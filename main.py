@@ -19,8 +19,8 @@ def format_text(text):
     for line in lines[1:]:
         line = line.strip()
 
-        # حذف آیدی‌ها
-        if line.startswith("@"):
+        # حذف هر خطی که @ دارد
+        if "@" in line:
             continue
 
         if line:
@@ -76,3 +76,4 @@ def webhook():
             })
 
     return "ok"
+
