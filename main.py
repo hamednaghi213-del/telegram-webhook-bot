@@ -10,6 +10,10 @@ API = f"https://api.telegram.org/bot{TOKEN}/"
 def remove_usernames(text):
     return re.sub(r"@\S+", "", text)
 
+# حذف لینک‌ها و آدرس‌های سایت
+def remove_links(text):
+    return re.sub(r"(https?://\S+|www\.\S+|\S+\.(com|ir|org|net|info|news))", "", text)
+
 # حذف کاراکترهای پنهان
 def clean_hidden_chars(text):
     return re.sub(r"[\u200c\u200d\u200e\u200f\ufeff]", "", text)
@@ -19,12 +23,22 @@ def keep_until_last_letter(text):
     match = re.search(r".*[a-zA-Z0-9آ-ی]", text)
     return match.group(0) if match else ""
 
-# نرمال‌سازی: فقط یک 🔹 اول خط
+# حذف ایموجی‌های اول خط و نگه‌داشتن فقط یک 🔹
 def normalize_bullet(text):
     text = re.sub(r"^[^\wآ-ی]+", "", text)
     if re.search(r"[a-zA-Z0-9آ-ی]", text):
         return "🔹 " + text
     return ""
+
+# تشخیص وجود فعل
+def has_verb(text):
+    verbs = [
+        "است", "هست", "شد", "می‌شود", "می شود", "می‌کند", "می کند",
+        "خواهد", "کرد", "می‌گردد", "می گردد", "بود", "می‌باشد", "می باشد",
+        "گفت", "اعلام کرد", "توضیح داد", "افزود", "تصریح کرد",
+        "خواهد شد", "خواهد بود"
+    ]
+    return any(v in text for v in verbs)
 
 def format_text(text):
     if not text:
@@ -36,6 +50,7 @@ def format_text(text):
     # --- تیتر ---
     title = lines[0].strip()
     title = remove_usernames(title)
+    title = remove_links(title)
     title = clean_hidden_chars(title)
     title = keep_until_last_letter(title).strip()
     output.append(f"❇️ {title}")
@@ -48,16 +63,16 @@ def format_text(text):
         if "@" in raw:
             continue
 
-        clean = remove_usernames(raw)
+        clean = remove_links(raw)
+        clean = remove_usernames(clean)
         clean = clean_hidden_chars(clean).strip()
-
-        # فقط تا آخرین حرف واقعی
         clean = keep_until_last_letter(clean).strip()
-
-        # نرمال‌سازی ایموجی‌های اول خط
         clean = normalize_bullet(clean).strip()
 
-        # اگر بعد از حذف خالی شد → حذف
+        # حذف خط‌های بدون فعل
+        if not has_verb(clean):
+            continue
+
         if not clean:
             continue
 
