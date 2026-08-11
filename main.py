@@ -58,93 +58,45 @@ INVITE_PATTERNS = [
 ]
 ALLOWED_CHARS_PATTERN = re.compile(r'[\w\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u200C\u200D.،؛:!؟()"\' ]')
 
-# ---------- 🆕 حذف تمام ایموجی‌ها ----------
+# ---------- حذف تمام ایموجی‌ها (به جز ❇️ و 🔹) ----------
 def remove_all_emojis(text: str) -> str:
-    """
-    حذف تمام ایموجی‌ها و آیکون‌های اضافی از متن
-    فقط ❇️ و 🔹 نگه داشته نمی‌شوند (چون خودمان اضافه می‌کنیم)
-    """
     if not text:
         return text
+    
+    # این دو تا رو نگه می‌داریم، بقیه رو حذف می‌کنیم
+    # اول ❇️ و 🔹 رو با یک نشانه موقت جایگزین می‌کنیم
+    text = text.replace('❇️', '[[TITLE]]')
+    text = text.replace('🔹', '[[BULLET]]')
     
     # الگوی جامع برای تمام ایموجی‌ها
     emoji_pattern = re.compile(
         "["
-        "\U0001F600-\U0001F64F"  # صورت‌ها
-        "\U0001F300-\U0001F5FF"  # نمادها و نشانه‌ها
-        "\U0001F680-\U0001F6FF"  # حمل و نقل و نقشه
-        "\U0001F700-\U0001F77F"  # نمادهای الحاقی
-        "\U0001F780-\U0001F7FF"  # اشکال هندسی
-        "\U0001F800-\U0001F8FF"  # پیکان‌های الحاقی
-        "\U0001F900-\U0001F9FF"  # ایموجی‌های تکمیلی
-        "\U0001FA00-\U0001FA6F"  # اشیاء و نمادها
-        "\U0001FA70-\U0001FAFF"  # نمادهای بیشتر
-        "\u2600-\u26FF"          # نمادهای متنوع
-        "\u2700-\u27BF"          # دینگ‌بات‌ها
-        "\uFE00-\uFEFF"          # انتخابگرهای تغییر
-        "\u2300-\u23FF"          # نمادهای فنی
-        "\u2B00-\u2BFF"          # پیکان‌ها و اشکال
-        "\u25A0-\u25FF"          # اشکال هندسی
-        "\u2930-\u293F"          # پیکان‌های اضافی
-        "\u2B00-\u2BFF"          # نمادها و پیکان‌ها
-        "\u2B50-\u2B50"          # ستاره ⭐
-        "\u2B55-\u2B55"          # دایره قرمز 🔴
-        "\u274C-\u274C"          # ضربدر ❌
-        "\u2753-\u2753"          # علامت سوال ❓
-        "\u2757-\u2757"          # علامت تعجب ❗
-        "\u2764-\u2764"          # قلب ❤️
-        "\u2B06-\u2B06"          # بالا ⬆️
-        "\u2B07-\u2B07"          # پایین ⬇️
-        "\u27A1-\u27A1"          # راست ➡️
-        "\u2B05-\u2B05"          # چپ ⬅️
-        "\u27B0-\u27B0"          # پیچ 🔀
-        "\u27BF-\u27BF"          # دایره خالی ◯
-        "\u26A0-\u26A0"          # هشدار ⚠️
-        "\u26A1-\u26A1"          # برق ⚡
-        "\u26AA-\u26AB"          # دایره ⚪⚫
-        "\u26BD-\u26BE"          # فوتبال ⚽⚾
-        "\u26C4-\u26C4"          # برف ☃️
-        "\u26CE-\u26CE"          # علامت ⛎
-        "\u26D4-\u26D4"          # ممنوع 🚫
-        "\u26EA-\u26EA"          # کلیسا ⛪
-        "\u26F0-\u26F1"          # کوه و چتر ⛰⛱
-        "\u26F2-\u26F3"          # فواره و پرچم ⛲⛳
-        "\u26F5-\u26F5"          # قایق ⛵
-        "\u26FA-\u26FA"          # چادر ⛺
-        "\u26FD-\u26FD"          # جایگاه سوخت ⛽
-        "\u2702-\u2702"          # قیچی ✂️
-        "\u2708-\u2708"          # هواپیما ✈️
-        "\u2709-\u2709"          # نامه ✉️
-        "\u270C-\u270C"          # دست ✌️
-        "\u270D-\u270D"          # دست ✍️
-        "\u270F-\u270F"          # خودکار ✏️
-        "\u2712-\u2712"          # خودکار سیاه ✒️
-        "\u2714-\u2714"          # تیک ✅
-        "\u2716-\u2716"          # ضربدر ✖️
-        "\u271D-\u271D"          # صلیب ✝️
-        "\u2721-\u2721"          # ستاره ✡️
-        "\u2728-\u2728"          # جرقه ✨
-        "\u2733-\u2734"          # ستاره هشت پر ✳️✴️
-        "\u2744-\u2744"          # دانه برف ❄️
-        "\u2747-\u2747"          # گل ❇️
-        "\u2757-\u2757"          # تعجب ❗
-        "\u2763-\u2763"          # قلب شکسته ❣️
-        "\u2764-\u2764"          # قلب ❤️
-        "\u2795-\u2797"          # جمع و تفریق ➕➖➗
-        "\u27B0-\u27B0"          # پیچ 🔀
-        "\u27BF-\u27BF"          # دایره خالی ◯
-        "\u2B50-\u2B50"          # ستاره ⭐
-        "\u2934-\u2935"          # پیکان‌های منحنی
+        "\U0001F600-\U0001F64F"
+        "\U0001F300-\U0001F5FF"
+        "\U0001F680-\U0001F6FF"
+        "\U0001F700-\U0001F77F"
+        "\U0001F780-\U0001F7FF"
+        "\U0001F800-\U0001F8FF"
+        "\U0001F900-\U0001F9FF"
+        "\U0001FA00-\U0001FA6F"
+        "\U0001FA70-\U0001FAFF"
+        "\u2600-\u26FF"
+        "\u2700-\u27BF"
+        "\uFE00-\uFEFF"
+        "\u2300-\u23FF"
+        "\u2B00-\u2BFF"
+        "\u25A0-\u25FF"
         "]+",
         flags=re.UNICODE
     )
     
-    # حذف تمام ایموجی‌ها
     text = emoji_pattern.sub('', text)
     
-    # حذف فضاهای اضافی
-    text = re.sub(r'\s+', ' ', text).strip()
+    # برگردوندن ❇️ و 🔹
+    text = text.replace('[[TITLE]]', '❇️')
+    text = text.replace('[[BULLET]]', '🔹')
     
+    text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 # ---------- توابع پاکسازی ----------
@@ -223,16 +175,16 @@ def clean_all_trailing_content(text: str) -> str:
     return text
 
 def format_news(raw_text: str) -> str:
-    # 🆕 مرحله ۰: حذف تمام ایموجی‌ها و آیکون‌های اضافی
+    # مرحله ۰: حذف تمام ایموجی‌های اضافی
     cleaned = remove_all_emojis(raw_text)
     
-    # مرحله ۱: پاکسازی @، #، لینک‌ها و عبارات دعوت
+    # مرحله ۱: پاکسازی @، #، لینک‌ها
     cleaned = clean_foreign_mentions_and_hashtags(cleaned)
     
     # مرحله ۲: حذف موارد اضافی از انتها
     cleaned = clean_all_trailing_content(cleaned)
     
-    # مرحله ۳: حذف عبارت‌های انتهایی مثل /صداوسیما
+    # مرحله ۳: حذف عبارت‌های انتهایی
     cleaned = clean_media_footer(cleaned)
     
     # مرحله ۴: حذف هر چیزی بعد از آخرین نقطه
@@ -332,7 +284,64 @@ def send_long_to_channel(text: str):
         if len(parts) > 1:
             time.sleep(0.5)
 
-# ---------- استخراج محتوای پیام ----------
+# ---------- 🆕 ارسال عکس و فیلم ----------
+def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
+    """ارسال عکس یا فیلم به کانال با کپشن قالب‌بندی‌شده"""
+    try:
+        if media_type == "photo":
+            endpoint = f"{API}/sendPhoto"
+        elif media_type == "video":
+            endpoint = f"{API}/sendVideo"
+        elif media_type == "document":
+            endpoint = f"{API}/sendDocument"
+        elif media_type == "voice":
+            endpoint = f"{API}/sendVoice"
+        elif media_type == "audio":
+            endpoint = f"{API}/sendAudio"
+        else:
+            logger.warning(f"نوع رسانه {media_type} پشتیبانی نمی‌شود")
+            return False
+        
+        resp = requests.post(
+            endpoint,
+            json={"chat_id": CHANNEL_ID, media_type: file_id, "caption": caption},
+            timeout=30
+        )
+        resp.raise_for_status()
+        logger.info(f"✅ {media_type} در کانال منتشر شد")
+        return True
+    except Exception as e:
+        logger.error(f"❌ خطا در ارسال {media_type} به کانال: {e}")
+        return False
+
+# ---------- 🆕 استخراج اطلاعات رسانه ----------
+def get_media_from_message(msg: dict) -> dict:
+    """استخراج اطلاعات رسانه از پیام"""
+    result = {"type": None, "file_id": None, "caption": ""}
+    
+    if "video" in msg:
+        result["type"] = "video"
+        result["file_id"] = msg["video"]["file_id"]
+        result["caption"] = msg.get("caption", "")
+    elif "photo" in msg:
+        result["type"] = "photo"
+        result["file_id"] = msg["photo"][-1]["file_id"]
+        result["caption"] = msg.get("caption", "")
+    elif "document" in msg:
+        result["type"] = "document"
+        result["file_id"] = msg["document"]["file_id"]
+        result["caption"] = msg.get("caption", "")
+    elif "voice" in msg:
+        result["type"] = "voice"
+        result["file_id"] = msg["voice"]["file_id"]
+        result["caption"] = msg.get("caption", "")
+    elif "audio" in msg:
+        result["type"] = "audio"
+        result["file_id"] = msg["audio"]["file_id"]
+        result["caption"] = msg.get("caption", "")
+    
+    return result
+
 def get_content_from_message(msg: dict) -> str:
     if "sticker" in msg:
         return ""
@@ -361,20 +370,46 @@ def webhook():
             msg = data["message"]
             chat_id = msg["chat"]["id"]
 
-            content = get_content_from_message(msg)
+            # 🆕 بررسی وجود رسانه
+            media_info = get_media_from_message(msg)
             
-            if content:
-                reply = format_news(content)
-                send_long_to_channel(reply)
+            if media_info["type"]:
+                # اگر رسانه وجود دارد
+                caption = media_info["caption"]
+                if caption:
+                    formatted_caption = format_news(caption)
+                else:
+                    formatted_caption = ""
+                
+                send_media_to_channel(
+                    media_info["file_id"],
+                    media_info["type"],
+                    formatted_caption
+                )
                 
                 try:
                     requests.post(
                         f"{API}/sendMessage",
-                        json={"chat_id": chat_id, "text": "✅ خبر شما در کانال منتشر شد."},
+                        json={"chat_id": chat_id, "text": "✅ خبر تصویری/ویدیویی شما در کانال منتشر شد."},
                         timeout=5
                     )
                 except:
                     pass
+            else:
+                # فقط متن
+                content = get_content_from_message(msg)
+                if content:
+                    reply = format_news(content)
+                    send_long_to_channel(reply)
+                    
+                    try:
+                        requests.post(
+                            f"{API}/sendMessage",
+                            json={"chat_id": chat_id, "text": "✅ خبر شما در کانال منتشر شد."},
+                            timeout=5
+                        )
+                    except:
+                        pass
 
             logger.info(f"[{request_id}] ✅ خبر در کانال منتشر شد")
 
@@ -384,7 +419,7 @@ def webhook():
 
         return {"ok": True}
 
-    return "🤖 ربات خبری هوشمند - نسخه نهایی با حذف کامل ایموجی‌ها"
+    return "🤖 ربات خبری هوشمند - نسخه نهایی با پشتیبانی از رسانه و حذف ایموجی"
 
 # ---------- اجرا ----------
 if __name__ == "__main__":
