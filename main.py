@@ -18,6 +18,13 @@ def remove_links(text):
 def clean_hidden_chars(text):
     return re.sub(r"[\u200c\u200d\u200e\u200f\ufeff]", "", text)
 
+# نیم‌فاصلهٔ حرفه‌ای (تلگرام حذف نمی‌کند)
+def fix_spacing(text):
+    # نیم‌فاصله استاندارد → تبدیل به ZWJ + Space
+    text = text.replace("\u200c", "\u200d ")
+    text = text.replace("\u200d", "\u200d ")
+    return text
+
 # نگه‌داشتن فقط تا آخرین حرف واقعی
 def keep_until_last_letter(text):
     match = re.search(r".*[a-zA-Z0-9آ-ی]", text)
@@ -53,6 +60,7 @@ def format_text(text):
     title = remove_links(title)
     title = clean_hidden_chars(title)
     title = keep_until_last_letter(title).strip()
+    title = fix_spacing(title)
     output.append(f"❇️ {title}")
 
     # --- بندهای خبر ---
@@ -67,6 +75,7 @@ def format_text(text):
         clean = remove_usernames(clean)
         clean = clean_hidden_chars(clean).strip()
         clean = keep_until_last_letter(clean).strip()
+        clean = fix_spacing(clean)
         clean = normalize_bullet(clean).strip()
 
         # حذف خط‌های بدون فعل
