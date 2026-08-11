@@ -1,6 +1,6 @@
+import re
 from flask import Flask, request
 import requests
-import re
 
 TOKEN = "8780146510:AAG0jmX2A-_TL86GceCglsNxS4Tyz6EW784"
 CHANNEL = "@Donya24News"
@@ -18,12 +18,11 @@ def remove_links(text):
 def clean_hidden_chars(text):
     return re.sub(r"[\u200c\u200d\u200e\u200f\ufeff]", "", text)
 
-# نیم‌فاصلهٔ حرفه‌ای (تلگرام حذف نمی‌کند)
+# نیم‌فاصلهٔ حرفه‌ای (ZWJ + Space)
 def fix_spacing(text):
-    # نیم‌فاصله استاندارد → تبدیل به ZWJ + Space
-    text = text.replace("\u200c", "\u200d ")
-    text = text.replace("\u200d", "\u200d ")
-    return text
+    # الگوی کلمات چسبیده فارسی
+    pattern = r"([اآبپتثجچحخدذرزسشصضطظعغفقکگلمنوهی])([اآبپتثجچحخدذرزسشصضطظعغفقکگلمنوهی])"
+    return re.sub(pattern, r"\1\u200d \2", text)
 
 # نگه‌داشتن فقط تا آخرین حرف واقعی
 def keep_until_last_letter(text):
@@ -67,7 +66,6 @@ def format_text(text):
     for line in lines[1:]:
         raw = line.strip()
 
-        # حذف کامل خط‌هایی که آیدی دارند
         if "@" in raw:
             continue
 
@@ -78,7 +76,6 @@ def format_text(text):
         clean = fix_spacing(clean)
         clean = normalize_bullet(clean).strip()
 
-        # حذف خط‌های بدون فعل
         if not has_verb(clean):
             continue
 
@@ -87,7 +84,6 @@ def format_text(text):
 
         output.append(clean)
 
-    # --- تگ کانال ---
     output.append("#دنیا_۲۴_نیوز")
     output.append("@Donya24News")
 
@@ -137,3 +133,4 @@ def webhook():
             })
 
     return "ok"
+
