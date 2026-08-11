@@ -6,18 +6,18 @@ TOKEN = "8780146510:AAG0jmX2A-_TL86GceCglsNxS4Tyz6EW784"
 CHANNEL = "@Donya24News"
 API = f"https://api.telegram.org/bot{TOKEN}/"
 
-# حذف هر چیزی شبیه @username
+# حذف آیدی‌ها
 def remove_usernames(text):
     return re.sub(r"@\S+", "", text)
 
-# حذف کاراکترهای پنهان، RTL/LTR، نیم‌فاصله، Zero-width
+# حذف کاراکترهای پنهان
 def clean_hidden_chars(text):
     return re.sub(r"[\u200c\u200d\u200e\u200f\ufeff]", "", text)
 
-# تشخیص اینکه خط فقط ایموجی/علامت است
-def is_emoji_line(text):
-    # اگر هیچ حرف فارسی/انگلیسی/عدد ندارد → فقط ایموجی/علامت است
-    return not re.search(r"[a-zA-Z0-9آ-ی]", text)
+# نگه‌داشتن فقط تا آخرین حرف واقعی
+def keep_until_last_letter(text):
+    match = re.search(r".*[a-zA-Z0-9آ-ی]", text)
+    return match.group(0) if match else ""
 
 def format_text(text):
     if not text:
@@ -27,7 +27,7 @@ def format_text(text):
     output = []
 
     # --- تیتر ---
-    title = clean_hidden_chars(remove_usernames(lines[0].strip()))
+    title = keep_until_last_letter(clean_hidden_chars(remove_usernames(lines[0].strip())))
     output.append(f"❇️ {title}")
 
     # --- بندهای خبر ---
@@ -39,11 +39,10 @@ def format_text(text):
             continue
 
         # حذف آیدی‌های احتمالی
-        clean = clean_hidden_chars(remove_usernames(raw)).strip()
+        clean = remove_usernames(raw).strip()
 
-        # اگر خط فقط ایموجی/علامت باشد → حذف
-        if is_emoji_line(clean):
-            continue
+        # نگه‌داشتن فقط تا آخرین حرف واقعی
+        clean = keep_until_last_letter(clean).strip()
 
         # اگر بعد از حذف خالی شد → حذف
         if not clean:
@@ -66,7 +65,6 @@ def webhook():
     if "message" in data:
         msg = data["message"]
 
-        # متن
         if "text" in msg:
             text = format_text(msg["text"])
             requests.post(API + "sendMessage", data={
@@ -74,7 +72,6 @@ def webhook():
                 "text": text
             })
 
-        # عکس
         if "photo" in msg:
             file_id = msg["photo"][-1]["file_id"]
             caption = format_text(msg.get("caption", ""))
@@ -84,7 +81,6 @@ def webhook():
                 "caption": caption
             })
 
-        # ویدیو
         if "video" in msg:
             file_id = msg["video"]["file_id"]
             caption = format_text(msg.get("caption", ""))
@@ -94,7 +90,6 @@ def webhook():
                 "caption": caption
             })
 
-        # سند
         if "document" in msg:
             file_id = msg["document"]["file_id"]
             caption = format_text(msg.get("caption", ""))
