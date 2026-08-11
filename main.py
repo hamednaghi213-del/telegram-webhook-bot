@@ -17,7 +17,10 @@ if not TOKEN:
 SECRET_TOKEN = os.getenv("TELEGRAM_SECRET_TOKEN", "my_secret_token_123")
 API = f"https://api.telegram.org/bot{TOKEN}"
 
-CHANNEL_ID = "@Donya24News"
+# 🔻 فقط این خط را با آیدی کانال خود جایگزین کنید 🔻
+CHANNEL_ID = "@Donya24News"  # ← آیدی کانال خود را اینجا بگذارید
+# 🔺
+
 HASHTAG = "#دنیا_۲۴_نیوز"
 CHANNEL_TAG = "@Donya24News"
 MAX_MESSAGE_LENGTH = 4096
@@ -88,18 +91,25 @@ def clean_trailing_emojis(text: str) -> str:
     return ""
 
 def clean_after_last_period(text: str) -> str:
-    """حذف هر چیزی بعد از آخرین نقطه (.) یا (۔)"""
+    """
+    حذف هر چیزی بعد از آخرین نقطه (.) یا (۔) در متن.
+    این روش منطقی‌ترین و کلی‌ترین روش برای حذف موارد اضافی است.
+    """
     if not text:
         return text
+    
     last_dot = text.rfind('.')
     last_persian_dot = text.rfind('۔')
     last_index = max(last_dot, last_persian_dot)
+    
     if last_index != -1:
-        return text[:last_index + 1].strip()
-    return text
+        trimmed = text[:last_index + 1].strip()
+        return trimmed
+    else:
+        return text
 
 def clean_all_trailing_content(text: str) -> str:
-    """حذف هوشمندانه تمام موارد اضافی از انتهای متن"""
+    """حذف هوشمندانه موارد اضافی از انتهای متن (پرچم، |، کلمات اضافی)"""
     if not text:
         return ""
     
@@ -121,7 +131,24 @@ def clean_all_trailing_content(text: str) -> str:
     # 6. حذف عباراتی مثل "- Link"
     text = re.sub(r'\s*[-–—]\s*(Link|لینک|More|بیشتر|ادامه|مشاهده|بخوانید|کلیک|اینجا)\s*$', '', text, flags=re.IGNORECASE)
     
-    # 7. حذف خطوط اضافی
+    # 7. حذف نام رسانه‌ها
+    media_names = [
+        'صداوسیما', 'ایسنا', 'فارس', 'مهر', 'تسنیم', 'ایرنا', 
+        'خبرگزاری', 'ایسکانیوز', 'دانشجو', 'ایلنا', 'باشگاه خبرنگاران',
+        'اسریران', 'Asriran', 'FarsNews', 'Tasnim', 'Mehr', 'IRNA',
+        'رویترز', 'روترز', 'Reuters', 'AP', 'BBC', 'CNN', 'Al Jazeera',
+        'العربیه', 'العربية', 'Sky News', 'فرانس پرس', 'AFP'
+    ]
+    for media in media_names:
+        text = re.sub(r'/?\s*' + re.escape(media) + r'\.?\s*$', '', text, flags=re.IGNORECASE)
+    
+    # 8. حذف هر چیزی که با / شروع می‌شود و یک کلمه است
+    text = re.sub(r'/\s*[^\s/]+\s*\.?\s*$', '', text)
+    
+    # 9. حذف عبارات با نقطه انتهایی که اسم رسانه هستند
+    text = re.sub(r'[A-Za-z]+\.\s*$', '', text)
+    
+    # 10. حذف خطوط اضافی
     lines = text.splitlines()
     cleaned_lines = []
     for line in lines:
@@ -132,10 +159,10 @@ def clean_all_trailing_content(text: str) -> str:
         cleaned_lines.append(line)
     text = '\n'.join(cleaned_lines)
     
-    # 8. حذف فضاهای اضافی
+    # 11. حذف فضاهای اضافی
     text = re.sub(r'\s+', ' ', text).strip()
     
-    # 9. حذف ایموجی‌های انتهایی
+    # 12. حذف ایموجی‌های انتهایی
     text = clean_trailing_emojis(text)
     
     return text
@@ -144,20 +171,19 @@ def format_news(raw_text: str) -> str:
     # مرحله ۱: پاکسازی @، #، لینک‌ها و عبارات دعوت
     cleaned = clean_foreign_mentions_and_hashtags(raw_text)
     
-    # مرحله ۲: حذف هوشمندانه موارد اضافی از انتها
+    # مرحله ۲: حذف ایموجی‌ها و نشانه‌های اضافی
     cleaned = clean_all_trailing_content(cleaned)
     
-    # مرحله ۳: حذف هر چیزی بعد از آخرین نقطه
+    # مرحله ۳: 🎯 حذف هر چیزی بعد از آخرین نقطه (منطقی‌ترین روش)
     cleaned = clean_after_last_period(cleaned)
     
     if not cleaned:
         return f"‏{HASHTAG}\n‏{CHANNEL_TAG}"
     
-    # مرحله ۴: تقسیم متن به خطوط بر اساس نشانه‌ها
+    # مرحله ۴: تقسیم به خطوط
     lines = cleaned.split('\n')
     
     if len(lines) == 1:
-        # اگر متن شامل 🔹 بود، بر اساس آن تقسیم کن
         if '🔹' in lines[0]:
             parts = lines[0].split('🔹')
             lines = []
@@ -168,7 +194,6 @@ def format_news(raw_text: str) -> str:
                         lines.append(part)
                     else:
                         lines.append(f"🔹{part}")
-        # اگر متن شامل نقطه بود، بر اساس نقطه تقسیم کن
         elif '۔' in lines[0] or '.' in lines[0]:
             parts = re.split(r'(?<=[.۔])\s+', lines[0])
             if len(parts) > 1:
@@ -176,13 +201,11 @@ def format_news(raw_text: str) -> str:
             else:
                 lines = [lines[0]]
     
-    # حذف خطوط خالی
     lines = [line.strip() for line in lines if line.strip()]
     
     if not lines:
         return f"‏{HASHTAG}\n‏{CHANNEL_TAG}"
     
-    # مرحله ۵: قالب‌بندی
     title = lines[0]
     body = lines[1:]
     
@@ -280,18 +303,23 @@ def webhook():
             chat_id = msg["chat"]["id"]
 
             content = get_content_from_message(msg)
-            reply = format_news(content)
-
-            send_long_to_channel(reply)
-
-            try:
-                requests.post(
-                    f"{API}/sendMessage",
-                    json={"chat_id": chat_id, "text": "✅ خبر شما در کانال منتشر شد."},
-                    timeout=5
-                )
-            except:
-                pass
+            
+            if content:
+                # قالب‌بندی خبر
+                reply = format_news(content)
+                
+                # ارسال به کانال
+                send_long_to_channel(reply)
+                
+                # پیام تأیید به کاربر
+                try:
+                    requests.post(
+                        f"{API}/sendMessage",
+                        json={"chat_id": chat_id, "text": "✅ خبر شما در کانال منتشر شد."},
+                        timeout=5
+                    )
+                except:
+                    pass
 
             logger.info(f"[{request_id}] ✅ خبر در کانال منتشر شد")
 
