@@ -12,12 +12,21 @@ def format_text(text):
     lines = text.split("\n")
     output = []
 
+    # تیتر
     output.append(f"❇️ {lines[0].strip()}")
 
+    # بندها
     for line in lines[1:]:
-        if line.strip():
-            output.append(f"🔹 {line.strip()}")
+        line = line.strip()
 
+        # حذف آیدی‌ها
+        if line.startswith("@"):
+            continue
+
+        if line:
+            output.append(f"🔹 {line}")
+
+    # تگ کانال
     output.append("#دنیا_۲۴_نیوز")
     output.append("@Donya24News")
 
