@@ -17,9 +17,7 @@ if not TOKEN:
 SECRET_TOKEN = os.getenv("TELEGRAM_SECRET_TOKEN", "my_secret_token_123")
 API = f"https://api.telegram.org/bot{TOKEN}"
 
-# ✅ آیدی کانال شما (خودم اضافه کردم)
 CHANNEL_ID = "@Donya24News"
-
 HASHTAG = "#دنیا_۲۴_نیوز"
 CHANNEL_TAG = "@Donya24News"
 MAX_MESSAGE_LENGTH = 4096
@@ -44,7 +42,7 @@ def setup_logging():
 
 logger = setup_logging()
 
-# ---------- RegExها ----------
+# ---------- RegExهای کامپایل شده ----------
 URL_PATTERN = re.compile(r'(?:https?://|t\.me/|telegram\.me/|telegram\.dog/|www\.)[^\s]+')
 AT_PATTERN = re.compile(r'@[a-zA-Z0-9_]+')
 HASH_PATTERN = re.compile(r'#[^\s]+')
@@ -64,15 +62,25 @@ ALLOWED_CHARS_PATTERN = re.compile(r'[\w\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\
 def clean_foreign_mentions_and_hashtags(text: str) -> str:
     if not text:
         return ""
+    
+    # 1. حذف @ها (به جز @Donya24News)
     def replace_at(match):
         return match.group(0) if match.group(0) == CHANNEL_TAG else ""
     text = AT_PATTERN.sub(replace_at, text)
+    
+    # 2. حذف #ها (به جز #دنیا_۲۴_نیوز)
     def replace_hash(match):
         return match.group(0) if match.group(0) == HASHTAG else ""
     text = HASH_PATTERN.sub(replace_hash, text)
+    
+    # 3. حذف تمام لینک‌ها
     text = URL_PATTERN.sub('', text)
+    
+    # 4. حذف عبارات دعوت
     for pattern in INVITE_PATTERNS:
         text = pattern.sub('', text)
+    
+    # 5. حذف فضاهای اضافی
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -84,23 +92,68 @@ def clean_trailing_emojis(text: str) -> str:
             return text[:i+1].rstrip()
     return ""
 
+def clean_all_trailing_content(text: str) -> str:
+    """
+    حذف هوشمندانه تمام موارد اضافی از انتهای متن:
+    - ایموجی‌ها و پرچم‌ها
+    - عبارات مثل "| اخبار ..."
+    - @آیدی‌ها
+    - کلمات تکراری مثل "اخبار"، "کانال"، "تلگرام"
+    - هرگونه کاراکتر غیرضروری بعد از آخرین کلمه مفید
+    """
+    if not text:
+        return ""
+    
+    # 1. حذف پرچم‌های کشورها (🇮🇷🇺🇸🇬🇧 و ...)
+    text = re.sub(r'[\U0001F1E6-\U0001F1FF]+', '', text)
+    
+    # 2. حذف هر چیزی که با | شروع می‌شود تا انتهای خط
+    text = re.sub(r'\|.*$', '', text, flags=re.MULTILINE)
+    
+    # 3. حذف عبارات "اخبار کانال" یا "کانال تلگرام"
+    text = re.sub(r'(اخبار|کانال|تلگرام|channel|telegram)\s+[^\s]+$', '', text, flags=re.IGNORECASE)
+    
+    # 4. حذف @آیدی‌های باقی‌مانده
+    text = re.sub(r'@[a-zA-Z0-9_]+', '', text)
+    
+    # 5. حذف هرگونه کلمه تکراری که به کانال اشاره دارد
+    text = re.sub(r'\b(کانال|تلگرام|channel|telegram)\b', '', text, flags=re.IGNORECASE)
+    
+    # 6. حذف فاصله‌های اضافی و خطوط خالی
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # 7. حذف ایموجی‌های انتهایی
+    text = clean_trailing_emojis(text)
+    
+    return text
+
 def format_news(raw_text: str) -> str:
+    # مرحله ۱: پاکسازی @، #، لینک‌ها و عبارات دعوت
     cleaned = clean_foreign_mentions_and_hashtags(raw_text)
-    cleaned = clean_trailing_emojis(cleaned)
+    
+    # مرحله ۲: حذف هوشمندانه تمام موارد اضافی از انتها
+    cleaned = clean_all_trailing_content(cleaned)
+    
     if not cleaned:
         return f"‏{HASHTAG}\n‏{CHANNEL_TAG}"
+    
+    # مرحله ۳: تقسیم به خطوط
     lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
     if not lines:
         return f"‏{HASHTAG}\n‏{CHANNEL_TAG}"
+    
+    # مرحله ۴: قالب‌بندی
     title = lines[0]
     body = lines[1:]
+    
     result = f"‏❇️ {title}\n"
     for line in body:
         result += f"🔹 {line}\n"
+    
     result += f"\n‏{HASHTAG}\n‏{CHANNEL_TAG}"
     return result
 
-# ---------- تقسیم پیام طولانی ----------
+# ---------- باقی توابع (split, send, webhook) به همان شکل ----------
 def split_long_message(text: str, max_len: int = MAX_MESSAGE_LENGTH) -> list:
     if len(text) <= max_len:
         return [text]
@@ -125,9 +178,7 @@ def split_long_message(text: str, max_len: int = MAX_MESSAGE_LENGTH) -> list:
             parts[i-1] = f"({i}/{total})\n{part}"
     return parts
 
-# ---------- ارسال به کانال ----------
 def send_to_channel(text: str):
-    """ارسال مستقیم پیام به کانال"""
     try:
         resp = requests.post(
             f"{API}/sendMessage",
@@ -142,7 +193,6 @@ def send_to_channel(text: str):
         return False
 
 def send_long_to_channel(text: str):
-    """ارسال پیام طولانی به کانال با تقسیم"""
     parts = split_long_message(text)
     for part in parts:
         success = send_to_channel(part)
@@ -151,7 +201,6 @@ def send_long_to_channel(text: str):
         if len(parts) > 1:
             time.sleep(0.5)
 
-# ---------- استخراج محتوای پیام ----------
 def get_content_from_message(msg: dict) -> str:
     if "sticker" in msg:
         return ""
@@ -163,7 +212,6 @@ def get_content_from_message(msg: dict) -> str:
         return ""
     return ""
 
-# ---------- Webhook ----------
 @app.route("/", methods=["POST", "GET"])
 def webhook():
     if request.method == "POST":
@@ -185,10 +233,8 @@ def webhook():
             content = get_content_from_message(msg)
             reply = format_news(content)
 
-            # 🎯 ارسال به کانال
             send_long_to_channel(reply)
 
-            # به کاربر پیام تأیید بفرست
             try:
                 requests.post(
                     f"{API}/sendMessage",
@@ -206,14 +252,9 @@ def webhook():
 
         return {"ok": True}
 
-    return "🤖 ربات خبری - ارسال به کانال"
+    return "🤖 ربات خبری هوشمند - نسخه نهایی"
 
-# ---------- اجرا ----------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     logger.info(f"🚀 ربات روی پورت {port} در حال اجراست...")
     app.run(host="0.0.0.0", port=port)
-
-
-
-
