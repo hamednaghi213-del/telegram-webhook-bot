@@ -41,7 +41,8 @@ def has_verb(text):
         "است", "هست", "شد", "می‌شود", "می شود", "می‌کند", "می کند",
         "خواهد", "کرد", "می‌گردد", "می گردد", "بود", "می‌باشد", "می باشد",
         "گفت", "اعلام کرد", "توضیح داد", "افزود", "تصریح کرد",
-        "خواهد شد", "خواهد بود"
+        "خواهد شد", "خواهد بود", "پرواز کرد", "خارج کرد", "خارج شده",
+        "انجام شد", "به نظر برسد"
     ]
     return any(v in text for v in verbs)
 
@@ -59,13 +60,19 @@ def format_text(text):
     title = clean_hidden_chars(title)
     title = keep_until_last_letter(title).strip()
     title = fix_spacing(title)
+
+    # اگر تیتر خالی شد، یک تیتر جایگزین می‌گذاریم تا خروجی صفر نشود
+    if not title:
+        title = "خبر"
+
     output.append(f"❇️ {title}")
 
     # --- بندهای خبر (با فیلتر فعل) ---
     for line in lines[1:]:
         raw = line.strip()
 
-        if "@" in raw:
+        # حذف آیدی‌ها اما بدون حذف کل خروجی
+        if raw.startswith("@"):
             continue
 
         clean = remove_links(raw)
@@ -84,6 +91,7 @@ def format_text(text):
 
         output.append(clean)
 
+    # همیشه این دو خط آخر اضافه شوند
     output.append("#دنیا_۲۴_نیوز")
     output.append("@Donya24News")
 
@@ -133,5 +141,6 @@ def webhook():
             })
 
     return "ok"
+
 
 
