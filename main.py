@@ -18,7 +18,7 @@ SECRET_TOKEN = os.getenv("TELEGRAM_SECRET_TOKEN", "my_secret_token_123")
 API = f"https://api.telegram.org/bot{TOKEN}"
 
 # 🔻 فقط این خط را با آیدی کانال خود جایگزین کنید 🔻
-CHANNEL_ID = "@Donya24News"  # ← آیدی کانال خود را اینجا بگذارید
+CHANNEL_ID = "@Donya24News"
 # 🔺
 
 HASHTAG = "#دنیا_۲۴_نیوز"
@@ -91,47 +91,55 @@ def clean_trailing_emojis(text: str) -> str:
     return ""
 
 def clean_after_last_period(text: str) -> str:
-    """
-    حذف هر چیزی بعد از آخرین نقطه (.) یا (۔) در متن.
-    این روش منطقی‌ترین و کلی‌ترین روش برای حذف موارد اضافی است.
-    """
+    """حذف هر چیزی بعد از آخرین نقطه (.) یا (۔)"""
     if not text:
         return text
-    
     last_dot = text.rfind('.')
     last_persian_dot = text.rfind('۔')
     last_index = max(last_dot, last_persian_dot)
-    
     if last_index != -1:
-        trimmed = text[:last_index + 1].strip()
-        return trimmed
-    else:
+        return text[:last_index + 1].strip()
+    return text
+
+def clean_media_footer(text: str) -> str:
+    """
+    حذف عبارات انتهایی مثل:
+    /صداوسیما Asriran.
+    /ایسنا
+    /فارس
+    @FarsNews - Link
+    و ...
+    """
+    if not text:
         return text
+    
+    # الگوی ۱: /رسانه نام
+    text = re.sub(r'/\s*[^\s/]+\s+[A-Za-z]+\.?\s*$', '', text)
+    
+    # الگوی ۲: /رسانه
+    text = re.sub(r'/\s*[^\s/]+\.?\s*$', '', text)
+    
+    # الگوی ۳: نام رسانه با نقطه
+    text = re.sub(r'[A-Za-z]+\.[A-Za-z]*\s*$', '', text)
+    
+    # الگوی ۴: @آیدی - لینک
+    text = re.sub(r'@[a-zA-Z0-9_]+\s*[-–—]\s*(Link|لینک|More|بیشتر)\s*$', '', text, flags=re.IGNORECASE)
+    
+    return text.strip()
 
 def clean_all_trailing_content(text: str) -> str:
-    """حذف هوشمندانه موارد اضافی از انتهای متن (پرچم، |، کلمات اضافی)"""
+    """حذف هوشمندانه موارد اضافی از انتهای متن"""
     if not text:
         return ""
     
-    # 1. حذف پرچم‌های کشورها
     text = re.sub(r'[\U0001F1E6-\U0001F1FF]+', '', text)
-    
-    # 2. حذف هر چیزی که با | شروع می‌شود
     text = re.sub(r'\|.*$', '', text, flags=re.MULTILINE)
-    
-    # 3. حذف عبارات "اخبار کانال"
     text = re.sub(r'(اخبار|کانال|تلگرام|channel|telegram)\s+[^\s]+$', '', text, flags=re.IGNORECASE)
-    
-    # 4. حذف @آیدی‌ها
     text = re.sub(r'@[a-zA-Z0-9_]+', '', text)
-    
-    # 5. حذف کلمات تکراری
     text = re.sub(r'\b(کانال|تلگرام|channel|telegram)\b', '', text, flags=re.IGNORECASE)
-    
-    # 6. حذف عباراتی مثل "- Link"
     text = re.sub(r'\s*[-–—]\s*(Link|لینک|More|بیشتر|ادامه|مشاهده|بخوانید|کلیک|اینجا)\s*$', '', text, flags=re.IGNORECASE)
     
-    # 7. حذف نام رسانه‌ها
+    # حذف نام رسانه‌ها
     media_names = [
         'صداوسیما', 'ایسنا', 'فارس', 'مهر', 'تسنیم', 'ایرنا', 
         'خبرگزاری', 'ایسکانیوز', 'دانشجو', 'ایلنا', 'باشگاه خبرنگاران',
@@ -142,13 +150,11 @@ def clean_all_trailing_content(text: str) -> str:
     for media in media_names:
         text = re.sub(r'/?\s*' + re.escape(media) + r'\.?\s*$', '', text, flags=re.IGNORECASE)
     
-    # 8. حذف هر چیزی که با / شروع می‌شود و یک کلمه است
+    # حذف عبارت با /
     text = re.sub(r'/\s*[^\s/]+\s*\.?\s*$', '', text)
-    
-    # 9. حذف عبارات با نقطه انتهایی که اسم رسانه هستند
     text = re.sub(r'[A-Za-z]+\.\s*$', '', text)
     
-    # 10. حذف خطوط اضافی
+    # حذف خطوط اضافی
     lines = text.splitlines()
     cleaned_lines = []
     for line in lines:
@@ -159,10 +165,7 @@ def clean_all_trailing_content(text: str) -> str:
         cleaned_lines.append(line)
     text = '\n'.join(cleaned_lines)
     
-    # 11. حذف فضاهای اضافی
     text = re.sub(r'\s+', ' ', text).strip()
-    
-    # 12. حذف ایموجی‌های انتهایی
     text = clean_trailing_emojis(text)
     
     return text
@@ -171,16 +174,19 @@ def format_news(raw_text: str) -> str:
     # مرحله ۱: پاکسازی @، #، لینک‌ها و عبارات دعوت
     cleaned = clean_foreign_mentions_and_hashtags(raw_text)
     
-    # مرحله ۲: حذف ایموجی‌ها و نشانه‌های اضافی
+    # مرحله ۲: حذف موارد اضافی از انتها (پرچم، |، ...)
     cleaned = clean_all_trailing_content(cleaned)
     
-    # مرحله ۳: 🎯 حذف هر چیزی بعد از آخرین نقطه (منطقی‌ترین روش)
+    # مرحله ۳: 🆕 حذف عبارت‌های انتهایی مثل /صداوسیما Asriran.
+    cleaned = clean_media_footer(cleaned)
+    
+    # مرحله ۴: حذف هر چیزی بعد از آخرین نقطه
     cleaned = clean_after_last_period(cleaned)
     
     if not cleaned:
         return f"‏{HASHTAG}\n‏{CHANNEL_TAG}"
     
-    # مرحله ۴: تقسیم به خطوط
+    # مرحله ۵: تقسیم به خطوط
     lines = cleaned.split('\n')
     
     if len(lines) == 1:
@@ -305,13 +311,9 @@ def webhook():
             content = get_content_from_message(msg)
             
             if content:
-                # قالب‌بندی خبر
                 reply = format_news(content)
-                
-                # ارسال به کانال
                 send_long_to_channel(reply)
                 
-                # پیام تأیید به کاربر
                 try:
                     requests.post(
                         f"{API}/sendMessage",
