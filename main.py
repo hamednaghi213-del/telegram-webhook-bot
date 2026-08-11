@@ -1,9 +1,14 @@
 from flask import Flask, request
 import requests
+import re
 
 TOKEN = "8780146510:AAG0jmX2A-_TL86GceCglsNxS4Tyz6EW784"
 CHANNEL = "@Donya24News"
 API = f"https://api.telegram.org/bot{TOKEN}/"
+
+def remove_usernames(text):
+    # حذف هر چیزی که شبیه @username باشد
+    return re.sub(r"@\S+", "", text)
 
 def format_text(text):
     if not text:
@@ -13,18 +18,18 @@ def format_text(text):
     output = []
 
     # تیتر
-    output.append(f"❇️ {lines[0].strip()}")
+    title = remove_usernames(lines[0].strip())
+    output.append(f"❇️ {title}")
 
     # بندها
     for line in lines[1:]:
-        line = line.strip()
+        line = remove_usernames(line.strip())
 
-        # حذف هر خطی که @ دارد
-        if "@" in line:
+        # اگر بعد از حذف آیدی، خط خالی شد → رد کن
+        if not line.strip():
             continue
 
-        if line:
-            output.append(f"🔹 {line}")
+        output.append(f"🔹 {line}")
 
     # تگ کانال
     output.append("#دنیا_۲۴_نیوز")
@@ -76,4 +81,3 @@ def webhook():
             })
 
     return "ok"
-
