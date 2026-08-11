@@ -10,6 +10,15 @@ API = f"https://api.telegram.org/bot{TOKEN}/"
 def remove_usernames(text):
     return re.sub(r"@\S+", "", text)
 
+# حذف کاراکترهای پنهان، RTL/LTR، نیم‌فاصله، Zero-width
+def clean_hidden_chars(text):
+    return re.sub(r"[\u200c\u200d\u200e\u200f\ufeff]", "", text)
+
+# تشخیص اینکه خط فقط ایموجی/علامت است
+def is_emoji_line(text):
+    # اگر هیچ حرف فارسی/انگلیسی/عدد ندارد → فقط ایموجی/علامت است
+    return not re.search(r"[a-zA-Z0-9آ-ی]", text)
+
 def format_text(text):
     if not text:
         return ""
@@ -18,21 +27,25 @@ def format_text(text):
     output = []
 
     # --- تیتر ---
-    title = remove_usernames(lines[0].strip())
+    title = clean_hidden_chars(remove_usernames(lines[0].strip()))
     output.append(f"❇️ {title}")
 
     # --- بندهای خبر ---
     for line in lines[1:]:
-        raw = line.strip()
+        raw = clean_hidden_chars(line.strip())
 
-        # اگر خط شامل @ باشد → کل خط حذف شود (ایموجی‌ها هم حذف می‌شوند)
+        # اگر خط شامل @ باشد → کل خط حذف شود
         if "@" in raw:
             continue
 
-        # حذف آیدی‌های احتمالی باقی‌مانده
-        clean = remove_usernames(raw).strip()
+        # حذف آیدی‌های احتمالی
+        clean = clean_hidden_chars(remove_usernames(raw)).strip()
 
-        # اگر بعد از حذف خالی شد → رد کن
+        # اگر خط فقط ایموجی/علامت باشد → حذف
+        if is_emoji_line(clean):
+            continue
+
+        # اگر بعد از حذف خالی شد → حذف
         if not clean:
             continue
 
@@ -92,3 +105,4 @@ def webhook():
             })
 
     return "ok"
+
