@@ -10,6 +10,10 @@ API = f"https://api.telegram.org/bot{TOKEN}/"
 def remove_usernames(text):
     return re.sub(r"@\S+", "", text)
 
+# حذف لینک‌ها و آدرس‌های سایت
+def remove_links(text):
+    return re.sub(r"(https?://\S+|www\.\S+|\S+\.(com|ir|org|net|info|news))", "", text)
+
 # حذف کاراکترهای پنهان
 def clean_hidden_chars(text):
     return re.sub(r"[\u200c\u200d\u200e\u200f\ufeff]", "", text)
@@ -27,19 +31,29 @@ def format_text(text):
     output = []
 
     # --- تیتر ---
-    title = keep_until_last_letter(clean_hidden_chars(remove_usernames(lines[0].strip())))
+    title = lines[0].strip()
+    title = remove_usernames(title)
+    title = remove_links(title)
+    title = clean_hidden_chars(title)
+    title = keep_until_last_letter(title).strip()
     output.append(f"❇️ {title}")
 
     # --- بندهای خبر ---
     for line in lines[1:]:
-        raw = clean_hidden_chars(line.strip())
+        raw = line.strip()
 
-        # اگر خط شامل @ باشد → کل خط حذف شود
+        # حذف کامل خط‌هایی که آیدی دارند
         if "@" in raw:
             continue
 
+        # حذف لینک‌ها و آدرس‌های سایت
+        clean = remove_links(raw)
+
         # حذف آیدی‌های احتمالی
-        clean = remove_usernames(raw).strip()
+        clean = remove_usernames(clean)
+
+        # حذف کاراکترهای پنهان
+        clean = clean_hidden_chars(clean).strip()
 
         # نگه‌داشتن فقط تا آخرین حرف واقعی
         clean = keep_until_last_letter(clean).strip()
@@ -100,4 +114,5 @@ def webhook():
             })
 
     return "ok"
+
 
