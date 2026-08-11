@@ -17,10 +17,7 @@ if not TOKEN:
 SECRET_TOKEN = os.getenv("TELEGRAM_SECRET_TOKEN", "my_secret_token_123")
 API = f"https://api.telegram.org/bot{TOKEN}"
 
-# 🔻 فقط این خط را با آیدی کانال خود جایگزین کنید 🔻
 CHANNEL_ID = "@Donya24News"
-# 🔺
-
 HASHTAG = "#دنیا_۲۴_نیوز"
 CHANNEL_TAG = "@Donya24News"
 MAX_MESSAGE_LENGTH = 4096
@@ -45,7 +42,7 @@ def setup_logging():
 
 logger = setup_logging()
 
-# ---------- RegExهای کامپایل شده ----------
+# ---------- RegExها ----------
 URL_PATTERN = re.compile(r'(?:https?://|t\.me/|telegram\.me/|telegram\.dog/|www\.)[^\s]+')
 AT_PATTERN = re.compile(r'@[a-zA-Z0-9_]+')
 HASH_PATTERN = re.compile(r'#[^\s]+')
@@ -65,20 +62,15 @@ ALLOWED_CHARS_PATTERN = re.compile(r'[\w\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\
 def clean_foreign_mentions_and_hashtags(text: str) -> str:
     if not text:
         return ""
-    
     def replace_at(match):
         return match.group(0) if match.group(0) == CHANNEL_TAG else ""
     text = AT_PATTERN.sub(replace_at, text)
-    
     def replace_hash(match):
         return match.group(0) if match.group(0) == HASHTAG else ""
     text = HASH_PATTERN.sub(replace_hash, text)
-    
     text = URL_PATTERN.sub('', text)
-    
     for pattern in INVITE_PATTERNS:
         text = pattern.sub('', text)
-    
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -91,7 +83,6 @@ def clean_trailing_emojis(text: str) -> str:
     return ""
 
 def clean_after_last_period(text: str) -> str:
-    """حذف هر چیزی بعد از آخرین نقطه (.) یا (۔)"""
     if not text:
         return text
     last_dot = text.rfind('.')
@@ -102,44 +93,23 @@ def clean_after_last_period(text: str) -> str:
     return text
 
 def clean_media_footer(text: str) -> str:
-    """
-    حذف عبارات انتهایی مثل:
-    /صداوسیما Asriran.
-    /ایسنا
-    /فارس
-    @FarsNews - Link
-    و ...
-    """
     if not text:
         return text
-    
-    # الگوی ۱: /رسانه نام
     text = re.sub(r'/\s*[^\s/]+\s+[A-Za-z]+\.?\s*$', '', text)
-    
-    # الگوی ۲: /رسانه
     text = re.sub(r'/\s*[^\s/]+\.?\s*$', '', text)
-    
-    # الگوی ۳: نام رسانه با نقطه
     text = re.sub(r'[A-Za-z]+\.[A-Za-z]*\s*$', '', text)
-    
-    # الگوی ۴: @آیدی - لینک
     text = re.sub(r'@[a-zA-Z0-9_]+\s*[-–—]\s*(Link|لینک|More|بیشتر)\s*$', '', text, flags=re.IGNORECASE)
-    
     return text.strip()
 
 def clean_all_trailing_content(text: str) -> str:
-    """حذف هوشمندانه موارد اضافی از انتهای متن"""
     if not text:
         return ""
-    
     text = re.sub(r'[\U0001F1E6-\U0001F1FF]+', '', text)
     text = re.sub(r'\|.*$', '', text, flags=re.MULTILINE)
     text = re.sub(r'(اخبار|کانال|تلگرام|channel|telegram)\s+[^\s]+$', '', text, flags=re.IGNORECASE)
     text = re.sub(r'@[a-zA-Z0-9_]+', '', text)
     text = re.sub(r'\b(کانال|تلگرام|channel|telegram)\b', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\s*[-–—]\s*(Link|لینک|More|بیشتر|ادامه|مشاهده|بخوانید|کلیک|اینجا)\s*$', '', text, flags=re.IGNORECASE)
-    
-    # حذف نام رسانه‌ها
     media_names = [
         'صداوسیما', 'ایسنا', 'فارس', 'مهر', 'تسنیم', 'ایرنا', 
         'خبرگزاری', 'ایسکانیوز', 'دانشجو', 'ایلنا', 'باشگاه خبرنگاران',
@@ -149,12 +119,8 @@ def clean_all_trailing_content(text: str) -> str:
     ]
     for media in media_names:
         text = re.sub(r'/?\s*' + re.escape(media) + r'\.?\s*$', '', text, flags=re.IGNORECASE)
-    
-    # حذف عبارت با /
     text = re.sub(r'/\s*[^\s/]+\s*\.?\s*$', '', text)
     text = re.sub(r'[A-Za-z]+\.\s*$', '', text)
-    
-    # حذف خطوط اضافی
     lines = text.splitlines()
     cleaned_lines = []
     for line in lines:
@@ -164,31 +130,18 @@ def clean_all_trailing_content(text: str) -> str:
             continue
         cleaned_lines.append(line)
     text = '\n'.join(cleaned_lines)
-    
     text = re.sub(r'\s+', ' ', text).strip()
     text = clean_trailing_emojis(text)
-    
     return text
 
 def format_news(raw_text: str) -> str:
-    # مرحله ۱: پاکسازی @، #، لینک‌ها و عبارات دعوت
     cleaned = clean_foreign_mentions_and_hashtags(raw_text)
-    
-    # مرحله ۲: حذف موارد اضافی از انتها (پرچم، |، ...)
     cleaned = clean_all_trailing_content(cleaned)
-    
-    # مرحله ۳: 🆕 حذف عبارت‌های انتهایی مثل /صداوسیما Asriran.
     cleaned = clean_media_footer(cleaned)
-    
-    # مرحله ۴: حذف هر چیزی بعد از آخرین نقطه
     cleaned = clean_after_last_period(cleaned)
-    
     if not cleaned:
         return f"‏{HASHTAG}\n‏{CHANNEL_TAG}"
-    
-    # مرحله ۵: تقسیم به خطوط
     lines = cleaned.split('\n')
-    
     if len(lines) == 1:
         if '🔹' in lines[0]:
             parts = lines[0].split('🔹')
@@ -206,25 +159,19 @@ def format_news(raw_text: str) -> str:
                 lines = [p.strip() for p in parts if p.strip()]
             else:
                 lines = [lines[0]]
-    
     lines = [line.strip() for line in lines if line.strip()]
-    
     if not lines:
         return f"‏{HASHTAG}\n‏{CHANNEL_TAG}"
-    
     title = lines[0]
     body = lines[1:]
-    
     if title.startswith('🔹'):
         title = title[1:].strip()
-    
     result = f"‏❇️ {title}\n"
     for line in body:
         if not line.startswith('🔹'):
             result += f"🔹 {line}\n"
         else:
             result += f"{line}\n"
-    
     result += f"\n‏{HASHTAG}\n‏{CHANNEL_TAG}"
     return result
 
@@ -277,7 +224,67 @@ def send_long_to_channel(text: str):
         if len(parts) > 1:
             time.sleep(0.5)
 
-# ---------- استخراج محتوای پیام ----------
+# ---------- 🆕 ارسال ویدیو به کانال ----------
+def send_video_to_channel(file_id: str, caption: str = ""):
+    """ارسال ویدیو به کانال با کپشن"""
+    try:
+        resp = requests.post(
+            f"{API}/sendVideo",
+            json={"chat_id": CHANNEL_ID, "video": file_id, "caption": caption},
+            timeout=30
+        )
+        resp.raise_for_status()
+        logger.info(f"✅ ویدیو در کانال منتشر شد")
+        return True
+    except Exception as e:
+        logger.error(f"❌ خطا در ارسال ویدیو به کانال: {e}")
+        return False
+
+# ---------- 🆕 ارسال عکس به کانال ----------
+def send_photo_to_channel(file_id: str, caption: str = ""):
+    """ارسال عکس به کانال با کپشن"""
+    try:
+        resp = requests.post(
+            f"{API}/sendPhoto",
+            json={"chat_id": CHANNEL_ID, "photo": file_id, "caption": caption},
+            timeout=30
+        )
+        resp.raise_for_status()
+        logger.info(f"✅ عکس در کانال منتشر شد")
+        return True
+    except Exception as e:
+        logger.error(f"❌ خطا در ارسال عکس به کانال: {e}")
+        return False
+
+# ---------- 🆕 استخراج اطلاعات رسانه ----------
+def get_media_from_message(msg: dict) -> dict:
+    """استخراج اطلاعات رسانه (ویدیو، عکس، فایل، ویس) از پیام"""
+    result = {"type": None, "file_id": None, "caption": ""}
+    
+    if "video" in msg:
+        result["type"] = "video"
+        result["file_id"] = msg["video"]["file_id"]
+        result["caption"] = msg.get("caption", "")
+    elif "photo" in msg:
+        result["type"] = "photo"
+        result["file_id"] = msg["photo"][-1]["file_id"]  # بزرگ‌ترین سایز
+        result["caption"] = msg.get("caption", "")
+    elif "document" in msg:
+        result["type"] = "document"
+        result["file_id"] = msg["document"]["file_id"]
+        result["caption"] = msg.get("caption", "")
+    elif "voice" in msg:
+        result["type"] = "voice"
+        result["file_id"] = msg["voice"]["file_id"]
+        result["caption"] = msg.get("caption", "")
+    elif "audio" in msg:
+        result["type"] = "audio"
+        result["file_id"] = msg["audio"]["file_id"]
+        result["caption"] = msg.get("caption", "")
+    
+    return result
+
+# ---------- استخراج محتوای متن ----------
 def get_content_from_message(msg: dict) -> str:
     if "sticker" in msg:
         return ""
@@ -285,8 +292,6 @@ def get_content_from_message(msg: dict) -> str:
         return msg["caption"]
     if "text" in msg and msg["text"]:
         return msg["text"]
-    if any(key in msg for key in ("photo", "video", "document", "voice", "audio")):
-        return ""
     return ""
 
 # ---------- Webhook ----------
@@ -308,20 +313,51 @@ def webhook():
             msg = data["message"]
             chat_id = msg["chat"]["id"]
 
-            content = get_content_from_message(msg)
+            # 🆕 بررسی وجود رسانه
+            media_info = get_media_from_message(msg)
             
-            if content:
-                reply = format_news(content)
-                send_long_to_channel(reply)
+            if media_info["type"]:
+                # اگر رسانه وجود دارد (ویدیو، عکس، ...)
+                caption = media_info["caption"]
+                if caption:
+                    # قالب‌بندی کپشن
+                    formatted_caption = format_news(caption)
+                else:
+                    formatted_caption = ""
                 
+                # ارسال رسانه به کانال با کپشن قالب‌بندی‌شده
+                if media_info["type"] == "video":
+                    send_video_to_channel(media_info["file_id"], formatted_caption)
+                elif media_info["type"] == "photo":
+                    send_photo_to_channel(media_info["file_id"], formatted_caption)
+                else:
+                    # برای فایل، ویس، یا سایر موارد (اختیاری)
+                    logger.warning(f"نوع رسانه {media_info['type']} هنوز پشتیبانی نمی‌شود")
+                
+                # پیام تأیید به کاربر
                 try:
                     requests.post(
                         f"{API}/sendMessage",
-                        json={"chat_id": chat_id, "text": "✅ خبر شما در کانال منتشر شد."},
+                        json={"chat_id": chat_id, "text": "✅ خبر تصویری/ویدیویی شما در کانال منتشر شد."},
                         timeout=5
                     )
                 except:
                     pass
+            else:
+                # اگر فقط متن بود
+                content = get_content_from_message(msg)
+                if content:
+                    reply = format_news(content)
+                    send_long_to_channel(reply)
+                    
+                    try:
+                        requests.post(
+                            f"{API}/sendMessage",
+                            json={"chat_id": chat_id, "text": "✅ خبر شما در کانال منتشر شد."},
+                            timeout=5
+                        )
+                    except:
+                        pass
 
             logger.info(f"[{request_id}] ✅ خبر در کانال منتشر شد")
 
@@ -331,7 +367,7 @@ def webhook():
 
         return {"ok": True}
 
-    return "🤖 ربات خبری هوشمند - نسخه نهایی"
+    return "🤖 ربات خبری هوشمند - نسخه نهایی با پشتیبانی از رسانه"
 
 # ---------- اجرا ----------
 if __name__ == "__main__":
