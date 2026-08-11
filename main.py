@@ -63,24 +63,19 @@ def clean_foreign_mentions_and_hashtags(text: str) -> str:
     if not text:
         return ""
     
-    # 1. حذف @ها (به جز @Donya24News)
     def replace_at(match):
         return match.group(0) if match.group(0) == CHANNEL_TAG else ""
     text = AT_PATTERN.sub(replace_at, text)
     
-    # 2. حذف #ها (به جز #دنیا_۲۴_نیوز)
     def replace_hash(match):
         return match.group(0) if match.group(0) == HASHTAG else ""
     text = HASH_PATTERN.sub(replace_hash, text)
     
-    # 3. حذف تمام لینک‌ها
     text = URL_PATTERN.sub('', text)
     
-    # 4. حذف عبارات دعوت
     for pattern in INVITE_PATTERNS:
         text = pattern.sub('', text)
     
-    # 5. حذف فضاهای اضافی
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -92,37 +87,55 @@ def clean_trailing_emojis(text: str) -> str:
             return text[:i+1].rstrip()
     return ""
 
+def clean_after_last_period(text: str) -> str:
+    """حذف هر چیزی بعد از آخرین نقطه (.) یا (۔)"""
+    if not text:
+        return text
+    last_dot = text.rfind('.')
+    last_persian_dot = text.rfind('۔')
+    last_index = max(last_dot, last_persian_dot)
+    if last_index != -1:
+        return text[:last_index + 1].strip()
+    return text
+
 def clean_all_trailing_content(text: str) -> str:
-    """
-    حذف هوشمندانه تمام موارد اضافی از انتهای متن:
-    - ایموجی‌ها و پرچم‌ها
-    - عبارات مثل "| اخبار ..."
-    - @آیدی‌ها
-    - کلمات تکراری مثل "اخبار"، "کانال"، "تلگرام"
-    - هرگونه کاراکتر غیرضروری بعد از آخرین کلمه مفید
-    """
+    """حذف هوشمندانه تمام موارد اضافی از انتهای متن"""
     if not text:
         return ""
     
-    # 1. حذف پرچم‌های کشورها (🇮🇷🇺🇸🇬🇧 و ...)
+    # 1. حذف پرچم‌های کشورها
     text = re.sub(r'[\U0001F1E6-\U0001F1FF]+', '', text)
     
-    # 2. حذف هر چیزی که با | شروع می‌شود تا انتهای خط
+    # 2. حذف هر چیزی که با | شروع می‌شود
     text = re.sub(r'\|.*$', '', text, flags=re.MULTILINE)
     
-    # 3. حذف عبارات "اخبار کانال" یا "کانال تلگرام"
+    # 3. حذف عبارات "اخبار کانال"
     text = re.sub(r'(اخبار|کانال|تلگرام|channel|telegram)\s+[^\s]+$', '', text, flags=re.IGNORECASE)
     
-    # 4. حذف @آیدی‌های باقی‌مانده
+    # 4. حذف @آیدی‌ها
     text = re.sub(r'@[a-zA-Z0-9_]+', '', text)
     
-    # 5. حذف هرگونه کلمه تکراری که به کانال اشاره دارد
+    # 5. حذف کلمات تکراری
     text = re.sub(r'\b(کانال|تلگرام|channel|telegram)\b', '', text, flags=re.IGNORECASE)
     
-    # 6. حذف فاصله‌های اضافی و خطوط خالی
+    # 6. حذف عباراتی مثل "- Link"
+    text = re.sub(r'\s*[-–—]\s*(Link|لینک|More|بیشتر|ادامه|مشاهده|بخوانید|کلیک|اینجا)\s*$', '', text, flags=re.IGNORECASE)
+    
+    # 7. حذف خطوط اضافی
+    lines = text.splitlines()
+    cleaned_lines = []
+    for line in lines:
+        if re.match(r'^\s*[@\-–—]+\s*(Link|لینک|More|بیشتر)?\s*$', line, re.IGNORECASE):
+            continue
+        if re.search(r'@[a-zA-Z0-9_]+\s*[-–—]\s*(Link|لینک|More|بیشتر)', line, re.IGNORECASE):
+            continue
+        cleaned_lines.append(line)
+    text = '\n'.join(cleaned_lines)
+    
+    # 8. حذف فضاهای اضافی
     text = re.sub(r'\s+', ' ', text).strip()
     
-    # 7. حذف ایموجی‌های انتهایی
+    # 9. حذف ایموجی‌های انتهایی
     text = clean_trailing_emojis(text)
     
     return text
@@ -131,29 +144,62 @@ def format_news(raw_text: str) -> str:
     # مرحله ۱: پاکسازی @، #، لینک‌ها و عبارات دعوت
     cleaned = clean_foreign_mentions_and_hashtags(raw_text)
     
-    # مرحله ۲: حذف هوشمندانه تمام موارد اضافی از انتها
+    # مرحله ۲: حذف هوشمندانه موارد اضافی از انتها
     cleaned = clean_all_trailing_content(cleaned)
+    
+    # مرحله ۳: حذف هر چیزی بعد از آخرین نقطه
+    cleaned = clean_after_last_period(cleaned)
     
     if not cleaned:
         return f"‏{HASHTAG}\n‏{CHANNEL_TAG}"
     
-    # مرحله ۳: تقسیم به خطوط
-    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    # مرحله ۴: تقسیم متن به خطوط بر اساس نشانه‌ها
+    lines = cleaned.split('\n')
+    
+    if len(lines) == 1:
+        # اگر متن شامل 🔹 بود، بر اساس آن تقسیم کن
+        if '🔹' in lines[0]:
+            parts = lines[0].split('🔹')
+            lines = []
+            for i, part in enumerate(parts):
+                part = part.strip()
+                if part:
+                    if i == 0:
+                        lines.append(part)
+                    else:
+                        lines.append(f"🔹{part}")
+        # اگر متن شامل نقطه بود، بر اساس نقطه تقسیم کن
+        elif '۔' in lines[0] or '.' in lines[0]:
+            parts = re.split(r'(?<=[.۔])\s+', lines[0])
+            if len(parts) > 1:
+                lines = [p.strip() for p in parts if p.strip()]
+            else:
+                lines = [lines[0]]
+    
+    # حذف خطوط خالی
+    lines = [line.strip() for line in lines if line.strip()]
+    
     if not lines:
         return f"‏{HASHTAG}\n‏{CHANNEL_TAG}"
     
-    # مرحله ۴: قالب‌بندی
+    # مرحله ۵: قالب‌بندی
     title = lines[0]
     body = lines[1:]
     
+    if title.startswith('🔹'):
+        title = title[1:].strip()
+    
     result = f"‏❇️ {title}\n"
     for line in body:
-        result += f"🔹 {line}\n"
+        if not line.startswith('🔹'):
+            result += f"🔹 {line}\n"
+        else:
+            result += f"{line}\n"
     
     result += f"\n‏{HASHTAG}\n‏{CHANNEL_TAG}"
     return result
 
-# ---------- باقی توابع (split, send, webhook) به همان شکل ----------
+# ---------- تقسیم پیام طولانی ----------
 def split_long_message(text: str, max_len: int = MAX_MESSAGE_LENGTH) -> list:
     if len(text) <= max_len:
         return [text]
@@ -178,6 +224,7 @@ def split_long_message(text: str, max_len: int = MAX_MESSAGE_LENGTH) -> list:
             parts[i-1] = f"({i}/{total})\n{part}"
     return parts
 
+# ---------- ارسال به کانال ----------
 def send_to_channel(text: str):
     try:
         resp = requests.post(
@@ -201,6 +248,7 @@ def send_long_to_channel(text: str):
         if len(parts) > 1:
             time.sleep(0.5)
 
+# ---------- استخراج محتوای پیام ----------
 def get_content_from_message(msg: dict) -> str:
     if "sticker" in msg:
         return ""
@@ -212,6 +260,7 @@ def get_content_from_message(msg: dict) -> str:
         return ""
     return ""
 
+# ---------- Webhook ----------
 @app.route("/", methods=["POST", "GET"])
 def webhook():
     if request.method == "POST":
@@ -254,6 +303,7 @@ def webhook():
 
     return "🤖 ربات خبری هوشمند - نسخه نهایی"
 
+# ---------- اجرا ----------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     logger.info(f"🚀 ربات روی پورت {port} در حال اجراست...")
