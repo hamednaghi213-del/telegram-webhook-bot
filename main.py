@@ -20,7 +20,6 @@ def clean_hidden_chars(text):
 
 # نیم‌فاصلهٔ حرفه‌ای (ZWJ + Space)
 def fix_spacing(text):
-    # الگوی کلمات چسبیده فارسی
     pattern = r"([اآبپتثجچحخدذرزسشصضطظعغفقکگلمنوهی])([اآبپتثجچحخدذرزسشصضطظعغفقکگلمنوهی])"
     return re.sub(pattern, r"\1\u200d \2", text)
 
@@ -36,7 +35,7 @@ def normalize_bullet(text):
         return "🔹 " + text
     return ""
 
-# تشخیص وجود فعل
+# تشخیص وجود فعل (فقط برای بندهای خبری)
 def has_verb(text):
     verbs = [
         "است", "هست", "شد", "می‌شود", "می شود", "می‌کند", "می کند",
@@ -53,7 +52,7 @@ def format_text(text):
     lines = text.split("\n")
     output = []
 
-    # --- تیتر ---
+    # --- تیتر (بدون فیلتر فعل) ---
     title = lines[0].strip()
     title = remove_usernames(title)
     title = remove_links(title)
@@ -62,7 +61,7 @@ def format_text(text):
     title = fix_spacing(title)
     output.append(f"❇️ {title}")
 
-    # --- بندهای خبر ---
+    # --- بندهای خبر (با فیلتر فعل) ---
     for line in lines[1:]:
         raw = line.strip()
 
@@ -76,6 +75,7 @@ def format_text(text):
         clean = fix_spacing(clean)
         clean = normalize_bullet(clean).strip()
 
+        # فیلتر فعل فقط برای بندهای خبری
         if not has_verb(clean):
             continue
 
@@ -133,4 +133,5 @@ def webhook():
             })
 
     return "ok"
+
 
