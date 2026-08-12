@@ -22,33 +22,24 @@ def remove_all_hashtags_and_mentions(text: str) -> str:
     return text
 
 def format_news(raw_text: str) -> str:
+    # 1. پاکسازی
     cleaned = clean_text(raw_text)
     cleaned = remove_all_hashtags_and_mentions(cleaned)
     if not cleaned:
         return ""
-    lines = cleaned.split('\n')
-    if len(lines) == 1:
-        if '🔹' in lines[0]:
-            parts = lines[0].split('🔹')
-            lines = []
-            for i, part in enumerate(parts):
-                part = part.strip()
-                if part:
-                    if i == 0:
-                        lines.append(part)
-                    else:
-                        lines.append(f"🔹{part}")
-    lines = [line.strip() for line in lines if line.strip()]
+    
+    # 2. تقسیم به خطوط و حذف خطوط خالی
+    lines = [line.strip() for line in cleaned.split('\n') if line.strip()]
     if not lines:
         return ""
+    
+    # 3. خط اول = تیتر، بقیه = بند
     title = lines[0]
-    body = lines[1:]
-    if title.startswith('🔹'):
-        title = title[1:].strip()
-    result = f"❇️ {title}\n"
+    body = lines[1:] if len(lines) > 1 else []
+    
+    # 4. ساخت خروجی بدون فاصله اضافی
+    result = f"❇️ {title}"
     for line in body:
-        if not line.startswith('🔹'):
-            result += f"🔹 {line}\n"
-        else:
-            result += f"{line}\n"
-    return result.rstrip()
+        result += f"\n🔹 {line}"
+    
+    return result
