@@ -3,7 +3,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# ---------- تنظیمات اولیه ----------
 CHANNEL_TAG = None
 HASHTAG = None
 
@@ -13,7 +12,6 @@ def initialize(channel_tag, hashtag):
     HASHTAG = hashtag
     logger.info("✅ Cleaner initialized")
 
-# ---------- RegExهای ثابت ----------
 URL_PATTERN = re.compile(r'(?:https?://|t\.me/|telegram\.me/|telegram\.dog/|www\.)[^\s]+')
 AT_PATTERN = re.compile(r'@[a-zA-Z0-9_]+')
 HASH_PATTERN = re.compile(r'#[^\s]+')
@@ -28,7 +26,6 @@ INVITE_PATTERNS = [
     re.compile(r'عضویت', re.IGNORECASE),
 ]
 
-# ---------- حذف تمام ایموجی‌ها (به جز ❇️ و 🔹) ----------
 def remove_all_emojis(text: str) -> str:
     if not text:
         return text
@@ -51,13 +48,13 @@ def remove_all_emojis(text: str) -> str:
         "\u2300-\u23FF"
         "\u2B00-\u2BFF"
         "\u25A0-\u25FF"
-        "\u2764-\u2764"          # ❤️ قلب
-        "\u2763-\u2763"          # ❣️ قلب شکسته
-        "\u274C-\u274C"          # ❌
-        "\u2753-\u2753"          # ❓
-        "\u2757-\u2757"          # ❗
-        "\u2B50-\u2B50"          # ⭐
-        "\u2B55-\u2B55"          # 🔴
+        "\u2764-\u2764"
+        "\u2763-\u2763"
+        "\u274C-\u274C"
+        "\u2753-\u2753"
+        "\u2757-\u2757"
+        "\u2B50-\u2B50"
+        "\u2B55-\u2B55"
         "]+",
         flags=re.UNICODE
     )
@@ -67,30 +64,23 @@ def remove_all_emojis(text: str) -> str:
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-# ---------- حذف @ و #های غیرخودی ----------
 def clean_foreign_mentions_and_hashtags(text: str) -> str:
     if not text:
         return ""
-    
     def replace_at(match):
         full = match.group(0)
         return full if full == CHANNEL_TAG else ""
     text = AT_PATTERN.sub(replace_at, text)
-    
     def replace_hash(match):
         full = match.group(0)
         return full if full == HASHTAG else ""
     text = HASH_PATTERN.sub(replace_hash, text)
-    
     text = URL_PATTERN.sub('', text)
-    
     for pattern in INVITE_PATTERNS:
         text = pattern.sub('', text)
-    
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-# ---------- حذف ایموجی‌های انتهایی ----------
 def clean_trailing_emojis(text: str) -> str:
     if not text:
         return ""
@@ -100,7 +90,6 @@ def clean_trailing_emojis(text: str) -> str:
             return text[:i+1].rstrip()
     return ""
 
-# ---------- حذف هر چیزی بعد از آخرین نقطه ----------
 def clean_after_last_period(text: str) -> str:
     if not text:
         return text
@@ -111,7 +100,6 @@ def clean_after_last_period(text: str) -> str:
         return text[:last_index + 1].strip()
     return text
 
-# ---------- حذف فوتر رسانه‌ها (مثل /صداوسیما Asriran) ----------
 def clean_media_footer(text: str) -> str:
     if not text:
         return text
@@ -121,7 +109,6 @@ def clean_media_footer(text: str) -> str:
     text = re.sub(r'@[a-zA-Z0-9_]+\s*[-–—]\s*(Link|لینک|More|بیشتر)\s*$', '', text, flags=re.IGNORECASE)
     return text.strip()
 
-# ---------- حذف تمام موارد اضافی از انتهای متن ----------
 def clean_all_trailing_content(text: str) -> str:
     if not text:
         return ""
@@ -131,7 +118,7 @@ def clean_all_trailing_content(text: str) -> str:
     text = re.sub(r'\b(کانال|تلگرام|channel|telegram)\b', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\s*[-–—]\s*(Link|لینک|More|بیشتر|ادامه|مشاهده|بخوانید|کلیک|اینجا)\s*$', '', text, flags=re.IGNORECASE)
     media_names = [
-        'صداوسیما', 'ایسنا', 'فارس', 'مهر', 'تسنیم', 'ایرنا', 
+        'صداوسیما', 'ایسنا', 'فارس', 'مهر', 'تسنیم', 'ایرنا',
         'خبرگزاری', 'ایسکانیوز', 'دانشجو', 'ایلنا', 'باشگاه خبرنگاران',
         'اسریران', 'Asriran', 'FarsNews', 'Tasnim', 'Mehr', 'IRNA',
         'رویترز', 'روترز', 'Reuters', 'AP', 'BBC', 'CNN', 'Al Jazeera',
@@ -154,7 +141,6 @@ def clean_all_trailing_content(text: str) -> str:
     text = clean_trailing_emojis(text)
     return text
 
-# ---------- تابع جامع پاکسازی ----------
 def clean_text(text: str) -> str:
     if not text:
         return ""
