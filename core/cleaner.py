@@ -3,12 +3,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# ---------- تنظیمات اولیه (از main.py دریافت می‌شود) ----------
+# ---------- تنظیمات اولیه ----------
 CHANNEL_TAG = None
 HASHTAG = None
 
 def initialize(channel_tag, hashtag):
-    """دریافت تنظیمات از main.py"""
     global CHANNEL_TAG, HASHTAG
     CHANNEL_TAG = channel_tag
     HASHTAG = hashtag
@@ -52,6 +51,13 @@ def remove_all_emojis(text: str) -> str:
         "\u2300-\u23FF"
         "\u2B00-\u2BFF"
         "\u25A0-\u25FF"
+        "\u2764-\u2764"          # ❤️ قلب
+        "\u2763-\u2763"          # ❣️ قلب شکسته
+        "\u274C-\u274C"          # ❌
+        "\u2753-\u2753"          # ❓
+        "\u2757-\u2757"          # ❗
+        "\u2B50-\u2B50"          # ⭐
+        "\u2B55-\u2B55"          # 🔴
         "]+",
         flags=re.UNICODE
     )
@@ -148,9 +154,8 @@ def clean_all_trailing_content(text: str) -> str:
     text = clean_trailing_emojis(text)
     return text
 
-# ---------- تابع جامع پاکسازی (یکجا) ----------
+# ---------- تابع جامع پاکسازی ----------
 def clean_text(text: str) -> str:
-    """اجرای تمام مراحل پاکسازی به ترتیب"""
     if not text:
         return ""
     text = remove_all_emojis(text)
