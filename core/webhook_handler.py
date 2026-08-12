@@ -6,6 +6,7 @@ from core.command_handler import is_command, handle_command
 from core.media_handler import is_media_group, handle_media_group_message
 from core.deep_reply_handler import has_reply, process_deep_reply
 from core.formatter import format_news
+from core.bale_forwarder import send_to_bale_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +54,33 @@ def get_content_from_message(msg: dict) -> str:
         return msg["text"]
     return ""
 
-def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
+def send_simple_message(chat_id: int, text: str):
+    """ارسال پیام به کانال تلگرام و سپس به بله (در صورت فعال بودن)"""
+    try:
+        resp = requests.post(
+            f"{API_URL}/sendMessage",
+            json={"chat_id": CHANNEL_ID, "text": text},
+            timeout=10
+        )
+        resp.raise_for_status()
+        logger.info(f"✅ پیام در کانال تلگرام منتشر شد (طول: {len(text)})")
+        
+        # ارسال به بله (در صورت فعال بودن)
+        send_to_bale_for_user(chat_id, text)
+        return True
+    except Exception as e:
+        logger.error(f"❌ خطا در ارسال پیام: {e}")
+        return False
+
+def send_media_to_channel(chat_id: int, file_id: str, media_type: str, caption: str = ""):
+    """ارسال رسانه به کانال تلگرام و سپس به بله (در صورت فعال بودن)"""
     from core.formatter import HASHTAG, CHANNEL_TAG
     try:
         if caption:
             caption = caption + f"\n\n{HASHTAG}\n{CHANNEL_TAG}"
         else:
             caption = f"{HASHTAG}\n{CHANNEL_TAG}"
+        
         if media_type == "photo":
             endpoint = f"{API_URL}/sendPhoto"
         elif media_type == "video":
@@ -72,24 +93,29 @@ def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
             endpoint = f"{API_URL}/sendAudio"
         else:
             return False
+        
         resp = requests.post(
             endpoint,
             json={"chat_id": CHANNEL_ID, media_type: file_id, "caption": caption},
             timeout=30
         )
         resp.raise_for_status()
-        logger.info(f"✅ {media_type} در کانال منتشر شد")
+        logger.info(f"✅ {media_type} در کانال تلگرام منتشر شد")
+        
+        # ارسال به بله (در صورت فعال بودن)
+        send_to_bale_for_user(chat_id, caption, file_id, media_type)
         return True
     except Exception as e:
         logger.error(f"❌ خطا در ارسال {media_type} به کانال: {e}")
         return False
 
-def send_long_to_channel(text: str):
+def send_long_to_channel(chat_id: int, text: str):
+    """ارسال متن طولانی به کانال (با شکستن خودکار)"""
     from core.formatter import HASHTAG, CHANNEL_TAG
     text = text + f"\n\n{HASHTAG}\n{CHANNEL_TAG}"
     max_len = 4096
     if len(text) <= max_len:
-        send_simple_message(text)
+        send_simple_message(chat_id, text)
         return
     parts = []
     start = 0
@@ -108,21 +134,9 @@ def send_long_to_channel(text: str):
     for i, part in enumerate(parts):
         if len(parts) > 1:
             part = f"({i+1}/{len(parts)})\n{part}"
-        send_simple_message(part)
+        send_simple_message(chat_id, part)
         import time
         time.sleep(0.5)
-
-def send_simple_message(text: str):
-    try:
-        resp = requests.post(
-            f"{API_URL}/sendMessage",
-            json={"chat_id": CHANNEL_ID, "text": text},
-            timeout=10
-        )
-        resp.raise_for_status()
-        logger.info(f"✅ پیام در کانال منتشر شد (طول: {len(text)})")
-    except Exception as e:
-        logger.error(f"❌ خطا در ارسال پیام: {e}")
 
 def handle_webhook():
     request_id = str(uuid.uuid4())[:8]
@@ -136,8 +150,9 @@ def handle_webhook():
             return {"ok": True}
         msg = data["message"]
         chat_id = msg["chat"]["id"]
+
         if has_reply(msg):
-            if process_deep_reply(msg):
+            if process_deep_reply(msg, chat_id):
                 try:
                     requests.post(
                         f"{API_URL}/sendMessage",
@@ -147,11 +162,14 @@ def handle_webhook():
                 except:
                     pass
                 return {"ok": True}
+
         content = get_content_from_message(msg)
         if content and is_command(content):
             handle_command(content, chat_id)
             return {"ok": True}
+
         media_info = get_media_from_message(msg)
+
         if media_info["type"] and is_media_group(msg):
             handle_media_group_message(
                 msg,
@@ -168,17 +186,21 @@ def handle_webhook():
             except:
                 pass
             return {"ok": True}
+
         if media_info["type"]:
             caption = media_info["caption"]
             if caption:
                 formatted_caption = format_news(caption)
             else:
                 formatted_caption = ""
+            
             send_media_to_channel(
+                chat_id,
                 media_info["file_id"],
                 media_info["type"],
                 formatted_caption
             )
+            
             try:
                 requests.post(
                     f"{API_URL}/sendMessage",
@@ -190,7 +212,8 @@ def handle_webhook():
         else:
             if content:
                 reply = format_news(content)
-                send_long_to_channel(reply)
+                send_long_to_channel(chat_id, reply)
+                
                 try:
                     requests.post(
                         f"{API_URL}/sendMessage",
@@ -199,6 +222,7 @@ def handle_webhook():
                     )
                 except:
                     pass
+
         logger.info(f"[{request_id}] ✅ خبر در کانال منتشر شد")
         return {"ok": True}
     except Exception as e:
