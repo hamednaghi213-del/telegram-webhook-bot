@@ -6,7 +6,6 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# حافظه موقت
 pending_groups = defaultdict(dict)
 API_URL = None
 CHANNEL_ID = None
@@ -34,10 +33,12 @@ def add_to_pending_group(media_group_id, file_id, media_type, caption=""):
     pending_groups[media_group_id]["last_update"] = time.time()
     if caption:
         pending_groups[media_group_id]["caption"] = caption
+    logger.info(f"📸 رسانه به گروه {media_group_id} اضافه شد (تعداد: {len(pending_groups[media_group_id]['files'])})")
 
 def remove_pending_group(media_group_id):
     if media_group_id in pending_groups:
         del pending_groups[media_group_id]
+        logger.info(f"🗑️ گروه {media_group_id} از حافظه حذف شد")
 
 def is_group_ready(media_group_id, timeout=1.5):
     group = pending_groups.get(media_group_id)
@@ -49,7 +50,23 @@ def is_group_ready(media_group_id, timeout=1.5):
         return True
     return False
 
+def clean_mentions_from_text(text):
+    """حذف تمام @ها (به جز @Donya24News) از کپشن"""
+    if not text:
+        return text
+    import re
+    pattern = re.compile(r'@[a-zA-Z0-9_]+')
+    def replace_at(match):
+        return match.group(0) if match.group(0) == "@Donya24News" else ""
+    return pattern.sub(replace_at, text)
+
 def send_media_group(chat_id, files, caption=""):
+    """ارسال آلبوم با متد sendMediaGroup"""
+    if not files:
+        return False
+    
+    caption = clean_mentions_from_text(caption)
+    
     media_group = []
     for i, file in enumerate(files):
         if file["type"] == "photo":
@@ -76,6 +93,23 @@ def send_media_group(chat_id, files, caption=""):
         return True
     except Exception as e:
         logger.error(f"❌ خطا در ارسال آلبوم: {e}")
+        # در صورت خطا، به صورت جداگانه ارسال کن
+        for i, file in enumerate(files):
+            try:
+                if file["type"] == "photo":
+                    requests.post(
+                        f"{API_URL}/sendPhoto",
+                        json={"chat_id": chat_id, "photo": file["file_id"], "caption": caption if i == 0 else ""},
+                        timeout=30
+                    )
+                elif file["type"] == "video":
+                    requests.post(
+                        f"{API_URL}/sendVideo",
+                        json={"chat_id": chat_id, "video": file["file_id"], "caption": caption if i == 0 else ""},
+                        timeout=30
+                    )
+            except Exception as e2:
+                logger.error(f"❌ خطا در ارسال تکی {file['type']}: {e2}")
         return False
 
 def process_media_group(media_group_id):
@@ -94,6 +128,7 @@ def process_media_group(media_group_id):
         
         if len(files) == 1:
             file = files[0]
+            caption = clean_mentions_from_text(caption)
             if file["type"] == "photo":
                 requests.post(
                     f"{API_URL}/sendPhoto",
@@ -111,7 +146,7 @@ def process_media_group(media_group_id):
             send_media_group(CHANNEL_ID, files, caption)
         
     except Exception as e:
-        logger.error(f"❌ خطا در پردازش آلبوم: {e}")
+        logger.error(f"❌ خطا در پردازش آلبوم {media_group_id}: {e}")
     finally:
         remove_pending_group(media_group_id)
 
