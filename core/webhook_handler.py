@@ -6,7 +6,6 @@ from core.command_handler import is_command, handle_command
 from core.media_handler import is_media_group, handle_media_group_message
 from core.deep_reply_handler import has_reply, process_deep_reply
 from core.formatter import format_news
-from core.cleaner import clean_text
 
 logger = logging.getLogger(__name__)
 
