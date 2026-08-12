@@ -4,7 +4,6 @@ from core.cleaner import clean_text
 
 logger = logging.getLogger(__name__)
 
-# ---------- تنظیمات اولیه ----------
 CHANNEL_TAG = None
 HASHTAG = None
 
@@ -15,7 +14,6 @@ def initialize(channel_tag, hashtag):
     logger.info("✅ Formatter initialized")
 
 def remove_all_hashtags_and_mentions(text: str) -> str:
-    """حذف کامل هشتگ‌ها و منشن‌ها (حتی خودمان)"""
     if not text:
         return text
     text = re.sub(r'@[a-zA-Z0-9_]+', '', text)
@@ -24,15 +22,11 @@ def remove_all_hashtags_and_mentions(text: str) -> str:
     return text
 
 def format_news(raw_text: str) -> str:
-    """قالب‌بندی خبر با ❇️ و 🔹 (بدون هشتگ و تگ)"""
     cleaned = clean_text(raw_text)
     cleaned = remove_all_hashtags_and_mentions(cleaned)
-    
     if not cleaned:
         return ""
-    
     lines = cleaned.split('\n')
-    
     if len(lines) == 1:
         if '🔹' in lines[0]:
             parts = lines[0].split('🔹')
@@ -44,23 +38,17 @@ def format_news(raw_text: str) -> str:
                         lines.append(part)
                     else:
                         lines.append(f"🔹{part}")
-    
     lines = [line.strip() for line in lines if line.strip()]
-    
     if not lines:
         return ""
-    
     title = lines[0]
     body = lines[1:]
-    
     if title.startswith('🔹'):
         title = title[1:].strip()
-    
     result = f"❇️ {title}\n"
     for line in body:
         if not line.startswith('🔹'):
             result += f"🔹 {line}\n"
         else:
             result += f"{line}\n"
-    
     return result.rstrip()
