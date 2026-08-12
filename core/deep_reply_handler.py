@@ -1,6 +1,6 @@
 import logging
 import requests
-import re
+from core.formatter import format_news
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,19 @@ def get_media_from_message(msg: dict) -> dict:
         result["text"] = msg["text"]
     return result
 
-def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
+def send_simple_message(text: str, reply_to_id=None):
+    try:
+        payload = {"chat_id": CHANNEL_ID, "text": text}
+        if reply_to_id:
+            payload["reply_to_message_id"] = reply_to_id
+        resp = requests.post(f"{API_URL}/sendMessage", json=payload, timeout=10)
+        resp.raise_for_status()
+        return resp.json().get("result", {}).get("message_id")
+    except Exception as e:
+        logger.error(f"❌ خطا در ارسال پیام: {e}")
+        return None
+
+def send_media_to_channel(file_id: str, media_type: str, caption: str = "", reply_to_id=None):
     try:
         if media_type == "photo":
             endpoint = f"{API_URL}/sendPhoto"
@@ -61,56 +73,44 @@ def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
         elif media_type == "audio":
             endpoint = f"{API_URL}/sendAudio"
         else:
-            return False
-        resp = requests.post(
-            endpoint,
-            json={"chat_id": CHANNEL_ID, media_type: file_id, "caption": caption},
-            timeout=30
-        )
+            return None
+        payload = {"chat_id": CHANNEL_ID, media_type: file_id, "caption": caption}
+        if reply_to_id:
+            payload["reply_to_message_id"] = reply_to_id
+        resp = requests.post(endpoint, json=payload, timeout=30)
         resp.raise_for_status()
-        logger.info(f"✅ {media_type} در کانال منتشر شد")
-        return True
+        return resp.json().get("result", {}).get("message_id")
     except Exception as e:
-        logger.error(f"❌ خطا در ارسال {media_type} به کانال: {e}")
-        return False
+        logger.error(f"❌ خطا در ارسال {media_type}: {e}")
+        return None
 
-def send_simple_message(text: str):
-    """ارسال یک پیام ساده به کانال"""
-    try:
-        resp = requests.post(
-            f"{API_URL}/sendMessage",
-            json={"chat_id": CHANNEL_ID, "text": text},
-            timeout=10
-        )
-        resp.raise_for_status()
-        logger.info(f"✅ پیام در کانال منتشر شد (طول: {len(text)})")
-    except Exception as e:
-        logger.error(f"❌ خطا در ارسال پیام: {e}")
-
-def format_news_with_tag(text: str) -> str:
-    """
-    قالب‌بندی خبر با ❇️ و 🔹 و اضافه کردن هشتگ و آیدی کانال در انتها
-    """
+def send_long_to_channel(text: str):
     from core.formatter import HASHTAG, CHANNEL_TAG
-
-    if not text:
-        return ""
-
-    lines = text.splitlines()
-    lines = [line.strip() for line in lines if line.strip()]
-    if not lines:
-        return ""
-
-    title = lines[0]
-    body = lines[1:]
-
-    result = f"❇️ {title}\n"
-    for line in body:
-        result += f"🔹 {line}\n"
-
-    # اضافه کردن هشتگ و آیدی کانال در انتهای هر خبر
-    result += f"\n{HASHTAG}\n{CHANNEL_TAG}"
-    return result
+    text = text + f"\n\n{HASHTAG}\n{CHANNEL_TAG}"
+    max_len = 4096
+    if len(text) <= max_len:
+        send_simple_message(text)
+        return
+    parts = []
+    start = 0
+    while start < len(text):
+        end = min(start + max_len, len(text))
+        if end < len(text):
+            last_newline = text.rfind('\n', start, end)
+            last_space = text.rfind(' ', start, end)
+            cut_at = max(last_newline, last_space)
+            if cut_at > start:
+                end = cut_at + 1
+        part = text[start:end].strip()
+        if part:
+            parts.append(part)
+        start = end
+    for i, part in enumerate(parts):
+        if len(parts) > 1:
+            part = f"({i+1}/{len(parts)})\n{part}"
+        send_simple_message(part)
+        import time
+        time.sleep(0.5)
 
 def extract_reply_chain(message: dict, chain=None):
     if chain is None:
@@ -130,34 +130,30 @@ def extract_reply_chain(message: dict, chain=None):
             logger.warning(f"⚠️ خطا در استخراج پیام اصلی: {e}")
     return chain
 
-def process_deep_reply(msg: dict) -> bool:
+def process_deep_reply(msg: dict, chat_id: int) -> bool:
     if not msg or "reply_to_message" not in msg:
         return False
 
     chain = extract_reply_chain(msg)
 
-    # اگر فقط یک آیتم وجود دارد (پیام اصلی در دسترس نبوده)
     if len(chain) == 1:
         item = chain[0]
         if item["text"]:
-            formatted = format_news_with_tag(item["text"])
+            formatted = format_news(item["text"])
             if formatted:
-                send_simple_message(formatted)
+                send_long_to_channel(formatted)
         if item["media"]:
             media = item["media"]
             send_media_to_channel(media["file_id"], media["type"], "")
         return True
 
-    # معکوس کردن زنجیره (از قدیمی به جدید)
     chain.reverse()
 
-    # ارسال هر خبر به صورت جداگانه با هشتگ و آیدی مخصوص خودش
     for item in chain:
         if item["text"]:
-            formatted = format_news_with_tag(item["text"])
+            formatted = format_news(item["text"])
             if formatted:
-                send_simple_message(formatted)
-
+                send_long_to_channel(formatted)
         if item["media"]:
             media = item["media"]
             send_media_to_channel(media["file_id"], media["type"], "")
