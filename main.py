@@ -6,7 +6,6 @@ import requests
 from logging.handlers import RotatingFileHandler
 from flask import Flask, request
 
-# ---------- import همه ماژول‌ها ----------
 from core.webhook_handler import initialize as init_webhook, handle_webhook
 from core.cleaner import initialize as init_cleaner
 from core.formatter import initialize as init_formatter
@@ -16,7 +15,6 @@ from core.deep_reply_handler import initialize as init_deep_reply
 
 app = Flask(__name__)
 
-# ---------- تنظیمات ----------
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("توکن در متغیر محیطی TELEGRAM_BOT_TOKEN تنظیم نشده.")
@@ -28,7 +26,6 @@ CHANNEL_ID = "@Donya24News"
 HASHTAG = "#دنیا_۲۴_نیوز"
 CHANNEL_TAG = "@Donya24News"
 
-# ---------- مقداردهی اولیه همه ماژول‌ها ----------
 init_cleaner(CHANNEL_TAG, HASHTAG)
 init_formatter(CHANNEL_TAG, HASHTAG)
 init_media_handler(API, CHANNEL_ID)
@@ -36,7 +33,6 @@ init_commands(API)
 init_deep_reply(API, CHANNEL_ID)
 init_webhook(API, CHANNEL_ID, SECRET_TOKEN)
 
-# ---------- لاگ ----------
 def setup_logging():
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
@@ -56,7 +52,6 @@ def setup_logging():
 
 logger = setup_logging()
 
-# ---------- Self-Ping ----------
 def self_ping():
     url = "https://telegram-webhook-bot-onyd.onrender.com/"
     while True:
@@ -72,14 +67,12 @@ ping_thread.daemon = True
 ping_thread.start()
 logger.info("✅ Self-ping فعال شد (هر ۷ دقیقه یک بار)")
 
-# ---------- Webhook ----------
 @app.route("/", methods=["POST", "GET"])
 def webhook():
     if request.method == "POST":
         return handle_webhook()
     return "🤖 ربات خبری هوشمند - نسخه نهایی"
 
-# ---------- اجرا ----------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     logger.info(f"🚀 ربات روی پورت {port} در حال اجراست...")
