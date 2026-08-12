@@ -20,7 +20,6 @@ def handle_command(text: str, chat_id: int) -> bool:
 
     command = text.split()[0][1:].lower()
 
-    # ========== دستورات قبلی ==========
     if command == 'start':
         send_message(chat_id, "👋 به ربات خبری خوش آمدید!\n"
                               "می‌توانید خبر خود را به همراه عکس، فیلم یا به صورت متنی ارسال کنید.\n"
@@ -29,11 +28,6 @@ def handle_command(text: str, chat_id: int) -> bool:
 
     elif command == 'help':
         send_message(chat_id, "📚 راهنمای ربات:\n\n"
-                              "1️⃣ یک خبر را به همراه عکس یا فیلم ارسال کنید.\n"
-                              "2️⃣ می‌توانید چند عکس را به صورت آلبوم بفرستید.\n"
-                              "3️⃣ خبر شما به طور خودکار در کانال منتشر می‌شود.\n"
-                              "4️⃣ تمام آیدی‌ها و هشتگ‌های غیرخودی حذف می‌شوند.\n\n"
-                              "🔹 دستورات مدیریت:\n"
                               "/register - ثبت‌نام در سیستم\n"
                               "/status - مشاهده وضعیت تنظیمات شما\n"
                               "/settelegram @channel - تنظیم کانال تلگرام\n"
@@ -41,14 +35,6 @@ def handle_command(text: str, chat_id: int) -> bool:
                               "/setbaletoken TOKEN - تنظیم توکن ربات بله")
         return True
 
-    elif command == 'stats':
-        send_message(chat_id, "📊 آمار ربات:\n"
-                              "▪️ نسخه: 2.0\n"
-                              "▪️ وضعیت: فعال\n"
-                              "▪️ سرویس: بیدار (Self-Ping فعال)")
-        return True
-
-    # ========== دستورات جدید مدیریت مشتریان ==========
     elif command == 'register':
         if get_tenant(chat_id):
             send_message(chat_id, "✅ شما قبلاً ثبت‌نام کرده‌اید.")
@@ -105,7 +91,6 @@ def handle_command(text: str, chat_id: int) -> bool:
         tenant = get_tenant(chat_id)
         if tenant:
             send_message(chat_id, f"📊 وضعیت شما:\n"
-                                  f"✅ ثبت‌نام: انجام شد\n"
                                   f"کانال تلگرام: {tenant[3]}\n"
                                   f"کانال بله: {tenant[4] or 'تنظیم نشده'}\n"
                                   f"توکن بله: {'✅' if tenant[5] else '❌'}")
