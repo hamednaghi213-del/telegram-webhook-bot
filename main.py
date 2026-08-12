@@ -47,9 +47,8 @@ def setup_logging():
 
 logger = setup_logging()
 
-# ---------- 🔄 Self-Ping (بیدار نگه‌داشتن ربات) ----------
+# ---------- 🔄 Self-Ping ----------
 def self_ping():
-    """هر ۷ دقیقه یک بار به خودش درخواست می‌زند تا Render بیدار بماند"""
     url = "https://telegram-webhook-bot-onyd.onrender.com/"
     while True:
         try:
@@ -57,15 +56,14 @@ def self_ping():
             logger.info(f"🔄 Self-ping: وضعیت {response.status_code}")
         except Exception as e:
             logger.error(f"❌ Self-ping خطا: {e}")
-        time.sleep(420)  # ۷ دقیقه = ۴۲۰ ثانیه
+        time.sleep(420)
 
-# اجرای self-ping در یک ترد جداگانه
 ping_thread = threading.Thread(target=self_ping)
 ping_thread.daemon = True
 ping_thread.start()
 logger.info("✅ Self-ping فعال شد (هر ۷ دقیقه یک بار)")
 
-# ---------- RegExهای کامپایل شده ----------
+# ---------- RegExها ----------
 URL_PATTERN = re.compile(r'(?:https?://|t\.me/|telegram\.me/|telegram\.dog/|www\.)[^\s]+')
 AT_PATTERN = re.compile(r'@[a-zA-Z0-9_]+')
 HASH_PATTERN = re.compile(r'#[^\s]+')
@@ -81,7 +79,7 @@ INVITE_PATTERNS = [
 ]
 ALLOWED_CHARS_PATTERN = re.compile(r'[\w\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u200C\u200D.،؛:!؟()"\' ]')
 
-# ---------- حذف تمام ایموجی‌ها (به جز ❇️ و 🔹) ----------
+# ---------- حذف ایموجی‌ها ----------
 def remove_all_emojis(text: str) -> str:
     if not text:
         return text
@@ -113,19 +111,29 @@ def remove_all_emojis(text: str) -> str:
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-# ---------- توابع پاکسازی ----------
+# ---------- پاکسازی @ و # ----------
 def clean_foreign_mentions_and_hashtags(text: str) -> str:
     if not text:
         return ""
+    
     def replace_at(match):
-        return match.group(0) if match.group(0) == CHANNEL_TAG else ""
+        full = match.group(0)
+        return full if full == CHANNEL_TAG else ""
     text = AT_PATTERN.sub(replace_at, text)
+    
     def replace_hash(match):
-        return match.group(0) if match.group(0) == HASHTAG else ""
+        full = match.group(0)
+        return full if full == HASHTAG else ""
     text = HASH_PATTERN.sub(replace_hash, text)
+    
     text = URL_PATTERN.sub('', text)
+    
     for pattern in INVITE_PATTERNS:
         text = pattern.sub('', text)
+    
+    # حذف @های باقی‌مانده در انتهای متن
+    text = re.sub(r'@[a-zA-Z0-9_]+\s*$', '', text)
+    
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -188,12 +196,16 @@ def clean_all_trailing_content(text: str) -> str:
     text = clean_trailing_emojis(text)
     return text
 
+# ---------- قالب‌بندی خبر ----------
 def format_news(raw_text: str) -> str:
     cleaned = remove_all_emojis(raw_text)
     cleaned = clean_foreign_mentions_and_hashtags(cleaned)
     cleaned = clean_all_trailing_content(cleaned)
     cleaned = clean_media_footer(cleaned)
     cleaned = clean_after_last_period(cleaned)
+    
+    # حذف @های باقی‌مانده در انتها
+    cleaned = re.sub(r'@[a-zA-Z0-9_]+\s*$', '', cleaned)
     
     if not cleaned:
         return f"‏{HASHTAG}\n‏{CHANNEL_TAG}"
@@ -288,7 +300,6 @@ def send_long_to_channel(text: str):
         if len(parts) > 1:
             time.sleep(0.5)
 
-# ---------- ارسال عکس و فیلم ----------
 def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
     try:
         if media_type == "photo":
@@ -316,7 +327,6 @@ def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
         logger.error(f"❌ خطا در ارسال {media_type} به کانال: {e}")
         return False
 
-# ---------- استخراج اطلاعات رسانه ----------
 def get_media_from_message(msg: dict) -> dict:
     result = {"type": None, "file_id": None, "caption": ""}
     
@@ -373,7 +383,6 @@ def webhook():
 
             media_info = get_media_from_message(msg)
             
-            # 🆕 بررسی آلبوم
             if media_info["type"] and is_media_group(msg):
                 handle_media_group_message(
                     msg,
@@ -391,7 +400,6 @@ def webhook():
                     pass
                 return {"ok": True}
 
-            # پردازش عادی
             if media_info["type"]:
                 caption = media_info["caption"]
                 if caption:
@@ -436,7 +444,7 @@ def webhook():
 
         return {"ok": True}
 
-    return "🤖 ربات خبری هوشمند - نسخه نهایی با Self-Ping"
+    return "🤖 ربات خبری هوشمند - نسخه نهایی با اصلاح پاکسازی @"
 
 # ---------- اجرا ----------
 if __name__ == "__main__":
