@@ -12,6 +12,7 @@ from core.formatter import initialize as init_formatter
 from core.media_handler import initialize as init_media_handler
 from core.command_handler import initialize as init_commands
 from core.deep_reply_handler import initialize as init_deep_reply
+from core.database import init_db
 
 app = Flask(__name__)
 
@@ -25,6 +26,9 @@ API = f"https://api.telegram.org/bot{TOKEN}"
 CHANNEL_ID = "@Donya24News"
 HASHTAG = "#دنیا_۲۴_نیوز"
 CHANNEL_TAG = "@Donya24News"
+
+# ---------- مقداردهی اولیه ----------
+init_db()  # 🆕 ایجاد دیتابیس
 
 init_cleaner(CHANNEL_TAG, HASHTAG)
 init_formatter(CHANNEL_TAG, HASHTAG)
