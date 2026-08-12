@@ -5,7 +5,14 @@ import threading
 import requests
 from logging.handlers import RotatingFileHandler
 from flask import Flask, request
+
+# ---------- import همه ماژول‌ها ----------
 from core.webhook_handler import initialize as init_webhook, handle_webhook
+from core.cleaner import initialize as init_cleaner
+from core.formatter import initialize as init_formatter
+from core.media_handler import initialize as init_media_handler
+from core.command_handler import initialize as init_commands
+from core.deep_reply_handler import initialize as init_deep_reply
 
 app = Flask(__name__)
 
@@ -21,7 +28,12 @@ CHANNEL_ID = "@Donya24News"
 HASHTAG = "#دنیا_۲۴_نیوز"
 CHANNEL_TAG = "@Donya24News"
 
-# ---------- مقداردهی اولیه ----------
+# ---------- مقداردهی اولیه همه ماژول‌ها ----------
+init_cleaner(CHANNEL_TAG, HASHTAG)
+init_formatter(CHANNEL_TAG, HASHTAG)
+init_media_handler(API, CHANNEL_ID)
+init_commands(API)
+init_deep_reply(API, CHANNEL_ID)
 init_webhook(API, CHANNEL_ID, SECRET_TOKEN)
 
 # ---------- لاگ ----------
