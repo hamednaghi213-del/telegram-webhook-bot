@@ -3,7 +3,6 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# ---------- تنظیمات ----------
 API_URL = None
 
 def initialize(api_url):
@@ -17,15 +16,12 @@ def is_command(text: str) -> bool:
 def handle_command(text: str, chat_id: int) -> bool:
     if not text or not text.startswith('/'):
         return False
-    
     command = text.split()[0][1:].lower()
-    
     if command == 'start':
         send_message(chat_id, "👋 به ربات خبری خوش آمدید!\n"
                               "می‌توانید خبر خود را به همراه عکس، فیلم یا به صورت متنی ارسال کنید.\n"
                               "خبر شما پس از پردازش در کانال منتشر خواهد شد.")
         return True
-    
     elif command == 'help':
         send_message(chat_id, "📚 راهنمای ربات:\n\n"
                               "1️⃣ یک خبر را به همراه عکس یا فیلم ارسال کنید.\n"
@@ -33,14 +29,12 @@ def handle_command(text: str, chat_id: int) -> bool:
                               "3️⃣ خبر شما به طور خودکار در کانال منتشر می‌شود.\n"
                               "4️⃣ تمام آیدی‌ها و هشتگ‌های غیرخودی حذف می‌شوند.")
         return True
-    
     elif command == 'stats':
         send_message(chat_id, "📊 آمار ربات:\n"
                               "▪️ نسخه: 2.0\n"
                               "▪️ وضعیت: فعال\n"
                               "▪️ سرویس: بیدار (Self-Ping فعال)")
         return True
-    
     else:
         send_message(chat_id, f"❌ دستور '{command}' شناسایی نشد.\n"
                               f"برای مشاهده راهنما، /help را بفرستید.")
