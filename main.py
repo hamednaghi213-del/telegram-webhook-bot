@@ -3,10 +3,12 @@ import re
 import time
 import uuid
 import logging
+import threading
+import requests
 from logging.handlers import RotatingFileHandler
 from flask import Flask, request
-import requests
 from media_group_handler import handle_media_group_message, is_media_group, initialize as init_media_handler
+from commands_handler import initialize as init_commands, is_command, handle_command
 
 app = Flask(__name__)
 
@@ -23,8 +25,9 @@ HASHTAG = "#دنیا_۲۴_نیوز"
 CHANNEL_TAG = "@Donya24News"
 MAX_MESSAGE_LENGTH = 4096
 
-# ---------- تنظیم media_group_handler ----------
+# ---------- تنظیم هندلرها ----------
 init_media_handler(API, CHANNEL_ID)
+init_commands(API)
 
 # ---------- لاگ ----------
 def setup_logging():
@@ -46,7 +49,23 @@ def setup_logging():
 
 logger = setup_logging()
 
-# ---------- RegExهای کامپایل شده ----------
+# ---------- Self-Ping ----------
+def self_ping():
+    url = "https://telegram-webhook-bot-onyd.onrender.com/"
+    while True:
+        try:
+            response = requests.get(url, timeout=10)
+            logger.info(f"🔄 Self-ping: وضعیت {response.status_code}")
+        except Exception as e:
+            logger.error(f"❌ Self-ping خطا: {e}")
+        time.sleep(420)
+
+ping_thread = threading.Thread(target=self_ping)
+ping_thread.daemon = True
+ping_thread.start()
+logger.info("✅ Self-ping فعال شد (هر ۷ دقیقه یک بار)")
+
+# ---------- RegExها ----------
 URL_PATTERN = re.compile(r'(?:https?://|t\.me/|telegram\.me/|telegram\.dog/|www\.)[^\s]+')
 AT_PATTERN = re.compile(r'@[a-zA-Z0-9_]+')
 HASH_PATTERN = re.compile(r'#[^\s]+')
@@ -62,7 +81,7 @@ INVITE_PATTERNS = [
 ]
 ALLOWED_CHARS_PATTERN = re.compile(r'[\w\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u200C\u200D.،؛:!؟()"\' ]')
 
-# ---------- حذف تمام ایموجی‌ها (به جز ❇️ و 🔹) ----------
+# ---------- حذف ایموجی‌ها ----------
 def remove_all_emojis(text: str) -> str:
     if not text:
         return text
@@ -97,22 +116,17 @@ def remove_all_emojis(text: str) -> str:
 def clean_foreign_mentions_and_hashtags(text: str) -> str:
     if not text:
         return ""
-    
     def replace_at(match):
         full = match.group(0)
         return full if full == CHANNEL_TAG else ""
     text = AT_PATTERN.sub(replace_at, text)
-    
     def replace_hash(match):
         full = match.group(0)
         return full if full == HASHTAG else ""
     text = HASH_PATTERN.sub(replace_hash, text)
-    
     text = URL_PATTERN.sub('', text)
-    
     for pattern in INVITE_PATTERNS:
         text = pattern.sub('', text)
-    
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -181,12 +195,9 @@ def format_news(raw_text: str) -> str:
     cleaned = clean_all_trailing_content(cleaned)
     cleaned = clean_media_footer(cleaned)
     cleaned = clean_after_last_period(cleaned)
-    
     if not cleaned:
         return f"‏{HASHTAG}\n‏{CHANNEL_TAG}"
-    
     lines = cleaned.split('\n')
-    
     if len(lines) == 1:
         if '🔹' in lines[0]:
             parts = lines[0].split('🔹')
@@ -204,25 +215,19 @@ def format_news(raw_text: str) -> str:
                 lines = [p.strip() for p in parts if p.strip()]
             else:
                 lines = [lines[0]]
-    
     lines = [line.strip() for line in lines if line.strip()]
-    
     if not lines:
         return f"‏{HASHTAG}\n‏{CHANNEL_TAG}"
-    
     title = lines[0]
     body = lines[1:]
-    
     if title.startswith('🔹'):
         title = title[1:].strip()
-    
     result = f"‏❇️ {title}\n"
     for line in body:
         if not line.startswith('🔹'):
             result += f"🔹 {line}\n"
         else:
             result += f"{line}\n"
-    
     result += f"\n‏{HASHTAG}\n‏{CHANNEL_TAG}"
     return result
 
@@ -275,7 +280,6 @@ def send_long_to_channel(text: str):
         if len(parts) > 1:
             time.sleep(0.5)
 
-# ---------- ارسال عکس و فیلم ----------
 def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
     try:
         if media_type == "photo":
@@ -290,7 +294,6 @@ def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
             endpoint = f"{API}/sendAudio"
         else:
             return False
-        
         resp = requests.post(
             endpoint,
             json={"chat_id": CHANNEL_ID, media_type: file_id, "caption": caption},
@@ -303,10 +306,8 @@ def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
         logger.error(f"❌ خطا در ارسال {media_type} به کانال: {e}")
         return False
 
-# ---------- استخراج اطلاعات رسانه ----------
 def get_media_from_message(msg: dict) -> dict:
     result = {"type": None, "file_id": None, "caption": ""}
-    
     if "video" in msg:
         result["type"] = "video"
         result["file_id"] = msg["video"]["file_id"]
@@ -327,7 +328,6 @@ def get_media_from_message(msg: dict) -> dict:
         result["type"] = "audio"
         result["file_id"] = msg["audio"]["file_id"]
         result["caption"] = msg.get("caption", "")
-    
     return result
 
 def get_content_from_message(msg: dict) -> str:
@@ -358,9 +358,15 @@ def webhook():
             msg = data["message"]
             chat_id = msg["chat"]["id"]
 
+            # بررسی دستورات متنی
+            content = get_content_from_message(msg)
+            if content and is_command(content):
+                handle_command(content, chat_id)
+                return {"ok": True}
+
             media_info = get_media_from_message(msg)
             
-            # 🆕 بررسی آلبوم
+            # بررسی آلبوم
             if media_info["type"] and is_media_group(msg):
                 handle_media_group_message(
                     msg,
@@ -401,7 +407,6 @@ def webhook():
                 except:
                     pass
             else:
-                content = get_content_from_message(msg)
                 if content:
                     reply = format_news(content)
                     send_long_to_channel(reply)
@@ -423,7 +428,7 @@ def webhook():
 
         return {"ok": True}
 
-    return "🤖 ربات خبری هوشمند - نسخه ۰۱ + پشتیبانی از آلبوم"
+    return "🤖 ربات خبری هوشمند - نسخه نهایی"
 
 # ---------- اجرا ----------
 if __name__ == "__main__":
