@@ -3,7 +3,7 @@ import threading
 import logging
 from collections import defaultdict
 import requests
-from core.cleaner import clean_text
+from core.formatter import format_news
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +20,6 @@ def initialize(api_url, channel_id):
 def is_media_group(message):
     return "media_group_id" in message
 
-def clean_mentions_from_text(text):
-    """حذف تمام @ها (به جز @Donya24News) از کپشن با استفاده از cleaner"""
-    if not text:
-        return text
-    return clean_text(text)
-
 def add_to_pending_group(media_group_id, file_id, media_type, caption=""):
     if media_group_id not in pending_groups:
         pending_groups[media_group_id] = {
@@ -40,7 +34,8 @@ def add_to_pending_group(media_group_id, file_id, media_type, caption=""):
     })
     pending_groups[media_group_id]["last_update"] = time.time()
     if caption:
-        pending_groups[media_group_id]["caption"] = caption
+        # 🆕 اعمال قالب خبر بر روی کپشن (اضافه کردن ❇️ و 🔹 و هشتگ/تگ)
+        pending_groups[media_group_id]["caption"] = format_news(caption)
     logger.info(f"📸 رسانه به گروه {media_group_id} اضافه شد (تعداد: {len(pending_groups[media_group_id]['files'])})")
 
 def remove_pending_group(media_group_id):
@@ -62,8 +57,6 @@ def send_media_group(chat_id, files, caption=""):
     """ارسال آلبوم با متد sendMediaGroup"""
     if not files:
         return False
-    
-    caption = clean_mentions_from_text(caption)
     
     media_group = []
     for i, file in enumerate(files):
@@ -91,6 +84,7 @@ def send_media_group(chat_id, files, caption=""):
         return True
     except Exception as e:
         logger.error(f"❌ خطا در ارسال آلبوم: {e}")
+        # در صورت خطا، به صورت جداگانه ارسال کن (با کپشن فقط برای اولین)
         for i, file in enumerate(files):
             try:
                 if file["type"] == "photo":
@@ -124,8 +118,8 @@ def process_media_group(media_group_id):
             return
         
         if len(files) == 1:
+            # رسانه تکی
             file = files[0]
-            caption = clean_mentions_from_text(caption)
             if file["type"] == "photo":
                 requests.post(
                     f"{API_URL}/sendPhoto",
@@ -140,6 +134,7 @@ def process_media_group(media_group_id):
                 )
             logger.info(f"✅ رسانه تکی ارسال شد")
         else:
+            # آلبوم
             send_media_group(CHANNEL_ID, files, caption)
         
     except Exception as e:
