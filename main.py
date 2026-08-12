@@ -3,9 +3,10 @@ import re
 import time
 import uuid
 import logging
+import threading
+import requests
 from logging.handlers import RotatingFileHandler
 from flask import Flask, request
-import requests
 from media_group_handler import handle_media_group_message, is_media_group, initialize as init_media_handler
 
 app = Flask(__name__)
@@ -46,6 +47,24 @@ def setup_logging():
 
 logger = setup_logging()
 
+# ---------- 🔄 Self-Ping (بیدار نگه‌داشتن ربات) ----------
+def self_ping():
+    """هر ۷ دقیقه یک بار به خودش درخواست می‌زند تا Render بیدار بماند"""
+    url = "https://telegram-webhook-bot-onyd.onrender.com/"
+    while True:
+        try:
+            response = requests.get(url, timeout=10)
+            logger.info(f"🔄 Self-ping: وضعیت {response.status_code}")
+        except Exception as e:
+            logger.error(f"❌ Self-ping خطا: {e}")
+        time.sleep(420)  # ۷ دقیقه = ۴۲۰ ثانیه
+
+# اجرای self-ping در یک ترد جداگانه
+ping_thread = threading.Thread(target=self_ping)
+ping_thread.daemon = True
+ping_thread.start()
+logger.info("✅ Self-ping فعال شد (هر ۷ دقیقه یک بار)")
+
 # ---------- RegExهای کامپایل شده ----------
 URL_PATTERN = re.compile(r'(?:https?://|t\.me/|telegram\.me/|telegram\.dog/|www\.)[^\s]+')
 AT_PATTERN = re.compile(r'@[a-zA-Z0-9_]+')
@@ -66,10 +85,8 @@ ALLOWED_CHARS_PATTERN = re.compile(r'[\w\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\
 def remove_all_emojis(text: str) -> str:
     if not text:
         return text
-    
     text = text.replace('❇️', '[[TITLE]]')
     text = text.replace('🔹', '[[BULLET]]')
-    
     emoji_pattern = re.compile(
         "["
         "\U0001F600-\U0001F64F"
@@ -90,12 +107,9 @@ def remove_all_emojis(text: str) -> str:
         "]+",
         flags=re.UNICODE
     )
-    
     text = emoji_pattern.sub('', text)
-    
     text = text.replace('[[TITLE]]', '❇️')
     text = text.replace('[[BULLET]]', '🔹')
-    
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -422,7 +436,7 @@ def webhook():
 
         return {"ok": True}
 
-    return "🤖 ربات خبری هوشمند - نسخه نهایی با پشتیبانی از آلبوم"
+    return "🤖 ربات خبری هوشمند - نسخه نهایی با Self-Ping"
 
 # ---------- اجرا ----------
 if __name__ == "__main__":
