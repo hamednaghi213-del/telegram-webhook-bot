@@ -34,14 +34,12 @@ def add_to_pending_group(media_group_id, file_id, media_type, caption=""):
     })
     pending_groups[media_group_id]["last_update"] = time.time()
     if caption:
-        # 🆕 اعمال قالب خبر بر روی کپشن (اضافه کردن ❇️ و 🔹 و هشتگ/تگ)
         pending_groups[media_group_id]["caption"] = format_news(caption)
-    logger.info(f"📸 رسانه به گروه {media_group_id} اضافه شد (تعداد: {len(pending_groups[media_group_id]['files'])})")
+    logger.info(f"📸 رسانه به گروه {media_group_id} اضافه شد")
 
 def remove_pending_group(media_group_id):
     if media_group_id in pending_groups:
         del pending_groups[media_group_id]
-        logger.info(f"🗑️ گروه {media_group_id} از حافظه حذف شد")
 
 def is_group_ready(media_group_id, timeout=1.5):
     group = pending_groups.get(media_group_id)
@@ -54,10 +52,13 @@ def is_group_ready(media_group_id, timeout=1.5):
     return False
 
 def send_media_group(chat_id, files, caption=""):
-    """ارسال آلبوم با متد sendMediaGroup"""
     if not files:
         return False
-    
+    from core.formatter import HASHTAG, CHANNEL_TAG
+    if caption:
+        caption = caption + f"\n\n{HASHTAG}\n{CHANNEL_TAG}"
+    else:
+        caption = f"{HASHTAG}\n{CHANNEL_TAG}"
     media_group = []
     for i, file in enumerate(files):
         if file["type"] == "photo":
@@ -69,10 +70,8 @@ def send_media_group(chat_id, files, caption=""):
         if i == 0 and caption:
             media["caption"] = caption
         media_group.append(media)
-    
     if not media_group:
         return False
-    
     try:
         resp = requests.post(
             f"{API_URL}/sendMediaGroup",
@@ -84,7 +83,6 @@ def send_media_group(chat_id, files, caption=""):
         return True
     except Exception as e:
         logger.error(f"❌ خطا در ارسال آلبوم: {e}")
-        # در صورت خطا، به صورت جداگانه ارسال کن (با کپشن فقط برای اولین)
         for i, file in enumerate(files):
             try:
                 if file["type"] == "photo":
@@ -107,18 +105,18 @@ def process_media_group(media_group_id):
     group = pending_groups.get(media_group_id)
     if not group:
         return
-    
     group["is_processing"] = True
-    
     try:
         files = group["files"]
         caption = group.get("caption", "")
-        
         if not files:
             return
-        
         if len(files) == 1:
-            # رسانه تکی
+            from core.formatter import HASHTAG, CHANNEL_TAG
+            if caption:
+                caption = caption + f"\n\n{HASHTAG}\n{CHANNEL_TAG}"
+            else:
+                caption = f"{HASHTAG}\n{CHANNEL_TAG}"
             file = files[0]
             if file["type"] == "photo":
                 requests.post(
@@ -134,9 +132,7 @@ def process_media_group(media_group_id):
                 )
             logger.info(f"✅ رسانه تکی ارسال شد")
         else:
-            # آلبوم
             send_media_group(CHANNEL_ID, files, caption)
-        
     except Exception as e:
         logger.error(f"❌ خطا در پردازش آلبوم {media_group_id}: {e}")
     finally:
@@ -149,7 +145,6 @@ def schedule_processing(media_group_id, delay=1.5):
             process_media_group(media_group_id)
         else:
             schedule_processing(media_group_id, delay)
-    
     thread = threading.Thread(target=delayed_process)
     thread.daemon = True
     thread.start()
@@ -158,7 +153,6 @@ def handle_media_group_message(message, file_id, media_type, caption=""):
     media_group_id = message.get("media_group_id")
     if not media_group_id:
         return False
-    
     add_to_pending_group(media_group_id, file_id, media_type, caption)
     schedule_processing(media_group_id, 1.5)
     return True
