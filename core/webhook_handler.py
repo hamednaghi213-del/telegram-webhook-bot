@@ -20,7 +20,6 @@ def initialize(api_url, channel_id, secret_token):
     SECRET_TOKEN = secret_token
     logger.info("✅ Webhook Handler initialized")
 
-# ---------- توابع کمکی ----------
 def get_media_from_message(msg: dict) -> dict:
     result = {"type": None, "file_id": None, "caption": ""}
     if "video" in msg:
@@ -61,7 +60,6 @@ def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
             caption = caption + f"\n\n{HASHTAG}\n{CHANNEL_TAG}"
         else:
             caption = f"{HASHTAG}\n{CHANNEL_TAG}"
-        
         if media_type == "photo":
             endpoint = f"{API_URL}/sendPhoto"
         elif media_type == "video":
@@ -74,7 +72,6 @@ def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
             endpoint = f"{API_URL}/sendAudio"
         else:
             return False
-        
         resp = requests.post(
             endpoint,
             json={"chat_id": CHANNEL_ID, media_type: file_id, "caption": caption},
@@ -127,24 +124,18 @@ def send_simple_message(text: str):
     except Exception as e:
         logger.error(f"❌ خطا در ارسال پیام: {e}")
 
-# ---------- تابع اصلی پردازش Webhook ----------
 def handle_webhook():
     request_id = str(uuid.uuid4())[:8]
     logger.info(f"[{request_id}] دریافت درخواست جدید")
-
     if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != SECRET_TOKEN:
         logger.warning(f"[{request_id}] تلاش غیرمجاز")
         return {"ok": False}, 403
-
     try:
         data = request.get_json()
         if not data or "message" not in data:
             return {"ok": True}
-
         msg = data["message"]
         chat_id = msg["chat"]["id"]
-
-        # 1. بررسی ریپلای عمیق (اولویت اول)
         if has_reply(msg):
             if process_deep_reply(msg):
                 try:
@@ -156,16 +147,11 @@ def handle_webhook():
                 except:
                     pass
                 return {"ok": True}
-
-        # 2. بررسی دستورات متنی
         content = get_content_from_message(msg)
         if content and is_command(content):
             handle_command(content, chat_id)
             return {"ok": True}
-
         media_info = get_media_from_message(msg)
-
-        # 3. بررسی آلبوم
         if media_info["type"] and is_media_group(msg):
             handle_media_group_message(
                 msg,
@@ -182,21 +168,17 @@ def handle_webhook():
             except:
                 pass
             return {"ok": True}
-
-        # 4. پردازش عادی (رسانه تکی یا متن)
         if media_info["type"]:
             caption = media_info["caption"]
             if caption:
                 formatted_caption = format_news(caption)
             else:
                 formatted_caption = ""
-            
             send_media_to_channel(
                 media_info["file_id"],
                 media_info["type"],
                 formatted_caption
             )
-            
             try:
                 requests.post(
                     f"{API_URL}/sendMessage",
@@ -209,7 +191,6 @@ def handle_webhook():
             if content:
                 reply = format_news(content)
                 send_long_to_channel(reply)
-                
                 try:
                     requests.post(
                         f"{API_URL}/sendMessage",
@@ -218,10 +199,8 @@ def handle_webhook():
                     )
                 except:
                     pass
-
         logger.info(f"[{request_id}] ✅ خبر در کانال منتشر شد")
         return {"ok": True}
-
     except Exception as e:
         logger.error(f"[{request_id}] ❌ خطا: {e}")
         return {"ok": False}, 500
