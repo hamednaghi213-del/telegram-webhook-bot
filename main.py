@@ -47,7 +47,7 @@ def setup_logging():
 
 logger = setup_logging()
 
-# ---------- 🔄 Self-Ping ----------
+# ---------- Self-Ping ----------
 def self_ping():
     url = "https://telegram-webhook-bot-onyd.onrender.com/"
     while True:
@@ -131,9 +131,6 @@ def clean_foreign_mentions_and_hashtags(text: str) -> str:
     for pattern in INVITE_PATTERNS:
         text = pattern.sub('', text)
     
-    # حذف @های باقی‌مانده در انتهای متن
-    text = re.sub(r'@[a-zA-Z0-9_]+\s*$', '', text)
-    
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -146,6 +143,7 @@ def clean_trailing_emojis(text: str) -> str:
     return ""
 
 def clean_after_last_period(text: str) -> str:
+    """✅ روش قدیمی و قابل‌اعتماد: حذف هر چیزی بعد از آخرین نقطه"""
     if not text:
         return text
     last_dot = text.rfind('.')
@@ -196,20 +194,46 @@ def clean_all_trailing_content(text: str) -> str:
     text = clean_trailing_emojis(text)
     return text
 
+# ---------- 🆕 حذف خطوط شامل @ (برای اطمینان بیشتر) ----------
+def clean_lines_with_mentions(text: str) -> str:
+    """حذف تمام خطوطی که شامل @ هستند"""
+    if not text:
+        return ""
+    lines = text.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        if '@' in line:
+            continue
+        cleaned_lines.append(line)
+    text = '\n'.join(cleaned_lines)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
 # ---------- قالب‌بندی خبر ----------
 def format_news(raw_text: str) -> str:
+    # مرحله ۱: حذف ایموجی‌ها
     cleaned = remove_all_emojis(raw_text)
+    
+    # مرحله ۲: پاکسازی @ و # (فقط @Donya24News و #دنیا_۲۴_نیوز باقی می‌مانند)
     cleaned = clean_foreign_mentions_and_hashtags(cleaned)
+    
+    # مرحله ۳: حذف موارد اضافی از انتها
     cleaned = clean_all_trailing_content(cleaned)
+    
+    # مرحله ۴: حذف فوتر رسانه‌ها
     cleaned = clean_media_footer(cleaned)
+    
+    # مرحله ۵: 🆕 حذف خطوط شامل @ (برای اطمینان از پاک شدن کامل)
+    cleaned = clean_lines_with_mentions(cleaned)
+    
+    # مرحله ۶: ✅ حذف بعد از آخرین نقطه (روش قدیمی و قابل‌اعتماد)
     cleaned = clean_after_last_period(cleaned)
     
-    # حذف @های باقی‌مانده در انتها
-    cleaned = re.sub(r'@[a-zA-Z0-9_]+\s*$', '', cleaned)
-    
+    # اگر متن خالی شد
     if not cleaned:
         return f"‏{HASHTAG}\n‏{CHANNEL_TAG}"
     
+    # تقسیم به خطوط
     lines = cleaned.split('\n')
     
     if len(lines) == 1:
@@ -444,7 +468,7 @@ def webhook():
 
         return {"ok": True}
 
-    return "🤖 ربات خبری هوشمند - نسخه نهایی با اصلاح پاکسازی @"
+    return "🤖 ربات خبری هوشمند - نسخه نهایی با روش ترکیبی"
 
 # ---------- اجرا ----------
 if __name__ == "__main__":
