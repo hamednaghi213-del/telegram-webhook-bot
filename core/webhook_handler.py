@@ -19,7 +19,7 @@ def initialize(api_url, channel_id, secret_token):
     API_URL = api_url
     CHANNEL_ID = channel_id
     SECRET_TOKEN = secret_token
-    logger.info(f"✅ Webhook Handler initialized with API_URL: {API_URL[:50]}...")
+    logger.info("✅ Webhook Handler initialized")
 
 def get_media_from_message(msg: dict) -> dict:
     result = {"type": None, "file_id": None, "caption": ""}
@@ -55,8 +55,6 @@ def get_content_from_message(msg: dict) -> str:
     return ""
 
 def send_simple_message(chat_id: int, text: str):
-    """ارسال پیام به کانال تلگرام و سپس به بله"""
-    global API_URL, CHANNEL_ID
     if not API_URL:
         logger.error("❌ API_URL تنظیم نشده است!")
         return False
@@ -67,7 +65,7 @@ def send_simple_message(chat_id: int, text: str):
             timeout=10
         )
         resp.raise_for_status()
-        logger.info(f"✅ پیام در کانال تلگرام منتشر شد")
+        logger.info("✅ پیام در کانال تلگرام منتشر شد")
         send_to_bale_for_user(chat_id, text)
         return True
     except Exception as e:
@@ -75,7 +73,6 @@ def send_simple_message(chat_id: int, text: str):
         return False
 
 def send_media_to_channel(chat_id: int, file_id: str, media_type: str, caption: str = ""):
-    global API_URL, CHANNEL_ID
     if not API_URL:
         logger.error("❌ API_URL تنظیم نشده است!")
         return False
@@ -141,14 +138,11 @@ def send_long_to_channel(chat_id: int, text: str):
         time.sleep(0.5)
 
 def handle_webhook():
-    global API_URL, CHANNEL_ID, SECRET_TOKEN
     request_id = str(uuid.uuid4())[:8]
     logger.info(f"[{request_id}] دریافت درخواست جدید")
-    
     if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != SECRET_TOKEN:
         logger.warning(f"[{request_id}] تلاش غیرمجاز")
         return {"ok": False}, 403
-    
     try:
         data = request.get_json()
         if not data or "message" not in data:
