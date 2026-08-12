@@ -7,10 +7,11 @@ logger = logging.getLogger(__name__)
 
 def send_to_bale_for_user(user_id, text, file_id=None, media_type=None):
     if os.getenv("ENABLE_BALE", "false").lower() != "true":
-        return False
+        return True
+
     tenant = get_tenant(user_id)
     if not tenant or not tenant[4] or not tenant[5]:
-        return False
+        return True
 
     api_url = f"https://tapi.bale.ai/bot{tenant[5]}/"
     try:
@@ -20,7 +21,10 @@ def send_to_bale_for_user(user_id, text, file_id=None, media_type=None):
         else:
             endpoint = f"{api_url}sendMessage"
             payload = {"chat_id": tenant[4], "text": text}
-        requests.post(endpoint, json=payload, timeout=10)
+        resp = requests.post(endpoint, json=payload, timeout=10)
+        if resp.status_code != 200:
+            logger.error(f"❌ خطا در ارسال به بله: {resp.text}")
+            return False
         logger.info(f"✅ به بله برای {user_id} ارسال شد")
         return True
     except Exception as e:
