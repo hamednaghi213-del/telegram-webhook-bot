@@ -115,36 +115,78 @@ def send_simple_message(text: str):
         logger.error(f"❌ خطا در ارسال پیام: {e}")
 
 def extract_reply_chain(message: dict, chain=None):
+    """استخراج زنجیره ریپلای با مدیریت خطا"""
     if chain is None:
         chain = []
+    
+    # اگر پیام فعلی وجود ندارد، برگرد
+    if not message:
+        return chain
+    
     media_info = get_media_from_message(message)
     chain.append({
         "text": media_info.get("text", ""),
         "media": media_info if media_info["type"] != "text" else None,
         "type": media_info.get("type", "text")
     })
-    if "reply_to_message" in message:
-        extract_reply_chain(message["reply_to_message"], chain)
+    
+    # اگر reply_to_message وجود دارد، بازگشتی برو
+    if "reply_to_message" in message and message["reply_to_message"]:
+        # بررسی کن که reply_to_message یک دیکشنری معتبر باشد
+        try:
+            extract_reply_chain(message["reply_to_message"], chain)
+        except Exception as e:
+            logger.warning(f"⚠️ خطا در استخراج پیام اصلی: {e}")
+    
     return chain
 
 def process_deep_reply(msg: dict) -> bool:
     if not msg or "reply_to_message" not in msg:
         return False
+    
+    # استخراج زنجیره
     chain = extract_reply_chain(msg)
+    
+    # اگر فقط یک آیتم وجود دارد (یعنی reply_to_message معتبر نبوده)، فقط همان را پردازش کن
+    if len(chain) == 1:
+        # فقط خود پیام را پردازش کن (مثل حالت عادی)
+        item = chain[0]
+        if item["text"]:
+            formatted = format_news(item["text"])
+            if formatted:
+                send_long_to_channel(formatted)
+        if item["media"]:
+            media = item["media"]
+            send_media_to_channel(media["file_id"], media["type"], "")
+        return True
+    
+    # معکوس کردن زنجیره (از قدیمی به جدید)
     chain.reverse()
+    
+    # ساخت متن کامل با چیدمان بهتر
     full_text = ""
     for i, item in enumerate(chain):
         if item["text"]:
             formatted = format_news(item["text"])
             if formatted:
+                # حذف فاصله‌های اضافی و خطوط خالی
+                formatted = formatted.strip()
                 if i == 0:
                     full_text += f"📌 خبر اصلی:\n{formatted}\n\n"
                 else:
                     full_text += f"🔄 پاسخ:\n{formatted}\n\n"
+    
+    # ارسال متن ترکیبی
     if full_text:
+        # حذف فضاهای اضافی انتهایی
+        full_text = full_text.rstrip()
         send_long_to_channel(full_text)
+    
+    # ارسال ضمیمه‌ها (به ترتیب)
     for item in chain:
         if item["media"]:
             media = item["media"]
+            # برای ضمیمه‌ها، کپشن خالی می‌فرستیم چون قبلاً متن کامل ارسال شده
             send_media_to_channel(media["file_id"], media["type"], "")
+    
     return True
