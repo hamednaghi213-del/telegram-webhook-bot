@@ -1,4 +1,5 @@
 import os
+import traceback
 from supabase import create_client, Client
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -18,6 +19,7 @@ def get_tenant(user_id):
         return result.data[0] if result.data else None
     except Exception as e:
         print(f"❌ خطا در get_tenant: {e}")
+        traceback.print_exc()  # چاپ کامل خطا
         return None
 
 def save_tenant(user_id, bot_token, telegram_channel, bale_channel=None, bale_token=None):
@@ -41,4 +43,5 @@ def save_tenant(user_id, bot_token, telegram_channel, bale_channel=None, bale_to
         return True
     except Exception as e:
         print(f"❌ خطا در save_tenant: {e}")
+        traceback.print_exc()
         return False
