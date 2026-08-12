@@ -54,15 +54,26 @@ def get_content_from_message(msg):
         return msg["text"]
     return ""
 
+def send_error_to_user(chat_id, message):
+    try:
+        requests.post(f"{API_URL}/sendMessage", json={"chat_id": chat_id, "text": message}, timeout=5)
+    except Exception as e:
+        logger.error(f"❌ خطا در ارسال پیام خطا به کاربر: {e}")
+
 def send_simple_message(chat_id, text):
     if not API_URL:
         return False
     try:
-        requests.post(f"{API_URL}/sendMessage", json={"chat_id": CHANNEL_ID, "text": text}, timeout=10)
-        send_to_bale_for_user(chat_id, text)
+        resp = requests.post(f"{API_URL}/sendMessage", json={"chat_id": CHANNEL_ID, "text": text}, timeout=10)
+        resp.raise_for_status()
+        logger.info("✅ پیام در کانال تلگرام منتشر شد")
+        bale_success = send_to_bale_for_user(chat_id, text)
+        if not bale_success:
+            send_error_to_user(chat_id, "⚠️ ارسال به بله با مشکل روبرو شد. خبر در تلگرام منتشر شد.")
         return True
     except Exception as e:
-        logger.error(f"❌ خطا: {e}")
+        logger.error(f"❌ خطا در ارسال به تلگرام: {e}")
+        send_error_to_user(chat_id, "❌ ارسال خبر با مشکل روبرو شد. لطفاً دوباره تلاش کنید.")
         return False
 
 def send_media_to_channel(chat_id, file_id, media_type, caption=""):
@@ -75,11 +86,16 @@ def send_media_to_channel(chat_id, file_id, media_type, caption=""):
         else:
             caption = f"{HASHTAG}\n{CHANNEL_TAG}"
         endpoint = f"{API_URL}/send{media_type.capitalize()}"
-        requests.post(endpoint, json={"chat_id": CHANNEL_ID, media_type: file_id, "caption": caption}, timeout=30)
-        send_to_bale_for_user(chat_id, caption, file_id, media_type)
+        resp = requests.post(endpoint, json={"chat_id": CHANNEL_ID, media_type: file_id, "caption": caption}, timeout=30)
+        resp.raise_for_status()
+        logger.info(f"✅ {media_type} در کانال تلگرام منتشر شد")
+        bale_success = send_to_bale_for_user(chat_id, caption, file_id, media_type)
+        if not bale_success:
+            send_error_to_user(chat_id, "⚠️ ارسال به بله با مشکل روبرو شد. خبر در تلگرام منتشر شد.")
         return True
     except Exception as e:
-        logger.error(f"❌ خطا: {e}")
+        logger.error(f"❌ خطا در ارسال {media_type}: {e}")
+        send_error_to_user(chat_id, "❌ ارسال خبر با مشکل روبرو شد. لطفاً دوباره تلاش کنید.")
         return False
 
 def send_long_to_channel(chat_id, text):
