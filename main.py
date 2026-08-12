@@ -3,11 +3,9 @@ import re
 import time
 import uuid
 import logging
-import threading
-import requests
 from logging.handlers import RotatingFileHandler
 from flask import Flask, request
-from media_group_handler import handle_media_group_message, is_media_group, initialize as init_media_handler
+import requests
 
 app = Flask(__name__)
 
@@ -23,9 +21,6 @@ CHANNEL_ID = "@Donya24News"
 HASHTAG = "#دنیا_۲۴_نیوز"
 CHANNEL_TAG = "@Donya24News"
 MAX_MESSAGE_LENGTH = 4096
-
-# ---------- تنظیم media_group_handler ----------
-init_media_handler(API, CHANNEL_ID)
 
 # ---------- لاگ ----------
 def setup_logging():
@@ -47,23 +42,7 @@ def setup_logging():
 
 logger = setup_logging()
 
-# ---------- Self-Ping ----------
-def self_ping():
-    url = "https://telegram-webhook-bot-onyd.onrender.com/"
-    while True:
-        try:
-            response = requests.get(url, timeout=10)
-            logger.info(f"🔄 Self-ping: وضعیت {response.status_code}")
-        except Exception as e:
-            logger.error(f"❌ Self-ping خطا: {e}")
-        time.sleep(420)
-
-ping_thread = threading.Thread(target=self_ping)
-ping_thread.daemon = True
-ping_thread.start()
-logger.info("✅ Self-ping فعال شد (هر ۷ دقیقه یک بار)")
-
-# ---------- RegExها ----------
+# ---------- RegExهای کامپایل شده ----------
 URL_PATTERN = re.compile(r'(?:https?://|t\.me/|telegram\.me/|telegram\.dog/|www\.)[^\s]+')
 AT_PATTERN = re.compile(r'@[a-zA-Z0-9_]+')
 HASH_PATTERN = re.compile(r'#[^\s]+')
@@ -79,7 +58,7 @@ INVITE_PATTERNS = [
 ]
 ALLOWED_CHARS_PATTERN = re.compile(r'[\w\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u200C\u200D.،؛:!؟()"\' ]')
 
-# ---------- حذف ایموجی‌ها ----------
+# ---------- حذف تمام ایموجی‌ها (به جز ❇️ و 🔹) ----------
 def remove_all_emojis(text: str) -> str:
     if not text:
         return text
@@ -111,7 +90,6 @@ def remove_all_emojis(text: str) -> str:
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-# ---------- پاکسازی @ و # ----------
 def clean_foreign_mentions_and_hashtags(text: str) -> str:
     if not text:
         return ""
@@ -143,7 +121,6 @@ def clean_trailing_emojis(text: str) -> str:
     return ""
 
 def clean_after_last_period(text: str) -> str:
-    """✅ روش قدیمی و قابل‌اعتماد: حذف هر چیزی بعد از آخرین نقطه"""
     if not text:
         return text
     last_dot = text.rfind('.')
@@ -194,46 +171,16 @@ def clean_all_trailing_content(text: str) -> str:
     text = clean_trailing_emojis(text)
     return text
 
-# ---------- 🆕 حذف خطوط شامل @ (برای اطمینان بیشتر) ----------
-def clean_lines_with_mentions(text: str) -> str:
-    """حذف تمام خطوطی که شامل @ هستند"""
-    if not text:
-        return ""
-    lines = text.split('\n')
-    cleaned_lines = []
-    for line in lines:
-        if '@' in line:
-            continue
-        cleaned_lines.append(line)
-    text = '\n'.join(cleaned_lines)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
-
-# ---------- قالب‌بندی خبر ----------
 def format_news(raw_text: str) -> str:
-    # مرحله ۱: حذف ایموجی‌ها
     cleaned = remove_all_emojis(raw_text)
-    
-    # مرحله ۲: پاکسازی @ و # (فقط @Donya24News و #دنیا_۲۴_نیوز باقی می‌مانند)
     cleaned = clean_foreign_mentions_and_hashtags(cleaned)
-    
-    # مرحله ۳: حذف موارد اضافی از انتها
     cleaned = clean_all_trailing_content(cleaned)
-    
-    # مرحله ۴: حذف فوتر رسانه‌ها
     cleaned = clean_media_footer(cleaned)
-    
-    # مرحله ۵: 🆕 حذف خطوط شامل @ (برای اطمینان از پاک شدن کامل)
-    cleaned = clean_lines_with_mentions(cleaned)
-    
-    # مرحله ۶: ✅ حذف بعد از آخرین نقطه (روش قدیمی و قابل‌اعتماد)
     cleaned = clean_after_last_period(cleaned)
     
-    # اگر متن خالی شد
     if not cleaned:
         return f"‏{HASHTAG}\n‏{CHANNEL_TAG}"
     
-    # تقسیم به خطوط
     lines = cleaned.split('\n')
     
     if len(lines) == 1:
@@ -324,6 +271,7 @@ def send_long_to_channel(text: str):
         if len(parts) > 1:
             time.sleep(0.5)
 
+# ---------- ارسال عکس و فیلم ----------
 def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
     try:
         if media_type == "photo":
@@ -351,6 +299,7 @@ def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
         logger.error(f"❌ خطا در ارسال {media_type} به کانال: {e}")
         return False
 
+# ---------- استخراج اطلاعات رسانه ----------
 def get_media_from_message(msg: dict) -> dict:
     result = {"type": None, "file_id": None, "caption": ""}
     
@@ -407,23 +356,6 @@ def webhook():
 
             media_info = get_media_from_message(msg)
             
-            if media_info["type"] and is_media_group(msg):
-                handle_media_group_message(
-                    msg,
-                    media_info["file_id"],
-                    media_info["type"],
-                    media_info["caption"]
-                )
-                try:
-                    requests.post(
-                        f"{API}/sendMessage",
-                        json={"chat_id": chat_id, "text": "✅ آلبوم شما در حال پردازش است..."},
-                        timeout=5
-                    )
-                except:
-                    pass
-                return {"ok": True}
-
             if media_info["type"]:
                 caption = media_info["caption"]
                 if caption:
@@ -468,7 +400,7 @@ def webhook():
 
         return {"ok": True}
 
-    return "🤖 ربات خبری هوشمند - نسخه نهایی با روش ترکیبی"
+    return "🤖 ربات خبری هوشمند - نسخه ۰۱"
 
 # ---------- اجرا ----------
 if __name__ == "__main__":
