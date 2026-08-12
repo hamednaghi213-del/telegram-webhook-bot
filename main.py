@@ -6,6 +6,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from flask import Flask, request
 import requests
+from media_group_handler import handle_media_group_message, is_media_group, initialize as init_media_handler
 
 app = Flask(__name__)
 
@@ -21,6 +22,9 @@ CHANNEL_ID = "@Donya24News"
 HASHTAG = "#دنیا_۲۴_نیوز"
 CHANNEL_TAG = "@Donya24News"
 MAX_MESSAGE_LENGTH = 4096
+
+# ---------- تنظیم media_group_handler ----------
+init_media_handler(API, CHANNEL_ID)
 
 # ---------- لاگ ----------
 def setup_logging():
@@ -356,6 +360,25 @@ def webhook():
 
             media_info = get_media_from_message(msg)
             
+            # 🆕 بررسی آلبوم
+            if media_info["type"] and is_media_group(msg):
+                handle_media_group_message(
+                    msg,
+                    media_info["file_id"],
+                    media_info["type"],
+                    media_info["caption"]
+                )
+                try:
+                    requests.post(
+                        f"{API}/sendMessage",
+                        json={"chat_id": chat_id, "text": "✅ آلبوم شما در حال پردازش است..."},
+                        timeout=5
+                    )
+                except:
+                    pass
+                return {"ok": True}
+
+            # پردازش عادی
             if media_info["type"]:
                 caption = media_info["caption"]
                 if caption:
@@ -400,7 +423,7 @@ def webhook():
 
         return {"ok": True}
 
-    return "🤖 ربات خبری هوشمند - نسخه ۰۱"
+    return "🤖 ربات خبری هوشمند - نسخه ۰۱ + پشتیبانی از آلبوم"
 
 # ---------- اجرا ----------
 if __name__ == "__main__":
