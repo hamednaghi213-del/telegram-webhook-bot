@@ -6,6 +6,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from flask import Flask, request
 import requests
+from media_group_handler import handle_media_group_message, is_media_group, initialize as init_media_handler
 
 app = Flask(__name__)
 
@@ -21,6 +22,9 @@ CHANNEL_ID = "@Donya24News"
 HASHTAG = "#دنیا_۲۴_نیوز"
 CHANNEL_TAG = "@Donya24News"
 MAX_MESSAGE_LENGTH = 4096
+
+# ---------- تنظیم media_group_handler ----------
+init_media_handler(API, CHANNEL_ID)
 
 # ---------- لاگ ----------
 def setup_logging():
@@ -63,12 +67,9 @@ def remove_all_emojis(text: str) -> str:
     if not text:
         return text
     
-    # این دو تا رو نگه می‌داریم، بقیه رو حذف می‌کنیم
-    # اول ❇️ و 🔹 رو با یک نشانه موقت جایگزین می‌کنیم
     text = text.replace('❇️', '[[TITLE]]')
     text = text.replace('🔹', '[[BULLET]]')
     
-    # الگوی جامع برای تمام ایموجی‌ها
     emoji_pattern = re.compile(
         "["
         "\U0001F600-\U0001F64F"
@@ -92,7 +93,6 @@ def remove_all_emojis(text: str) -> str:
     
     text = emoji_pattern.sub('', text)
     
-    # برگردوندن ❇️ و 🔹
     text = text.replace('[[TITLE]]', '❇️')
     text = text.replace('[[BULLET]]', '🔹')
     
@@ -175,25 +175,15 @@ def clean_all_trailing_content(text: str) -> str:
     return text
 
 def format_news(raw_text: str) -> str:
-    # مرحله ۰: حذف تمام ایموجی‌های اضافی
     cleaned = remove_all_emojis(raw_text)
-    
-    # مرحله ۱: پاکسازی @، #، لینک‌ها
     cleaned = clean_foreign_mentions_and_hashtags(cleaned)
-    
-    # مرحله ۲: حذف موارد اضافی از انتها
     cleaned = clean_all_trailing_content(cleaned)
-    
-    # مرحله ۳: حذف عبارت‌های انتهایی
     cleaned = clean_media_footer(cleaned)
-    
-    # مرحله ۴: حذف هر چیزی بعد از آخرین نقطه
     cleaned = clean_after_last_period(cleaned)
     
     if not cleaned:
         return f"‏{HASHTAG}\n‏{CHANNEL_TAG}"
     
-    # مرحله ۵: تقسیم به خطوط
     lines = cleaned.split('\n')
     
     if len(lines) == 1:
@@ -284,9 +274,8 @@ def send_long_to_channel(text: str):
         if len(parts) > 1:
             time.sleep(0.5)
 
-# ---------- 🆕 ارسال عکس و فیلم ----------
+# ---------- ارسال عکس و فیلم ----------
 def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
-    """ارسال عکس یا فیلم به کانال با کپشن قالب‌بندی‌شده"""
     try:
         if media_type == "photo":
             endpoint = f"{API}/sendPhoto"
@@ -299,7 +288,6 @@ def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
         elif media_type == "audio":
             endpoint = f"{API}/sendAudio"
         else:
-            logger.warning(f"نوع رسانه {media_type} پشتیبانی نمی‌شود")
             return False
         
         resp = requests.post(
@@ -314,9 +302,8 @@ def send_media_to_channel(file_id: str, media_type: str, caption: str = ""):
         logger.error(f"❌ خطا در ارسال {media_type} به کانال: {e}")
         return False
 
-# ---------- 🆕 استخراج اطلاعات رسانه ----------
+# ---------- استخراج اطلاعات رسانه ----------
 def get_media_from_message(msg: dict) -> dict:
-    """استخراج اطلاعات رسانه از پیام"""
     result = {"type": None, "file_id": None, "caption": ""}
     
     if "video" in msg:
@@ -370,11 +357,28 @@ def webhook():
             msg = data["message"]
             chat_id = msg["chat"]["id"]
 
-            # 🆕 بررسی وجود رسانه
             media_info = get_media_from_message(msg)
             
+            # 🆕 بررسی آلبوم
+            if media_info["type"] and is_media_group(msg):
+                handle_media_group_message(
+                    msg,
+                    media_info["file_id"],
+                    media_info["type"],
+                    media_info["caption"]
+                )
+                try:
+                    requests.post(
+                        f"{API}/sendMessage",
+                        json={"chat_id": chat_id, "text": "✅ آلبوم شما در حال پردازش است..."},
+                        timeout=5
+                    )
+                except:
+                    pass
+                return {"ok": True}
+
+            # پردازش عادی
             if media_info["type"]:
-                # اگر رسانه وجود دارد
                 caption = media_info["caption"]
                 if caption:
                     formatted_caption = format_news(caption)
@@ -396,7 +400,6 @@ def webhook():
                 except:
                     pass
             else:
-                # فقط متن
                 content = get_content_from_message(msg)
                 if content:
                     reply = format_news(content)
@@ -419,7 +422,7 @@ def webhook():
 
         return {"ok": True}
 
-    return "🤖 ربات خبری هوشمند - نسخه نهایی با پشتیبانی از رسانه و حذف ایموجی"
+    return "🤖 ربات خبری هوشمند - نسخه نهایی با پشتیبانی از آلبوم"
 
 # ---------- اجرا ----------
 if __name__ == "__main__":
