@@ -1,25 +1,25 @@
 import os
 import traceback
-from supabase import create_client, Client
+from supabase import create_client
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("SUPABASE_URL و SUPABASE_KEY در متغیرهای محیطی تنظیم نشده‌اند.")
+    raise ValueError("SUPABASE_URL و SUPABASE_KEY تنظیم نشده‌اند.")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def init_db():
-    pass
+    print("✅ دیتابیس مقداردهی شد")
 
 def get_tenant(user_id):
     try:
         result = supabase.table("tenants").select("*").eq("user_id", user_id).execute()
         return result.data[0] if result.data else None
     except Exception as e:
-        print(f"❌ خطا در get_tenant: {e}")
-        traceback.print_exc()  # چاپ کامل خطا
+        print("❌ get_tenant ERROR:")
+        traceback.print_exc()
         return None
 
 def save_tenant(user_id, bot_token, telegram_channel, bale_channel=None, bale_token=None):
@@ -42,6 +42,6 @@ def save_tenant(user_id, bot_token, telegram_channel, bale_channel=None, bale_to
             }).execute()
         return True
     except Exception as e:
-        print(f"❌ خطا در save_tenant: {e}")
+        print("❌ save_tenant ERROR:")
         traceback.print_exc()
         return False
