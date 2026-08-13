@@ -61,7 +61,7 @@ def remove_all_emojis(text: str) -> str:
     text = emoji_pattern.sub('', text)
     text = text.replace('[[TITLE]]', '❇️')
     text = text.replace('[[BULLET]]', '🔹')
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'[ \t]+', ' ', text).strip()  # فقط فاصله‌های افقی حذف شوند
     return text
 
 def clean_foreign_mentions_and_hashtags(text: str) -> str:
@@ -78,7 +78,7 @@ def clean_foreign_mentions_and_hashtags(text: str) -> str:
     text = URL_PATTERN.sub('', text)
     for pattern in INVITE_PATTERNS:
         text = pattern.sub('', text)
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'[ \t]+', ' ', text).strip()
     return text
 
 def clean_trailing_emojis(text: str) -> str:
@@ -137,7 +137,7 @@ def clean_all_trailing_content(text: str) -> str:
             continue
         cleaned_lines.append(line)
     text = '\n'.join(cleaned_lines)
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'[ \t]+', ' ', text).strip()
     text = clean_trailing_emojis(text)
     return text
 
