@@ -1,31 +1,39 @@
 import os
 import requests
 import logging
-from core.database import get_tenant
+from core.branding_manager import get_branding
 
 logger = logging.getLogger(__name__)
 
 def send_to_bale_for_user(user_id, text, file_id=None, media_type=None):
+    """
+    ارسال پیام به کانال بله بر اساس تنظیمات ذخیره‌شده در دیتابیس
+    """
+    # بررسی فعال بودن بله
     if os.getenv("ENABLE_BALE", "false").lower() != "true":
         return True
 
-    tenant = get_tenant(user_id)
-    if not tenant or not tenant[4] or not tenant[5]:
+    # دریافت تنظیمات بله از دیتابیس
+    branding = get_branding(user_id)
+    bale_channel = branding.get("bale_channel", "")
+    bale_token = branding.get("bale_token", "")
+
+    if not bale_channel or not bale_token:
+        logger.info(f"⏳ بله برای کاربر {user_id} تنظیم نشده است.")
         return True
 
-    api_url = f"https://tapi.bale.ai/bot{tenant[5]}/"
+    api_url = f"https://tapi.bale.ai/bot{bale_token}/"
 
     try:
         # ارسال متن ساده
         if not file_id or not media_type:
             resp = requests.post(
                 f"{api_url}sendMessage",
-                json={"chat_id": tenant[4], "text": text},
+                json={"chat_id": bale_channel, "text": text},
                 timeout=10
             )
         else:
             # ارسال رسانه به‌عنوان Document
-            # ابتدا فایل را از تلگرام دانلود می‌کنیم
             bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
             file_info = requests.get(
                 f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}",
@@ -39,11 +47,10 @@ def send_to_bale_for_user(user_id, text, file_id=None, media_type=None):
             file_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
             file_content = requests.get(file_url, timeout=30).content
 
-            # ارسال به بله
             files = {"document": (os.path.basename(file_path), file_content)}
             resp = requests.post(
                 f"{api_url}sendDocument",
-                data={"chat_id": tenant[4], "caption": text},
+                data={"chat_id": bale_channel, "caption": text},
                 files=files,
                 timeout=30
             )
