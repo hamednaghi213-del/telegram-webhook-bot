@@ -300,6 +300,22 @@ def get_content_from_message(msg: dict) -> str:
         return msg["text"]
     return ""
 
+# ---------- Self-Ping ----------
+def self_ping():
+    url = "https://telegram-webhook-bot-onyd.onrender.com/"
+    while True:
+        try:
+            response = requests.get(url, timeout=10)
+            logger.info(f"🔄 Self-ping: وضعیت {response.status_code}")
+        except Exception as e:
+            logger.error(f"❌ Self-ping خطا: {e}")
+        time.sleep(420)
+
+ping_thread = threading.Thread(target=self_ping)
+ping_thread.daemon = True
+ping_thread.start()
+logger.info("✅ Self-ping فعال شد (هر ۷ دقیقه یک بار)")
+
 # ---------- Webhook ----------
 @app.route("/", methods=["POST", "GET"])
 def webhook():
