@@ -29,6 +29,7 @@ INVITE_PATTERNS = [
 def remove_all_emojis(text: str) -> str:
     if not text:
         return text
+    # ❇️ و 🔹 را موقتاً با نشانه جایگزین می‌کنیم
     text = text.replace('❇️', '[[TITLE]]')
     text = text.replace('🔹', '[[BULLET]]')
     emoji_pattern = re.compile(
@@ -59,9 +60,10 @@ def remove_all_emojis(text: str) -> str:
         flags=re.UNICODE
     )
     text = emoji_pattern.sub('', text)
+    # برگرداندن ❇️ و 🔹
     text = text.replace('[[TITLE]]', '❇️')
     text = text.replace('[[BULLET]]', '🔹')
-    # فقط فاصله‌های افقی را حذف کن، خطوط جدید را نگه دار
+    # فقط فاصله‌های اضافی را حذف کن، خطوط جدید را نگه دار
     text = re.sub(r'[ \t]+', ' ', text).strip()
     return text
 
