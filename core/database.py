@@ -16,29 +16,29 @@ def get_tenant(user_id):
     try:
         result = supabase.table("tenants").select("*").eq("user_id", user_id).execute()
         if result.data:
-            return result.data[0]  # دیکشنری
+            return result.data[0]
         return None
     except Exception as e:
         print(f"❌ get_tenant: {e}")
         return None
 
-def save_tenant(user_id, bot_token, telegram_channel, bale_channel=None, bale_token=None):
+def save_tenant(user_id, bot_token, telegram_channel, bale_channel=None, bale_token=None, hashtag=None, channel_tag=None):
     try:
         existing = get_tenant(user_id)
+        data = {
+            "bot_token": bot_token,
+            "telegram_channel": telegram_channel,
+            "bale_channel": bale_channel or "",
+            "bale_token": bale_token or "",
+            "hashtag": hashtag or "#دنیا_۲۴_نیوز",
+            "channel_tag": channel_tag or "@Donya24News"
+        }
         if existing:
-            supabase.table("tenants").update({
-                "bot_token": bot_token,
-                "telegram_channel": telegram_channel,
-                "bale_channel": bale_channel,
-                "bale_token": bale_token
-            }).eq("user_id", user_id).execute()
+            supabase.table("tenants").update(data).eq("user_id", user_id).execute()
         else:
             supabase.table("tenants").insert({
                 "user_id": user_id,
-                "bot_token": bot_token,
-                "telegram_channel": telegram_channel,
-                "bale_channel": bale_channel,
-                "bale_token": bale_token
+                **data
             }).execute()
         return True
     except Exception as e:
