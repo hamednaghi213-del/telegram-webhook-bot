@@ -10,6 +10,7 @@ from core.media_sender import send_media_to_channel
 from core.branding_manager import get_branding
 from core.media_handler import is_media_group, handle_media_group_message
 from core.bale_forwarder import send_to_bale_for_user
+from core.command_handler import is_command, handle_command
 
 logger = logging.getLogger(__name__)
 API_URL = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN')}"
@@ -116,102 +117,61 @@ def handle_webhook():
 
         logger.info(f"[{req_id}] پیام از {chat_id}")
 
-        # ========== دستورات ==========
-        if text == "/register":
-            tenant = get_tenant(chat_id)
-            if tenant:
-                send_message(chat_id, "✅ شما قبلاً ثبت‌نام کرده‌اید.")
-            else:
-                save_tenant(chat_id, "TOKEN_TEMP", "@channel")
-                send_message(chat_id, "✅ ثبت‌نام شد. /settelegram @channel")
-            return {"ok": True}
-
-        elif text.startswith("/settelegram"):
-            parts = text.split()
-            if len(parts) < 2:
-                send_message(chat_id, "❌ /settelegram @channel")
-                return {"ok": True}
-            channel = parts[1]
-            tenant = get_tenant(chat_id)
-            if not tenant:
-                send_message(chat_id, "❌ ابتدا /register")
-                return {"ok": True}
-            save_tenant(
-                chat_id,
-                tenant.get("bot_token", "TOKEN_TEMP"),
-                channel,
-                tenant.get("bale_channel", ""),
-                tenant.get("bale_token", ""),
-                tenant.get("hashtag", "#دنیا_۲۴_نیوز"),
-                tenant.get("channel_tag", "@Donya24News")
-            )
-            send_message(chat_id, f"✅ کانال تلگرام: {channel}")
-            return {"ok": True}
-
-        elif text == "/status":
-            tenant = get_tenant(chat_id)
-            if tenant:
-                send_message(chat_id, f"📊 وضعیت:\nکانال تلگرام: {tenant.get('telegram_channel', 'تنظیم نشده')}\nکانال بله: {tenant.get('bale_channel', 'تنظیم نشده')}\nتوکن بله: {'✅' if tenant.get('bale_token') else '❌'}")
-            else:
-                send_message(chat_id, "❌ ثبت‌نام نکرده‌اید. /register")
-            return {"ok": True}
-
-        elif text == "/start":
-            send_message(chat_id, "👋 به ربات خبری خوش آمدید!")
+        # ========== پردازش دستورات ==========
+        if text and is_command(text):
+            handle_command(text, chat_id)
             return {"ok": True}
 
         # ========== پردازش خبر ==========
-        else:
-            tenant = get_tenant(chat_id)
-            if not tenant or not tenant.get("telegram_channel"):
-                send_message(chat_id, "❌ ابتدا با /register ثبت‌نام و کانال را تنظیم کنید.")
-                return {"ok": True}
+        tenant = get_tenant(chat_id)
+        if not tenant or not tenant.get("telegram_channel"):
+            send_message(chat_id, "❌ ابتدا با /register ثبت‌نام و کانال را تنظیم کنید.")
+            return {"ok": True}
 
-            media_info = get_media_from_message(msg)
+        media_info = get_media_from_message(msg)
 
-            # ====== آلبوم ======
-            if media_info["type"] and is_media_group(msg):
+        # ====== آلبوم ======
+        if media_info["type"] and is_media_group(msg):
+            branding = get_branding(chat_id)
+            handle_media_group_message(
+                msg,
+                media_info["file_id"],
+                media_info["type"],
+                media_info["caption"]
+            )
+            send_message(chat_id, "✅ آلبوم شما در حال پردازش است...")
+            return {"ok": True}
+
+        # ====== رسانه تکی ======
+        elif media_info["type"]:
+            caption = text if text else media_info.get("caption", "")
+            if caption:
+                formatted_caption = format_news(caption)
                 branding = get_branding(chat_id)
-                handle_media_group_message(
-                    msg,
-                    media_info["file_id"],
-                    media_info["type"],
-                    media_info["caption"]
-                )
-                send_message(chat_id, "✅ آلبوم شما در حال پردازش است...")
-                return {"ok": True}
-
-            # ====== رسانه تکی ======
-            elif media_info["type"]:
-                caption = text if text else media_info.get("caption", "")
-                if caption:
-                    formatted_caption = format_news(caption)
-                    branding = get_branding(chat_id)
-                    formatted_caption = formatted_caption + f"\n\n{branding['hashtag']}\n{branding['channel_tag']}"
-                else:
-                    branding = get_branding(chat_id)
-                    formatted_caption = f"{branding['hashtag']}\n{branding['channel_tag']}"
-                success = send_media_to_channel(API_URL, CHANNEL_ID, media_info["file_id"], media_info["type"], formatted_caption)
-                if success:
-                    send_message(chat_id, "✅ خبر تصویری/ویدیویی شما در کانال منتشر شد.")
-                    # ارسال به بله بعد از موفقیت
-                    send_to_bale_for_user(chat_id, formatted_caption, media_info["file_id"], media_info["type"])
-                else:
-                    send_message(chat_id, "❌ ارسال رسانه با مشکل روبرو شد.")
-                return {"ok": True}
-
-            # ====== فقط متن ======
+                formatted_caption = formatted_caption + f"\n\n{branding['hashtag']}\n{branding['channel_tag']}"
             else:
-                if text.strip():
-                    formatted = format_news(text)
-                    if formatted:
-                        send_long_to_channel(formatted, chat_id)
-                        send_message(chat_id, "✅ خبر شما در کانال منتشر شد.")
-                    else:
-                        send_message(chat_id, "❌ خبر قابل پردازش نیست.")
+                branding = get_branding(chat_id)
+                formatted_caption = f"{branding['hashtag']}\n{branding['channel_tag']}"
+            success = send_media_to_channel(API_URL, CHANNEL_ID, media_info["file_id"], media_info["type"], formatted_caption)
+            if success:
+                send_message(chat_id, "✅ خبر تصویری/ویدیویی شما در کانال منتشر شد.")
+                send_to_bale_for_user(chat_id, formatted_caption, media_info["file_id"], media_info["type"])
+            else:
+                send_message(chat_id, "❌ ارسال رسانه با مشکل روبرو شد.")
+            return {"ok": True}
+
+        # ====== فقط متن ======
+        else:
+            if text.strip():
+                formatted = format_news(text)
+                if formatted:
+                    send_long_to_channel(formatted, chat_id)
+                    send_message(chat_id, "✅ خبر شما در کانال منتشر شد.")
                 else:
-                    send_message(chat_id, "❌ پیام خالی است.")
-                return {"ok": True}
+                    send_message(chat_id, "❌ خبر قابل پردازش نیست.")
+            else:
+                send_message(chat_id, "❌ پیام خالی است.")
+            return {"ok": True}
 
     except Exception as e:
         logger.error(f"[{req_id}] ❌ خطا:")
