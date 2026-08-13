@@ -1,5 +1,4 @@
 import os
-import traceback
 from supabase import create_client
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -16,10 +15,11 @@ def init_db():
 def get_tenant(user_id):
     try:
         result = supabase.table("tenants").select("*").eq("user_id", user_id).execute()
-        return result.data[0] if result.data else None
+        if result.data:
+            return result.data[0]  # دیکشنری
+        return None
     except Exception as e:
-        print("❌ get_tenant ERROR:")
-        traceback.print_exc()
+        print(f"❌ get_tenant: {e}")
         return None
 
 def save_tenant(user_id, bot_token, telegram_channel, bale_channel=None, bale_token=None):
@@ -42,6 +42,5 @@ def save_tenant(user_id, bot_token, telegram_channel, bale_channel=None, bale_to
             }).execute()
         return True
     except Exception as e:
-        print("❌ save_tenant ERROR:")
-        traceback.print_exc()
+        print(f"❌ save_tenant: {e}")
         return False
