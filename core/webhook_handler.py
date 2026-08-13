@@ -68,7 +68,6 @@ def send_long_to_channel(text, chat_id):
         success = send_to_channel(part)
         if not success:
             break
-    # ارسال به بله بعد از موفقیت
     send_to_bale_for_user(chat_id, text)
 
 def get_message_text(msg):
@@ -117,12 +116,10 @@ def handle_webhook():
 
         logger.info(f"[{req_id}] پیام از {chat_id}")
 
-        # ========== پردازش دستورات ==========
         if text and is_command(text):
             handle_command(text, chat_id)
             return {"ok": True}
 
-        # ========== پردازش خبر ==========
         tenant = get_tenant(chat_id)
         if not tenant or not tenant.get("telegram_channel"):
             send_message(chat_id, "❌ ابتدا با /register ثبت‌نام و کانال را تنظیم کنید.")
@@ -130,9 +127,7 @@ def handle_webhook():
 
         media_info = get_media_from_message(msg)
 
-        # ====== آلبوم ======
         if media_info["type"] and is_media_group(msg):
-            branding = get_branding(chat_id)
             handle_media_group_message(
                 msg,
                 media_info["file_id"],
@@ -142,7 +137,6 @@ def handle_webhook():
             send_message(chat_id, "✅ آلبوم شما در حال پردازش است...")
             return {"ok": True}
 
-        # ====== رسانه تکی ======
         elif media_info["type"]:
             caption = text if text else media_info.get("caption", "")
             if caption:
@@ -160,7 +154,6 @@ def handle_webhook():
                 send_message(chat_id, "❌ ارسال رسانه با مشکل روبرو شد.")
             return {"ok": True}
 
-        # ====== فقط متن ======
         else:
             if text.strip():
                 formatted = format_news(text)
