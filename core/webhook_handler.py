@@ -9,6 +9,7 @@ from core.formatter import format_news
 from core.media_sender import send_media_to_channel
 from core.branding_manager import get_branding
 from core.media_handler import is_media_group, handle_media_group_message
+from core.bale_forwarder import send_to_bale_for_user
 
 logger = logging.getLogger(__name__)
 API_URL = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN')}"
@@ -27,38 +28,20 @@ def send_message(chat_id, text):
         logger.error(f"❌ send_message: {e}")
 
 def split_long_message(text, max_len=4096):
-    """
-    تقسیم پیام طولانی بدون شکستن خطوط
-    هر خط کامل (با \n) را حفظ می‌کند و در صورت نیاز به بخش‌های جداگانه تقسیم می‌کند.
-    """
     if len(text) <= max_len:
         return [text]
-    
     parts = []
     lines = text.split('\n')
     current_part = ""
-    
     for line in lines:
-        # اگر خط خالی است، آن را نادیده نگیر
-        line_to_add = line + '\n'
-        if len(current_part) + len(line_to_add) <= max_len:
-            current_part += line_to_add
+        if len(current_part) + len(line) + 1 <= max_len:
+            current_part += line + "\n"
         else:
-            # بخش فعلی را ذخیره کن
             if current_part:
-                parts.append(current_part.rstrip())
-            # اگر خود خط از max_len بلندتر است، آن را به چند بخش تقسیم کن
-            if len(line_to_add) > max_len:
-                # خط را به بخش‌های کوچکتر تقسیم کن (اما اینجا معمولاً اتفاق نمی‌افتد)
-                for i in range(0, len(line_to_add), max_len):
-                    parts.append(line_to_add[i:i+max_len].rstrip())
-                current_part = ""
-            else:
-                current_part = line_to_add
-    
+                parts.append(current_part.strip())
+            current_part = line + "\n"
     if current_part:
-        parts.append(current_part.rstrip())
-    
+        parts.append(current_part.strip())
     return parts
 
 def send_to_channel(text):
@@ -84,6 +67,8 @@ def send_long_to_channel(text, chat_id):
         success = send_to_channel(part)
         if not success:
             break
+    # ارسال به بله بعد از موفقیت
+    send_to_bale_for_user(chat_id, text)
 
 def get_message_text(msg):
     if "caption" in msg and msg["caption"]:
@@ -209,6 +194,8 @@ def handle_webhook():
                 success = send_media_to_channel(API_URL, CHANNEL_ID, media_info["file_id"], media_info["type"], formatted_caption)
                 if success:
                     send_message(chat_id, "✅ خبر تصویری/ویدیویی شما در کانال منتشر شد.")
+                    # ارسال به بله بعد از موفقیت
+                    send_to_bale_for_user(chat_id, formatted_caption, media_info["file_id"], media_info["type"])
                 else:
                     send_message(chat_id, "❌ ارسال رسانه با مشکل روبرو شد.")
                 return {"ok": True}
