@@ -5,14 +5,18 @@ import os
 import traceback
 from flask import request
 from core.database import get_tenant, save_tenant
+from core.formatter import format_news
 
 logger = logging.getLogger(__name__)
 API_URL = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN')}"
+CHANNEL_ID = "@Donya24News"
+HASHTAG = "#دنیا_۲۴_نیوز"
+CHANNEL_TAG = "@Donya24News"
 
-# ---------- تابع initialize برای main.py ----------
 def initialize(api_url, channel_id, secret_token):
-    global API_URL
+    global API_URL, CHANNEL_ID
     API_URL = api_url
+    CHANNEL_ID = channel_id
     logger.info("✅ Webhook Handler initialized")
 
 def send_message(chat_id, text):
@@ -20,6 +24,46 @@ def send_message(chat_id, text):
         requests.post(f"{API_URL}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
     except Exception as e:
         logger.error(f"❌ send_message: {e}")
+
+def split_long_message(text, max_len=4096):
+    if len(text) <= max_len:
+        return [text]
+    parts = []
+    start = 0
+    while start < len(text):
+        end = min(start + max_len, len(text))
+        if end < len(text):
+            last_newline = text.rfind('\n', start, end)
+            last_space = text.rfind(' ', start, end)
+            cut_at = max(last_newline, last_space)
+            if cut_at > start:
+                end = cut_at + 1
+        part = text[start:end].strip()
+        if part:
+            parts.append(part)
+        start = end
+    return parts
+
+def send_to_channel(text):
+    try:
+        resp = requests.post(
+            f"{API_URL}/sendMessage",
+            json={"chat_id": CHANNEL_ID, "text": text},
+            timeout=10
+        )
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        logger.error(f"❌ خطا در ارسال به کانال: {e}")
+        return False
+
+def send_long_to_channel(text):
+    text = text + f"\n\n{HASHTAG}\n{CHANNEL_TAG}"
+    parts = split_long_message(text)
+    for part in parts:
+        success = send_to_channel(part)
+        if not success:
+            break
 
 def handle_webhook():
     req_id = str(uuid.uuid4())[:8]
@@ -38,7 +82,6 @@ def handle_webhook():
 
         # ========== دستورات ==========
         if text == "/register":
-            logger.info(f"[{req_id}] ثبت‌نام کاربر {chat_id}")
             tenant = get_tenant(chat_id)
             if tenant:
                 send_message(chat_id, "✅ شما قبلاً ثبت‌نام کرده‌اید.")
@@ -57,7 +100,6 @@ def handle_webhook():
             if not tenant:
                 send_message(chat_id, "❌ ابتدا /register")
                 return {"ok": True}
-            # دسترسی به دیکشنری با کلیدهای اسمی
             save_tenant(
                 chat_id,
                 tenant.get("bot_token", "TOKEN_TEMP"),
@@ -80,8 +122,23 @@ def handle_webhook():
             send_message(chat_id, "👋 به ربات خبری خوش آمدید!")
             return {"ok": True}
 
+        # ========== ارسال خبر به کانال ==========
         else:
-            send_message(chat_id, "❌ دستور نامعتبر. /help")
+            # اگر متن خالی نباشد، آن را به‌عنوان خبر به کانال ارسال کن
+            if text.strip():
+                tenant = get_tenant(chat_id)
+                if tenant:
+                    # قالب‌بندی خبر
+                    formatted = format_news(text)
+                    if formatted:
+                        send_long_to_channel(formatted)
+                        send_message(chat_id, "✅ خبر شما در کانال منتشر شد.")
+                    else:
+                        send_message(chat_id, "❌ خبر قابل پردازش نیست.")
+                else:
+                    send_message(chat_id, "❌ ابتدا با /register ثبت‌نام کنید.")
+            else:
+                send_message(chat_id, "❌ پیام خالی است.")
             return {"ok": True}
 
     except Exception as e:
