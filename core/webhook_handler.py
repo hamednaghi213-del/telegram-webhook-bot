@@ -6,6 +6,7 @@ import traceback
 from flask import request
 from core.database import get_tenant, save_tenant
 from core.formatter import format_news
+from core.media_sender import send_media_to_channel, send_media_group
 
 logger = logging.getLogger(__name__)
 API_URL = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN')}"
@@ -66,12 +67,35 @@ def send_long_to_channel(text):
             break
 
 def get_message_text(msg):
-    """استخراج متن از پیام (اولویت با caption)"""
     if "caption" in msg and msg["caption"]:
         return msg["caption"]
     if "text" in msg and msg["text"]:
         return msg["text"]
     return ""
+
+def get_media_from_message(msg):
+    result = {"type": None, "file_id": None, "caption": ""}
+    if "video" in msg:
+        result["type"] = "video"
+        result["file_id"] = msg["video"]["file_id"]
+        result["caption"] = msg.get("caption", "")
+    elif "photo" in msg:
+        result["type"] = "photo"
+        result["file_id"] = msg["photo"][-1]["file_id"]
+        result["caption"] = msg.get("caption", "")
+    elif "document" in msg:
+        result["type"] = "document"
+        result["file_id"] = msg["document"]["file_id"]
+        result["caption"] = msg.get("caption", "")
+    elif "voice" in msg:
+        result["type"] = "voice"
+        result["file_id"] = msg["voice"]["file_id"]
+        result["caption"] = msg.get("caption", "")
+    elif "audio" in msg:
+        result["type"] = "audio"
+        result["file_id"] = msg["audio"]["file_id"]
+        result["caption"] = msg.get("caption", "")
+    return result
 
 def handle_webhook():
     req_id = str(uuid.uuid4())[:8]
@@ -86,7 +110,7 @@ def handle_webhook():
         chat_id = msg["chat"]["id"]
         text = get_message_text(msg)
 
-        logger.info(f"[{req_id}] پیام از {chat_id}: {text[:50]}...")
+        logger.info(f"[{req_id}] پیام از {chat_id}")
 
         # ========== دستورات ==========
         if text == "/register":
@@ -130,11 +154,45 @@ def handle_webhook():
             send_message(chat_id, "👋 به ربات خبری خوش آمدید!")
             return {"ok": True}
 
-        # ========== ارسال خبر به کانال ==========
+        # ========== پردازش خبر ==========
         else:
-            if text.strip():
-                tenant = get_tenant(chat_id)
-                if tenant and tenant.get("telegram_channel"):
+            tenant = get_tenant(chat_id)
+            if not tenant or not tenant.get("telegram_channel"):
+                send_message(chat_id, "❌ ابتدا با /register ثبت‌نام و کانال را تنظیم کنید.")
+                return {"ok": True}
+
+            media_info = get_media_from_message(msg)
+
+            # ====== آلبوم ======
+            if media_info["type"] and "media_group_id" in msg:
+                # ارسال آلبوم (چند عکس/فیلم)
+                # فعلاً ساده: فقط رسانه اول را ارسال کن
+                caption = text if text else media_info.get("caption", "")
+                if caption:
+                    formatted_caption = format_news(caption)
+                else:
+                    formatted_caption = ""
+                send_media_to_channel(API_URL, CHANNEL_ID, media_info["file_id"], media_info["type"], formatted_caption)
+                send_message(chat_id, "✅ خبر تصویری شما در کانال منتشر شد.")
+                return {"ok": True}
+
+            # ====== رسانه تکی ======
+            elif media_info["type"]:
+                caption = text if text else media_info.get("caption", "")
+                if caption:
+                    formatted_caption = format_news(caption)
+                else:
+                    formatted_caption = ""
+                success = send_media_to_channel(API_URL, CHANNEL_ID, media_info["file_id"], media_info["type"], formatted_caption)
+                if success:
+                    send_message(chat_id, "✅ خبر تصویری/ویدیویی شما در کانال منتشر شد.")
+                else:
+                    send_message(chat_id, "❌ ارسال رسانه با مشکل روبرو شد.")
+                return {"ok": True}
+
+            # ====== فقط متن ======
+            else:
+                if text.strip():
                     formatted = format_news(text)
                     if formatted:
                         send_long_to_channel(formatted)
@@ -142,10 +200,8 @@ def handle_webhook():
                     else:
                         send_message(chat_id, "❌ خبر قابل پردازش نیست.")
                 else:
-                    send_message(chat_id, "❌ ابتدا با /register ثبت‌نام و کانال را تنظیم کنید.")
-            else:
-                send_message(chat_id, "❌ پیام خالی است.")
-            return {"ok": True}
+                    send_message(chat_id, "❌ پیام خالی است.")
+                return {"ok": True}
 
     except Exception as e:
         logger.error(f"[{req_id}] ❌ خطا:")
