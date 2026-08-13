@@ -20,7 +20,7 @@ def send_to_bale_for_user(user_id, text, file_id=None, media_type=None):
 
     if not bale_channel or not bale_token:
         logger.info(f"⏳ بله برای کاربر {user_id} تنظیم نشده است.")
-        return True
+        return False
 
     api_url = f"https://tapi.bale.ai/bot{bale_token}/"
 
