@@ -1,9 +1,6 @@
 from core.database import get_tenant, save_tenant
 
 def get_branding(user_id):
-    """
-    دریافت هشتگ، آیدی کانال و اطلاعات بله برای یک کاربر
-    """
     tenant = get_tenant(user_id)
     if tenant:
         return {
