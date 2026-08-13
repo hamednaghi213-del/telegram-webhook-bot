@@ -16,28 +16,33 @@ def initialize(channel_tag, hashtag):
 def remove_all_hashtags_and_mentions(text: str) -> str:
     if not text:
         return text
+    # حذف @ها
     text = re.sub(r'@[a-zA-Z0-9_]+', '', text)
-    text = re.sub(r'#[^\s]+', '', text)
+    # حذف #ها (با یا بدون فاصله)
+    text = re.sub(r'#\s*[^\s#]+', '', text)
+    # حذف ❇️ و 🔹 اضافی (اگر در ورودی باشند)
+    text = re.sub(r'❇️', '', text)
+    text = re.sub(r'🔹', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 def format_news(raw_text: str) -> str:
-    # 1. پاکسازی
+    # پاکسازی متن با cleaner
     cleaned = clean_text(raw_text)
     cleaned = remove_all_hashtags_and_mentions(cleaned)
     if not cleaned:
         return ""
     
-    # 2. تقسیم به خطوط و حذف خطوط خالی
+    # تقسیم به خطوط و حذف خطوط خالی
     lines = [line.strip() for line in cleaned.split('\n') if line.strip()]
     if not lines:
         return ""
     
-    # 3. خط اول = تیتر، بقیه = بند
+    # خط اول = تیتر، بقیه = بند
     title = lines[0]
     body = lines[1:] if len(lines) > 1 else []
     
-    # 4. ساخت خروجی بدون فاصله اضافی
+    # ساخت خروجی با آیکون‌ها
     result = f"❇️ {title}"
     for line in body:
         result += f"\n🔹 {line}"
