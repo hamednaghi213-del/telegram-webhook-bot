@@ -3,15 +3,18 @@ import logging
 import tempfile
 import requests
 
+from telethon import TelegramClient
+
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 
 
+# =========================================================
+# ENV
+# =========================================================
+
 def get_bot_token():
-    """
-    دریافت توکن ربات تلگرام از Environment
-    """
     token = os.getenv("TELEGRAM_BOT_TOKEN")
 
     if not token:
@@ -23,12 +26,47 @@ def get_bot_token():
     return token
 
 
+def get_api_id():
+    value = os.getenv("TELEGRAM_API_ID")
+
+    if not value:
+        logger.error(
+            "❌ TELEGRAM_API_ID تنظیم نشده است."
+        )
+        return None
+
+    try:
+        return int(value)
+    except ValueError:
+        logger.error(
+            "❌ TELEGRAM_API_ID باید عدد باشد."
+        )
+        return None
+
+
+def get_api_hash():
+    value = os.getenv("TELEGRAM_API_HASH")
+
+    if not value:
+        logger.error(
+            "❌ TELEGRAM_API_HASH تنظیم نشده است."
+        )
+        return None
+
+    return value
+
+
+# =========================================================
+# BOT API DOWNLOAD
+# =========================================================
+
 def download_with_bot_api(file_id):
     """
-    روش اول:
     دانلود فایل با Telegram Bot API
 
-    این روش برای فایل‌های معمولی استفاده می‌شود.
+    برای فایل‌های معمولی استفاده می‌شود.
+    اگر فایل بیش از محدودیت Bot API باشد،
+    تابع شکست می‌خورد و Telethon استفاده خواهد شد.
     """
 
     bot_token = get_bot_token()
@@ -136,15 +174,182 @@ def download_with_bot_api(file_id):
         return None, None
 
 
+# =========================================================
+# TELETHON DOWNLOAD
+# =========================================================
+
+def download_with_telethon(file_id):
+    """
+    دانلود فایل‌های بزرگ با Telethon.
+
+    برای جلوگیری از نگه‌داشتن فایل بزرگ در RAM،
+    فایل ابتدا روی دیسک موقت Render ذخیره می‌شود
+    و سپس محتوای آن خوانده می‌شود.
+    """
+
+    api_id = get_api_id()
+    api_hash = get_api_hash()
+
+    if not api_id or not api_hash:
+        return None, None
+
+    try:
+
+        bot_token = get_bot_token()
+
+        if not bot_token:
+            return None, None
+
+        session_path = os.getenv(
+            "TELETHON_SESSION",
+            "/tmp/telegram_downloader"
+        )
+
+        logger.info(
+            "🚀 شروع دانلود با Telethon..."
+        )
+
+        client = TelegramClient(
+            session_path,
+            api_id,
+            api_hash
+        )
+
+        # -------------------------------------------------
+        # اتصال
+        # -------------------------------------------------
+
+        client.start(
+            bot_token=bot_token
+        )
+
+        logger.info(
+            "✅ Telethon متصل شد."
+        )
+
+        # -------------------------------------------------
+        # دریافت فایل
+        # -------------------------------------------------
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            dir="/tmp"
+        ) as temp_file:
+
+            temp_path = temp_file.name
+
+        logger.info(
+            f"📥 دانلود فایل بزرگ با Telethon | "
+            f"path={temp_path}"
+        )
+
+        client.loop.run_until_complete(
+            client.download_media(
+                file_id,
+                file=temp_path
+            )
+        )
+
+        # -------------------------------------------------
+        # قطع اتصال
+        # -------------------------------------------------
+
+        client.disconnect()
+
+        # -------------------------------------------------
+        # بررسی فایل
+        # -------------------------------------------------
+
+        if not os.path.exists(temp_path):
+
+            logger.error(
+                "❌ Telethon فایل را دانلود نکرد."
+            )
+
+            return None, None
+
+        file_size = os.path.getsize(
+            temp_path
+        )
+
+        if file_size <= 0:
+
+            logger.error(
+                "❌ فایل دانلود شده خالی است."
+            )
+
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+            return None, None
+
+        # -------------------------------------------------
+        # خواندن فایل
+        # -------------------------------------------------
+
+        with open(
+            temp_path,
+            "rb"
+        ) as file:
+
+            content = file.read()
+
+        # -------------------------------------------------
+        # پاک کردن فایل موقت
+        # -------------------------------------------------
+
+        try:
+
+            os.remove(
+                temp_path
+            )
+
+        except Exception as e:
+
+            logger.warning(
+                f"⚠️ حذف فایل موقت ناموفق بود: {e}"
+            )
+
+        # -------------------------------------------------
+        # نام فایل
+        # -------------------------------------------------
+
+        filename = (
+            f"telegram_{file_id}.bin"
+        )
+
+        logger.info(
+            f"✅ فایل با Telethon دانلود شد | "
+            f"name={filename} | "
+            f"size={len(content)} bytes"
+        )
+
+        return content, filename
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ خطا در download_with_telethon: {e}"
+        )
+
+        return None, None
+
+
+# =========================================================
+# MAIN DOWNLOADER
+# =========================================================
+
 def download_telegram_file(file_id):
     """
     تابع اصلی دانلود فایل از تلگرام.
 
-    فعلاً ابتدا Bot API را امتحان می‌کند.
+    ترتیب کار:
 
-    در مرحله بعدی Telethon را به همین تابع
-    اضافه می‌کنیم تا فایل‌های بزرگ نیز
-    قابل دانلود باشند.
+    1. Bot API
+    2. در صورت شکست Bot API
+       Telethon
     """
 
     if not file_id:
@@ -160,6 +365,11 @@ def download_telegram_file(file_id):
         f"file_id={str(file_id)[:20]}..."
     )
 
+    # =====================================================
+    # مرحله اول
+    # Bot API
+    # =====================================================
+
     content, filename = (
         download_with_bot_api(
             file_id
@@ -170,9 +380,32 @@ def download_telegram_file(file_id):
 
         return content, filename
 
+    # =====================================================
+    # مرحله دوم
+    # Telethon
+    # =====================================================
+
     logger.warning(
-        "⚠️ دانلود با Bot API ناموفق بود. "
-        "در مرحله بعدی Telethon استفاده خواهد شد."
+        "⚠️ دانلود با Bot API ناموفق بود."
+    )
+
+    logger.info(
+        "🔄 انتقال دانلود فایل به Telethon..."
+    )
+
+    content, filename = (
+        download_with_telethon(
+            file_id
+        )
+    )
+
+    if content is not None:
+
+        return content, filename
+
+    logger.error(
+        "❌ دانلود فایل هم با Bot API "
+        "و هم با Telethon ناموفق بود."
     )
 
     return None, None
