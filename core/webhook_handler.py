@@ -9,6 +9,12 @@ from core.database import get_tenant, save_tenant
 logger = logging.getLogger(__name__)
 API_URL = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN')}"
 
+# ---------- تابع initialize برای main.py ----------
+def initialize(api_url, channel_id, secret_token):
+    global API_URL
+    API_URL = api_url
+    logger.info("✅ Webhook Handler initialized")
+
 def send_message(chat_id, text):
     try:
         requests.post(f"{API_URL}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
@@ -51,14 +57,21 @@ def handle_webhook():
             if not tenant:
                 send_message(chat_id, "❌ ابتدا /register")
                 return {"ok": True}
-            save_tenant(chat_id, tenant[2] or "TOKEN_TEMP", channel, tenant[4], tenant[5])
+            # دسترسی به دیکشنری با کلیدهای اسمی
+            save_tenant(
+                chat_id,
+                tenant.get("bot_token", "TOKEN_TEMP"),
+                channel,
+                tenant.get("bale_channel", ""),
+                tenant.get("bale_token", "")
+            )
             send_message(chat_id, f"✅ کانال تلگرام: {channel}")
             return {"ok": True}
 
         elif text == "/status":
             tenant = get_tenant(chat_id)
             if tenant:
-                send_message(chat_id, f"📊 وضعیت:\nکانال تلگرام: {tenant[3]}\nکانال بله: {tenant[4] or 'تنظیم نشده'}\nتوکن بله: {'✅' if tenant[5] else '❌'}")
+                send_message(chat_id, f"📊 وضعیت:\nکانال تلگرام: {tenant.get('telegram_channel', 'تنظیم نشده')}\nکانال بله: {tenant.get('bale_channel', 'تنظیم نشده')}\nتوکن بله: {'✅' if tenant.get('bale_token') else '❌'}")
             else:
                 send_message(chat_id, "❌ ثبت‌نام نکرده‌اید. /register")
             return {"ok": True}
