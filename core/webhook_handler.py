@@ -33,7 +33,8 @@ def handle_webhook():
         # ========== دستورات ==========
         if text == "/register":
             logger.info(f"[{req_id}] ثبت‌نام کاربر {chat_id}")
-            if get_tenant(chat_id):
+            tenant = get_tenant(chat_id)
+            if tenant:
                 send_message(chat_id, "✅ شما قبلاً ثبت‌نام کرده‌اید.")
             else:
                 save_tenant(chat_id, "TOKEN_TEMP", "@channel")
