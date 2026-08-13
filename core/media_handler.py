@@ -2,6 +2,7 @@ import time
 import threading
 import logging
 import requests
+import json
 
 from collections import defaultdict
 
@@ -33,11 +34,11 @@ group_lock = threading.RLock()
 # TIMEOUT CONFIG
 # =========================================================
 
-TELEGRAM_CONNECT_TIMEOUT = 15
-TELEGRAM_READ_TIMEOUT = 45
+TELEGRAM_CONNECT_TIMEOUT = 10
+TELEGRAM_READ_TIMEOUT = 30
 
 MEDIA_GROUP_DELAY = 2.0
-MEDIA_GROUP_MIN_WAIT = 1.2
+MEDIA_GROUP_MIN_WAIT = 1.5
 
 
 # =========================================================
@@ -54,6 +55,11 @@ def initialize(api_url, channel_id):
 
     logger.info(
         "✅ Media Handler initialized"
+    )
+
+    logger.info(
+        f"🔧 Media Handler config | "
+        f"channel={CHANNEL_ID}"
     )
 
 
@@ -98,6 +104,11 @@ def add_to_pending_group(
                 "is_processing": False
             }
 
+            logger.info(
+                f"🆕 گروه جدید ایجاد شد | "
+                f"group={media_group_id}"
+            )
+
         group = pending_groups[group_key]
 
         already_exists = any(
@@ -111,6 +122,13 @@ def add_to_pending_group(
                 "type": media_type,
                 "file_id": file_id
             })
+
+        else:
+
+            logger.info(
+                f"ℹ️ رسانه تکراری نادیده گرفته شد | "
+                f"group={media_group_id}"
+            )
 
         group["last_update"] = time.time()
 
@@ -186,7 +204,9 @@ def remove_pending_group(
 
             keys_to_remove = [
                 key
-                for key in list(pending_groups.keys())
+                for key in list(
+                    pending_groups.keys()
+                )
                 if key[1] == media_group_id
             ]
 
@@ -211,6 +231,114 @@ def remove_pending_group(
 
 
 # =========================================================
+# TELEGRAM REQUEST HELPER
+# =========================================================
+
+def telegram_post(
+    endpoint,
+    payload
+):
+
+    if not API_URL:
+
+        logger.error(
+            "❌ API_URL تنظیم نشده است."
+        )
+
+        return None
+
+    url = (
+        f"{API_URL}/{endpoint}"
+    )
+
+    logger.info(
+        f"🌐 Telegram API request | "
+        f"endpoint={endpoint}"
+    )
+
+    try:
+
+        start_time = time.time()
+
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=(
+                TELEGRAM_CONNECT_TIMEOUT,
+                TELEGRAM_READ_TIMEOUT
+            )
+        )
+
+        elapsed = (
+            time.time() - start_time
+        )
+
+        logger.info(
+            f"📡 Telegram API response | "
+            f"endpoint={endpoint} | "
+            f"status={response.status_code} | "
+            f"time={elapsed:.2f}s"
+        )
+
+        logger.info(
+            f"📨 Telegram response body | "
+            f"{response.text[:3000]}"
+        )
+
+        return response
+
+    except requests.exceptions.ConnectTimeout as e:
+
+        logger.error(
+            f"⏰ Telegram ConnectTimeout | "
+            f"endpoint={endpoint} | "
+            f"{e}"
+        )
+
+        return None
+
+    except requests.exceptions.ReadTimeout as e:
+
+        logger.error(
+            f"⏰ Telegram ReadTimeout | "
+            f"endpoint={endpoint} | "
+            f"{e}"
+        )
+
+        return None
+
+    except requests.exceptions.Timeout as e:
+
+        logger.error(
+            f"⏰ Telegram Timeout | "
+            f"endpoint={endpoint} | "
+            f"{e}"
+        )
+
+        return None
+
+    except requests.exceptions.RequestException as e:
+
+        logger.error(
+            f"❌ Telegram RequestException | "
+            f"endpoint={endpoint} | "
+            f"{e}"
+        )
+
+        return None
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Telegram API Exception | "
+            f"endpoint={endpoint} | "
+            f"{e}"
+        )
+
+        return None
+
+
+# =========================================================
 # SEND SINGLE MEDIA TO TELEGRAM
 # =========================================================
 
@@ -226,22 +354,32 @@ def send_single_media_to_channel(
     )
 
     if not API_URL:
+
         logger.error(
             "❌ API_URL تنظیم نشده است."
         )
+
         return False
 
     if not CHANNEL_ID:
+
         logger.error(
             "❌ CHANNEL_ID تنظیم نشده است."
         )
+
+        return False
+
+    if not file_id:
+
+        logger.error(
+            "❌ file_id خالی است."
+        )
+
         return False
 
     if media_type == "photo":
 
-        endpoint = (
-            f"{API_URL}/sendPhoto"
-        )
+        endpoint = "sendPhoto"
 
         payload = {
             "chat_id": CHANNEL_ID,
@@ -250,9 +388,7 @@ def send_single_media_to_channel(
 
     elif media_type == "video":
 
-        endpoint = (
-            f"{API_URL}/sendVideo"
-        )
+        endpoint = "sendVideo"
 
         payload = {
             "chat_id": CHANNEL_ID,
@@ -272,61 +408,49 @@ def send_single_media_to_channel(
 
         payload["caption"] = caption
 
-    try:
+    response = telegram_post(
+        endpoint,
+        payload
+    )
 
-        response = requests.post(
-            endpoint,
-            json=payload,
-            timeout=(
-                TELEGRAM_CONNECT_TIMEOUT,
-                TELEGRAM_READ_TIMEOUT
+    if response is None:
+
+        return False
+
+    if response.status_code == 200:
+
+        try:
+
+            data = response.json()
+
+            if data.get("ok") is True:
+
+                logger.info(
+                    "✅ رسانه تکی در تلگرام "
+                    "ارسال شد."
+                )
+
+                return True
+
+            logger.error(
+                f"❌ Telegram returned ok=false | "
+                f"{data}"
             )
-        )
 
-        logger.info(
-            f"📡 Telegram single media response | "
-            f"status={response.status_code}"
-        )
+        except Exception:
 
-        if response.status_code == 200:
-
-            logger.info(
-                "✅ رسانه تکی در تلگرام ارسال شد."
+            logger.error(
+                "❌ پاسخ Telegram قابل پردازش نیست."
             )
 
-            return True
-
-        logger.error(
-            f"❌ خطا در ارسال رسانه تکی به تلگرام | "
-            f"status={response.status_code} | "
-            f"response={response.text[:1000]}"
-        )
-
         return False
 
-    except requests.exceptions.Timeout as e:
+    logger.error(
+        f"❌ خطا در ارسال رسانه تکی | "
+        f"status={response.status_code}"
+    )
 
-        logger.error(
-            f"⏰ Timeout ارسال رسانه تکی به تلگرام: {e}"
-        )
-
-        return False
-
-    except requests.exceptions.RequestException as e:
-
-        logger.error(
-            f"❌ Telegram RequestException: {e}"
-        )
-
-        return False
-
-    except Exception as e:
-
-        logger.exception(
-            f"❌ Exception ارسال رسانه تکی: {e}"
-        )
-
-        return False
+    return False
 
 
 # =========================================================
@@ -351,8 +475,27 @@ def send_media_group_to_channel(
 
         return False
 
-    media_group = []
+    if not API_URL:
 
+        logger.error(
+            "❌ API_URL تنظیم نشده است."
+        )
+
+        return False
+
+    if not CHANNEL_ID:
+
+        logger.error(
+            "❌ CHANNEL_ID تنظیم نشده است."
+        )
+
+        return False
+
+    # =====================================================
+    # ساخت Media Group
+    # =====================================================
+
+    media_group = []
     supported_files = []
 
     for index, file in enumerate(files):
@@ -377,9 +520,8 @@ def send_media_group_to_channel(
         ):
 
             logger.warning(
-                f"⚠️ رسانه {index + 1} "
-                f"نوع پشتیبانی‌نشده دارد: "
-                f"{media_type}"
+                f"⚠️ نوع رسانه پشتیبانی نمی‌شود | "
+                f"type={media_type}"
             )
 
             continue
@@ -393,60 +535,57 @@ def send_media_group_to_channel(
 
             continue
 
-        media = {
+        media_item = {
             "type": media_type,
             "media": file_id
         }
 
-        supported_files.append(
-            file
-        )
+        if (
+            len(media_group) == 0
+            and caption
+        ):
+
+            media_item[
+                "caption"
+            ] = caption
 
         media_group.append(
-            media
+            media_item
         )
 
-    # -------------------------------------------------
+        supported_files.append({
+            "type": media_type,
+            "file_id": file_id
+        })
+
+    # =====================================================
     # حداکثر ۱۰ رسانه
-    # -------------------------------------------------
+    # =====================================================
 
     media_group = media_group[:10]
     supported_files = supported_files[:10]
 
     logger.info(
-        f"📦 Media Group آماده ارسال به تلگرام | "
+        f"📦 Media Group آماده شد | "
         f"count={len(media_group)}"
     )
 
     if not media_group:
 
         logger.error(
-            "❌ هیچ رسانه قابل پشتیبانی "
-            "برای ارسال به تلگرام وجود ندارد."
+            "❌ هیچ رسانه‌ای برای ارسال وجود ندارد."
         )
 
         return False
 
-    # -------------------------------------------------
-    # Caption
-    # -------------------------------------------------
+    # =====================================================
+    # ساخت Payload
+    # =====================================================
 
-    if caption:
-
-        media_group[0]["caption"] = caption
-
-        logger.info(
-            "📝 کپشن روی اولین رسانه قرار گرفت."
-        )
-
-    # -------------------------------------------------
-    # نمایش اطلاعات درخواست
-    # -------------------------------------------------
-
-    logger.info(
-        f"🔗 Telegram API endpoint = "
-        f"{API_URL}/sendMediaGroup"
-    )
+    payload = {
+        "chat_id": CHANNEL_ID,
+        "media": media_group
+    }
 
     logger.info(
         f"📨 Telegram Media Group payload آماده شد | "
@@ -454,128 +593,77 @@ def send_media_group_to_channel(
         f"count={len(media_group)}"
     )
 
-    # -------------------------------------------------
-    # ارسال اصلی
-    # -------------------------------------------------
+    logger.info(
+        f"🧾 Media JSON | "
+        f"{json.dumps(media_group, ensure_ascii=False)}"
+    )
 
-    try:
+    # =====================================================
+    # ارسال Media Group
+    # =====================================================
 
-        logger.info(
-            "🚀 درخواست sendMediaGroup به Telegram API..."
-        )
+    response = telegram_post(
+        "sendMediaGroup",
+        payload
+    )
 
-        start_time = time.time()
+    # =====================================================
+    # موفق
+    # =====================================================
 
-        response = requests.post(
-            f"{API_URL}/sendMediaGroup",
-            json={
-                "chat_id": CHANNEL_ID,
-                "media": media_group
-            },
-            timeout=(
-                TELEGRAM_CONNECT_TIMEOUT,
-                TELEGRAM_READ_TIMEOUT
-            )
-        )
-
-        elapsed = (
-            time.time() - start_time
-        )
-
-        logger.info(
-            f"📡 Telegram Media Group response | "
-            f"status={response.status_code} | "
-            f"time={elapsed:.2f}s"
-        )
+    if response is not None:
 
         if response.status_code == 200:
 
-            logger.info(
-                f"✅ آلبوم با "
-                f"{len(media_group)} رسانه "
-                f"در کانال تلگرام منتشر شد."
+            try:
+
+                data = response.json()
+
+                if data.get("ok") is True:
+
+                    logger.info(
+                        f"🎯 آلبوم با "
+                        f"{len(media_group)} رسانه "
+                        f"در تلگرام منتشر شد."
+                    )
+
+                    return True
+
+                logger.error(
+                    f"❌ Telegram sendMediaGroup "
+                    f"ok=false | {data}"
+                )
+
+            except Exception as e:
+
+                logger.error(
+                    f"❌ خطا در خواندن پاسخ Telegram: "
+                    f"{e}"
+                )
+
+        else:
+
+            logger.error(
+                f"❌ Telegram Media Group failed | "
+                f"status={response.status_code}"
             )
 
-            return True
+    # =====================================================
+    # FALLBACK
+    # =====================================================
 
-        logger.error(
-            f"❌ خطا در ارسال آلبوم به تلگرام | "
-            f"status={response.status_code} | "
-            f"response={response.text[:2000]}"
-        )
+    logger.warning(
+        "🛟 Media Group ناموفق بود."
+    )
 
-        # -------------------------------------------------
-        # Fallback
-        # -------------------------------------------------
+    logger.warning(
+        "🔄 فعال‌سازی Fallback ارسال تکی..."
+    )
 
-        logger.warning(
-            "🔄 ارسال Media Group ناموفق بود. "
-            "Fallback به ارسال تکی فعال می‌شود."
-        )
-
-        return send_media_group_fallback(
-            supported_files,
-            caption
-        )
-
-    except requests.exceptions.ConnectTimeout as e:
-
-        logger.error(
-            f"⏰ Telegram Connect Timeout در "
-            f"sendMediaGroup: {e}"
-        )
-
-        return send_media_group_fallback(
-            supported_files,
-            caption
-        )
-
-    except requests.exceptions.ReadTimeout as e:
-
-        logger.error(
-            f"⏰ Telegram Read Timeout در "
-            f"sendMediaGroup: {e}"
-        )
-
-        return send_media_group_fallback(
-            supported_files,
-            caption
-        )
-
-    except requests.exceptions.Timeout as e:
-
-        logger.error(
-            f"⏰ Telegram Timeout در "
-            f"sendMediaGroup: {e}"
-        )
-
-        return send_media_group_fallback(
-            supported_files,
-            caption
-        )
-
-    except requests.exceptions.RequestException as e:
-
-        logger.error(
-            f"❌ Telegram RequestException در "
-            f"sendMediaGroup: {e}"
-        )
-
-        return send_media_group_fallback(
-            supported_files,
-            caption
-        )
-
-    except Exception as e:
-
-        logger.exception(
-            f"❌ Exception ارسال آلبوم به تلگرام: {e}"
-        )
-
-        return send_media_group_fallback(
-            supported_files,
-            caption
-        )
+    return send_media_group_fallback(
+        supported_files,
+        caption
+    )
 
 
 # =========================================================
@@ -588,7 +676,7 @@ def send_media_group_fallback(
 ):
 
     logger.warning(
-        f"🛟 شروع Fallback ارسال تکی | "
+        f"🛟 شروع Fallback | "
         f"count={len(files) if files else 0}"
     )
 
@@ -616,7 +704,6 @@ def send_media_group_fallback(
 
             continue
 
-        # Caption فقط روی اولین رسانه
         item_caption = (
             caption
             if index == 0
@@ -624,15 +711,17 @@ def send_media_group_fallback(
         )
 
         logger.info(
-            f"🛟 Fallback رسانه "
+            f"🛟 ارسال Fallback رسانه "
             f"{index + 1}/{len(files)} | "
             f"type={media_type}"
         )
 
-        success = send_single_media_to_channel(
-            file_id,
-            media_type,
-            item_caption
+        success = (
+            send_single_media_to_channel(
+                file_id,
+                media_type,
+                item_caption
+            )
         )
 
         if success:
@@ -649,7 +738,7 @@ def send_media_group_fallback(
     if success_count == len(files):
 
         logger.info(
-            f"✅ Fallback با موفقیت انجام شد | "
+            f"✅ Fallback کامل موفق بود | "
             f"{success_count}/{len(files)}"
         )
 
@@ -665,7 +754,7 @@ def send_media_group_fallback(
         return False
 
     logger.error(
-        "❌ Fallback نیز کاملاً ناموفق بود."
+        "❌ Fallback کاملاً ناموفق بود."
     )
 
     return False
@@ -888,10 +977,6 @@ def process_media_group(
 
         if len(files) == 1:
 
-            logger.info(
-                "📦 آلبوم فقط یک رسانه دارد."
-            )
-
             file = files[0]
 
             channel_success = (
@@ -903,11 +988,6 @@ def process_media_group(
             )
 
         else:
-
-            logger.info(
-                f"📦 ارسال آلبوم "
-                f"{len(files)} رسانه‌ای به تلگرام..."
-            )
 
             channel_success = (
                 send_media_group_to_channel(
@@ -1041,7 +1121,8 @@ def schedule_processing(
         logger.info(
             f"⏱️ پردازش گروه "
             f"{media_group_id} "
-            f"برای {delay} ثانیه بعد برنامه‌ریزی شد"
+            f"برای {delay} ثانیه بعد "
+            f"برنامه‌ریزی شد"
         )
 
 
@@ -1074,7 +1155,8 @@ def _scheduled_process(
 
             logger.warning(
                 f"⚠️ گروه در زمان اجرای Timer "
-                f"پیدا نشد | group={media_group_id}"
+                f"پیدا نشد | "
+                f"group={media_group_id}"
             )
 
             return
@@ -1169,10 +1251,6 @@ def handle_media_group_message(
         f"group_id={media_group_id}"
     )
 
-    # =====================================================
-    # ADD
-    # =====================================================
-
     add_to_pending_group(
         media_group_id,
         chat_id,
@@ -1180,10 +1258,6 @@ def handle_media_group_message(
         media_type,
         caption
     )
-
-    # =====================================================
-    # RESCHEDULE
-    # =====================================================
 
     schedule_processing(
         media_group_id,
