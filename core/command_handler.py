@@ -19,7 +19,7 @@ def send_message(chat_id, text):
     try:
         requests.post(f"{API_URL}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
     except Exception as e:
-        logger.error(f"❌ خطا: {e}")
+        logger.error(f"❌ خطا در ارسال پیام: {e}")
 
 def handle_command(text, chat_id):
     if not text or not text.startswith('/'):
@@ -75,12 +75,13 @@ def handle_command(text, chat_id):
             chat_id,
             tenant.get("bot_token", "TOKEN_TEMP"),
             tenant.get("telegram_channel", "@channel"),
-            channel,
-            tenant.get("bale_token", ""),
+            channel,  # bale_channel
+            tenant.get("bale_token", ""),  # bale_token
             tenant.get("hashtag", "#دنیا_۲۴_نیوز"),
             tenant.get("channel_tag", "@Donya24News")
         )
         send_message(chat_id, f"✅ کانال بله: {channel}")
+        logger.info(f"✅ کانال بله برای کاربر {chat_id} به {channel} تنظیم شد.")
         return True
 
     # ====== 🆕 تنظیم توکن بله ======
@@ -98,12 +99,13 @@ def handle_command(text, chat_id):
             chat_id,
             tenant.get("bot_token", "TOKEN_TEMP"),
             tenant.get("telegram_channel", "@channel"),
-            tenant.get("bale_channel", ""),
-            token,
+            tenant.get("bale_channel", ""),  # bale_channel
+            token,  # bale_token
             tenant.get("hashtag", "#دنیا_۲۴_نیوز"),
             tenant.get("channel_tag", "@Donya24News")
         )
         send_message(chat_id, "✅ توکن بله ذخیره شد.")
+        logger.info(f"✅ توکن بله برای کاربر {chat_id} ذخیره شد.")
         return True
 
     # ====== وضعیت ======
