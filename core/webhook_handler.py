@@ -6,13 +6,12 @@ import traceback
 from flask import request
 from core.database import get_tenant, save_tenant
 from core.formatter import format_news
-from core.media_sender import send_media_to_channel, send_media_group
+from core.media_sender import send_media_to_channel
+from core.branding_manager import get_branding
 
 logger = logging.getLogger(__name__)
 API_URL = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN')}"
 CHANNEL_ID = "@Donya24News"
-HASHTAG = "#دنیا_۲۴_نیوز"
-CHANNEL_TAG = "@Donya24News"
 
 def initialize(api_url, channel_id, secret_token):
     global API_URL, CHANNEL_ID
@@ -58,8 +57,11 @@ def send_to_channel(text):
         logger.error(f"❌ خطا در ارسال به کانال: {e}")
         return False
 
-def send_long_to_channel(text):
-    text = text + f"\n\n{HASHTAG}\n{CHANNEL_TAG}"
+def send_long_to_channel(text, chat_id):
+    branding = get_branding(chat_id)
+    hashtag = branding["hashtag"]
+    channel_tag = branding["channel_tag"]
+    text = text + f"\n\n{hashtag}\n{channel_tag}"
     parts = split_long_message(text)
     for part in parts:
         success = send_to_channel(part)
@@ -137,7 +139,9 @@ def handle_webhook():
                 tenant.get("bot_token", "TOKEN_TEMP"),
                 channel,
                 tenant.get("bale_channel", ""),
-                tenant.get("bale_token", "")
+                tenant.get("bale_token", ""),
+                tenant.get("hashtag", "#دنیا_۲۴_نیوز"),
+                tenant.get("channel_tag", "@Donya24News")
             )
             send_message(chat_id, f"✅ کانال تلگرام: {channel}")
             return {"ok": True}
@@ -165,13 +169,14 @@ def handle_webhook():
 
             # ====== آلبوم ======
             if media_info["type"] and "media_group_id" in msg:
-                # ارسال آلبوم (چند عکس/فیلم)
-                # فعلاً ساده: فقط رسانه اول را ارسال کن
                 caption = text if text else media_info.get("caption", "")
                 if caption:
                     formatted_caption = format_news(caption)
+                    branding = get_branding(chat_id)
+                    formatted_caption = formatted_caption + f"\n\n{branding['hashtag']}\n{branding['channel_tag']}"
                 else:
-                    formatted_caption = ""
+                    branding = get_branding(chat_id)
+                    formatted_caption = f"{branding['hashtag']}\n{branding['channel_tag']}"
                 send_media_to_channel(API_URL, CHANNEL_ID, media_info["file_id"], media_info["type"], formatted_caption)
                 send_message(chat_id, "✅ خبر تصویری شما در کانال منتشر شد.")
                 return {"ok": True}
@@ -181,8 +186,11 @@ def handle_webhook():
                 caption = text if text else media_info.get("caption", "")
                 if caption:
                     formatted_caption = format_news(caption)
+                    branding = get_branding(chat_id)
+                    formatted_caption = formatted_caption + f"\n\n{branding['hashtag']}\n{branding['channel_tag']}"
                 else:
-                    formatted_caption = ""
+                    branding = get_branding(chat_id)
+                    formatted_caption = f"{branding['hashtag']}\n{branding['channel_tag']}"
                 success = send_media_to_channel(API_URL, CHANNEL_ID, media_info["file_id"], media_info["type"], formatted_caption)
                 if success:
                     send_message(chat_id, "✅ خبر تصویری/ویدیویی شما در کانال منتشر شد.")
@@ -195,7 +203,7 @@ def handle_webhook():
                 if text.strip():
                     formatted = format_news(text)
                     if formatted:
-                        send_long_to_channel(formatted)
+                        send_long_to_channel(formatted, chat_id)
                         send_message(chat_id, "✅ خبر شما در کانال منتشر شد.")
                     else:
                         send_message(chat_id, "❌ خبر قابل پردازش نیست.")
