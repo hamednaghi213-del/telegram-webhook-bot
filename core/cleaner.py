@@ -61,7 +61,8 @@ def remove_all_emojis(text: str) -> str:
     text = emoji_pattern.sub('', text)
     text = text.replace('[[TITLE]]', '❇️')
     text = text.replace('[[BULLET]]', '🔹')
-    text = re.sub(r'[ \t]+', ' ', text).strip()  # فقط فاصله‌های افقی حذف شوند
+    # فقط فاصله‌های افقی را حذف کن، خطوط جدید را نگه دار
+    text = re.sub(r'[ \t]+', ' ', text).strip()
     return text
 
 def clean_foreign_mentions_and_hashtags(text: str) -> str:
