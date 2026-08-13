@@ -27,22 +27,38 @@ def send_message(chat_id, text):
         logger.error(f"❌ send_message: {e}")
 
 def split_long_message(text, max_len=4096):
+    """
+    تقسیم پیام طولانی بدون شکستن خطوط
+    هر خط کامل (با \n) را حفظ می‌کند و در صورت نیاز به بخش‌های جداگانه تقسیم می‌کند.
+    """
     if len(text) <= max_len:
         return [text]
+    
     parts = []
-    start = 0
-    while start < len(text):
-        end = min(start + max_len, len(text))
-        if end < len(text):
-            last_newline = text.rfind('\n', start, end)
-            last_space = text.rfind(' ', start, end)
-            cut_at = max(last_newline, last_space)
-            if cut_at > start:
-                end = cut_at + 1
-        part = text[start:end].strip()
-        if part:
-            parts.append(part)
-        start = end
+    lines = text.split('\n')
+    current_part = ""
+    
+    for line in lines:
+        # اگر خط خالی است، آن را نادیده نگیر
+        line_to_add = line + '\n'
+        if len(current_part) + len(line_to_add) <= max_len:
+            current_part += line_to_add
+        else:
+            # بخش فعلی را ذخیره کن
+            if current_part:
+                parts.append(current_part.rstrip())
+            # اگر خود خط از max_len بلندتر است، آن را به چند بخش تقسیم کن
+            if len(line_to_add) > max_len:
+                # خط را به بخش‌های کوچکتر تقسیم کن (اما اینجا معمولاً اتفاق نمی‌افتد)
+                for i in range(0, len(line_to_add), max_len):
+                    parts.append(line_to_add[i:i+max_len].rstrip())
+                current_part = ""
+            else:
+                current_part = line_to_add
+    
+    if current_part:
+        parts.append(current_part.rstrip())
+    
     return parts
 
 def send_to_channel(text):
@@ -168,9 +184,8 @@ def handle_webhook():
 
             media_info = get_media_from_message(msg)
 
-            # ====== آلبوم (چند رسانه) ======
+            # ====== آلبوم ======
             if media_info["type"] and is_media_group(msg):
-                # پردازش آلبوم با استفاده از media_handler
                 branding = get_branding(chat_id)
                 handle_media_group_message(
                     msg,
