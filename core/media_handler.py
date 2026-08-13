@@ -30,12 +30,28 @@ group_lock = threading.RLock()
 
 
 # =========================================================
+# CONFIG
+# =========================================================
+
+GROUP_DELAY = 2.0
+
+GROUP_MIN_WAIT = 1.2
+
+MAX_MEDIA_PER_GROUP = 10
+
+TELEGRAM_SINGLE_TIMEOUT = 120
+
+TELEGRAM_GROUP_TIMEOUT = 180
+
+
+# =========================================================
 # INITIALIZE
 # =========================================================
 
 def initialize(api_url, channel_id):
 
-    global API_URL, CHANNEL_ID
+    global API_URL
+    global CHANNEL_ID
 
     API_URL = api_url
     CHANNEL_ID = channel_id
@@ -75,9 +91,13 @@ def add_to_pending_group(
 
     with group_lock:
 
-        if group_key not in pending_groups:
+        group = pending_groups.get(
+            group_key
+        )
 
-            pending_groups[group_key] = {
+        if group is None:
+
+            group = {
                 "chat_id": chat_id,
                 "media_group_id": media_group_id,
                 "files": [],
@@ -86,10 +106,21 @@ def add_to_pending_group(
                 "is_processing": False
             }
 
-        group = pending_groups[group_key]
+            pending_groups[
+                group_key
+            ] = group
+
+            logger.info(
+                f"🆕 گروه رسانه ایجاد شد | "
+                f"group={media_group_id}"
+            )
+
+        # -------------------------------------------------
+        # جلوگیری از ثبت تکراری
+        # -------------------------------------------------
 
         already_exists = any(
-            item["file_id"] == file_id
+            item.get("file_id") == file_id
             for item in group["files"]
         )
 
@@ -100,10 +131,14 @@ def add_to_pending_group(
                 "file_id": file_id
             })
 
+        # -------------------------------------------------
+        # آخرین زمان دریافت رسانه
+        # -------------------------------------------------
+
         group["last_update"] = time.time()
 
         # -------------------------------------------------
-        # کپشن
+        # دریافت کپشن
         # -------------------------------------------------
 
         if caption and not group["caption"]:
@@ -129,8 +164,9 @@ def add_to_pending_group(
                 group["caption"] = caption
 
         logger.info(
-            f"📸 رسانه به گروه {media_group_id} "
-            f"اضافه شد | تعداد فعلی: "
+            f"📸 رسانه به گروه "
+            f"{media_group_id} اضافه شد | "
+            f"تعداد فعلی: "
             f"{len(group['files'])}"
         )
 
@@ -170,32 +206,37 @@ def remove_pending_group(
                 except Exception:
                     pass
 
-        else:
+            logger.info(
+                f"🧹 گروه حذف شد | "
+                f"group={media_group_id}"
+            )
 
-            keys_to_remove = [
-                key
-                for key in pending_groups
-                if key[1] == media_group_id
-            ]
+            return
 
-            for key in keys_to_remove:
+        keys_to_remove = [
+            key
+            for key in list(pending_groups.keys())
+            if key[1] == media_group_id
+        ]
 
-                pending_groups.pop(
-                    key,
-                    None
-                )
+        for key in keys_to_remove:
 
-                timer = group_timers.pop(
-                    key,
-                    None
-                )
+            pending_groups.pop(
+                key,
+                None
+            )
 
-                if timer:
+            timer = group_timers.pop(
+                key,
+                None
+            )
 
-                    try:
-                        timer.cancel()
-                    except Exception:
-                        pass
+            if timer:
+
+                try:
+                    timer.cancel()
+                except Exception:
+                    pass
 
 
 # =========================================================
@@ -212,6 +253,22 @@ def send_single_media_to_channel(
         f"📤 شروع ارسال رسانه تکی به تلگرام | "
         f"type={media_type}"
     )
+
+    if not API_URL:
+
+        logger.error(
+            "❌ API_URL تنظیم نشده است."
+        )
+
+        return False
+
+    if not CHANNEL_ID:
+
+        logger.error(
+            "❌ CHANNEL_ID تنظیم نشده است."
+        )
+
+        return False
 
     if media_type == "photo":
 
@@ -250,10 +307,15 @@ def send_single_media_to_channel(
 
     try:
 
+        logger.info(
+            "🚀 درخواست ارسال رسانه تکی "
+            "به Telegram API..."
+        )
+
         response = requests.post(
             endpoint,
             json=payload,
-            timeout=120
+            timeout=TELEGRAM_SINGLE_TIMEOUT
         )
 
         logger.info(
@@ -272,7 +334,16 @@ def send_single_media_to_channel(
         logger.error(
             f"❌ خطا در ارسال رسانه تکی به تلگرام | "
             f"status={response.status_code} | "
-            f"response={response.text}"
+            f"response={response.text[:1000]}"
+        )
+
+        return False
+
+    except requests.Timeout:
+
+        logger.error(
+            "⏰ Timeout در ارسال رسانه تکی "
+            "به تلگرام."
         )
 
         return False
@@ -308,11 +379,31 @@ def send_media_group_to_channel(
 
         return False
 
+    if not API_URL:
+
+        logger.error(
+            "❌ API_URL تنظیم نشده است."
+        )
+
+        return False
+
+    if not CHANNEL_ID:
+
+        logger.error(
+            "❌ CHANNEL_ID تنظیم نشده است."
+        )
+
+        return False
+
     media_group = []
 
-    supported_files = []
+    # -----------------------------------------------------
+    # ساخت Media Group
+    # -----------------------------------------------------
 
-    for index, file in enumerate(files):
+    for index, file in enumerate(
+        files[:MAX_MEDIA_PER_GROUP]
+    ):
 
         media_type = file.get(
             "type"
@@ -350,25 +441,10 @@ def send_media_group_to_channel(
 
             continue
 
-        media = {
+        media_group.append({
             "type": media_type,
             "media": file_id
-        }
-
-        supported_files.append(
-            file
-        )
-
-        media_group.append(
-            media
-        )
-
-    # -------------------------------------------------
-    # حداکثر ۱۰ رسانه
-    # -------------------------------------------------
-
-    media_group = media_group[:10]
-    supported_files = supported_files[:10]
+        })
 
     logger.info(
         f"📦 Media Group آماده ارسال به تلگرام | "
@@ -384,9 +460,9 @@ def send_media_group_to_channel(
 
         return False
 
-    # -------------------------------------------------
+    # -----------------------------------------------------
     # کپشن فقط روی اولین رسانه
-    # -------------------------------------------------
+    # -----------------------------------------------------
 
     if caption:
 
@@ -396,14 +472,15 @@ def send_media_group_to_channel(
             "📝 کپشن روی اولین رسانه قرار گرفت."
         )
 
-    # -------------------------------------------------
+    # -----------------------------------------------------
     # ارسال
-    # -------------------------------------------------
+    # -----------------------------------------------------
 
     try:
 
         logger.info(
-            "🚀 درخواست sendMediaGroup به Telegram API..."
+            "🚀 درخواست sendMediaGroup "
+            "به Telegram API..."
         )
 
         response = requests.post(
@@ -412,7 +489,7 @@ def send_media_group_to_channel(
                 "chat_id": CHANNEL_ID,
                 "media": media_group
             },
-            timeout=180
+            timeout=TELEGRAM_GROUP_TIMEOUT
         )
 
         logger.info(
@@ -433,7 +510,16 @@ def send_media_group_to_channel(
         logger.error(
             f"❌ خطا در ارسال آلبوم به تلگرام | "
             f"status={response.status_code} | "
-            f"response={response.text}"
+            f"response={response.text[:1500]}"
+        )
+
+        return False
+
+    except requests.Timeout:
+
+        logger.error(
+            "⏰ Timeout در ارسال Media Group "
+            "به تلگرام."
         )
 
         return False
@@ -533,208 +619,291 @@ def process_media_group(
         f"chat={chat_id}"
     )
 
-    # =====================================================
-    # دریافت گروه
-    # =====================================================
-
-    with group_lock:
-
-        group = pending_groups.get(
-            group_key
-        )
-
-        if not group:
-
-            logger.error(
-                f"❌ گروه پیدا نشد | "
-                f"group={media_group_id}"
-            )
-
-            return False
-
-        if group.get(
-            "is_processing",
-            False
-        ):
-
-            logger.warning(
-                f"⚠️ گروه قبلاً در حال پردازش است | "
-                f"group={media_group_id}"
-            )
-
-            return False
-
-        group["is_processing"] = True
-
-        files = list(
-            group.get(
-                "files",
-                []
-            )
-        )
-
-        caption = group.get(
-            "caption",
-            ""
-        )
-
-    logger.info(
-        f"📦 اطلاعات آلبوم دریافت شد | "
-        f"count={len(files)} | "
-        f"caption={'YES' if caption else 'NO'}"
-    )
+    files = []
+    caption = ""
 
     # =====================================================
-    # بررسی فایل‌ها
+    # SNAPSHOT
     # =====================================================
-
-    if not files:
-
-        logger.error(
-            "❌ آلبوم هیچ فایلی ندارد."
-        )
-
-        remove_pending_group(
-            media_group_id,
-            chat_id
-        )
-
-        return False
-
-    for index, file in enumerate(files):
-
-        logger.info(
-            f"📋 فایل {index + 1}/{len(files)} | "
-            f"type={file.get('type')} | "
-            f"file_id="
-            f"{str(file.get('file_id'))[:25]}..."
-        )
 
     try:
 
+        logger.info(
+            f"🔒 دریافت Snapshot گروه | "
+            f"group={media_group_id}"
+        )
+
+        with group_lock:
+
+            group = pending_groups.get(
+                group_key
+            )
+
+            if not group:
+
+                logger.error(
+                    f"❌ گروه پیدا نشد | "
+                    f"group={media_group_id}"
+                )
+
+                return False
+
+            if group.get(
+                "is_processing",
+                False
+            ):
+
+                logger.warning(
+                    f"⚠️ گروه قبلاً در حال پردازش است | "
+                    f"group={media_group_id}"
+                )
+
+                return False
+
+            # ---------------------------------------------
+            # قفل فقط برای تغییر وضعیت
+            # ---------------------------------------------
+
+            group["is_processing"] = True
+
+            files = list(
+                group.get(
+                    "files",
+                    []
+                )
+            )
+
+            caption = group.get(
+                "caption",
+                ""
+            )
+
+        # -------------------------------------------------
+        # Lock کاملاً آزاد شده
+        # -------------------------------------------------
+
+        logger.info(
+            f"🔓 Snapshot دریافت شد و Lock آزاد شد | "
+            f"group={media_group_id}"
+        )
+
+        logger.info(
+            f"📦 اطلاعات آلبوم دریافت شد | "
+            f"count={len(files)} | "
+            f"caption={'YES' if caption else 'NO'}"
+        )
+
         # =================================================
-        # ساخت کپشن
+        # بررسی فایل‌ها
+        # =================================================
+
+        if not files:
+
+            logger.error(
+                "❌ آلبوم هیچ فایلی ندارد."
+            )
+
+            return False
+
+        for index, file in enumerate(files):
+
+            logger.info(
+                f"📋 فایل {index + 1}/{len(files)} | "
+                f"type={file.get('type')} | "
+                f"file_id="
+                f"{str(file.get('file_id'))[:25]}..."
+            )
+
+        # =================================================
+        # ساخت کپشن نهایی
         # =================================================
 
         logger.info(
             "📝 شروع ساخت کپشن نهایی..."
         )
 
-        from core.formatter import (
-            HASHTAG,
-            CHANNEL_TAG
-        )
+        try:
 
-        if caption:
-
-            final_caption = (
-                f"{caption}\n\n"
-                f"{HASHTAG}\n"
-                f"{CHANNEL_TAG}"
+            from core.formatter import (
+                HASHTAG,
+                CHANNEL_TAG
             )
 
-        else:
+            if caption:
 
-            final_caption = (
-                f"{HASHTAG}\n"
-                f"{CHANNEL_TAG}"
+                final_caption = (
+                    f"{caption}\n\n"
+                    f"{HASHTAG}\n"
+                    f"{CHANNEL_TAG}"
+                )
+
+            else:
+
+                final_caption = (
+                    f"{HASHTAG}\n"
+                    f"{CHANNEL_TAG}"
+                )
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ خطا در ساخت کپشن نهایی: {e}"
             )
+
+            final_caption = caption or ""
 
         logger.info(
             "✅ کپشن نهایی ساخته شد."
         )
 
         # =================================================
-        # ارسال به تلگرام
+        # مرحله ۱
+        # TELEGRAM
         # =================================================
 
         logger.info(
-            "📤 مرحله ۱/۲ | شروع انتشار در تلگرام..."
+            "📤 مرحله ۱/۲ | "
+            "شروع انتشار در تلگرام..."
         )
 
         channel_success = False
 
-        if len(files) == 1:
+        try:
 
-            logger.info(
-                "📦 آلبوم فقط یک رسانه دارد."
-            )
+            if len(files) == 1:
 
-            file = files[0]
-
-            channel_success = (
-                send_single_media_to_channel(
-                    file["file_id"],
-                    file["type"],
-                    final_caption
+                logger.info(
+                    "📦 آلبوم فقط یک رسانه دارد."
                 )
-            )
 
-        else:
+                file = files[0]
 
-            logger.info(
-                f"📦 ارسال آلبوم "
-                f"{len(files)} رسانه‌ای به تلگرام..."
-            )
-
-            channel_success = (
-                send_media_group_to_channel(
-                    files,
-                    final_caption
+                channel_success = (
+                    send_single_media_to_channel(
+                        file.get("file_id"),
+                        file.get("type"),
+                        final_caption
+                    )
                 )
+
+            else:
+
+                logger.info(
+                    f"📦 ارسال آلبوم "
+                    f"{len(files)} رسانه‌ای "
+                    f"به تلگرام..."
+                )
+
+                channel_success = (
+                    send_media_group_to_channel(
+                        files,
+                        final_caption
+                    )
+                )
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Exception مرحله تلگرام: {e}"
             )
+
+            channel_success = False
 
         logger.info(
             f"📡 نتیجه ارسال به تلگرام | "
             f"success={channel_success}"
         )
 
-        if not channel_success:
+        if channel_success:
 
-            logger.error(
-                "❌ انتشار آلبوم در تلگرام ناموفق بود."
+            logger.info(
+                "🎯 مرحله ۱/۲ با موفقیت انجام شد."
             )
 
-            return False
+        else:
 
-        logger.info(
-            "🎯 مرحله ۱/۲ با موفقیت انجام شد."
-        )
+            logger.error(
+                "❌ انتشار در تلگرام ناموفق بود."
+            )
 
         # =================================================
-        # ارسال به بله
+        # مرحله ۲
+        # BALE
+        #
+        # مهم:
+        # شکست تلگرام باعث توقف بله نمی‌شود.
         # =================================================
 
         logger.info(
-            "📤 مرحله ۲/۲ | شروع انتشار در بله..."
+            "📤 مرحله ۲/۲ | "
+            "شروع انتشار در بله..."
         )
 
-        bale_success = send_album_to_bale(
-            chat_id,
-            files,
-            final_caption
-        )
+        bale_success = False
+
+        try:
+
+            bale_success = send_album_to_bale(
+                chat_id,
+                files,
+                final_caption
+            )
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Exception مرحله بله: {e}"
+            )
+
+            bale_success = False
 
         logger.info(
             f"📡 نتیجه ارسال به بله | "
             f"success={bale_success}"
         )
 
-        if bale_success:
+        # =================================================
+        # نتیجه نهایی
+        # =================================================
+
+        if channel_success and bale_success:
 
             logger.info(
                 "🎯 آلبوم کامل با موفقیت "
                 "در تلگرام و بله منتشر شد."
             )
 
-        else:
+        elif channel_success:
 
             logger.warning(
                 "⚠️ آلبوم در تلگرام منتشر شد "
                 "اما ارسال آن به بله ناموفق بود."
             )
 
-        return True
+        elif bale_success:
+
+            logger.warning(
+                "⚠️ آلبوم در بله منتشر شد "
+                "اما ارسال آن به تلگرام ناموفق بود."
+            )
+
+        else:
+
+            logger.error(
+                "❌ آلبوم در هیچ‌کدام از "
+                "کانال‌ها منتشر نشد."
+            )
+
+        # -------------------------------------------------
+        # برای سازگاری با رفتار قبلی
+        # پردازش انجام شده است حتی اگر
+        # یکی از مقصدها شکست خورده باشد.
+        # -------------------------------------------------
+
+        return (
+            channel_success
+            or bale_success
+        )
 
     except Exception as e:
 
@@ -747,15 +916,27 @@ def process_media_group(
 
     finally:
 
+        # =================================================
+        # پاکسازی قطعی
+        # =================================================
+
         logger.info(
-            f"🧹 پاک‌سازی گروه | "
+            f"🧹 شروع پاک‌سازی گروه | "
             f"group={media_group_id}"
         )
 
-        remove_pending_group(
-            media_group_id,
-            chat_id
-        )
+        try:
+
+            remove_pending_group(
+                media_group_id,
+                chat_id
+            )
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ خطا در پاک‌سازی گروه: {e}"
+            )
 
         logger.info(
             f"✅ پردازش گروه پایان یافت | "
@@ -770,7 +951,7 @@ def process_media_group(
 def schedule_processing(
     media_group_id,
     chat_id,
-    delay=2.0
+    delay=GROUP_DELAY
 ):
 
     group_key = (
@@ -787,8 +968,11 @@ def schedule_processing(
         if old_timer:
 
             try:
+
                 old_timer.cancel()
+
             except Exception:
+
                 pass
 
         timer = threading.Timer(
@@ -802,14 +986,17 @@ def schedule_processing(
 
         timer.daemon = True
 
-        group_timers[group_key] = timer
+        group_timers[
+            group_key
+        ] = timer
 
         timer.start()
 
         logger.info(
             f"⏱️ پردازش گروه "
             f"{media_group_id} "
-            f"برای {delay} ثانیه بعد برنامه‌ریزی شد"
+            f"برای {delay} ثانیه بعد "
+            f"برنامه‌ریزی شد"
         )
 
 
@@ -832,6 +1019,10 @@ def _scheduled_process(
         f"group={media_group_id}"
     )
 
+    # -----------------------------------------------------
+    # فقط خواندن وضعیت
+    # -----------------------------------------------------
+
     with group_lock:
 
         group = pending_groups.get(
@@ -842,7 +1033,13 @@ def _scheduled_process(
 
             logger.warning(
                 f"⚠️ گروه در زمان اجرای Timer "
-                f"پیدا نشد | group={media_group_id}"
+                f"پیدا نشد | "
+                f"group={media_group_id}"
+            )
+
+            group_timers.pop(
+                group_key,
+                None
             )
 
             return
@@ -852,19 +1049,37 @@ def _scheduled_process(
             0
         )
 
-        elapsed = (
-            time.time() - last_update
+        is_processing = group.get(
+            "is_processing",
+            False
         )
+
+    if is_processing:
+
+        logger.info(
+            f"ℹ️ گروه قبلاً وارد پردازش شده است | "
+            f"group={media_group_id}"
+        )
+
+        return
+
+    elapsed = (
+        time.time() - last_update
+    )
 
     logger.info(
         f"⏱️ زمان گذشته از آخرین رسانه: "
         f"{elapsed:.2f}s"
     )
 
-    if elapsed < 1.2:
+    # -----------------------------------------------------
+    # اگر هنوز رسانه جدید ممکن است برسد
+    # -----------------------------------------------------
+
+    if elapsed < GROUP_MIN_WAIT:
 
         remaining = (
-            1.2 - elapsed
+            GROUP_MIN_WAIT - elapsed
         )
 
         logger.info(
@@ -882,6 +1097,10 @@ def _scheduled_process(
         )
 
         return
+
+    # -----------------------------------------------------
+    # پردازش
+    # -----------------------------------------------------
 
     logger.info(
         f"🚀 ارسال گروه به process_media_group | "
@@ -956,7 +1175,7 @@ def handle_media_group_message(
     schedule_processing(
         media_group_id,
         chat_id,
-        delay=2.0
+        delay=GROUP_DELAY
     )
 
     return True
