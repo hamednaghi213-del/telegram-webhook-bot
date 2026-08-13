@@ -65,6 +65,14 @@ def send_long_to_channel(text):
         if not success:
             break
 
+def get_message_text(msg):
+    """استخراج متن از پیام (اولویت با caption)"""
+    if "caption" in msg and msg["caption"]:
+        return msg["caption"]
+    if "text" in msg and msg["text"]:
+        return msg["text"]
+    return ""
+
 def handle_webhook():
     req_id = str(uuid.uuid4())[:8]
     logger.info(f"[{req_id}] دریافت درخواست")
@@ -76,9 +84,9 @@ def handle_webhook():
 
         msg = data["message"]
         chat_id = msg["chat"]["id"]
-        text = msg.get("text", "")
+        text = get_message_text(msg)  # استفاده از تابع جدید
 
-        logger.info(f"[{req_id}] پیام از {chat_id}: {text}")
+        logger.info(f"[{req_id}] پیام از {chat_id}: {text[:50]}...")
 
         # ========== دستورات ==========
         if text == "/register":
@@ -124,11 +132,9 @@ def handle_webhook():
 
         # ========== ارسال خبر به کانال ==========
         else:
-            # اگر متن خالی نباشد، آن را به‌عنوان خبر به کانال ارسال کن
             if text.strip():
                 tenant = get_tenant(chat_id)
-                if tenant:
-                    # قالب‌بندی خبر
+                if tenant and tenant.get("telegram_channel"):
                     formatted = format_news(text)
                     if formatted:
                         send_long_to_channel(formatted)
@@ -136,7 +142,7 @@ def handle_webhook():
                     else:
                         send_message(chat_id, "❌ خبر قابل پردازش نیست.")
                 else:
-                    send_message(chat_id, "❌ ابتدا با /register ثبت‌نام کنید.")
+                    send_message(chat_id, "❌ ابتدا با /register ثبت‌نام و کانال را تنظیم کنید.")
             else:
                 send_message(chat_id, "❌ پیام خالی است.")
             return {"ok": True}
