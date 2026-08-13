@@ -1,6 +1,7 @@
 import os
 import logging
 import tempfile
+import asyncio
 import requests
 
 from telethon import TelegramClient
@@ -37,10 +38,13 @@ def get_api_id():
 
     try:
         return int(value)
+
     except ValueError:
+
         logger.error(
             "❌ TELEGRAM_API_ID باید عدد باشد."
         )
+
         return None
 
 
@@ -61,13 +65,6 @@ def get_api_hash():
 # =========================================================
 
 def download_with_bot_api(file_id):
-    """
-    دانلود فایل با Telegram Bot API
-
-    برای فایل‌های معمولی استفاده می‌شود.
-    اگر فایل بیش از محدودیت Bot API باشد،
-    تابع شکست می‌خورد و Telethon استفاده خواهد شد.
-    """
 
     bot_token = get_bot_token()
 
@@ -175,98 +172,64 @@ def download_with_bot_api(file_id):
 
 
 # =========================================================
-# TELETHON DOWNLOAD
+# TELETHON ASYNC DOWNLOAD
 # =========================================================
 
-def download_with_telethon(file_id):
-    """
-    دانلود فایل‌های بزرگ با Telethon.
+async def _telethon_download(
+    file_id,
+    temp_path,
+    session_path,
+    api_id,
+    api_hash,
+    bot_token
+):
 
-    برای جلوگیری از نگه‌داشتن فایل بزرگ در RAM،
-    فایل ابتدا روی دیسک موقت Render ذخیره می‌شود
-    و سپس محتوای آن خوانده می‌شود.
-    """
-
-    api_id = get_api_id()
-    api_hash = get_api_hash()
-
-    if not api_id or not api_hash:
-        return None, None
+    client = TelegramClient(
+        session_path,
+        api_id,
+        api_hash
+    )
 
     try:
 
-        bot_token = get_bot_token()
-
-        if not bot_token:
-            return None, None
-
-        session_path = os.getenv(
-            "TELETHON_SESSION",
-            "/tmp/telegram_downloader"
-        )
-
         logger.info(
-            "🚀 شروع دانلود با Telethon..."
+            "🔌 اتصال Telethon..."
         )
 
-        client = TelegramClient(
-            session_path,
-            api_id,
-            api_hash
-        )
-
-        # -------------------------------------------------
-        # اتصال
-        # -------------------------------------------------
-
-        client.start(
+        await client.start(
             bot_token=bot_token
         )
 
         logger.info(
-            "✅ Telethon متصل شد."
+            "✅ Telethon با موفقیت متصل شد."
         )
 
-        # -------------------------------------------------
-        # دریافت فایل
-        # -------------------------------------------------
-
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            dir="/tmp"
-        ) as temp_file:
-
-            temp_path = temp_file.name
-
         logger.info(
-            f"📥 دانلود فایل بزرگ با Telethon | "
+            f"📥 شروع دانلود با Telethon | "
             f"path={temp_path}"
         )
 
-        client.loop.run_until_complete(
-            client.download_media(
-                file_id,
-                file=temp_path
-            )
+        result = await client.download_media(
+            file_id,
+            file=temp_path
         )
 
-        # -------------------------------------------------
-        # قطع اتصال
-        # -------------------------------------------------
+        if not result:
 
-        client.disconnect()
+            logger.error(
+                "❌ Telethon download_media "
+                "نتیجه‌ای برنگرداند."
+            )
 
-        # -------------------------------------------------
-        # بررسی فایل
-        # -------------------------------------------------
+            return False
 
         if not os.path.exists(temp_path):
 
             logger.error(
-                "❌ Telethon فایل را دانلود نکرد."
+                "❌ فایل خروجی Telethon پیدا نشد."
             )
 
-            return None, None
+            return False
 
         file_size = os.path.getsize(
             temp_path
@@ -278,15 +241,132 @@ def download_with_telethon(file_id):
                 "❌ فایل دانلود شده خالی است."
             )
 
+            return False
+
+        logger.info(
+            f"✅ Telethon دانلود را کامل کرد | "
+            f"size={file_size} bytes"
+        )
+
+        return True
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ خطا در Telethon: {e}"
+        )
+
+        return False
+
+    finally:
+
+        try:
+
+            await client.disconnect()
+
+            logger.info(
+                "🔌 Telethon disconnected."
+            )
+
+        except Exception:
+            pass
+
+
+# =========================================================
+# TELETHON DOWNLOAD
+# =========================================================
+
+def download_with_telethon(file_id):
+
+    api_id = get_api_id()
+    api_hash = get_api_hash()
+    bot_token = get_bot_token()
+
+    if not api_id:
+        return None, None
+
+    if not api_hash:
+        return None, None
+
+    if not bot_token:
+        return None, None
+
+    temp_path = None
+
+    try:
+
+        # -------------------------------------------------
+        # Session
+        # -------------------------------------------------
+
+        session_path = os.getenv(
+            "TELETHON_SESSION",
+            "/tmp/telegram_downloader"
+        )
+
+        # -------------------------------------------------
+        # Temporary file
+        # -------------------------------------------------
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            dir="/tmp",
+            suffix=".bin"
+        ) as temp_file:
+
+            temp_path = temp_file.name
+
+        logger.info(
+            f"📦 فایل موقت ساخته شد | "
+            f"path={temp_path}"
+        )
+
+        # -------------------------------------------------
+        # Event Loop مستقل
+        # -------------------------------------------------
+
+        loop = asyncio.new_event_loop()
+
+        try:
+
+            asyncio.set_event_loop(
+                loop
+            )
+
+            success = loop.run_until_complete(
+                _telethon_download(
+                    file_id,
+                    temp_path,
+                    session_path,
+                    api_id,
+                    api_hash,
+                    bot_token
+                )
+            )
+
+        finally:
+
             try:
-                os.remove(temp_path)
+
+                loop.run_until_complete(
+                    asyncio.sleep(0)
+                )
+
             except Exception:
                 pass
+
+            asyncio.set_event_loop(
+                None
+            )
+
+            loop.close()
+
+        if not success:
 
             return None, None
 
         # -------------------------------------------------
-        # خواندن فایل
+        # Read file
         # -------------------------------------------------
 
         with open(
@@ -296,24 +376,16 @@ def download_with_telethon(file_id):
 
             content = file.read()
 
-        # -------------------------------------------------
-        # پاک کردن فایل موقت
-        # -------------------------------------------------
+        if not content:
 
-        try:
-
-            os.remove(
-                temp_path
+            logger.error(
+                "❌ محتوای فایل خالی است."
             )
 
-        except Exception as e:
-
-            logger.warning(
-                f"⚠️ حذف فایل موقت ناموفق بود: {e}"
-            )
+            return None, None
 
         # -------------------------------------------------
-        # نام فایل
+        # Filename
         # -------------------------------------------------
 
         filename = (
@@ -321,7 +393,7 @@ def download_with_telethon(file_id):
         )
 
         logger.info(
-            f"✅ فایل با Telethon دانلود شد | "
+            f"🎯 فایل با Telethon آماده شد | "
             f"name={filename} | "
             f"size={len(content)} bytes"
         )
@@ -336,21 +408,38 @@ def download_with_telethon(file_id):
 
         return None, None
 
+    finally:
+
+        # -------------------------------------------------
+        # Cleanup
+        # -------------------------------------------------
+
+        if temp_path and os.path.exists(
+            temp_path
+        ):
+
+            try:
+
+                os.remove(
+                    temp_path
+                )
+
+                logger.info(
+                    "🧹 فایل موقت حذف شد."
+                )
+
+            except Exception as e:
+
+                logger.warning(
+                    f"⚠️ حذف فایل موقت ناموفق بود: {e}"
+                )
+
 
 # =========================================================
 # MAIN DOWNLOADER
 # =========================================================
 
 def download_telegram_file(file_id):
-    """
-    تابع اصلی دانلود فایل از تلگرام.
-
-    ترتیب کار:
-
-    1. Bot API
-    2. در صورت شکست Bot API
-       Telethon
-    """
 
     if not file_id:
 
@@ -362,12 +451,12 @@ def download_telegram_file(file_id):
 
     logger.info(
         f"📥 شروع دانلود فایل تلگرام | "
-        f"file_id={str(file_id)[:20]}..."
+        f"file_id={str(file_id)[:25]}..."
     )
 
     # =====================================================
-    # مرحله اول
-    # Bot API
+    # STEP 1
+    # BOT API
     # =====================================================
 
     content, filename = (
@@ -378,19 +467,23 @@ def download_telegram_file(file_id):
 
     if content is not None:
 
+        logger.info(
+            "✅ دانلود با Bot API موفق بود."
+        )
+
         return content, filename
 
     # =====================================================
-    # مرحله دوم
-    # Telethon
+    # STEP 2
+    # TELETHON
     # =====================================================
 
     logger.warning(
-        "⚠️ دانلود با Bot API ناموفق بود."
+        "⚠️ Bot API نتوانست فایل را دانلود کند."
     )
 
     logger.info(
-        "🔄 انتقال دانلود فایل به Telethon..."
+        "🔄 انتقال دانلود به Telethon..."
     )
 
     content, filename = (
@@ -401,11 +494,19 @@ def download_telegram_file(file_id):
 
     if content is not None:
 
+        logger.info(
+            "✅ دانلود با Telethon موفق بود."
+        )
+
         return content, filename
 
+    # =====================================================
+    # FAILED
+    # =====================================================
+
     logger.error(
-        "❌ دانلود فایل هم با Bot API "
-        "و هم با Telethon ناموفق بود."
+        "❌ دانلود فایل با هر دو روش "
+        "Bot API و Telethon ناموفق بود."
     )
 
     return None, None
