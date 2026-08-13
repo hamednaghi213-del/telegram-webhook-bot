@@ -27,9 +27,8 @@ CHANNEL_ID = "@Donya24News"
 HASHTAG = "#دنیا_۲۴_نیوز"
 CHANNEL_TAG = "@Donya24News"
 
-# ---------- مقداردهی اولیه ----------
+# ========== مقداردهی اولیه ==========
 init_db()  # 🆕 ایجاد دیتابیس
-
 init_cleaner(CHANNEL_TAG, HASHTAG)
 init_formatter(CHANNEL_TAG, HASHTAG)
 init_media_handler(API, CHANNEL_ID)
