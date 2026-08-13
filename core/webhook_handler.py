@@ -84,7 +84,7 @@ def handle_webhook():
 
         msg = data["message"]
         chat_id = msg["chat"]["id"]
-        text = get_message_text(msg)  # استفاده از تابع جدید
+        text = get_message_text(msg)
 
         logger.info(f"[{req_id}] پیام از {chat_id}: {text[:50]}...")
 
