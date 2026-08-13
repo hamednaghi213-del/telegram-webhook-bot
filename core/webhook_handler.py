@@ -8,6 +8,7 @@ from core.database import get_tenant, save_tenant
 from core.formatter import format_news
 from core.media_sender import send_media_to_channel
 from core.branding_manager import get_branding
+from core.media_handler import is_media_group, handle_media_group_message
 
 logger = logging.getLogger(__name__)
 API_URL = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN')}"
@@ -167,18 +168,17 @@ def handle_webhook():
 
             media_info = get_media_from_message(msg)
 
-            # ====== آلبوم ======
-            if media_info["type"] and "media_group_id" in msg:
-                caption = text if text else media_info.get("caption", "")
-                if caption:
-                    formatted_caption = format_news(caption)
-                    branding = get_branding(chat_id)
-                    formatted_caption = formatted_caption + f"\n\n{branding['hashtag']}\n{branding['channel_tag']}"
-                else:
-                    branding = get_branding(chat_id)
-                    formatted_caption = f"{branding['hashtag']}\n{branding['channel_tag']}"
-                send_media_to_channel(API_URL, CHANNEL_ID, media_info["file_id"], media_info["type"], formatted_caption)
-                send_message(chat_id, "✅ خبر تصویری شما در کانال منتشر شد.")
+            # ====== آلبوم (چند رسانه) ======
+            if media_info["type"] and is_media_group(msg):
+                # پردازش آلبوم با استفاده از media_handler
+                branding = get_branding(chat_id)
+                handle_media_group_message(
+                    msg,
+                    media_info["file_id"],
+                    media_info["type"],
+                    media_info["caption"]
+                )
+                send_message(chat_id, "✅ آلبوم شما در حال پردازش است...")
                 return {"ok": True}
 
             # ====== رسانه تکی ======
