@@ -3,218 +3,718 @@ import threading
 import logging
 import requests
 import json
+
+from typing import (
+    Dict,
+    Tuple,
+    List,
+    Optional,
+    Any
+)
+
 from collections import defaultdict
-from core.formatter import format_news
+
+from core.formatter import (
+    format_news
+)
+
+from core.content_entities import (
+    parse_telegram_entities
+)
+
+from core.caption_manager import (
+    analyze_content,
+    PublicationPlan
+)
+
+
 logger = logging.getLogger(__name__)
+
+
 # =========================================================
 # GLOBAL CONFIG
 # =========================================================
-API_URL = None
-CHANNEL_ID = None
+
+API_URL: Optional[str] = None
+CHANNEL_ID: Optional[str] = None
+
+
 # =========================================================
 # MEDIA GROUP STORAGE
 # =========================================================
-pending_groups = defaultdict(dict)
-group_timers = {}
+
+pending_groups: Dict[
+    Tuple[int, str],
+    Dict[str, Any]
+] = defaultdict(dict)
+
+
+group_timers: Dict[
+    Tuple[int, str],
+    threading.Timer
+] = {}
+
+
 group_lock = threading.RLock()
+
+
+# =========================================================
+# RESOURCE LIMITS
+# =========================================================
+
+MAX_PENDING_GROUPS = 1000
+
+MAX_GROUP_AGE_SECONDS = 900
+# 15 minutes
+
+CLEANUP_INTERVAL_SECONDS = 300
+# 5 minutes
+
+
+cleanup_thread: Optional[
+    threading.Thread
+] = None
+
+cleanup_running = False
+
+
+# =========================================================
+# TELEGRAM LIMITS
+# =========================================================
+
+TELEGRAM_MEDIA_GROUP_MIN_ITEMS = 2
+TELEGRAM_MEDIA_GROUP_MAX_ITEMS = 10
+
+
 # =========================================================
 # TIMEOUT CONFIG
 # =========================================================
+
 TELEGRAM_CONNECT_TIMEOUT = 10
 TELEGRAM_READ_TIMEOUT = 60
+
 MEDIA_GROUP_DELAY = 2.5
 MEDIA_GROUP_MIN_WAIT = 1.5
+
+
 # =========================================================
 # INITIALIZE
 # =========================================================
-def initialize(api_url, channel_id):
+
+def initialize(
+    api_url: str,
+    channel_id: str
+) -> None:
+    """
+    مقداردهی Media Handler.
+    """
+
     global API_URL
     global CHANNEL_ID
+    global cleanup_thread
+
+    if not api_url:
+
+        raise ValueError(
+            "api_url cannot be empty"
+        )
+
+    if not channel_id:
+
+        raise ValueError(
+            "channel_id cannot be empty"
+        )
+
     API_URL = api_url.rstrip("/")
+
     CHANNEL_ID = channel_id
+
     logger.info(
-        "✅ Media Handler initialized"
-    )
-    logger.info(
-        f"🔧 Media Handler config | "
-        f"api={API_URL} | "
+        f"✅ Media Handler initialized | "
         f"channel={CHANNEL_ID}"
     )
-# =========================================================
-# MEDIA GROUP DETECTION
-# =========================================================
-def is_media_group(message):
-    return bool(
-        message.get("media_group_id")
-    )
-# =========================================================
-# ADD MEDIA TO GROUP
-# =========================================================
-def add_to_pending_group(
-    media_group_id,
-    chat_id,
-    file_id,
-    media_type,
-    caption=""
-):
-    group_key = (
-        chat_id,
-        media_group_id
-    )
-    with group_lock:
-        if group_key not in pending_groups:
-            pending_groups[group_key] = {
-                "chat_id": chat_id,
-                "media_group_id": media_group_id,
-                "files": [],
-                "caption": "",
-                "last_update": time.time(),
-                "is_processing": False
-            }
-            logger.info(
-                f"🆕 گروه جدید ایجاد شد | "
-                f"group={media_group_id}"
-            )
-        group = pending_groups[group_key]
-        already_exists = any(
-            item.get("file_id") == file_id
-            for item in group["files"]
+
+    # =====================================================
+    # START CLEANUP SCHEDULER
+    # =====================================================
+
+    if (
+        cleanup_thread is None
+        or not cleanup_thread.is_alive()
+    ):
+
+        cleanup_thread = threading.Thread(
+            target=_cleanup_scheduler,
+            daemon=True,
+            name="MediaHandlerCleanup"
         )
-        if not already_exists:
-            group["files"].append({
-                "type": media_type,
-                "file_id": file_id
-            })
-            logger.info(
-                f"📸 رسانه به گروه اضافه شد | "
-                f"group={media_group_id} | "
-                f"type={media_type} | "
-                f"count={len(group['files'])}"
-            )
-        else:
-            logger.info(
-                f"ℹ️ رسانه تکراری نادیده گرفته شد | "
-                f"group={media_group_id}"
-            )
-        group["last_update"] = time.time()
-        # -------------------------------------------------
-        # Caption
-        # -------------------------------------------------
-        if caption and not group["caption"]:
-            try:
-                formatted = format_news(
-                    caption
-                )
-                group["caption"] = (
-                    formatted
-                    if formatted
-                    else caption
-                )
-            except Exception as e:
-                logger.exception(
-                    f"❌ خطا در format_news: {e}"
-                )
-                group["caption"] = caption
+
+        cleanup_thread.start()
+
+        logger.info(
+            "🧹 Media Handler cleanup scheduler started"
+        )
+
+
 # =========================================================
-# REMOVE GROUP
+# CLEANUP SCHEDULER
 # =========================================================
-def remove_pending_group(
-    media_group_id,
-    chat_id=None
-):
+
+def _cleanup_scheduler() -> None:
+    """
+    پاکسازی دوره‌ای Media Groupهای قدیمی.
+    """
+
+    global cleanup_running
+
+    cleanup_running = True
+
+    logger.info(
+        f"🧹 Cleanup scheduler running | "
+        f"interval={CLEANUP_INTERVAL_SECONDS}s"
+    )
+
+    while cleanup_running:
+
+        try:
+
+            time.sleep(
+                CLEANUP_INTERVAL_SECONDS
+            )
+
+            cleanup_old_groups()
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Cleanup scheduler error: {e}"
+            )
+
+
+# =========================================================
+# CLEANUP OLD GROUPS
+# =========================================================
+
+def cleanup_old_groups() -> None:
+    """
+    حذف Media Groupهای قدیمی یا stuck.
+    """
+
+    current_time = time.time()
+
+    groups_to_remove = []
+
     with group_lock:
-        if chat_id is not None:
-            group_key = (
-                chat_id,
-                media_group_id
+
+        # =================================================
+        # OLD GROUPS
+        # =================================================
+
+        for group_key, group in list(
+            pending_groups.items()
+        ):
+
+            last_update = group.get(
+                "last_update",
+                current_time
             )
+
+            age_seconds = (
+                current_time
+                - last_update
+            )
+
+            if (
+                age_seconds
+                > MAX_GROUP_AGE_SECONDS
+            ):
+
+                groups_to_remove.append(
+                    group_key
+                )
+
+                logger.warning(
+                    f"⚠️ Old Media Group | "
+                    f"group={group_key[1]} | "
+                    f"age={age_seconds:.1f}s"
+                )
+
+        # =================================================
+        # TOTAL GROUP LIMIT
+        # =================================================
+
+        if (
+            len(pending_groups)
+            > MAX_PENDING_GROUPS
+        ):
+
+            sorted_groups = sorted(
+                pending_groups.items(),
+                key=lambda item: (
+                    item[1].get(
+                        "last_update",
+                        0
+                    )
+                )
+            )
+
+            excess = (
+                len(sorted_groups)
+                - MAX_PENDING_GROUPS
+            )
+
+            for (
+                group_key,
+                _
+            ) in sorted_groups[:excess]:
+
+                if (
+                    group_key
+                    not in groups_to_remove
+                ):
+
+                    groups_to_remove.append(
+                        group_key
+                    )
+
+        # =================================================
+        # REMOVE GROUPS
+        # =================================================
+
+        for group_key in groups_to_remove:
+
             pending_groups.pop(
                 group_key,
                 None
             )
+
             timer = group_timers.pop(
                 group_key,
                 None
             )
+
             if timer:
+
                 try:
+
                     timer.cancel()
+
                 except Exception:
+
                     pass
+
+    if groups_to_remove:
+
+        logger.info(
+            f"🧹 Media Group cleanup | "
+            f"removed={len(groups_to_remove)} | "
+            f"remaining={len(pending_groups)}"
+        )
+
+
+# =========================================================
+# MEDIA GROUP DETECTION
+# =========================================================
+
+def is_media_group(
+    message: Dict[str, Any]
+) -> bool:
+    """
+    آیا Message بخشی از Media Group است؟
+    """
+
+    return bool(
+        message.get(
+            "media_group_id"
+        )
+    )
+
+
+# =========================================================
+# ADD MEDIA TO PENDING GROUP
+# =========================================================
+
+def add_to_pending_group(
+    media_group_id: str,
+    chat_id: int,
+    file_id: str,
+    media_type: str,
+    caption: str = "",
+    caption_entities: Optional[
+        List[Dict[str, Any]]
+    ] = None
+) -> None:
+    """
+    اضافه کردن Media به Pending Group.
+
+    معماری:
+
+    Telegram raw caption
+            +
+    caption_entities
+            ↓
+    parse_telegram_entities()
+            ↓
+    Content Structure
+
+    Formatter و Caption Manager
+    در مرحله process_media_group اجرا می‌شوند.
+
+    فقط اولین Media دارای Caption
+    اطلاعات Caption را ثبت می‌کند.
+    """
+
+    group_key = (
+        chat_id,
+        media_group_id
+    )
+
+    with group_lock:
+
+        # =================================================
+        # CREATE GROUP
+        # =================================================
+
+        if group_key not in pending_groups:
+
+            pending_groups[
+                group_key
+            ] = {
+                "chat_id": chat_id,
+
+                "media_group_id": (
+                    media_group_id
+                ),
+
+                "files": [],
+
+                "raw_caption": "",
+
+                "caption_entities": [],
+
+                "main_text": "",
+
+                "expandable_blocks": [],
+
+                "blockquote_blocks": [],
+
+                "other_entities": [],
+
+                "caption_received": False,
+
+                "last_update": (
+                    time.time()
+                ),
+
+                "is_processing": False
+            }
+
+            logger.info(
+                f"🆕 New Media Group | "
+                f"group={media_group_id}"
+            )
+
+        group = pending_groups[
+            group_key
+        ]
+
+        # =================================================
+        # DUPLICATE MEDIA CHECK
+        # =================================================
+
+        already_exists = any(
+            item.get(
+                "file_id"
+            ) == file_id
+
+            for item
+            in group["files"]
+        )
+
+        if not already_exists:
+
+            group["files"].append({
+                "type": media_type,
+                "file_id": file_id
+            })
+
+            logger.info(
+                f"📸 Media added | "
+                f"group={media_group_id} | "
+                f"type={media_type} | "
+                f"count={len(group['files'])}"
+            )
+
         else:
-            keys_to_remove = [
-                key
-                for key in list(
-                    pending_groups.keys()
-                )
-                if key[1] == media_group_id
+
+            logger.debug(
+                f"ℹ️ Duplicate media ignored | "
+                f"group={media_group_id}"
+            )
+
+        group[
+            "last_update"
+        ] = time.time()
+
+        # =================================================
+        # CAPTION
+        # =================================================
+        #
+        # فقط اولین Caption ثبت می‌شود.
+        #
+        # caption_received جداگانه داریم چون ممکن است
+        # main_text بعد از Entity Parsing خالی شود.
+        # =================================================
+
+        if (
+            caption
+            and not group[
+                "caption_received"
             ]
-            for key in keys_to_remove:
-                pending_groups.pop(
-                    key,
-                    None
+        ):
+
+            entities = list(
+                caption_entities
+                or []
+            )
+
+            group[
+                "caption_received"
+            ] = True
+
+            group[
+                "raw_caption"
+            ] = caption
+
+            group[
+                "caption_entities"
+            ] = entities
+
+            try:
+
+                parsed = (
+                    parse_telegram_entities(
+                        caption,
+                        entities
+                    )
                 )
-                timer = group_timers.pop(
-                    key,
-                    None
+
+                group[
+                    "main_text"
+                ] = parsed.get(
+                    "main_text",
+                    ""
                 )
-                if timer:
-                    try:
-                        timer.cancel()
-                    except Exception:
-                        pass
+
+                group[
+                    "expandable_blocks"
+                ] = list(
+                    parsed.get(
+                        "expandable_blocks",
+                        []
+                    )
+                )
+
+                group[
+                    "blockquote_blocks"
+                ] = list(
+                    parsed.get(
+                        "blockquote_blocks",
+                        []
+                    )
+                )
+
+                group[
+                    "other_entities"
+                ] = list(
+                    parsed.get(
+                        "other_entities",
+                        []
+                    )
+                )
+
+                logger.info(
+                    f"🧩 Media Group entities parsed | "
+                    f"group={media_group_id} | "
+                    f"entities={len(entities)} | "
+                    f"main={len(group['main_text'])} | "
+                    f"expandable="
+                    f"{len(group['expandable_blocks'])} | "
+                    f"blockquote="
+                    f"{len(group['blockquote_blocks'])} | "
+                    f"other="
+                    f"{len(group['other_entities'])}"
+                )
+
+            except Exception as e:
+
+                # =========================================
+                # BACKWARD SAFE FALLBACK
+                # =========================================
+                #
+                # اگر Entity Parser شکست خورد،
+                # متن اصلی از بین نمی‌رود.
+                # =========================================
+
+                logger.exception(
+                    f"❌ Entity parsing failed | "
+                    f"group={media_group_id} | "
+                    f"{e}"
+                )
+
+                group[
+                    "main_text"
+                ] = caption
+
+                group[
+                    "expandable_blocks"
+                ] = []
+
+                group[
+                    "blockquote_blocks"
+                ] = []
+
+                group[
+                    "other_entities"
+                ] = []
+
+
+# =========================================================
+# REMOVE GROUP
+# =========================================================
+
+def remove_pending_group(
+    media_group_id: str,
+    chat_id: Optional[int] = None
+) -> None:
+    """
+    حذف Pending Group و Timer.
+    """
+
+    with group_lock:
+
+        if chat_id is not None:
+
+            group_key = (
+                chat_id,
+                media_group_id
+            )
+
+            pending_groups.pop(
+                group_key,
+                None
+            )
+
+            timer = group_timers.pop(
+                group_key,
+                None
+            )
+
+            if timer:
+
+                try:
+
+                    timer.cancel()
+
+                except Exception:
+
+                    pass
+
+            return
+
+        keys_to_remove = [
+            key
+            for key
+            in list(
+                pending_groups.keys()
+            )
+            if key[1]
+            == media_group_id
+        ]
+
+        for key in keys_to_remove:
+
+            pending_groups.pop(
+                key,
+                None
+            )
+
+            timer = group_timers.pop(
+                key,
+                None
+            )
+
+            if timer:
+
+                try:
+
+                    timer.cancel()
+
+                except Exception:
+
+                    pass
+
+
 # =========================================================
 # TELEGRAM POST
 # =========================================================
+
 def telegram_post(
-    endpoint,
-    payload
-):
+    endpoint: str,
+    payload: Dict[str, Any]
+) -> Optional[requests.Response]:
+    """
+    ارسال HTTP Request به Telegram Bot API.
+    """
+
     if not API_URL:
+
         logger.error(
-            "❌ API_URL تنظیم نشده است."
+            "❌ API_URL is not configured"
         )
+
         return None
+
     url = (
         f"{API_URL}/{endpoint}"
     )
+
     logger.info(
         f"🌐 Telegram API request | "
         f"endpoint={endpoint}"
     )
-    # -----------------------------------------------------
-    # Payload log
-    # -----------------------------------------------------
+
+    # =====================================================
+    # SAFE PAYLOAD LOGGING
+    # =====================================================
+
     try:
-        safe_payload = dict(
-            payload
+
+        payload_preview = json.dumps(
+            payload,
+            ensure_ascii=False,
+            default=str
         )
-        if "media" in safe_payload:
-            safe_payload["media"] = (
-                json.loads(
-                    json.dumps(
-                        safe_payload["media"],
-                        ensure_ascii=False
-                    )
-                )
-            )
-        logger.info(
+
+        logger.debug(
             f"📨 Telegram payload | "
-            f"{json.dumps(safe_payload, ensure_ascii=False)}"
+            f"{payload_preview[:1500]}"
         )
+
     except Exception as e:
-        logger.warning(
-            f"⚠️ ثبت payload ناموفق بود: {e}"
+
+        logger.debug(
+            f"Payload logging error: {e}"
         )
-    # -----------------------------------------------------
-    # Request
-    # -----------------------------------------------------
+
+    # =====================================================
+    # REQUEST
+    # =====================================================
+
     try:
+
         start_time = time.time()
-        logger.info(
-            f"🚀 ارسال درخواست به Telegram | "
-            f"endpoint={endpoint}"
-        )
+
         response = requests.post(
             url,
             json=payload,
@@ -223,570 +723,1331 @@ def telegram_post(
                 TELEGRAM_READ_TIMEOUT
             )
         )
+
         elapsed = (
-            time.time() - start_time
+            time.time()
+            - start_time
         )
+
         logger.info(
-            f"📡 Telegram API response | "
+            f"📡 Telegram response | "
             f"endpoint={endpoint} | "
             f"status={response.status_code} | "
             f"time={elapsed:.2f}s"
         )
-        # -------------------------------------------------
-        # Response body
-        # -------------------------------------------------
-        response_text = response.text
-        logger.info(
-            f"📥 Telegram response body | "
-            f"{response_text[:5000]}"
-        )
+
         return response
+
     except requests.exceptions.ConnectTimeout as e:
+
         logger.error(
             f"⏰ Telegram ConnectTimeout | "
             f"endpoint={endpoint} | "
             f"{e}"
         )
+
         return None
+
     except requests.exceptions.ReadTimeout as e:
+
         logger.error(
             f"⏰ Telegram ReadTimeout | "
             f"endpoint={endpoint} | "
             f"{e}"
         )
+
         return None
+
     except requests.exceptions.Timeout as e:
+
         logger.error(
             f"⏰ Telegram Timeout | "
             f"endpoint={endpoint} | "
             f"{e}"
         )
+
         return None
+
     except requests.exceptions.ConnectionError as e:
+
         logger.error(
             f"🔌 Telegram ConnectionError | "
             f"endpoint={endpoint} | "
             f"{e}"
         )
+
         return None
+
     except requests.exceptions.RequestException as e:
+
         logger.error(
             f"❌ Telegram RequestException | "
             f"endpoint={endpoint} | "
             f"{e}"
         )
+
         return None
+
     except Exception as e:
+
         logger.exception(
-            f"❌ Telegram API Exception | "
+            f"❌ Telegram API error | "
             f"endpoint={endpoint} | "
             f"{e}"
         )
+
         return None
+
+
 # =========================================================
-# PARSE TELEGRAM RESPONSE
+# TELEGRAM RESPONSE CHECK
 # =========================================================
+
 def telegram_response_ok(
-    response,
-    endpoint
-):
+    response: Optional[
+        requests.Response
+    ],
+    endpoint: str
+) -> bool:
+    """
+    بررسی پاسخ Telegram API.
+    """
+
     if response is None:
+
         logger.error(
-            f"❌ هیچ پاسخی از Telegram دریافت نشد | "
+            f"❌ No Telegram response | "
             f"endpoint={endpoint}"
         )
+
         return False
+
     if response.status_code != 200:
+
         logger.error(
-            f"❌ Telegram HTTP Error | "
+            f"❌ Telegram HTTP error | "
             f"endpoint={endpoint} | "
             f"status={response.status_code} | "
-            f"body={response.text[:5000]}"
+            f"response={response.text[:2000]}"
         )
+
         return False
+
     try:
+
         data = response.json()
+
     except Exception as e:
+
         logger.error(
-            f"❌ پاسخ Telegram JSON معتبر نیست | "
+            f"❌ Invalid Telegram JSON | "
             f"endpoint={endpoint} | "
-            f"error={e}"
+            f"{e}"
         )
+
         return False
-    if data.get("ok") is True:
+
+    if data.get(
+        "ok"
+    ) is True:
+
         return True
+
     logger.error(
-        f"❌ Telegram returned ok=false | "
+        f"❌ Telegram API returned error | "
         f"endpoint={endpoint} | "
         f"error_code={data.get('error_code')} | "
-        f"description={data.get('description')} | "
-        f"response={data}"
+        f"description={data.get('description')}"
     )
+
     return False
+
+
 # =========================================================
-# SEND SINGLE MEDIA
+# SEND TEXT TO TELEGRAM CHANNEL
 # =========================================================
-def send_single_media_to_channel(
-    file_id,
-    media_type,
-    caption=""
-):
-    logger.info(
-        f"📤 شروع ارسال رسانه تکی به تلگرام | "
-        f"type={media_type}"
-    )
-    if not API_URL:
-        logger.error(
-            "❌ API_URL تنظیم نشده است."
-        )
-        return False
+
+def send_text_to_channel(
+    text: str,
+    parse_mode: Optional[str] = None
+) -> bool:
+    """
+    ارسال پیام متنی مستقل به Telegram.
+    """
+
+    if not text:
+
+        return True
+
     if not CHANNEL_ID:
+
         logger.error(
-            "❌ CHANNEL_ID تنظیم نشده است."
+            "❌ CHANNEL_ID not configured"
         )
+
         return False
+
+    payload: Dict[str, Any] = {
+        "chat_id": CHANNEL_ID,
+        "text": text
+    }
+
+    if parse_mode:
+
+        payload[
+            "parse_mode"
+        ] = parse_mode
+
+    response = telegram_post(
+        "sendMessage",
+        payload
+    )
+
+    success = telegram_response_ok(
+        response,
+        "sendMessage"
+    )
+
+    if success:
+
+        logger.info(
+            f"✅ Telegram text sent | "
+            f"length={len(text)} | "
+            f"parse_mode={parse_mode or 'NONE'}"
+        )
+
+    return success
+
+
+# =========================================================
+# SEND SINGLE MEDIA TO TELEGRAM
+# =========================================================
+
+def send_single_media_to_channel(
+    file_id: str,
+    media_type: str,
+    caption: str = ""
+) -> bool:
+    """
+    ارسال Photo یا Video تکی.
+    """
+
+    if not API_URL:
+
+        logger.error(
+            "❌ API_URL not configured"
+        )
+
+        return False
+
+    if not CHANNEL_ID:
+
+        logger.error(
+            "❌ CHANNEL_ID not configured"
+        )
+
+        return False
+
     if not file_id:
+
         logger.error(
-            "❌ file_id خالی است."
+            "❌ file_id is empty"
         )
+
         return False
+
     if media_type == "photo":
+
         endpoint = "sendPhoto"
+
         payload = {
             "chat_id": CHANNEL_ID,
             "photo": file_id
         }
+
     elif media_type == "video":
+
         endpoint = "sendVideo"
+
         payload = {
             "chat_id": CHANNEL_ID,
             "video": file_id
         }
+
     else:
+
         logger.error(
-            f"❌ نوع رسانه پشتیبانی نمی‌شود | "
+            f"❌ Unsupported media type | "
             f"type={media_type}"
         )
+
         return False
+
     if caption:
-        payload["caption"] = caption
+
+        payload[
+            "caption"
+        ] = caption
+
     response = telegram_post(
         endpoint,
         payload
     )
+
     if telegram_response_ok(
         response,
         endpoint
     ):
+
         logger.info(
-            f"✅ رسانه تکی با موفقیت ارسال شد | "
+            f"✅ Single Telegram media sent | "
             f"type={media_type}"
         )
+
         return True
-    logger.error(
-        f"❌ ارسال رسانه تکی ناموفق بود | "
-        f"type={media_type}"
-    )
+
     return False
+
+
 # =========================================================
-# SEND MEDIA GROUP
+# SEND MEDIA GROUP TO TELEGRAM
 # =========================================================
+
 def send_media_group_to_channel(
-    files,
-    caption=""
-):
-    logger.info(
-        f"📤 شروع ارسال Media Group به تلگرام | "
-        f"input_count={len(files) if files else 0}"
+    files: List[
+        Dict[str, str]
+    ],
+    caption: str = ""
+) -> bool:
+    """
+    ارسال Media Group واقعی Telegram.
+
+    قانون قطعی:
+
+    هیچ Fallback به ارسال تکی وجود ندارد.
+    """
+
+    file_count = (
+        len(files)
+        if files
+        else 0
     )
+
+    logger.info(
+        f"📤 Sending Telegram Media Group | "
+        f"count={file_count}"
+    )
+
     if not files:
+
         logger.error(
-            "❌ لیست Media Group خالی است."
+            "❌ Media Group files empty"
         )
+
         return False
+
     if not API_URL:
+
         logger.error(
-            "❌ API_URL تنظیم نشده است."
+            "❌ API_URL not configured"
         )
+
         return False
+
     if not CHANNEL_ID:
+
         logger.error(
-            "❌ CHANNEL_ID تنظیم نشده است."
+            "❌ CHANNEL_ID not configured"
         )
+
         return False
-    # -----------------------------------------------------
-    # Telegram اجازه 2 تا 10 رسانه را در Media Group می‌دهد
-    # -----------------------------------------------------
-    if len(files) < 2:
-        logger.error(
-            "❌ Media Group باید حداقل ۲ رسانه داشته باشد."
-        )
-        return False
-    media_group = []
-    for index, file in enumerate(
-        files[:10]
+
+    # =====================================================
+    # ITEM COUNT VALIDATION
+    # =====================================================
+
+    if (
+        file_count
+        < TELEGRAM_MEDIA_GROUP_MIN_ITEMS
     ):
+
+        logger.error(
+            "❌ Media Group requires "
+            "at least 2 items"
+        )
+
+        return False
+
+    if (
+        file_count
+        > TELEGRAM_MEDIA_GROUP_MAX_ITEMS
+    ):
+
+        # مهم:
+        # files[:10] استفاده نمی‌کنیم.
+        # هیچ رسانه‌ای silently حذف نمی‌شود.
+
+        logger.error(
+            f"❌ Media Group exceeds Telegram limit | "
+            f"count={file_count} | "
+            f"max={TELEGRAM_MEDIA_GROUP_MAX_ITEMS}"
+        )
+
+        return False
+
+    # =====================================================
+    # BUILD MEDIA ARRAY
+    # =====================================================
+
+    media_group = []
+
+    for index, file in enumerate(
+        files
+    ):
+
         media_type = file.get(
             "type"
         )
+
         file_id = file.get(
             "file_id"
         )
-        logger.info(
-            f"🔎 بررسی رسانه {index + 1} | "
-            f"type={media_type} | "
-            f"has_file_id={bool(file_id)}"
-        )
+
         if media_type not in (
             "photo",
             "video"
         ):
+
             logger.error(
-                f"❌ نوع رسانه نامعتبر است | "
-                f"index={index + 1} | "
+                f"❌ Invalid Media Group type | "
+                f"index={index} | "
                 f"type={media_type}"
             )
+
             return False
+
         if not file_id:
+
             logger.error(
-                f"❌ file_id خالی است | "
-                f"index={index + 1}"
+                f"❌ Empty file_id | "
+                f"index={index}"
             )
+
             return False
+
         media_item = {
             "type": media_type,
             "media": file_id
         }
-        # -------------------------------------------------
-        # Caption فقط روی اولین رسانه
-        # -------------------------------------------------
-        if index == 0 and caption:
-            media_item["caption"] = caption
+
+        # =================================================
+        # CAPTION ONLY FIRST MEDIA
+        # =================================================
+
+        if (
+            index == 0
+            and caption
+        ):
+
+            media_item[
+                "caption"
+            ] = caption
+
         media_group.append(
             media_item
         )
-    # -----------------------------------------------------
-    # بررسی نهایی
-    # -----------------------------------------------------
-    if len(media_group) < 2:
-        logger.error(
-            "❌ Media Group نهایی کمتر از ۲ رسانه دارد."
-        )
-        return False
-    logger.info(
-        f"📦 Media Group نهایی آماده شد | "
-        f"count={len(media_group)}"
-    )
-    # -----------------------------------------------------
-    # Payload
-    # -----------------------------------------------------
+
     payload = {
         "chat_id": CHANNEL_ID,
         "media": media_group
     }
-    logger.info(
-        f"📨 Telegram Media Group payload آماده شد | "
-        f"chat_id={CHANNEL_ID} | "
-        f"count={len(media_group)}"
-    )
-    try:
-        logger.info(
-            f"🧾 Media JSON | "
-            f"{json.dumps(media_group, ensure_ascii=False)}"
-        )
-    except Exception:
-        pass
-    # -----------------------------------------------------
-    # SEND
-    # -----------------------------------------------------
-    logger.info(
-        "🚀 درخواست sendMediaGroup به Telegram API..."
-    )
+
     response = telegram_post(
         "sendMediaGroup",
         payload
     )
-    # -----------------------------------------------------
-    # نتیجه
-    # -----------------------------------------------------
+
     if telegram_response_ok(
         response,
         "sendMediaGroup"
     ):
+
         logger.info(
-            f"🎯 Media Group با موفقیت منتشر شد | "
+            f"🎯 Telegram Media Group sent | "
             f"count={len(media_group)}"
         )
+
         return True
-    # -----------------------------------------------------
-    # IMPORTANT
-    # -----------------------------------------------------
-    # هیچ Fallback به ارسال تکی وجود ندارد.
-    # کاربر صراحتاً نمی‌خواهد آلبوم تبدیل
-    # به چند پیام جداگانه شود.
-    # -----------------------------------------------------
+
+    # =====================================================
+    # ABSOLUTELY NO FALLBACK
+    # =====================================================
+
     logger.error(
-        "❌ ارسال Media Group ناموفق بود."
+        "❌ Telegram Media Group failed"
     )
+
     logger.error(
-        "🚫 Fallback به ارسال تکی عمداً غیرفعال است."
+        "🚫 Single-media fallback is disabled"
     )
+
     return False
+
+
+# =========================================================
+# BUILD BRANDING
+# =========================================================
+
+def build_branding_for_user(
+    user_id: int
+) -> str:
+    """
+    Branding مخصوص Tenant را می‌سازد.
+
+    اولویت:
+    branding_manager
+
+    Fallback:
+    Formatter globals
+    """
+
+    try:
+
+        from core.branding_manager import (
+            get_branding
+        )
+
+        branding = get_branding(
+            user_id
+        )
+
+        parts = []
+
+        hashtag = (
+            branding.get(
+                "hashtag",
+                ""
+            )
+            or ""
+        )
+
+        channel_tag = (
+            branding.get(
+                "channel_tag",
+                ""
+            )
+            or ""
+        )
+
+        if hashtag:
+
+            parts.append(
+                hashtag
+            )
+
+        if channel_tag:
+
+            parts.append(
+                channel_tag
+            )
+
+        if parts:
+
+            return "\n".join(
+                parts
+            )
+
+    except Exception as e:
+
+        logger.warning(
+            f"⚠️ Per-user branding unavailable | "
+            f"user={user_id} | "
+            f"{e}"
+        )
+
+    # =====================================================
+    # FALLBACK TO FORMATTER GLOBALS
+    # =====================================================
+
+    try:
+
+        from core.formatter import (
+            HASHTAG,
+            CHANNEL_TAG
+        )
+
+        parts = []
+
+        if HASHTAG:
+
+            parts.append(
+                HASHTAG
+            )
+
+        if CHANNEL_TAG:
+
+            parts.append(
+                CHANNEL_TAG
+            )
+
+        return "\n".join(
+            parts
+        )
+
+    except Exception as e:
+
+        logger.warning(
+            f"⚠️ Formatter branding unavailable | "
+            f"{e}"
+        )
+
+        return ""
+
+
 # =========================================================
 # SEND ALBUM TO BALE
 # =========================================================
+
 def send_album_to_bale(
-    user_id,
-    files,
-    caption=""
-):
-    logger.info(
-        f"📤 شروع ارسال آلبوم به بله | "
-        f"user={user_id} | "
-        f"count={len(files) if files else 0}"
-    )
+    user_id: int,
+    files: List[
+        Dict[str, str]
+    ],
+    caption: str = ""
+) -> bool:
+    """
+    ارسال Album به Bale.
+    """
+
     if not files:
+
         logger.error(
-            "❌ فایل‌های آلبوم برای بله خالی هستند."
+            "❌ Bale album files empty"
         )
+
         return False
+
     try:
+
         from core.bale_forwarder import (
             send_media_group_to_bale
         )
-        logger.info(
-            "🔗 اتصال به bale_forwarder برقرار شد."
+
+        success = (
+            send_media_group_to_bale(
+                user_id,
+                files,
+                caption
+            )
         )
-        success = send_media_group_to_bale(
+
+        if success:
+
+            logger.info(
+                f"✅ Bale album sent | "
+                f"user={user_id}"
+            )
+
+        else:
+
+            logger.warning(
+                f"⚠️ Bale album failed | "
+                f"user={user_id}"
+            )
+
+        return success
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Bale album exception | "
+            f"user={user_id} | "
+            f"{e}"
+        )
+
+        return False
+
+
+# =========================================================
+# SEND TEXT TO BALE
+# =========================================================
+
+def send_text_to_bale(
+    user_id: int,
+    text: str
+) -> bool:
+    """
+    ارسال پیام متنی مستقل به Bale.
+    """
+
+    if not text:
+
+        return True
+
+    try:
+
+        from core.bale_forwarder import (
+            send_to_bale_for_user
+        )
+
+        success = (
+            send_to_bale_for_user(
+                user_id,
+                text
+            )
+        )
+
+        if success:
+
+            logger.info(
+                f"✅ Bale text sent | "
+                f"user={user_id} | "
+                f"length={len(text)}"
+            )
+
+        else:
+
+            logger.warning(
+                f"⚠️ Bale text failed | "
+                f"user={user_id}"
+            )
+
+        return success
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Bale text exception | "
+            f"user={user_id} | "
+            f"{e}"
+        )
+
+        return False
+
+
+# =========================================================
+# EXECUTE TELEGRAM PLAN
+# =========================================================
+
+def execute_telegram_plan(
+    files: List[
+        Dict[str, str]
+    ],
+    plan: Dict[str, Any]
+) -> bool:
+    """
+    اجرای Telegram Publication Plan.
+
+    Caption Manager تصمیم می‌گیرد.
+    Media Handler فقط اجرا می‌کند.
+    """
+
+    media_caption = (
+        plan.get(
+            "media_caption",
+            ""
+        )
+        or ""
+    )
+
+    followup_messages = list(
+        plan.get(
+            "followup_messages",
+            []
+        )
+        or []
+    )
+
+    blockquote_messages = list(
+        plan.get(
+            "blockquote_messages",
+            []
+        )
+        or []
+    )
+
+    document_fallback = bool(
+        plan.get(
+            "document_fallback",
+            False
+        )
+    )
+
+    # =====================================================
+    # SAFETY FLAG
+    # =====================================================
+    #
+    # طبق تست‌های Caption Manager در شرایط عادی
+    # این Flag نباید True شود.
+    #
+    # اگر True شد، Caption نامعتبر را ارسال نمی‌کنیم.
+    # =====================================================
+
+    if document_fallback:
+
+        logger.error(
+            "❌ Telegram Publication Plan requested "
+            "document fallback"
+        )
+
+        logger.error(
+            "🚫 Unsafe Telegram media send aborted"
+        )
+
+        return False
+
+    # =====================================================
+    # STEP 1
+    # MEDIA
+    # =====================================================
+
+    if len(files) == 1:
+
+        file = files[0]
+
+        media_success = (
+            send_single_media_to_channel(
+                file.get(
+                    "file_id"
+                ),
+                file.get(
+                    "type"
+                ),
+                media_caption
+            )
+        )
+
+    else:
+
+        media_success = (
+            send_media_group_to_channel(
+                files,
+                media_caption
+            )
+        )
+
+    if not media_success:
+
+        logger.error(
+            "❌ Telegram media execution failed"
+        )
+
+        return False
+
+    # =====================================================
+    # STEP 2
+    # FOLLOW-UP MESSAGES
+    # =====================================================
+
+    for index, message in enumerate(
+        followup_messages
+    ):
+
+        success = send_text_to_channel(
+            message
+        )
+
+        if not success:
+
+            logger.error(
+                f"❌ Telegram follow-up failed | "
+                f"index={index + 1}"
+            )
+
+    # =====================================================
+    # STEP 3
+    # BLOCKQUOTES
+    # =====================================================
+
+    for index, html_message in enumerate(
+        blockquote_messages
+    ):
+
+        success = send_text_to_channel(
+            html_message,
+            parse_mode="HTML"
+        )
+
+        if not success:
+
+            logger.error(
+                f"❌ Telegram blockquote failed | "
+                f"index={index + 1}"
+            )
+
+    # اصل موفقیت:
+    # Media اصلی با موفقیت ارسال شده است.
+
+    return True
+
+
+# =========================================================
+# EXECUTE BALE PLAN
+# =========================================================
+
+def execute_bale_plan(
+    user_id: int,
+    files: List[
+        Dict[str, str]
+    ],
+    plan: Dict[str, Any]
+) -> bool:
+    """
+    اجرای Bale Publication Plan.
+    """
+
+    media_caption = (
+        plan.get(
+            "media_caption",
+            ""
+        )
+        or ""
+    )
+
+    followup_messages = list(
+        plan.get(
+            "followup_messages",
+            []
+        )
+        or []
+    )
+
+    blockquote_messages = list(
+        plan.get(
+            "blockquote_messages",
+            []
+        )
+        or []
+    )
+
+    document_fallback = bool(
+        plan.get(
+            "document_fallback",
+            False
+        )
+    )
+
+    if document_fallback:
+
+        logger.error(
+            "❌ Bale Publication Plan requested "
+            "document fallback"
+        )
+
+        return False
+
+    # =====================================================
+    # STEP 1
+    # MEDIA
+    # =====================================================
+
+    media_success = (
+        send_album_to_bale(
             user_id,
             files,
-            caption
+            media_caption
         )
-        if success:
-            logger.info(
-                f"✅ آلبوم با موفقیت "
-                f"به بله ارسال شد | "
-                f"user={user_id}"
-            )
-        else:
-            logger.error(
-                f"❌ ارسال آلبوم به بله ناموفق بود | "
-                f"user={user_id}"
-            )
-        return success
-    except Exception as e:
-        logger.exception(
-            f"❌ Exception در ارسال آلبوم به بله: {e}"
+    )
+
+    if not media_success:
+
+        logger.warning(
+            "⚠️ Bale media execution failed"
         )
+
         return False
+
+    # =====================================================
+    # STEP 2
+    # FOLLOW-UP
+    # =====================================================
+
+    for index, message in enumerate(
+        followup_messages
+    ):
+
+        success = send_text_to_bale(
+            user_id,
+            message
+        )
+
+        if not success:
+
+            logger.warning(
+                f"⚠️ Bale follow-up failed | "
+                f"index={index + 1}"
+            )
+
+    # =====================================================
+    # STEP 3
+    # BLOCKQUOTES
+    # =====================================================
+
+    for index, message in enumerate(
+        blockquote_messages
+    ):
+
+        success = send_text_to_bale(
+            user_id,
+            message
+        )
+
+        if not success:
+
+            logger.warning(
+                f"⚠️ Bale blockquote failed | "
+                f"index={index + 1}"
+            )
+
+    return True
+
+
 # =========================================================
 # PROCESS MEDIA GROUP
 # =========================================================
+
 def process_media_group(
-    media_group_id,
-    chat_id
-):
+    media_group_id: str,
+    chat_id: int
+) -> bool:
+    """
+    پردازش نهایی Media Group.
+
+    معماری:
+
+    Parsed Content
+        ↓
+    Formatter
+        ↓
+    Branding
+        ↓
+    Caption Manager
+        ↓
+    Publication Plan
+        ↓
+    Telegram
+        ↓
+    Bale
+    """
+
     group_key = (
         chat_id,
         media_group_id
     )
+
     logger.info(
-        f"🚀 پردازش آلبوم | "
+        f"🚀 Processing Media Group | "
         f"group={media_group_id} | "
         f"chat={chat_id}"
     )
-    # -----------------------------------------------------
+
+    # =====================================================
     # SNAPSHOT
-    # -----------------------------------------------------
+    # =====================================================
+
     with group_lock:
-        logger.info(
-            f"🔒 دریافت Snapshot گروه | "
-            f"group={media_group_id}"
-        )
+
         group = pending_groups.get(
             group_key
         )
+
         if not group:
+
             logger.error(
-                f"❌ گروه پیدا نشد | "
+                f"❌ Media Group not found | "
                 f"group={media_group_id}"
             )
+
             return False
+
         if group.get(
             "is_processing",
             False
         ):
+
             logger.warning(
-                f"⚠️ گروه قبلاً در حال پردازش است | "
+                f"⚠️ Media Group already processing | "
                 f"group={media_group_id}"
             )
+
             return False
-        group["is_processing"] = True
+
+        group[
+            "is_processing"
+        ] = True
+
         files = list(
             group.get(
                 "files",
                 []
             )
         )
-        caption = group.get(
-            "caption",
-            ""
+
+        raw_main_text = (
+            group.get(
+                "main_text",
+                ""
+            )
+            or ""
         )
-        logger.info(
-            f"🔓 Snapshot دریافت شد و Lock آزاد شد | "
-            f"group={media_group_id}"
+
+        blockquote_blocks = list(
+            group.get(
+                "blockquote_blocks",
+                []
+            )
         )
+
+        expandable_blocks = list(
+            group.get(
+                "expandable_blocks",
+                []
+            )
+        )
+
+        other_entities = list(
+            group.get(
+                "other_entities",
+                []
+            )
+        )
+
     logger.info(
-        f"📦 اطلاعات آلبوم دریافت شد | "
-        f"count={len(files)} | "
-        f"caption={'YES' if caption else 'NO'}"
+        f"📦 Media Group snapshot | "
+        f"files={len(files)} | "
+        f"main={len(raw_main_text)} | "
+        f"blockquote={len(blockquote_blocks)} | "
+        f"expandable={len(expandable_blocks)} | "
+        f"other={len(other_entities)}"
     )
-    # -----------------------------------------------------
-    # VALIDATE
-    # -----------------------------------------------------
+
     if not files:
+
         logger.error(
-            "❌ آلبوم هیچ فایلی ندارد."
+            "❌ Media Group contains no files"
         )
+
         remove_pending_group(
             media_group_id,
             chat_id
         )
+
         return False
-    for index, file in enumerate(files):
-        logger.info(
-            f"📋 فایل {index + 1}/{len(files)} | "
-            f"type={file.get('type')} | "
-            f"file_id="
-            f"{str(file.get('file_id'))[:25]}..."
-        )
+
     try:
+
         # =================================================
-        # CAPTION
+        # FORMAT MAIN TEXT
         # =================================================
-        logger.info(
-            "📝 شروع ساخت کپشن نهایی..."
-        )
-        from core.formatter import (
-            HASHTAG,
-            CHANNEL_TAG
-        )
-        if caption:
-            final_caption = (
-                f"{caption}\n\n"
-                f"{HASHTAG}\n"
-                f"{CHANNEL_TAG}"
+
+        formatted_main_text = ""
+
+        if raw_main_text:
+
+            try:
+
+                formatted_main_text = (
+                    format_news(
+                        raw_main_text
+                    )
+                )
+
+            except Exception as e:
+
+                logger.exception(
+                    f"❌ Formatter failed | "
+                    f"group={media_group_id} | "
+                    f"{e}"
+                )
+
+                # Backward safe fallback
+                formatted_main_text = (
+                    raw_main_text
+                )
+
+        # =================================================
+        # BRANDING
+        # =================================================
+
+        branding = (
+            build_branding_for_user(
+                chat_id
             )
-        else:
-            final_caption = (
-                f"{HASHTAG}\n"
-                f"{CHANNEL_TAG}"
-            )
-        logger.info(
-            "✅ کپشن نهایی ساخته شد."
         )
+
+        logger.info(
+            f"🏷️ Branding prepared | "
+            f"length={len(branding)}"
+        )
+
         # =================================================
+        # CAPTION MANAGER
+        # =================================================
+
+        publication_plan: PublicationPlan = (
+            analyze_content(
+                main_text=formatted_main_text,
+                blockquote_blocks=(
+                    blockquote_blocks
+                ),
+                expandable_blocks=(
+                    expandable_blocks
+                ),
+                other_entities=(
+                    other_entities
+                ),
+                branding=branding
+            )
+        )
+
+        telegram_plan = (
+            publication_plan.telegram
+        )
+
+        bale_plan = (
+            publication_plan.bale
+        )
+
+        logger.info(
+            f"📋 Publication Plan received | "
+            f"tg_caption="
+            f"{len(telegram_plan.get('media_caption', ''))} | "
+            f"tg_followup="
+            f"{len(telegram_plan.get('followup_messages', []))} | "
+            f"tg_blockquote="
+            f"{len(telegram_plan.get('blockquote_messages', []))} | "
+            f"bale_caption="
+            f"{len(bale_plan.get('media_caption', ''))}"
+        )
+
+        # =================================================
+        # STEP 1
         # TELEGRAM
         # =================================================
+
         logger.info(
-            "📤 مرحله ۱/۲ | شروع انتشار در تلگرام..."
+            "📤 Step 1/2 | Execute Telegram Plan"
         )
-        if len(files) == 1:
-            file = files[0]
-            channel_success = (
-                send_single_media_to_channel(
-                    file.get("file_id"),
-                    file.get("type"),
-                    final_caption
-                )
+
+        telegram_success = (
+            execute_telegram_plan(
+                files,
+                telegram_plan
             )
-        else:
-            logger.info(
-                f"📦 ارسال یک Media Group واقعی | "
-                f"count={len(files)}"
-            )
-            channel_success = (
-                send_media_group_to_channel(
-                    files,
-                    final_caption
-                )
-            )
-        logger.info(
-            f"📡 نتیجه ارسال به تلگرام | "
-            f"success={channel_success}"
         )
-        if not channel_success:
+
+        if not telegram_success:
+
             logger.error(
-                "❌ انتشار در تلگرام ناموفق بود."
+                "❌ Telegram Publication Plan failed"
             )
+
+            # اصل قدیمی حفظ می‌شود:
+            # اگر Telegram شکست بخورد Bale اجرا نمی‌شود.
+
             return False
+
         logger.info(
-            "🎯 مرحله ۱/۲ با موفقیت انجام شد."
+            "✅ Telegram Publication Plan completed"
         )
+
         # =================================================
+        # STEP 2
         # BALE
         # =================================================
+
         logger.info(
-            "📤 مرحله ۲/۲ | شروع انتشار در بله..."
+            "📤 Step 2/2 | Execute Bale Plan"
         )
-        bale_success = send_album_to_bale(
-            chat_id,
-            files,
-            final_caption
+
+        bale_success = (
+            execute_bale_plan(
+                chat_id,
+                files,
+                bale_plan
+            )
         )
-        logger.info(
-            f"📡 نتیجه ارسال به بله | "
-            f"success={bale_success}"
-        )
+
         if bale_success:
+
             logger.info(
-                "🎯 انتشار کامل در تلگرام و بله انجام شد."
+                "✅ Bale Publication Plan completed"
             )
+
         else:
+
             logger.warning(
-                "⚠️ تلگرام موفق بود اما بله ناموفق بود."
+                "⚠️ Telegram succeeded but Bale failed"
             )
+
+        # =================================================
+        # SUCCESS POLICY
+        # =================================================
+        #
+        # Telegram Media موفق = عملیات اصلی موفق.
+        #
+        # Bale failure باعث Fail شدن Telegram نمی‌شود.
+        # =================================================
+
         return True
+
     except Exception as e:
+
         logger.exception(
-            f"❌ خطای اصلی در process_media_group | "
-            f"group={media_group_id}: {e}"
+            f"❌ Media Group processing error | "
+            f"group={media_group_id} | "
+            f"{e}"
         )
+
         return False
+
     finally:
-        logger.info(
-            f"🧹 پاک‌سازی گروه | "
-            f"group={media_group_id}"
-        )
+
         remove_pending_group(
             media_group_id,
             chat_id
         )
+
         logger.info(
-            f"✅ پردازش گروه پایان یافت | "
+            f"🧹 Media Group cleaned | "
             f"group={media_group_id}"
         )
+
+
 # =========================================================
 # SCHEDULE PROCESSING
 # =========================================================
+
 def schedule_processing(
-    media_group_id,
-    chat_id,
-    delay=MEDIA_GROUP_DELAY
-):
+    media_group_id: str,
+    chat_id: int,
+    delay: float = MEDIA_GROUP_DELAY
+) -> None:
+    """
+    برنامه‌ریزی پردازش Media Group.
+    """
+
     group_key = (
         chat_id,
         media_group_id
     )
+
     with group_lock:
+
         old_timer = group_timers.get(
             group_key
         )
+
         if old_timer:
+
             try:
+
                 old_timer.cancel()
+
             except Exception:
+
                 pass
+
         timer = threading.Timer(
             delay,
             _scheduled_process,
@@ -795,69 +2056,81 @@ def schedule_processing(
                 chat_id
             )
         )
+
         timer.daemon = True
-        group_timers[group_key] = timer
+
+        group_timers[
+            group_key
+        ] = timer
+
         timer.start()
+
         logger.info(
-            f"⏱️ پردازش گروه "
-            f"{media_group_id} "
-            f"برای {delay} ثانیه بعد "
-            f"برنامه‌ریزی شد"
+            f"⏱️ Media Group scheduled | "
+            f"group={media_group_id} | "
+            f"delay={delay}s"
         )
+
+
 # =========================================================
 # SCHEDULED PROCESS
 # =========================================================
+
 def _scheduled_process(
-    media_group_id,
-    chat_id
-):
+    media_group_id: str,
+    chat_id: int
+) -> None:
+    """
+    Timer callback.
+    """
+
     group_key = (
         chat_id,
         media_group_id
     )
-    logger.info(
-        f"⏰ Timer اجرا شد | "
-        f"group={media_group_id}"
-    )
+
     with group_lock:
+
         group = pending_groups.get(
             group_key
         )
+
         if not group:
+
             logger.warning(
-                f"⚠️ گروه در زمان اجرای Timer "
-                f"پیدا نشد | "
+                f"⚠️ Media Group not found at timer | "
                 f"group={media_group_id}"
             )
+
             return
+
         if group.get(
             "is_processing",
             False
         ):
-            logger.warning(
-                f"⚠️ گروه قبلاً در حال پردازش است | "
-                f"group={media_group_id}"
-            )
+
             return
+
         last_update = group.get(
             "last_update",
             0
         )
+
         elapsed = (
-            time.time() - last_update
+            time.time()
+            - last_update
         )
-    logger.info(
-        f"⏱️ زمان گذشته از آخرین رسانه: "
-        f"{elapsed:.2f}s"
-    )
-    if elapsed < MEDIA_GROUP_MIN_WAIT:
+
+    if (
+        elapsed
+        < MEDIA_GROUP_MIN_WAIT
+    ):
+
         remaining = (
-            MEDIA_GROUP_MIN_WAIT - elapsed
+            MEDIA_GROUP_MIN_WAIT
+            - elapsed
         )
-        logger.info(
-            f"⏳ رسانه جدید ممکن است برسد | "
-            f"remaining={remaining:.2f}s"
-        )
+
         schedule_processing(
             media_group_id,
             chat_id,
@@ -866,57 +2139,101 @@ def _scheduled_process(
                 0.5
             )
         )
+
         return
-    logger.info(
-        f"🚀 ارسال گروه به process_media_group | "
-        f"group={media_group_id}"
-    )
+
     process_media_group(
         media_group_id,
         chat_id
     )
+
+
 # =========================================================
 # HANDLE MEDIA GROUP MESSAGE
 # =========================================================
+
 def handle_media_group_message(
-    message,
-    file_id,
-    media_type,
-    caption=""
-):
+    message: Dict[str, Any],
+    file_id: str,
+    media_type: str,
+    caption: str = "",
+    caption_entities: Optional[
+        List[Dict[str, Any]]
+    ] = None
+) -> bool:
+    """
+    دریافت یک بخش از Media Group.
+
+    caption و caption_entities
+    هر دو وارد Content Entity Layer می‌شوند.
+    """
+
     media_group_id = message.get(
         "media_group_id"
     )
+
     if not media_group_id:
+
         logger.warning(
-            "⚠️ media_group_id وجود ندارد."
+            "⚠️ media_group_id not found"
         )
+
         return False
+
     chat_id = (
         message
-        .get("chat", {})
-        .get("id")
-    )
-    if not chat_id:
-        logger.error(
-            "❌ chat_id برای آلبوم پیدا نشد."
+        .get(
+            "chat",
+            {}
         )
-        return False
-    logger.info(
-        f"🖼️ Media Group detected | "
-        f"type={media_type} | "
-        f"group_id={media_group_id}"
+        .get(
+            "id"
+        )
     )
+
+    if chat_id is None:
+
+        logger.error(
+            "❌ chat_id not found"
+        )
+
+        return False
+
+    # =====================================================
+    # CAPTION ENTITIES
+    # =====================================================
+
+    if caption_entities is None:
+
+        caption_entities = (
+            message.get(
+                "caption_entities",
+                []
+            )
+            or []
+        )
+
+    logger.info(
+        f"🖼️ Media Group message | "
+        f"group={media_group_id} | "
+        f"type={media_type} | "
+        f"caption={bool(caption)} | "
+        f"entities={len(caption_entities)}"
+    )
+
     add_to_pending_group(
         media_group_id,
         chat_id,
         file_id,
         media_type,
-        caption
+        caption,
+        caption_entities
     )
+
     schedule_processing(
         media_group_id,
         chat_id,
         delay=MEDIA_GROUP_DELAY
     )
+
     return True
