@@ -26,5 +26,7 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Run caption manager tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           pytest -v tests/test_caption_manager.py
