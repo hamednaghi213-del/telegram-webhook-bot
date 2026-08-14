@@ -1,25 +1,9 @@
 import logging
 import uuid
+import secrets
 import requests
-import os
-import traceback
-
+from typing import Dict, Tuple, Optional, Any
 from flask import request
-
-from core.database import get_tenant
-from core.formatter import format_news
-from core.media_sender import send_media_to_channel
-from core.branding_manager import get_branding
-from core.media_handler import (
-    is_media_group,
-    handle_media_group_message
-)
-from core.bale_forwarder import send_to_bale_for_user
-from core.command_handler import (
-    is_command,
-    handle_command
-)
-
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +12,10 @@ logger = logging.getLogger(__name__)
 # GLOBAL CONFIG
 # =========================================================
 
-API_URL = (
-    f"https://api.telegram.org/"
-    f"bot{os.getenv('TELEGRAM_BOT_TOKEN')}"
-)
-
-CHANNEL_ID = "@Donya24News"
+API_URL: Optional[str] = None
+CHANNEL_ID: Optional[str] = None
+SECRET_TOKEN: Optional[str] = None
+WEBHOOK_INITIALIZED: bool = False
 
 
 # =========================================================
@@ -41,307 +23,123 @@ CHANNEL_ID = "@Donya24News"
 # =========================================================
 
 def initialize(
-    api_url,
-    channel_id,
-    secret_token
-):
-
-    global API_URL
-    global CHANNEL_ID
-
-    API_URL = api_url
+    api_url: str,
+    channel_id: str,
+    secret_token: str
+) -> None:
+    """
+    مقداردهی Webhook Handler
+    
+    Args:
+        api_url: آدرس API تلگرام (مثل https://api.telegram.org/bot<TOKEN>)
+        channel_id: آیدی کانال مقصد
+        secret_token: رمز مخفی برای اعتبارسنجی Webhook
+    
+    Raises:
+        ValueError: اگر هر یک از پارامترها خالی باشند
+        
+    Example:
+        >>> initialize(
+        ...     "https://api.telegram.org/bot123",
+        ...     "@mychannel",
+        ...     "my_secret_token_123"
+        ... )
+    """
+    global API_URL, CHANNEL_ID, SECRET_TOKEN, WEBHOOK_INITIALIZED
+    
+    if not api_url:
+        raise ValueError("❌ api_url cannot be empty")
+    
+    if not channel_id:
+        raise ValueError("❌ channel_id cannot be empty")
+    
+    if not secret_token:
+        raise ValueError(
+            "❌ secret_token cannot be empty (SECURITY REQUIRED)"
+        )
+    
+    API_URL = api_url.rstrip("/")
     CHANNEL_ID = channel_id
-
+    SECRET_TOKEN = secret_token
+    WEBHOOK_INITIALIZED = True
+    
     logger.info(
-        "✅ Webhook Handler initialized"
+        f"✅ Webhook Handler initialized | "
+        f"channel={CHANNEL_ID}"
     )
 
 
 # =========================================================
-# SEND MESSAGE TO USER
+# VALIDATE SECRET TOKEN
 # =========================================================
 
-def send_message(
-    chat_id,
-    text
-):
-
-    try:
-
-        resp = requests.post(
-            f"{API_URL}/sendMessage",
-            json={
-                "chat_id": chat_id,
-                "text": text
-            },
-            timeout=30
-        )
-
-        if resp.status_code != 200:
-
-            logger.error(
-                f"❌ send_message failed | "
-                f"status={resp.status_code} | "
-                f"response={resp.text}"
-            )
-
-            return False
-
-        return True
-
-    except Exception as e:
-
-        logger.exception(
-            f"❌ send_message error: {e}"
-        )
-
-        return False
-
-
-# =========================================================
-# SPLIT LONG MESSAGE
-# =========================================================
-
-def split_long_message(
-    text,
-    max_len=4096
-):
-
-    if not text:
-
-        return [""]
-
-    if len(text) <= max_len:
-
-        return [text]
-
-    parts = []
-
-    lines = text.split("\n")
-
-    current_part = ""
-
-    for line in lines:
-
-        # -----------------------------------------
-        # خط معمولی
-        # -----------------------------------------
-
-        if (
-            len(current_part)
-            + len(line)
-            + 1
-            <= max_len
-        ):
-
-            current_part += (
-                line + "\n"
-            )
-
-        else:
-
-            if current_part:
-
-                parts.append(
-                    current_part.strip()
-                )
-
-            # -------------------------------------
-            # اگر خود خط خیلی بزرگ است
-            # -------------------------------------
-
-            if len(line) > max_len:
-
-                for i in range(
-                    0,
-                    len(line),
-                    max_len
-                ):
-
-                    parts.append(
-                        line[
-                            i:i + max_len
-                        ]
-                    )
-
-                current_part = ""
-
-            else:
-
-                current_part = (
-                    line + "\n"
-                )
-
-    if current_part:
-
-        parts.append(
-            current_part.strip()
-        )
-
-    return parts
-
-
-# =========================================================
-# SEND TEXT TO MAIN TELEGRAM CHANNEL
-# =========================================================
-
-def send_to_channel(
-    text
-):
-
-    try:
-
-        resp = requests.post(
-            f"{API_URL}/sendMessage",
-            json={
-                "chat_id": CHANNEL_ID,
-                "text": text
-            },
-            timeout=30
-        )
-
-        if resp.status_code == 200:
-
-            logger.info(
-                "✅ متن به کانال اصلی ارسال شد."
-            )
-
-            return True
-
+def validate_webhook_token() -> bool:
+    """
+    اعتبارسنجی Secret Token از HTTP Header
+    
+    از secrets.compare_digest برای جلوگیری از Timing Attack استفاده می‌کند.
+    
+    Returns:
+        True اگر توکن معتبر باشد
+        False اگر توکن missing یا نامعتبر باشد
+    """
+    if not WEBHOOK_INITIALIZED:
         logger.error(
-            f"❌ ارسال متن به کانال شکست خورد | "
-            f"status={resp.status_code} | "
-            f"response={resp.text}"
+            "❌ Webhook Handler not initialized! "
+            "Call initialize() first"
         )
-
         return False
-
-    except Exception as e:
-
-        logger.exception(
-            f"❌ send_to_channel error: {e}"
+    
+    if not SECRET_TOKEN:
+        logger.error(
+            "❌ SECRET_TOKEN is not configured! "
+            "This is a SECURITY risk!"
         )
-
         return False
-
-
-# =========================================================
-# SEND LONG TEXT TO TELEGRAM + BALE
-# =========================================================
-
-def send_long_to_channel(
-    text,
-    chat_id
-):
-
-    try:
-
-        branding = get_branding(
-            chat_id
+    
+    request_token = request.headers.get(
+        "X-Telegram-Bot-Api-Secret-Token"
+    )
+    
+    if not request_token:
+        logger.warning(
+            "⚠️ Missing X-Telegram-Bot-Api-Secret-Token header"
         )
-
-        hashtag = branding.get(
-            "hashtag",
-            ""
-        )
-
-        channel_tag = branding.get(
-            "channel_tag",
-            ""
-        )
-
-        # -----------------------------------------
-        # Branding
-        # -----------------------------------------
-
-        if hashtag:
-
-            text += (
-                f"\n\n{hashtag}"
-            )
-
-        if channel_tag:
-
-            text += (
-                f"\n{channel_tag}"
-            )
-
-        # -----------------------------------------
-        # Split
-        # -----------------------------------------
-
-        parts = split_long_message(
-            text
-        )
-
-        telegram_success = True
-
-        for part in parts:
-
-            if not send_to_channel(
-                part
-            ):
-
-                telegram_success = False
-
-                break
-
-        # -----------------------------------------
-        # Telegram موفق
-        # -----------------------------------------
-
-        if telegram_success:
-
-            bale_success = (
-                send_to_bale_for_user(
-                    chat_id,
-                    text,
-                    None,
-                    None
-                )
-            )
-
-            if bale_success:
-
-                logger.info(
-                    "✅ متن به بله ارسال شد."
-                )
-
-            else:
-
-                logger.error(
-                    "❌ ارسال متن به بله ناموفق بود."
-                )
-
-        return telegram_success
-
-    except Exception as e:
-
-        logger.exception(
-            f"❌ send_long_to_channel error: {e}"
-        )
-
         return False
+    
+    # مقایسه امن (constant-time)
+    is_valid = secrets.compare_digest(request_token, SECRET_TOKEN)
+    
+    if not is_valid:
+        logger.error(
+            f"❌ Invalid secret token | "
+            f"expected_length={len(SECRET_TOKEN)} | "
+            f"received_length={len(request_token)}"
+        )
+        return False
+    
+    logger.debug("✅ Secret token validated")
+    return True
 
 
 # =========================================================
 # GET MESSAGE TEXT
 # =========================================================
 
-def get_message_text(
-    msg
-):
-
-    # caption برای عکس / ویدئو / فایل
+def get_message_text(msg: Dict[str, Any]) -> str:
+    """
+    استخراج متن یا کپشن از پیام تلگرام
+    
+    Args:
+        msg: Message object از Telegram
+        
+    Returns:
+        متن پیام یا کپشن، یا خالی
+    """
     if msg.get("caption"):
-
         return msg["caption"]
-
-    # text برای پیام معمولی
     if msg.get("text"):
-
         return msg["text"]
-
     return ""
 
 
@@ -349,639 +147,499 @@ def get_message_text(
 # GET MEDIA FROM MESSAGE
 # =========================================================
 
-def get_media_from_message(
-    msg
-):
-
-    result = {
+def get_media_from_message(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    استخراج اطلاعات رسانه از پیام تلگرام
+    
+    Args:
+        msg: Message object از Telegram
+    
+    Returns:
+        {
+            "type": "photo" | "video" | "document" | "voice" | "audio" | None,
+            "file_id": str | None,
+            "caption": str
+        }
+    """
+    result: Dict[str, Any] = {
         "type": None,
         "file_id": None,
         "caption": ""
     }
-
-    # =====================================================
-    # VIDEO
-    # =====================================================
-
+    
     if "video" in msg:
-
-        video = msg["video"]
-
         result["type"] = "video"
-
-        result["file_id"] = (
-            video.get("file_id")
-        )
-
-        result["caption"] = (
-            msg.get("caption", "")
-        )
-
-        return result
-
-    # =====================================================
-    # PHOTO
-    # =====================================================
-
-    if "photo" in msg:
-
+        result["file_id"] = msg["video"].get("file_id")
+        result["caption"] = msg.get("caption", "")
+    elif "photo" in msg:
         photos = msg["photo"]
-
         if photos:
-
-            # آخرین مورد = بالاترین کیفیت
             result["type"] = "photo"
-
-            result["file_id"] = (
-                photos[-1].get(
-                    "file_id"
-                )
-            )
-
-            result["caption"] = (
-                msg.get(
-                    "caption",
-                    ""
-                )
-            )
-
-        return result
-
-    # =====================================================
-    # DOCUMENT
-    # =====================================================
-
-    if "document" in msg:
-
-        document = msg["document"]
-
+            result["file_id"] = photos[-1].get("file_id")
+            result["caption"] = msg.get("caption", "")
+    elif "document" in msg:
         result["type"] = "document"
-
-        result["file_id"] = (
-            document.get("file_id")
-        )
-
-        result["caption"] = (
-            msg.get(
-                "caption",
-                ""
-            )
-        )
-
-        return result
-
-    # =====================================================
-    # AUDIO
-    # =====================================================
-
-    if "audio" in msg:
-
-        audio = msg["audio"]
-
-        result["type"] = "audio"
-
-        result["file_id"] = (
-            audio.get("file_id")
-        )
-
-        result["caption"] = (
-            msg.get(
-                "caption",
-                ""
-            )
-        )
-
-        return result
-
-    # =====================================================
-    # VOICE
-    # =====================================================
-
-    if "voice" in msg:
-
-        voice = msg["voice"]
-
+        result["file_id"] = msg["document"].get("file_id")
+        result["caption"] = msg.get("caption", "")
+    elif "voice" in msg:
         result["type"] = "voice"
-
-        result["file_id"] = (
-            voice.get("file_id")
-        )
-
-        result["caption"] = (
-            msg.get(
-                "caption",
-                ""
-            )
-        )
-
-        return result
-
+        result["file_id"] = msg["voice"].get("file_id")
+        result["caption"] = msg.get("caption", "")
+    elif "audio" in msg:
+        result["type"] = "audio"
+        result["file_id"] = msg["audio"].get("file_id")
+        result["caption"] = msg.get("caption", "")
+    
     return result
 
 
 # =========================================================
-# LOG MEDIA
+# SEND MESSAGE TO USER
 # =========================================================
 
-def log_media_info(
-    req_id,
-    media_info
-):
+def send_message(
+    chat_id: int,
+    text: str,
+    parse_mode: Optional[str] = None
+) -> bool:
+    """
+    ارسال پیام به کاربر (چت خصوصی)
+    
+    Args:
+        chat_id: شناسه چت کاربر
+        text: متن پیام
+        parse_mode: نوع فرمت (HTML, Markdown, etc.)
+        
+    Returns:
+        True اگر ارسال موفق باشد
+    """
+    if not API_URL:
+        logger.error("❌ API_URL not configured")
+        return False
+    
+    try:
+        payload: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": text
+        }
+        
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        
+        resp = requests.post(
+            f"{API_URL}/sendMessage",
+            json=payload,
+            timeout=30
+        )
+        
+        if resp.status_code == 200:
+            logger.debug(f"✅ Message sent to {chat_id}")
+            return True
+        
+        logger.error(
+            f"❌ send_message failed | "
+            f"status={resp.status_code} | "
+            f"response={resp.text[:200]}"
+        )
+        return False
+        
+    except Exception as e:
+        logger.exception(f"❌ send_message error: {e}")
+        return False
 
-    file_id = media_info.get(
-        "file_id"
-    )
 
-    logger.info(
-        f"[{req_id}] 📦 MEDIA DETECTED | "
-        f"type={media_info.get('type')} | "
-        f"has_file_id={bool(file_id)} | "
-        f"file_id="
-        f"{str(file_id)[:30] if file_id else None}"
-    )
+# =========================================================
+# SEND TO CHANNEL (TEXT)
+# =========================================================
+
+def send_to_channel(
+    text: str,
+    parse_mode: Optional[str] = None
+) -> bool:
+    """
+    ارسال متن به کانال اصلی
+    
+    Args:
+        text: متن برای ارسال
+        parse_mode: نوع فرمت (HTML, Markdown, etc.)
+        
+    Returns:
+        True اگر ارسال موفق باشد
+    """
+    if not API_URL or not CHANNEL_ID:
+        logger.error("❌ API_URL or CHANNEL_ID not configured")
+        return False
+    
+    try:
+        payload: Dict[str, Any] = {
+            "chat_id": CHANNEL_ID,
+            "text": text
+        }
+        
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        
+        resp = requests.post(
+            f"{API_URL}/sendMessage",
+            json=payload,
+            timeout=30
+        )
+        
+        if resp.status_code == 200:
+            logger.info(
+                f"✅ متن به کانال اصلی ارسال شد ({len(text)} chars)"
+            )
+            return True
+        
+        logger.error(
+            f"❌ send_to_channel failed | "
+            f"status={resp.status_code} | "
+            f"response={resp.text[:200]}"
+        )
+        return False
+        
+    except Exception as e:
+        logger.exception(f"❌ send_to_channel error: {e}")
+        return False
 
 
 # =========================================================
 # WEBHOOK HANDLER
 # =========================================================
 
-def handle_webhook():
-
-    req_id = str(
-        uuid.uuid4()
-    )[:8]
-
-    logger.info(
-        f"[{req_id}] 📥 دریافت درخواست Webhook"
-    )
-
+def handle_webhook() -> Tuple[Dict[str, Any], int]:
+    """
+    پردازش اصلی Webhook با اعتبارسنجی امنیتی
+    
+    Returns:
+        Tuple[response_dict, status_code]
+    """
+    req_id = str(uuid.uuid4())[:8]
+    logger.info(f"[{req_id}] 📥 دریافت درخواست Webhook")
+    
     try:
-
-        # =================================================
-        # GET JSON
-        # =================================================
-
-        data = request.get_json(
-            silent=True
-        )
-
-        if not data:
-
-            logger.warning(
-                f"[{req_id}] ⚠️ Webhook بدون JSON"
-            )
-
-            return {
-                "ok": True
-            }
-
-        # =================================================
-        # CHECK MESSAGE
-        # =================================================
-
-        if "message" not in data:
-
-            logger.info(
-                f"[{req_id}] ℹ️ Update فاقد message است."
-            )
-
-            return {
-                "ok": True
-            }
-
-        msg = data["message"]
-
-        # =================================================
-        # CHAT ID
-        # =================================================
-
-        chat = msg.get(
-            "chat",
-            {}
-        )
-
-        chat_id = chat.get(
-            "id"
-        )
-
-        if not chat_id:
-
+        # ================================================
+        # SECURITY: Validate Secret Token
+        # ================================================
+        
+        if not validate_webhook_token():
             logger.error(
-                f"[{req_id}] ❌ chat_id پیدا نشد."
+                f"[{req_id}] 🔒 Webhook validation failed - "
+                "rejecting request"
             )
-
-            return {
-                "ok": True
-            }
-
-        # =================================================
-        # TEXT / CAPTION
-        # =================================================
-
-        text = get_message_text(
-            msg
-        )
-
-        logger.info(
-            f"[{req_id}] 📩 پیام از "
-            f"chat_id={chat_id}"
-        )
-
-        # =================================================
-        # COMMAND
-        # =================================================
-
-        if text and is_command(
-            text
-        ):
-
-            logger.info(
-                f"[{req_id}] ⚙️ Command: {text}"
+            return {"ok": False}, 403
+        
+        logger.info(f"[{req_id}] 🔓 Webhook token validated ✅")
+        
+        # ================================================
+        # GET JSON DATA
+        # ================================================
+        
+        data = request.get_json(silent=True)
+        
+        if not data:
+            logger.warning(f"[{req_id}] ⚠️ Webhook بدون JSON")
+            return {"ok": True}, 200
+        
+        if "message" not in data:
+            logger.info(f"[{req_id}] ℹ️ Update فاقد message است.")
+            return {"ok": True}, 200
+        
+        msg = data["message"]
+        chat = msg.get("chat", {})
+        chat_id = chat.get("id")
+        
+        if not chat_id:
+            logger.error(f"[{req_id}] ❌ chat_id پیدا نشد.")
+            return {"ok": True}, 200
+        
+        # ================================================
+        # EXTRACT TEXT / CAPTION & ENTITIES
+        # ================================================
+        
+        text = get_message_text(msg)
+        caption_entities = msg.get("caption_entities", [])
+        entities = msg.get("entities", [])
+        
+        logger.info(f"[{req_id}] 📩 پیام از chat_id={chat_id}")
+        
+        if text:
+            logger.debug(
+                f"[{req_id}] متن: {text[:50]}... | "
+                f"entities={len(entities)} | "
+                f"caption_entities={len(caption_entities)}"
             )
-
-            handle_command(
-                text,
-                chat_id
-            )
-
-            return {
-                "ok": True
-            }
-
-        # =================================================
-        # TENANT
-        # =================================================
-
-        tenant = get_tenant(
-            chat_id
-        )
-
-        if (
-            not tenant
-            or not tenant.get(
-                "telegram_channel"
-            )
-        ):
-
-            logger.warning(
-                f"[{req_id}] ⚠️ "
-                f"Telegram channel تنظیم نشده."
-            )
-
+        
+        # ================================================
+        # COMMAND DETECTION
+        # ================================================
+        
+        if text and text.startswith("/"):
+            logger.info(f"[{req_id}] ⚙️ Command: {text}")
+            
+            try:
+                from core.command_handler import handle_command
+                handle_command(text, chat_id)
+            except Exception as e:
+                logger.exception(
+                    f"[{req_id}] ❌ Error handling command: {e}"
+                )
+            
+            return {"ok": True}, 200
+        
+        # ================================================
+        # TENANT VALIDATION
+        # ================================================
+        
+        try:
+            from core.database import get_tenant
+            tenant = get_tenant(chat_id)
+        except Exception as e:
+            logger.exception(f"[{req_id}] ❌ Error getting tenant: {e}")
             send_message(
                 chat_id,
-                "❌ ابتدا با /register ثبت‌نام "
-                "و کانال را تنظیم کنید."
+                "❌ خطای دیتابیسی. لطفاً بعداً تلاش کنید."
             )
-
-            return {
-                "ok": True
-            }
-
-        # =================================================
+            return {"ok": True}, 200
+        
+        if not tenant or not tenant.get("telegram_channel"):
+            logger.warning(
+                f"[{req_id}] ⚠️ Telegram channel تنظیم نشده."
+            )
+            send_message(
+                chat_id,
+                "❌ ابتدا با /register ثبت‌نام و کانال را تنظیم کنید."
+            )
+            return {"ok": True}, 200
+        
+        # ================================================
         # MEDIA DETECTION
-        # =================================================
-
-        media_info = (
-            get_media_from_message(
-                msg
-            )
-        )
-
-        log_media_info(
-            req_id,
-            media_info
-        )
-
-        # =================================================
-        # MEDIA GROUP
-        # =================================================
-
-        if (
-            media_info["type"]
-            and is_media_group(msg)
-        ):
-
+        # ================================================
+        
+        media_info = get_media_from_message(msg)
+        media_type = media_info.get("type")
+        file_id = media_info.get("file_id")
+        caption = text if text else media_info.get("caption", "")
+        
+        # ================================================
+        # MEDIA GROUP (ALBUM)
+        # ================================================
+        
+        if media_type and msg.get("media_group_id"):
             logger.info(
                 f"[{req_id}] 🖼️ Media Group detected | "
-                f"type={media_info['type']} | "
-                f"group_id="
-                f"{msg.get('media_group_id')}"
+                f"type={media_type} | "
+                f"group_id={msg.get('media_group_id')}"
             )
-
-            # ---------------------------------------------
-            # اضافه کردن رسانه به Media Handler
-            # ---------------------------------------------
-
-            handle_media_group_message(
-                msg,
-                media_info["file_id"],
-                media_info["type"],
-                media_info["caption"]
-            )
-
-            # ---------------------------------------------
-            # توجه:
-            # ارسال به بله اینجا انجام نمی‌شود.
-            #
-            # Media Handler بعد از کامل شدن آلبوم
-            # تمام رسانه‌ها را به بله می‌فرستد.
-            # ---------------------------------------------
-
-            send_message(
-                chat_id,
-                "✅ آلبوم شما در حال پردازش است..."
-            )
-
-            return {
-                "ok": True
-            }
-
-        # =================================================
+            
+            try:
+                from core.media_handler import (
+                    handle_media_group_message
+                )
+                
+                handle_media_group_message(
+                    msg,
+                    file_id,
+                    media_type,
+                    caption
+                )
+                
+                send_message(
+                    chat_id,
+                    "✅ آلبوم شما در حال پردازش است..."
+                )
+                
+            except Exception as e:
+                logger.exception(
+                    f"[{req_id}] ❌ Error handling media group: {e}"
+                )
+                send_message(
+                    chat_id,
+                    "❌ خطا در پردازش آلبوم"
+                )
+            
+            return {"ok": True}, 200
+        
+        # ================================================
         # SINGLE MEDIA
-        # =================================================
-
-        elif media_info["type"]:
-
-            media_type = (
-                media_info["type"]
-            )
-
-            file_id = (
-                media_info["file_id"]
-            )
-
+        # ================================================
+        
+        if media_type and file_id:
             logger.info(
                 f"[{req_id}] 🎞️ Single Media | "
-                f"type={media_type} | "
-                f"file_id="
-                f"{str(file_id)[:30]}"
+                f"type={media_type}"
             )
-
-            # ---------------------------------------------
-            # Caption
-            # ---------------------------------------------
-
-            caption = (
-                text
-                if text
-                else media_info.get(
-                    "caption",
-                    ""
-                )
-            )
-
-            # ---------------------------------------------
-            # Branding
-            # ---------------------------------------------
-
-            branding = get_branding(
-                chat_id
-            )
-
-            hashtag = branding.get(
-                "hashtag",
-                ""
-            )
-
-            channel_tag = branding.get(
-                "channel_tag",
-                ""
-            )
-
-            # ---------------------------------------------
-            # Format caption
-            # ---------------------------------------------
-
-            if caption:
-
+            
+            try:
+                from core.media_sender import send_media_to_channel
+                from core.formatter import format_news
+                from core.branding_manager import get_branding
+                
+                # Format caption with branding
                 formatted_caption = (
-                    format_news(
-                        caption
-                    )
+                    format_news(caption) if caption else ""
                 )
-
-                if not formatted_caption:
-
-                    formatted_caption = (
-                        caption
-                    )
-
-            else:
-
-                formatted_caption = ""
-
-            # ---------------------------------------------
-            # Branding
-            # ---------------------------------------------
-
-            branding_parts = []
-
-            if hashtag:
-
-                branding_parts.append(
-                    hashtag
-                )
-
-            if channel_tag:
-
-                branding_parts.append(
-                    channel_tag
-                )
-
-            if branding_parts:
-
-                if formatted_caption:
-
-                    formatted_caption += (
-                        "\n\n"
-                        + "\n".join(
-                            branding_parts
-                        )
-                    )
-
-                else:
-
-                    formatted_caption = (
-                        "\n".join(
-                            branding_parts
-                        )
-                    )
-
-            # =================================================
-            # SEND MEDIA TO TELEGRAM CHANNEL
-            # =================================================
-
-            logger.info(
-                f"[{req_id}] 📤 "
-                f"ارسال رسانه به کانال اصلی..."
-            )
-
-            telegram_success = (
-                send_media_to_channel(
+                
+                branding = get_branding(chat_id)
+                hashtag = branding.get("hashtag", "")
+                channel_tag = branding.get("channel_tag", "")
+                
+                if hashtag or channel_tag:
+                    branding_text = ""
+                    if hashtag:
+                        branding_text += f"\n\n{hashtag}"
+                    if channel_tag:
+                        branding_text += f"\n{channel_tag}"
+                    formatted_caption += branding_text
+                
+                # Send to Telegram
+                success = send_media_to_channel(
                     API_URL,
                     CHANNEL_ID,
                     file_id,
                     media_type,
                     formatted_caption
                 )
-            )
-
-            # ---------------------------------------------
-            # Telegram Failed
-            # ---------------------------------------------
-
-            if not telegram_success:
-
-                logger.error(
-                    f"[{req_id}] ❌ "
-                    f"ارسال رسانه به کانال اصلی شکست خورد."
+                
+                if success:
+                    logger.info(
+                        f"[{req_id}] ✅ رسانه به کانال ارسال شد"
+                    )
+                    send_message(
+                        chat_id,
+                        "✅ خبر تصویری/ویدیویی شما "
+                        "در کانال منتشر شد."
+                    )
+                    
+                    # Send to Bale
+                    try:
+                        from core.bale_forwarder import (
+                            send_to_bale_for_user
+                        )
+                        send_to_bale_for_user(
+                            chat_id,
+                            formatted_caption,
+                            file_id,
+                            media_type
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"[{req_id}] ❌ Error sending to Bale: {e}"
+                        )
+                else:
+                    logger.error(
+                        f"[{req_id}] ❌ رسانه ارسال نشد"
+                    )
+                    send_message(
+                        chat_id,
+                        "❌ ارسال رسانه با مشکل روبرو شد."
+                    )
+                
+            except Exception as e:
+                logger.exception(
+                    f"[{req_id}] ❌ Error sending media: {e}"
                 )
-
                 send_message(
                     chat_id,
-                    "❌ ارسال رسانه با مشکل روبرو شد."
+                    "❌ خطا در ارسال رسانه"
                 )
-
-                return {
-                    "ok": True
-                }
-
-            # ---------------------------------------------
-            # Telegram Success
-            # ---------------------------------------------
-
-            logger.info(
-                f"[{req_id}] ✅ "
-                f"رسانه در کانال اصلی منتشر شد."
-            )
-
-            send_message(
-                chat_id,
-                "✅ خبر تصویری/ویدیویی شما "
-                "در کانال منتشر شد."
-            )
-
-            # =================================================
-            # SEND MEDIA TO BALE
-            # =================================================
-
-            logger.info(
-                f"[{req_id}] 📤 "
-                f"شروع ارسال رسانه به بله | "
-                f"type={media_type}"
-            )
-
-            bale_success = (
-                send_to_bale_for_user(
-                    chat_id,
-                    formatted_caption,
-                    file_id,
-                    media_type
-                )
-            )
-
-            # ---------------------------------------------
-            # Bale Result
-            # ---------------------------------------------
-
-            if bale_success:
-
-                logger.info(
-                    f"[{req_id}] ✅ "
-                    f"رسانه با موفقیت به بله ارسال شد."
-                )
-
-            else:
-
-                logger.error(
-                    f"[{req_id}] ❌ "
-                    f"ارسال رسانه به بله ناموفق بود."
-                )
-
-            return {
-                "ok": True
-            }
-
-        # =================================================
+            
+            return {"ok": True}, 200
+        
+        # ================================================
         # TEXT MESSAGE
-        # =================================================
-
-        else:
-
-            if text and text.strip():
-
-                logger.info(
-                    f"[{req_id}] 📝 "
-                    f"پیام متنی دریافت شد."
-                )
-
-                formatted = format_news(
-                    text
-                )
-
+        # ================================================
+        
+        if text and text.strip():
+            logger.info(f"[{req_id}] 📝 پیام متنی دریافت شد")
+            
+            try:
+                from core.formatter import format_news
+                from core.bale_forwarder import send_to_bale_for_user
+                from core.content_entities import build_full_html
+                
+                # Format text
+                formatted = format_news(text)
+                
                 if formatted:
-
-                    telegram_success = (
-                        send_long_to_channel(
-                            formatted,
-                            chat_id
+                    # اگر entities موجود است، build_full_html استفاده کن
+                    if entities or caption_entities:
+                        try:
+                            html_content = build_full_html(
+                                text,
+                                entities or caption_entities
+                            )
+                            logger.info(
+                                f"[{req_id}] Built HTML with entities"
+                            )
+                            success = send_to_channel(
+                                html_content,
+                                parse_mode="HTML"
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"[{req_id}] Fallback to plain text: {e}"
+                            )
+                            success = send_to_channel(formatted)
+                    else:
+                        success = send_to_channel(formatted)
+                    
+                    if success:
+                        logger.info(
+                            f"[{req_id}] ✅ متن به کانال ارسال شد"
                         )
-                    )
-
-                    if telegram_success:
-
                         send_message(
                             chat_id,
                             "✅ خبر شما در کانال منتشر شد."
                         )
-
+                        
+                        # Send to Bale
+                        try:
+                            send_to_bale_for_user(
+                                chat_id,
+                                formatted
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"[{req_id}] ❌ Error sending to Bale: {e}"
+                            )
                     else:
-
+                        logger.error(
+                            f"[{req_id}] ❌ متن ارسال نشد"
+                        )
                         send_message(
                             chat_id,
                             "❌ ارسال خبر به کانال "
                             "با مشکل روبرو شد."
                         )
-
                 else:
-
+                    logger.warning(
+                        f"[{req_id}] متن قابل پردازش نیست"
+                    )
                     send_message(
                         chat_id,
                         "❌ خبر قابل پردازش نیست."
                     )
-
-            else:
-
-                logger.warning(
-                    f"[{req_id}] ⚠️ "
-                    f"پیام خالی است."
+                
+            except Exception as e:
+                logger.exception(
+                    f"[{req_id}] ❌ Error processing text: {e}"
                 )
-
                 send_message(
                     chat_id,
-                    "❌ پیام خالی است."
+                    "❌ خطا در پردازش پیام"
                 )
-
-            return {
-                "ok": True
-            }
-
-    # =====================================================
-    # EXCEPTION
-    # =====================================================
-
+        
+        else:
+            logger.warning(f"[{req_id}] ⚠️ پیام خالی است")
+            send_message(chat_id, "❌ پیام خالی است.")
+        
+        return {"ok": True}, 200
+    
     except Exception as e:
-
-        logger.error(
-            f"[{req_id}] ❌ "
-            f"خطا در Webhook Handler: {e}"
+        logger.exception(
+            f"[{req_id}] ❌ خطا در Webhook Handler: {e}"
         )
-
-        logger.error(
-            traceback.format_exc()
-        )
-
         return {
             "ok": False,
             "error": str(e)
