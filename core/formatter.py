@@ -1,130 +1,450 @@
 import logging
-import re
+from typing import Optional, List
 
 from core.cleaner import clean_text
 
 logger = logging.getLogger(__name__)
 
-CHANNEL_TAG = None
-HASHTAG = None
+
+# =========================================================
+# GLOBAL CONFIG
+# =========================================================
+
+CHANNEL_TAG: Optional[str] = None
+HASHTAG: Optional[str] = None
 
 
-def initialize(channel_tag, hashtag):
+# =========================================================
+# INITIALIZE
+# =========================================================
+
+def initialize(
+    channel_tag: str,
+    hashtag: str
+) -> None:
+    """
+    مقداردهی Formatter.
+
+    Args:
+        channel_tag: منشن اصلی کانال
+        hashtag: هشتگ اصلی رسانه
+    """
+
     global CHANNEL_TAG, HASHTAG
 
     CHANNEL_TAG = channel_tag
     HASHTAG = hashtag
 
-    logger.info("✅ Formatter initialized")
+    logger.info(
+        f"✅ Formatter initialized | "
+        f"channel={CHANNEL_TAG} | "
+        f"hashtag={HASHTAG}"
+    )
 
 
-def remove_all_hashtags_and_mentions(text: str) -> str:
+# =========================================================
+# SPLIT LINES PRESERVING STRUCTURE
+# =========================================================
+
+def split_lines(
+    text: str
+) -> List[str]:
+    """
+    تقسیم متن به خطوط با حفظ خطوط خالی.
+
+    خطوط خالی برای تشخیص مرز پاراگراف‌ها
+    در مرحله قالب‌بندی استفاده می‌شوند.
+    """
+
     if not text:
+        return []
+
+    return text.splitlines()
+
+
+# =========================================================
+# FORMAT PARAGRAPH
+# =========================================================
+
+def format_paragraph(
+    lines: List[str],
+    bullet: str = "🔹"
+) -> str:
+    """
+    قالب‌بندی یک پاراگراف خبری.
+
+    هر خط غیرخالی با Bullet استاندارد
+    دنیا ۲۴ نمایش داده می‌شود.
+    """
+
+    if not lines:
         return ""
 
-    # حذف منشن‌ها
-    text = re.sub(
-        r'@[a-zA-Z0-9_]+',
-        '',
-        text
+    formatted_lines = []
+
+    for line in lines:
+
+        stripped = line.strip()
+
+        if not stripped:
+            continue
+
+        formatted_lines.append(
+            f"{bullet} {stripped}"
+        )
+
+    return "\n".join(
+        formatted_lines
     )
 
-    # حذف هشتگ‌ها
-    text = re.sub(
-        r'#\s*[^\s#]+',
-        '',
-        text
-    )
 
-    # حذف نشانه‌های قالب‌بندی اضافی
-    text = text.replace('❇️', '')
-    text = text.replace('🔹', '')
+# =========================================================
+# FORMAT NEWS
+# =========================================================
 
-    # فقط فاصله‌های داخل خطوط را اصلاح می‌کنیم
-    # و خطوط جدید را حفظ می‌کنیم
-    text = re.sub(
-        r'[ \t]+',
-        ' ',
-        text
-    )
-
-    # حذف خطوط خالی اضافی
-    text = re.sub(
-        r'\n\s*\n+',
-        '\n',
-        text
-    )
-
-    return text.strip()
-
-
-def format_news(raw_text: str) -> str:
+def format_news(
+    raw_text: str
+) -> str:
     """
-    تبدیل متن خام خبر به قالب استاندارد دنیا ۲۴
+    تبدیل متن خبر به قالب استاندارد دنیا ۲۴.
 
-    خروجی:
+    معماری صحیح:
 
-    ❇️ تیتر
+        Telegram raw text
+                +
+        Telegram entities
+                ↓
+        parse_telegram_entities()
+                ↓
+            main_text
+                ↓
+        format_news(main_text)
+                ↓
+            clean_text()
+                ↓
+        قالب استاندارد دنیا ۲۴
 
-    🔹 متن
-    🔹 متن
+
+    نکته بسیار مهم:
+
+    raw_text در این تابع باید در مسیر Entity-aware
+    همان main_text خروجی content_entities.py باشد.
+
+    Formatter مسئول تشخیص Telegram Entity نیست.
+
+    وظایف Formatter فقط:
+
+    1. پاکسازی متن با Cleaner
+    2. تشخیص اولین خط غیرخالی به‌عنوان تیتر
+    3. قالب‌بندی خطوط بعدی
+    4. حفظ مرز پاراگراف‌ها
+
+    خروجی نمونه:
+
+        ❇️ تیتر خبر
+
+        🔹 خط اول
+        🔹 خط دوم
+
+        🔹 پاراگراف بعدی
     """
 
     if not raw_text:
         return ""
 
-    # ---------------------------------------------
-    # پاکسازی اولیه
-    # ---------------------------------------------
+    logger.debug(
+        f"📝 Formatting news | "
+        f"length={len(raw_text)} | "
+        f"preview={raw_text[:80]!r}"
+    )
 
-    cleaned = clean_text(raw_text)
+    # =====================================================
+    # STEP 1
+    # CLEAN TEXT
+    # =====================================================
 
-    if not cleaned:
-        return ""
-
-    # ---------------------------------------------
-    # حذف منشن و هشتگ‌های ورودی
-    # ---------------------------------------------
-
-    cleaned = remove_all_hashtags_and_mentions(
-        cleaned
+    cleaned = clean_text(
+        raw_text
     )
 
     if not cleaned:
+
+        logger.warning(
+            "⚠️ Text is empty after cleaning"
+        )
+
         return ""
 
-    # ---------------------------------------------
-    # تقسیم خطوط
-    # ---------------------------------------------
+    logger.debug(
+        f"After clean_text | "
+        f"length={len(cleaned)}"
+    )
 
-    lines = [
-        line.strip()
-        for line in cleaned.splitlines()
-        if line.strip()
+    # =====================================================
+    # STEP 2
+    # SPLIT LINES
+    # =====================================================
+
+    all_lines = split_lines(
+        cleaned
+    )
+
+    if not all_lines:
+
+        logger.warning(
+            "⚠️ No lines found"
+        )
+
+        return ""
+
+    logger.debug(
+        f"Split into {len(all_lines)} lines"
+    )
+
+    # =====================================================
+    # STEP 3
+    # FIND TITLE
+    # =====================================================
+
+    title = None
+    title_index = None
+
+    for index, line in enumerate(
+        all_lines
+    ):
+
+        stripped = line.strip()
+
+        if stripped:
+
+            title = stripped
+            title_index = index
+            break
+
+    if (
+        title is None
+        or title_index is None
+    ):
+
+        logger.warning(
+            "⚠️ No title found"
+        )
+
+        return ""
+
+    logger.debug(
+        f"Title detected | "
+        f"title={title[:80]!r}"
+    )
+
+    # =====================================================
+    # STEP 4
+    # BODY
+    # =====================================================
+
+    body_lines = all_lines[
+        title_index + 1:
     ]
 
-    if not lines:
-        return ""
+    # =====================================================
+    # STEP 5
+    # BUILD RESULT
+    # =====================================================
 
-    # ---------------------------------------------
-    # خط اول = تیتر
-    # ---------------------------------------------
+    result = (
+        f"❇️ {title}"
+    )
 
-    title = lines[0]
+    if body_lines:
 
-    # ---------------------------------------------
-    # خطوط بعدی = متن
-    # ---------------------------------------------
+        current_paragraph = []
 
-    body = lines[1:]
+        for line in body_lines:
 
-    # ---------------------------------------------
-    # ساخت خروجی
-    # ---------------------------------------------
+            stripped = line.strip()
 
-    result = f"❇️ {title}"
+            # -------------------------------------------------
+            # خط خالی = مرز پاراگراف
+            # -------------------------------------------------
 
-    for line in body:
-        result += f"\n🔹 {line}"
+            if not stripped:
+
+                if current_paragraph:
+
+                    formatted_paragraph = (
+                        format_paragraph(
+                            current_paragraph
+                        )
+                    )
+
+                    if formatted_paragraph:
+
+                        result += (
+                            f"\n\n"
+                            f"{formatted_paragraph}"
+                        )
+
+                    current_paragraph = []
+
+                continue
+
+            # -------------------------------------------------
+            # خط معمولی
+            # -------------------------------------------------
+
+            current_paragraph.append(
+                stripped
+            )
+
+        # -----------------------------------------------------
+        # پاراگراف آخر
+        # -----------------------------------------------------
+
+        if current_paragraph:
+
+            formatted_paragraph = (
+                format_paragraph(
+                    current_paragraph
+                )
+            )
+
+            if formatted_paragraph:
+
+                result += (
+                    f"\n\n"
+                    f"{formatted_paragraph}"
+                )
+
+    logger.debug(
+        f"✅ Formatted news | "
+        f"length={len(result)}"
+    )
 
     return result
+
+
+# =========================================================
+# ADD BRANDING
+# =========================================================
+
+def add_branding(
+    formatted_text: str,
+    include_hashtag: bool = True,
+    include_channel: bool = True
+) -> str:
+    """
+    افزودن Branding استاندارد دنیا ۲۴.
+
+    خروجی نمونه:
+
+        ❇️ تیتر
+
+        🔹 متن خبر
+
+        #دنیا_۲۴_نیوز
+        @Donya24News
+
+    نکته:
+    Branding فقط در این لایه اضافه می‌شود
+    و Cleaner مسئول ساخت Branding نیست.
+    """
+
+    if not formatted_text:
+        return ""
+
+    result = formatted_text.rstrip()
+
+    branding_lines = []
+
+    # -----------------------------------------------------
+    # HASHTAG
+    # -----------------------------------------------------
+
+    if (
+        include_hashtag
+        and HASHTAG
+    ):
+
+        branding_lines.append(
+            HASHTAG
+        )
+
+    # -----------------------------------------------------
+    # CHANNEL TAG
+    # -----------------------------------------------------
+
+    if (
+        include_channel
+        and CHANNEL_TAG
+    ):
+
+        branding_lines.append(
+            CHANNEL_TAG
+        )
+
+    # -----------------------------------------------------
+    # APPEND BRANDING
+    # -----------------------------------------------------
+
+    if branding_lines:
+
+        result += (
+            "\n\n"
+            + "\n".join(
+                branding_lines
+            )
+        )
+
+    return result
+
+
+# =========================================================
+# PROCESS NEWS
+# =========================================================
+
+def process_news(
+    raw_text: str,
+    add_brand: bool = True
+) -> str:
+    """
+    پردازش کامل متن خبری.
+
+    این تابع یک Wrapper ساده برای:
+
+        format_news()
+                ↓
+        add_branding()
+
+    است.
+
+    نکته معماری:
+
+    در مسیر Telegram Entity-aware، raw_text
+    باید main_text خروجی content_entities.py باشد.
+    """
+
+    if not raw_text:
+        return ""
+
+    # =====================================================
+    # FORMAT
+    # =====================================================
+
+    formatted = format_news(
+        raw_text
+    )
+
+    if not formatted:
+        return ""
+
+    # =====================================================
+    # BRANDING
+    # =====================================================
+
+    if add_brand:
+
+        formatted = add_branding(
+            formatted
+        )
+
+    return formatted
