@@ -47,36 +47,24 @@ def initialize(
     global WEBHOOK_INITIALIZED
 
     if not api_url:
-
         raise ValueError(
             "❌ api_url cannot be empty"
         )
 
     if not channel_id:
-
         raise ValueError(
             "❌ channel_id cannot be empty"
         )
 
     if not secret_token:
-
         raise ValueError(
             "❌ secret_token cannot be empty "
             "(SECURITY REQUIRED)"
         )
 
-    API_URL = (
-        api_url.rstrip("/")
-    )
-
-    CHANNEL_ID = (
-        channel_id
-    )
-
-    SECRET_TOKEN = (
-        secret_token
-    )
-
+    API_URL = api_url.rstrip("/")
+    CHANNEL_ID = channel_id
+    SECRET_TOKEN = secret_token
     WEBHOOK_INITIALIZED = True
 
     logger.info(
@@ -92,9 +80,6 @@ def initialize(
 def validate_webhook_token() -> bool:
     """
     اعتبارسنجی Telegram Webhook Secret Token.
-
-    از compare_digest استفاده می‌شود
-    تا مقایسه constant-time باشد.
     """
 
     if not WEBHOOK_INITIALIZED:
@@ -113,10 +98,8 @@ def validate_webhook_token() -> bool:
 
         return False
 
-    request_token = (
-        request.headers.get(
-            "X-Telegram-Bot-Api-Secret-Token"
-        )
+    request_token = request.headers.get(
+        "X-Telegram-Bot-Api-Secret-Token"
     )
 
     if not request_token:
@@ -127,11 +110,9 @@ def validate_webhook_token() -> bool:
 
         return False
 
-    is_valid = (
-        secrets.compare_digest(
-            request_token,
-            SECRET_TOKEN
-        )
+    is_valid = secrets.compare_digest(
+        request_token,
+        SECRET_TOKEN
     )
 
     if not is_valid:
@@ -160,24 +141,18 @@ def get_message_text(
     استخراج text یا caption.
     """
 
-    caption = (
-        msg.get(
-            "caption"
-        )
+    caption = msg.get(
+        "caption"
     )
 
     if caption:
-
         return caption
 
-    text = (
-        msg.get(
-            "text"
-        )
+    text = msg.get(
+        "text"
     )
 
     if text:
-
         return text
 
     return ""
@@ -191,14 +166,16 @@ def get_message_entities(
     msg: Dict[str, Any]
 ) -> List[Dict[str, Any]]:
     """
-    اگر Message دارای Caption باشد:
+    Caption:
         caption_entities
 
-    اگر Message متنی باشد:
+    Text:
         entities
     """
 
-    if msg.get("caption") is not None:
+    if msg.get(
+        "caption"
+    ) is not None:
 
         return list(
             msg.get(
@@ -215,6 +192,412 @@ def get_message_entities(
         )
         or []
     )
+
+
+# =========================================================
+# FORWARD SOURCE METADATA
+# =========================================================
+
+def extract_forward_source_metadata(
+    msg: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    استخراج اطلاعات کانال یا منبع Forward.
+
+    این تابع فعلاً فقط برای Diagnostic استفاده می‌شود.
+
+    هیچ متنی حذف یا تغییر داده نمی‌شود.
+    """
+
+    result: Dict[str, Any] = {
+        "is_forwarded": False,
+        "origin_type": "",
+        "source_chat_id": None,
+        "source_title": "",
+        "source_username": "",
+        "source_message_id": None,
+        "sender_name": ""
+    }
+
+    try:
+
+        forward_origin = msg.get(
+            "forward_origin"
+        )
+
+        # =================================================
+        # MODERN TELEGRAM FORWARD_ORIGIN
+        # =================================================
+
+        if isinstance(
+            forward_origin,
+            dict
+        ):
+
+            result[
+                "is_forwarded"
+            ] = True
+
+            result[
+                "origin_type"
+            ] = (
+                forward_origin.get(
+                    "type",
+                    ""
+                )
+                or ""
+            )
+
+            # ---------------------------------------------
+            # CHANNEL OR CHAT ORIGIN
+            # ---------------------------------------------
+
+            origin_chat = (
+                forward_origin.get(
+                    "chat"
+                )
+                or {}
+            )
+
+            if isinstance(
+                origin_chat,
+                dict
+            ):
+
+                result[
+                    "source_chat_id"
+                ] = origin_chat.get(
+                    "id"
+                )
+
+                result[
+                    "source_title"
+                ] = (
+                    origin_chat.get(
+                        "title",
+                        ""
+                    )
+                    or ""
+                )
+
+                result[
+                    "source_username"
+                ] = (
+                    origin_chat.get(
+                        "username",
+                        ""
+                    )
+                    or ""
+                )
+
+            result[
+                "source_message_id"
+            ] = forward_origin.get(
+                "message_id"
+            )
+
+            result[
+                "sender_name"
+            ] = (
+                forward_origin.get(
+                    "sender_user_name",
+                    ""
+                )
+                or ""
+            )
+
+        # =================================================
+        # BACKWARD COMPATIBILITY
+        # =================================================
+
+        forward_from_chat = (
+            msg.get(
+                "forward_from_chat"
+            )
+            or {}
+        )
+
+        if isinstance(
+            forward_from_chat,
+            dict
+        ) and forward_from_chat:
+
+            result[
+                "is_forwarded"
+            ] = True
+
+            if not result[
+                "source_chat_id"
+            ]:
+
+                result[
+                    "source_chat_id"
+                ] = (
+                    forward_from_chat.get(
+                        "id"
+                    )
+                )
+
+            if not result[
+                "source_title"
+            ]:
+
+                result[
+                    "source_title"
+                ] = (
+                    forward_from_chat.get(
+                        "title",
+                        ""
+                    )
+                    or ""
+                )
+
+            if not result[
+                "source_username"
+            ]:
+
+                result[
+                    "source_username"
+                ] = (
+                    forward_from_chat.get(
+                        "username",
+                        ""
+                    )
+                    or ""
+                )
+
+        if not result[
+            "source_message_id"
+        ]:
+
+            result[
+                "source_message_id"
+            ] = msg.get(
+                "forward_from_message_id"
+            )
+
+        if (
+            not result[
+                "sender_name"
+            ]
+            and msg.get(
+                "forward_sender_name"
+            )
+        ):
+
+            result[
+                "sender_name"
+            ] = (
+                msg.get(
+                    "forward_sender_name"
+                )
+                or ""
+            )
+
+        return result
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Forward metadata parse error | "
+            f"{e}"
+        )
+
+        return result
+
+
+# =========================================================
+# MESSAGE DIAGNOSTICS
+# =========================================================
+
+def log_message_diagnostics(
+    req_id: str,
+    msg: Dict[str, Any]
+) -> None:
+    """
+    Diagnostic برای بررسی:
+
+    1. دو تکه شدن Caption
+    2. Forward source
+    3. Channel username/title
+    4. Entities
+    5. Media Group
+
+    این تابع هیچ تغییری در Message ایجاد نمی‌کند.
+    """
+
+    try:
+
+        raw_text = (
+            msg.get(
+                "text",
+                ""
+            )
+            or ""
+        )
+
+        raw_caption = (
+            msg.get(
+                "caption",
+                ""
+            )
+            or ""
+        )
+
+        entities = list(
+            msg.get(
+                "entities",
+                []
+            )
+            or []
+        )
+
+        caption_entities = list(
+            msg.get(
+                "caption_entities",
+                []
+            )
+            or []
+        )
+
+        media_group_id = (
+            msg.get(
+                "media_group_id"
+            )
+        )
+
+        forward_info = (
+            extract_forward_source_metadata(
+                msg
+            )
+        )
+
+        # =================================================
+        # BASIC LENGTH DIAGNOSTIC
+        # =================================================
+
+        logger.info(
+            f"[{req_id}] 🔬 MESSAGE-DIAGNOSTIC | "
+            f"has_text={bool(raw_text)} | "
+            f"text_length={len(raw_text)} | "
+            f"has_caption={bool(raw_caption)} | "
+            f"caption_length={len(raw_caption)} | "
+            f"media_group_id={media_group_id or '-'}"
+        )
+
+        # =================================================
+        # ENTITY DIAGNOSTIC
+        # =================================================
+
+        logger.info(
+            f"[{req_id}] 🔬 ENTITY-DIAGNOSTIC | "
+            f"entities={len(entities)} | "
+            f"caption_entities="
+            f"{len(caption_entities)}"
+        )
+
+        if entities:
+
+            entity_types = [
+                str(
+                    entity.get(
+                        "type",
+                        ""
+                    )
+                )
+                for entity in entities
+            ]
+
+            logger.info(
+                f"[{req_id}] 🔬 TEXT-ENTITY-TYPES | "
+                f"{entity_types}"
+            )
+
+        if caption_entities:
+
+            caption_entity_types = [
+                str(
+                    entity.get(
+                        "type",
+                        ""
+                    )
+                )
+                for entity
+                in caption_entities
+            ]
+
+            logger.info(
+                f"[{req_id}] 🔬 CAPTION-ENTITY-TYPES | "
+                f"{caption_entity_types}"
+            )
+
+        # =================================================
+        # FORWARD DIAGNOSTIC
+        # =================================================
+
+        logger.info(
+            f"[{req_id}] 🔬 FORWARD-DIAGNOSTIC | "
+            f"is_forwarded="
+            f"{forward_info.get('is_forwarded')} | "
+            f"origin_type="
+            f"{forward_info.get('origin_type') or '-'} | "
+            f"source_chat_id="
+            f"{forward_info.get('source_chat_id') or '-'} | "
+            f"source_title="
+            f"{forward_info.get('source_title') or '-'} | "
+            f"source_username="
+            f"{forward_info.get('source_username') or '-'} | "
+            f"source_message_id="
+            f"{forward_info.get('source_message_id') or '-'} | "
+            f"sender_name="
+            f"{forward_info.get('sender_name') or '-'}"
+        )
+
+        # =================================================
+        # TAIL DIAGNOSTIC
+        # =================================================
+        #
+        # برای دیدن همان بخش‌هایی مثل:
+        #
+        # 🔷 🆔
+        # کانال ...
+        # @username
+        #
+        # فقط 500 کاراکتر انتهایی Caption را Log می‌کنیم.
+        # =================================================
+
+        if raw_caption:
+
+            caption_tail = (
+                raw_caption[
+                    -500:
+                ]
+            )
+
+            logger.info(
+                f"[{req_id}] 🔬 CAPTION-TAIL | "
+                f"{caption_tail!r}"
+            )
+
+        elif raw_text:
+
+            text_tail = (
+                raw_text[
+                    -500:
+                ]
+            )
+
+            logger.info(
+                f"[{req_id}] 🔬 TEXT-TAIL | "
+                f"{text_tail!r}"
+            )
+
+    except Exception as e:
+
+        logger.exception(
+            f"[{req_id}] ❌ Diagnostic logging failed | "
+            f"{e}"
+        )
 
 
 # =========================================================
@@ -282,10 +665,6 @@ def get_media_from_message(
 
         if photos:
 
-            # Telegram PhotoSizeها معمولاً
-            # از کوچک به بزرگ هستند.
-            # آخرین مورد بیشترین کیفیت را دارد.
-
             result[
                 "type"
             ] = "photo"
@@ -293,7 +672,9 @@ def get_media_from_message(
             result[
                 "file_id"
             ] = (
-                photos[-1].get(
+                photos[
+                    -1
+                ].get(
                     "file_id"
                 )
             )
@@ -481,8 +862,6 @@ def send_to_channel(
 ) -> bool:
     """
     ارسال Text Message مستقیم به کانال.
-
-    این تابع برای مسیر Text-only حفظ شده است.
     """
 
     if not API_URL or not CHANNEL_ID:
@@ -626,19 +1005,7 @@ def process_single_photo_video(
     ]
 ) -> bool:
     """
-    Single Photo/Video را از همان معماری جدید عبور می‌دهد.
-
-    raw caption
-        ↓
-    content_entities
-        ↓
-    formatter
-        ↓
-    caption_manager
-        ↓
-    Telegram Plan
-        ↓
-    Bale Plan
+    Single Photo/Video را از معماری جدید عبور می‌دهد.
     """
 
     try:
@@ -703,6 +1070,15 @@ def process_single_photo_video(
             or []
         )
 
+        logger.info(
+            f"🔬 SINGLE-MEDIA-PRE-FORMAT | "
+            f"raw_caption_length={len(caption or '')} | "
+            f"main_text_length={len(main_text)} | "
+            f"blockquote={len(blockquote_blocks)} | "
+            f"expandable={len(expandable_blocks)} | "
+            f"other_entities={len(other_entities)}"
+        )
+
         # =================================================
         # FORMAT
         # =================================================
@@ -741,6 +1117,14 @@ def process_single_photo_video(
             )
         )
 
+        logger.info(
+            f"🔬 SINGLE-MEDIA-LENGTHS | "
+            f"formatted={len(formatted_main_text)} | "
+            f"branding={len(branding)} | "
+            f"combined_estimate="
+            f"{len(formatted_main_text) + len(branding)}"
+        )
+
         # =================================================
         # PLAN
         # =================================================
@@ -759,6 +1143,22 @@ def process_single_photo_video(
                 ),
                 branding=branding
             )
+        )
+
+        logger.info(
+            f"🔬 SINGLE-MEDIA-PLAN | "
+            f"telegram_caption_length="
+            f"{len(publication_plan.telegram.get('media_caption', ''))} | "
+            f"telegram_followups="
+            f"{len(publication_plan.telegram.get('followup_messages', []))} | "
+            f"telegram_blockquotes="
+            f"{len(publication_plan.telegram.get('blockquote_messages', []))} | "
+            f"telegram_fallback="
+            f"{publication_plan.telegram.get('document_fallback', False)} | "
+            f"bale_caption_length="
+            f"{len(publication_plan.bale.get('media_caption', ''))} | "
+            f"bale_followups="
+            f"{len(publication_plan.bale.get('followup_messages', []))}"
         )
 
         files = [
@@ -829,13 +1229,7 @@ def process_legacy_single_media(
     caption: str
 ) -> bool:
     """
-    مسیر پایدار قبلی برای:
-
-    document
-    voice
-    audio
-
-    فعلاً دست‌نخورده حفظ می‌شود.
+    مسیر قبلی برای document / voice / audio.
     """
 
     try:
@@ -947,13 +1341,6 @@ def process_text_message(
 ) -> bool:
     """
     مسیر Text-only.
-
-    فعلاً برای جلوگیری از تغییر بیش از حد
-    از build_full_html به‌عنوان Compatibility Layer
-    استفاده می‌شود.
-
-    در مرحله مستقل بعدی می‌توان Text Publication Manager
-    را نیز مانند Media کامل کرد.
     """
 
     try:
@@ -979,10 +1366,6 @@ def process_text_message(
         if not formatted:
 
             return False
-
-        # =================================================
-        # TELEGRAM
-        # =================================================
 
         if entities:
 
@@ -1026,10 +1409,6 @@ def process_text_message(
         if not success:
 
             return False
-
-        # =================================================
-        # BALE
-        # =================================================
 
         try:
 
@@ -1099,10 +1478,8 @@ def handle_webhook() -> Tuple[
         # JSON
         # =================================================
 
-        data = (
-            request.get_json(
-                silent=True
-            )
+        data = request.get_json(
+            silent=True
         )
 
         if not data:
@@ -1119,10 +1496,8 @@ def handle_webhook() -> Tuple[
         # MESSAGE
         # =================================================
 
-        msg = (
-            data.get(
-                "message"
-            )
+        msg = data.get(
+            "message"
         )
 
         if not msg:
@@ -1154,6 +1529,18 @@ def handle_webhook() -> Tuple[
             return {
                 "ok": True
             }, 200
+
+        # =================================================
+        # DIAGNOSTIC
+        # =================================================
+        #
+        # هیچ تغییری در Message ایجاد نمی‌کند.
+        # =================================================
+
+        log_message_diagnostics(
+            req_id,
+            msg
+        )
 
         # =================================================
         # INPUT DATA
