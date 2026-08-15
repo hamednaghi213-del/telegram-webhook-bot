@@ -2,7 +2,12 @@ name: Python Tests
 
 on:
   push:
+    branches:
+      - main
+
   pull_request:
+
+  workflow_dispatch:
 
 jobs:
   test:
@@ -21,13 +26,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Run project tests
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+      - name: Run full project test suite
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
           pytest -v \
             tests/test_caption_manager.py \
             tests/test_media_handler_integration.py \
-            tests/test_content_entities.py
+            tests/test_content_entities.py \
+            tests/test_webhook_handler_integration.py
