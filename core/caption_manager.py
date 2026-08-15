@@ -222,15 +222,6 @@ def clean_blockquote_text(
 def compact_long_text(
     text: str
 ) -> str:
-    """
-    متن بلند را بدون حذف محتوا فشرده می‌کند.
-
-    سیاست:
-    - تیتر حفظ می‌شود
-    - فاصله بعد از تیتر حفظ می‌شود
-    - Bullet آبی بدنه حذف می‌شود
-    - خطوط خالی میان بدنه حذف می‌شوند
-    """
 
     text = normalize_text(
         text
@@ -276,8 +267,6 @@ def compact_long_text(
             line.strip()
         )
 
-        # مهم:
-        # تمام Bulletهای آبی متوالی حذف شوند.
         while cleaned_line.startswith(
             "🔹"
         ):
@@ -339,7 +328,6 @@ def find_split_position(
         text[:limit]
     )
 
-    # Paragraph
     position = (
         search_text.rfind(
             "\n\n"
@@ -349,7 +337,6 @@ def find_split_position(
     if position > 0:
         return position
 
-    # Line
     position = (
         search_text.rfind(
             "\n"
@@ -359,7 +346,6 @@ def find_split_position(
     if position > 0:
         return position
 
-    # Sentence
     sentence_marks = (
         "؟",
         "!",
@@ -392,7 +378,6 @@ def find_split_position(
             + 1
         )
 
-    # Word
     position = (
         search_text.rfind(
             " "
@@ -402,7 +387,175 @@ def find_split_position(
     if position > 0:
         return position
 
-    # Hard cut
+    return limit
+
+
+# =========================================================
+# NEW:
+# FIND SPLIT CLOSE TO MEDIA CAPTION LIMIT
+# =========================================================
+
+def find_media_split_position(
+    text: str,
+    limit: int,
+    minimum_fill_ratio: float = 0.60
+) -> int:
+    """
+    مخصوص Caption رسانه.
+
+    مشکل قبلی:
+    اگر تنها \\n\\n موجود، فاصله بعد از تیتر بود،
+    همان نقطه انتخاب می‌شد و تقریباً کل بدنه به Reply می‌رفت.
+
+    سیاست جدید:
+    فقط شکست‌هایی پذیرفته می‌شوند که به اندازه کافی
+    نزدیک سقف Caption باشند.
+
+    اولویت:
+    1. Paragraph نزدیک انتهای ظرفیت
+    2. Line نزدیک انتهای ظرفیت
+    3. Sentence نزدیک انتهای ظرفیت
+    4. Word نزدیک انتهای ظرفیت
+    5. Hard cut
+    """
+
+    if not text:
+        return 0
+
+    if limit <= 0:
+        return 0
+
+    if len(text) <= limit:
+        return len(text)
+
+    search_text = (
+        text[:limit]
+    )
+
+    minimum_position = max(
+        1,
+        int(
+            limit
+            * minimum_fill_ratio
+        )
+    )
+
+    # =====================================================
+    # 1. PARAGRAPH
+    # =====================================================
+
+    position = (
+        search_text.rfind(
+            "\n\n"
+        )
+    )
+
+    if position >= minimum_position:
+
+        return position
+
+    # =====================================================
+    # 2. LINE
+    # =====================================================
+
+    position = (
+        search_text.rfind(
+            "\n"
+        )
+    )
+
+    if position >= minimum_position:
+
+        return position
+
+    # =====================================================
+    # 3. SENTENCE
+    # =====================================================
+
+    sentence_marks = (
+        "؟",
+        "!",
+        ".",
+        "?",
+        "۔",
+        "…"
+    )
+
+    best_sentence_position = -1
+
+    for mark in sentence_marks:
+
+        current = (
+            search_text.rfind(
+                mark
+            )
+        )
+
+        if (
+            current
+            > best_sentence_position
+        ):
+
+            best_sentence_position = (
+                current
+            )
+
+    if (
+        best_sentence_position
+        >= minimum_position
+    ):
+
+        return (
+            best_sentence_position
+            + 1
+        )
+
+    # =====================================================
+    # 4. WORD
+    # =====================================================
+
+    position = (
+        search_text.rfind(
+            " "
+        )
+    )
+
+    if position >= minimum_position:
+
+        return position
+
+    # =====================================================
+    # 5. LAST LINE FALLBACK
+    # =====================================================
+
+    position = (
+        search_text.rfind(
+            "\n"
+        )
+    )
+
+    if position > 0:
+
+        return position
+
+    # =====================================================
+    # 6. LAST WORD FALLBACK
+    # =====================================================
+
+    position = (
+        search_text.rfind(
+            " "
+        )
+    )
+
+    if position > 0:
+
+        return position
+
+    # =====================================================
+    # 7. HARD CUT
+    # =====================================================
+
     return limit
 
 
@@ -543,10 +696,6 @@ def split_for_media(
 
         return result
 
-    # =====================================================
-    # COMPACT BEFORE SPLIT
-    # =====================================================
-
     compact_text = (
         compact_long_text(
             text
@@ -571,7 +720,7 @@ def split_for_media(
     )
 
     split_position = (
-        find_split_position(
+        find_media_split_position(
             source_text,
             caption_limit
         )
@@ -1008,7 +1157,6 @@ def build_telegram_html_caption(
             inline_blocks
         )
 
-    # Branding همیشه آخر Caption
     if branding:
 
         parts.append(
@@ -1023,7 +1171,7 @@ def build_telegram_html_caption(
 
 
 # =========================================================
-# SMART EXPANDABLE FOR LONG MEDIA
+# SMART EXPANDABLE
 # =========================================================
 
 def build_smart_expandable_media_caption(
@@ -1070,9 +1218,10 @@ def build_smart_expandable_media_caption(
     )
 
     position = (
-        find_split_position(
+        find_media_split_position(
             main_text,
-            target
+            target,
+            minimum_fill_ratio=0.55
         )
     )
 
@@ -1133,8 +1282,6 @@ def build_smart_expandable_media_caption(
 
         return None
 
-    # برای Smart Expandable مصنوعی
-    # حاشیه امن تست قبلی حفظ می‌شود.
     if len(html_caption) > caption_limit:
         return None
 
@@ -1232,11 +1379,6 @@ def create_bale_blockquote_messages(
         Dict[str, Any]
     ]
 ) -> List[str]:
-    """
-    برای سازگاری با API قدیمی نگه داشته شده است.
-
-    در Plan جدید بله Blockquote داخل جریان خبر قرار می‌گیرد.
-    """
 
     result: List[str] = []
 
@@ -1315,14 +1457,14 @@ def create_telegram_plan(
     )
 
     # =====================================================
-    # REAL SOURCE BLOCKQUOTE
+    # SOURCE BLOCKQUOTE EXISTS
     # =====================================================
 
     if has_source_blockquotes:
 
-        # -------------------------------------------------
-        # FULL CONTENT FIRST
-        # -------------------------------------------------
+        # =================================================
+        # 1. FULL VERSION
+        # =================================================
 
         full_caption = (
             build_telegram_html_caption(
@@ -1351,9 +1493,9 @@ def create_telegram_plan(
 
             return plan
 
-        # -------------------------------------------------
-        # COMPACT MAIN SECOND
-        # -------------------------------------------------
+        # =================================================
+        # 2. COMPACT MAIN
+        # =================================================
 
         compact_main = (
             compact_long_text(
@@ -1389,9 +1531,13 @@ def create_telegram_plan(
 
             return plan
 
-        # -------------------------------------------------
-        # REAL OVERFLOW
-        # -------------------------------------------------
+        # =================================================
+        # 3. REAL OVERFLOW
+        #
+        # IMPORTANT:
+        # بیشترین مقدار متن اصلی باید قبل از Blockquote
+        # داخل Caption قرار بگیرد.
+        # =================================================
 
         inline_blocks = (
             build_inline_telegram_blockquotes(
@@ -1440,15 +1586,24 @@ def create_telegram_plan(
 
         if available_for_main > 0:
 
+            # =============================================
+            # FIX:
+            # دیگر فاصله بعد از تیتر Split را نمی‌رباید.
+            # =============================================
+
             split_position = (
-                find_split_position(
+                find_media_split_position(
                     compact_main,
-                    available_for_main
+                    available_for_main,
+                    minimum_fill_ratio=0.60
                 )
             )
 
             if split_position <= 0:
-                split_position = available_for_main
+
+                split_position = (
+                    available_for_main
+                )
 
             main_for_caption = (
                 compact_main[
@@ -1529,11 +1684,23 @@ def create_telegram_plan(
                         )
                     )
 
+                logger.info(
+                    f"🧩 Telegram balanced media plan | "
+                    f"main_in_caption="
+                    f"{len(main_for_caption)} | "
+                    f"remaining="
+                    f"{len(remaining_main)} | "
+                    f"blockquote_visible="
+                    f"{telegram_html_visible_length(inline_blocks)} | "
+                    f"caption_visible="
+                    f"{telegram_html_visible_length(candidate)}"
+                )
+
                 return plan
 
-        # -------------------------------------------------
+        # =================================================
         # EXTREME CASE
-        # -------------------------------------------------
+        # =================================================
 
         branding_cost = (
             len(branding)
@@ -1551,7 +1718,7 @@ def create_telegram_plan(
         )
 
         position = (
-            find_split_position(
+            find_media_split_position(
                 compact_main,
                 available
             )
@@ -1614,7 +1781,7 @@ def create_telegram_plan(
         return plan
 
     # =====================================================
-    # NORMAL MEDIA
+    # NORMAL MEDIA WITHOUT SOURCE BLOCKQUOTE
     # =====================================================
 
     normal_final = (
@@ -1637,7 +1804,7 @@ def create_telegram_plan(
         return plan
 
     # =====================================================
-    # COMPACT BEFORE ANY SPLIT
+    # COMPACT BEFORE SPLIT
     # =====================================================
 
     compact_main = (
@@ -1660,7 +1827,6 @@ def create_telegram_plan(
         <= TELEGRAM_CAPTION_SAFE_LIMIT
     ):
 
-        # اگر قابلیت Smart Expandable قابل ساخت بود
         smart_caption = (
             build_smart_expandable_media_caption(
                 compact_main,
@@ -1688,7 +1854,7 @@ def create_telegram_plan(
         return plan
 
     # =====================================================
-    # REAL CAPTION OVERFLOW
+    # REAL MEDIA OVERFLOW
     # =====================================================
 
     branding_cost = (
@@ -1714,7 +1880,7 @@ def create_telegram_plan(
         return plan
 
     position = (
-        find_split_position(
+        find_media_split_position(
             compact_main,
             available
         )
@@ -1818,10 +1984,6 @@ def create_bale_plan(
         )
     )
 
-    # =====================================================
-    # FULL CONTENT
-    # =====================================================
-
     full_parts: List[str] = []
 
     if main_text:
@@ -1859,10 +2021,6 @@ def create_bale_plan(
         ] = full_caption
 
         return plan
-
-    # =====================================================
-    # COMPACT MAIN
-    # =====================================================
 
     compact_main = (
         compact_long_text(
@@ -1909,10 +2067,6 @@ def create_bale_plan(
 
         return plan
 
-    # =====================================================
-    # KEEP BLOCKQUOTE INLINE IF POSSIBLE
-    # =====================================================
-
     suffix_parts: List[str] = []
 
     if inline_blocks:
@@ -1946,7 +2100,7 @@ def create_bale_plan(
     if available_for_main > 0:
 
         position = (
-            find_split_position(
+            find_media_split_position(
                 compact_main,
                 available_for_main
             )
@@ -2025,14 +2179,6 @@ def create_bale_plan(
                 )
 
             return plan
-
-    # =====================================================
-    # EXTREME CASE
-    #
-    # Blockquote خیلی بزرگ است.
-    # دیگر blockquote_messages تولید نمی‌کنیم.
-    # همه چیز در زنجیره خود خبر قرار می‌گیرد.
-    # =====================================================
 
     media_source = (
         compact_main
@@ -2114,8 +2260,6 @@ def create_bale_plan(
                 "media_caption"
             ] = branded_caption
 
-    # سیاست جدید:
-    # Blockquote بله هرگز مسیر جدا ندارد.
     plan[
         "blockquote_messages"
     ] = []
@@ -2155,10 +2299,6 @@ def create_telegram_text_plan(
         )
     )
 
-    # =====================================================
-    # NORMAL
-    # =====================================================
-
     if (
         normal_final
         and len(normal_final)
@@ -2170,10 +2310,6 @@ def create_telegram_text_plan(
         ]
 
     else:
-
-        # =================================================
-        # COMPACT BEFORE SPLIT
-        # =================================================
 
         compact_text = (
             compact_long_text(
@@ -2247,12 +2383,6 @@ def create_bale_text_plan(
     ],
     branding: str
 ) -> Dict[str, Any]:
-    """
-    سیاست جدید بله:
-
-    Blockquote پیام جدا نیست.
-    داخل زنجیره خود خبر قرار می‌گیرد.
-    """
 
     main_text = normalize_text(
         main_text
@@ -2268,10 +2398,6 @@ def create_bale_text_plan(
             expandable_blocks
         )
     )
-
-    # =====================================================
-    # FIRST TRY: NORMAL
-    # =====================================================
 
     normal_content_parts: List[str] = []
 
@@ -2312,10 +2438,6 @@ def create_bale_text_plan(
             ],
             "blockquote_messages": []
         }
-
-    # =====================================================
-    # SECOND TRY: COMPACT MAIN
-    # =====================================================
 
     compact_main = (
         compact_long_text(
@@ -2363,13 +2485,6 @@ def create_bale_text_plan(
             ],
             "blockquote_messages": []
         }
-
-    # =====================================================
-    # REAL SPLIT
-    #
-    # Branding را قبل از Split داخل متن نمی‌گذاریم.
-    # در پایان فقط یک بار به آخرین پیام اضافه می‌شود.
-    # =====================================================
 
     source_for_split = (
         compact_content
