@@ -31,10 +31,6 @@ def make_text(
     target_length: int,
     unit: str = "متن خبر "
 ) -> str:
-    """
-    ساخت متن تست با طول تقریبی مشخص،
-    بدون اینکه کلمه را نصف کنیم.
-    """
 
     if target_length <= 0:
         return ""
@@ -273,7 +269,7 @@ def test_caption_near_safe_limit():
 
 # =========================================================
 # TEST 03
-# CAPTION ABOVE TELEGRAM SAFE LIMIT
+# CAPTION ABOVE SAFE LIMIT
 # =========================================================
 
 def test_caption_above_telegram_safe_limit_creates_followup():
@@ -315,7 +311,7 @@ def test_caption_above_telegram_safe_limit_creates_followup():
 
 # =========================================================
 # TEST 04
-# TEXT OVER MESSAGE LIMIT
+# LONG MEDIA TEXT
 # =========================================================
 
 def test_text_over_telegram_message_limit_splits_multiple_times():
@@ -347,7 +343,7 @@ def test_text_over_telegram_message_limit_splits_multiple_times():
 
 # =========================================================
 # TEST 05
-# VERY LONG MULTI-PARAGRAPH TEXT
+# LONG MULTI-PARAGRAPH
 # =========================================================
 
 def test_very_long_paragraph_text_preserves_content():
@@ -440,7 +436,7 @@ def test_branding_added_to_caption_when_it_fits():
 def test_branding_moves_to_followup_if_caption_would_overflow():
 
     media_caption = (
-        "الف"
+        "ا"
         * 995
     )
 
@@ -558,7 +554,7 @@ def test_expandable_blockquote_becomes_expandable_html():
 
 # =========================================================
 # TEST 10
-# BLOCKQUOTE OFFSET ORDER
+# BLOCKQUOTE ORDER
 # =========================================================
 
 def test_blockquotes_are_sorted_by_offset():
@@ -887,7 +883,7 @@ def test_other_entities_preserved_in_metadata():
 
 # =========================================================
 # TEST 18
-# NO NETWORK CALLS
+# NO NETWORK
 # =========================================================
 
 def test_caption_manager_has_no_network_dependency(
@@ -938,7 +934,7 @@ def test_caption_manager_has_no_network_dependency(
 
 # =========================================================
 # TEST 19
-# TELEGRAM LIMIT GUARANTEE
+# TELEGRAM LIMITS
 # =========================================================
 
 def test_no_telegram_output_exceeds_official_limits():
@@ -975,7 +971,7 @@ def test_no_telegram_output_exceeds_official_limits():
 
 # =========================================================
 # TEST 20
-# BALE LIMIT GUARANTEE
+# BALE LIMITS
 # =========================================================
 
 def test_no_bale_output_exceeds_configured_limits():
@@ -1012,7 +1008,7 @@ def test_no_bale_output_exceeds_configured_limits():
 
 # =========================================================
 # TEST 21
-# FULL INTEGRATION STRUCTURE
+# FULL STRUCTURE
 # =========================================================
 
 def test_full_publication_plan_structure():
@@ -1174,7 +1170,7 @@ def test_full_publication_plan_structure():
 
 # =========================================================
 # TEST 22
-# TELEGRAM TEXT PLAN SHORT MESSAGE
+# TELEGRAM TEXT SHORT
 # =========================================================
 
 def test_telegram_text_plan_short_message():
@@ -1233,7 +1229,7 @@ def test_telegram_text_plan_short_message():
 
 # =========================================================
 # TEST 23
-# TELEGRAM TEXT PLAN LONG MESSAGE SPLITS
+# TELEGRAM TEXT LONG
 # =========================================================
 
 def test_telegram_text_plan_long_message_splits():
@@ -1287,7 +1283,7 @@ def test_telegram_text_plan_long_message_splits():
 
 # =========================================================
 # TEST 24
-# TEXT PLAN BRANDING ONLY ONCE
+# TEXT BRANDING ONCE
 # =========================================================
 
 def test_text_plan_branding_added_only_once():
@@ -1369,7 +1365,7 @@ def test_text_plan_branding_added_only_once():
 
 # =========================================================
 # TEST 25
-# TELEGRAM TEXT PLAN EXPANDABLE BLOCKQUOTE
+# EXPANDABLE TEXT PLAN
 # =========================================================
 
 def test_telegram_text_plan_expandable_blockquote():
@@ -1431,7 +1427,7 @@ def test_telegram_text_plan_expandable_blockquote():
 
 # =========================================================
 # TEST 26
-# BALE TEXT PLAN LIMITS
+# BALE TEXT PLAN
 # =========================================================
 
 def test_bale_text_plan_respects_limits():
@@ -1519,27 +1515,31 @@ def test_bale_text_plan_respects_limits():
 
 # =========================================================
 # TEST 27
-# TELEGRAM TEXT MUST NOT SPLIT BELOW OFFICIAL LIMIT
+# TELEGRAM TEXT MUST STAY ONE MESSAGE
+# IF FINAL CONTENT FITS 4096
 # =========================================================
 
 def test_telegram_text_does_not_split_when_final_message_fits_4096():
 
-    # متن عمداً بیشتر از Safe Limit فعلی 4000 است،
-    # اما همراه Branding هنوز باید زیر سقف رسمی
-    # Telegram یعنی 4096 باقی بماند.
+    # Branding همراه با دو Line Break
+    branding_overhead = (
+        len(DEFAULT_BRANDING)
+        + 2
+    )
 
-    available_for_main_text = (
+    # متنی می‌سازیم که از Safe Limit قبلی 4000
+    # عبور کند، ولی همراه Branding همچنان
+    # داخل سقف رسمی 4096 باقی بماند.
+
+    target_main_length = (
         TELEGRAM_MESSAGE_LIMIT
-        - len(DEFAULT_BRANDING)
-        - 2
+        - branding_overhead
+        - 5
     )
 
     main_text = (
-        "الف"
-        * (
-            available_for_main_text
-            - 5
-        )
+        "ا"
+        * target_main_length
     )
 
     assert (
@@ -1547,13 +1547,15 @@ def test_telegram_text_does_not_split_when_final_message_fits_4096():
         > TELEGRAM_MESSAGE_SAFE_LIMIT
     )
 
-    assert (
-        len(
-            append_branding(
-                main_text,
-                DEFAULT_BRANDING
-            )
+    final_content = (
+        append_branding(
+            main_text,
+            DEFAULT_BRANDING
         )
+    )
+
+    assert (
+        len(final_content)
         <= TELEGRAM_MESSAGE_LIMIT
     )
 
@@ -1570,13 +1572,18 @@ def test_telegram_text_does_not_split_when_final_message_fits_4096():
         ]
     )
 
-    # انتظار مطلوب:
-    # چون متن + Branding زیر 4096 است،
-    # نباید به دو پیام تقسیم شود.
+    # اصل Regression:
+    # تا وقتی خروجی نهایی در 4096 جا دارد،
+    # تقسیم کردن ممنوع است.
 
     assert (
         len(messages)
         == 1
+    )
+
+    assert (
+        messages[0]
+        == final_content
     )
 
     assert (
@@ -1592,7 +1599,7 @@ def test_telegram_text_does_not_split_when_final_message_fits_4096():
 
 # =========================================================
 # TEST 28
-# FORMATTER REMOVES SOURCE ICONS AND FOOTER
+# REMOVE SOURCE ICONS / PROMOTIONAL FOOTER
 # =========================================================
 
 def test_formatter_removes_source_icons_and_promotional_footer():
@@ -1617,7 +1624,10 @@ def test_formatter_removes_source_icons_and_promotional_footer():
         source_username="AbdiMediaNet"
     )
 
-    # متن واقعی خبر باید باقی بماند
+    # =====================================================
+    # REAL NEWS MUST REMAIN
+    # =====================================================
+
     assert (
         "کارشناس صداوسیما"
         in result
@@ -1628,7 +1638,10 @@ def test_formatter_removes_source_icons_and_promotional_footer():
         in result
     )
 
-    # آیکون منبع نباید باقی بماند
+    # =====================================================
+    # FOREIGN ICONS MUST BE REMOVED
+    # =====================================================
+
     assert (
         "🔷"
         not in result
@@ -1639,7 +1652,10 @@ def test_formatter_removes_source_icons_and_promotional_footer():
         not in result
     )
 
-    # شناسه و هشتگ منبع نباید باقی بمانند
+    # =====================================================
+    # FOREIGN BRANDING MUST BE REMOVED
+    # =====================================================
+
     assert (
         "@AbdiMediaNet"
         not in result
@@ -1650,7 +1666,10 @@ def test_formatter_removes_source_icons_and_promotional_footer():
         not in result
     )
 
-    # Footer تبلیغاتی منبع نباید باقی بماند
+    # =====================================================
+    # PROMOTIONAL FOOTER MUST BE REMOVED
+    # =====================================================
+
     assert (
         "واتس‌اپ"
         not in result
@@ -1666,7 +1685,31 @@ def test_formatter_removes_source_icons_and_promotional_footer():
         not in result
     )
 
-    # Formatter دنیا ۲۴ باید همچنان فعال باشد
+    # خط مستقل "سایت" هم نباید باقی بماند
+
+    result_lines = [
+        line.strip()
+
+        for line
+        in result.splitlines()
+
+        if line.strip()
+    ]
+
+    assert (
+        "سایت"
+        not in result_lines
+    )
+
+    assert (
+        "🔹 سایت"
+        not in result_lines
+    )
+
+    # =====================================================
+    # DONYA24 FORMAT MUST REMAIN
+    # =====================================================
+
     assert (
         "❇️"
         in result
@@ -1675,4 +1718,9 @@ def test_formatter_removes_source_icons_and_promotional_footer():
     assert (
         "🔹"
         in result
+    )
+
+    assert (
+        "🔹 🔹"
+        not in result
     )
