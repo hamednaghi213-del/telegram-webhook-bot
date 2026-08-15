@@ -180,11 +180,6 @@ def get_message_entities(
 def extract_forward_source_metadata(
     msg: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """
-    استخراج پویا و عمومی اطلاعات منبع Forward.
-
-    هیچ کانالی در این تابع Hardcode نشده است.
-    """
 
     result: Dict[str, Any] = {
         "is_forwarded": False,
@@ -858,13 +853,6 @@ def format_with_source(
         Dict[str, Any]
     ] = None
 ) -> str:
-    """
-    Formatter را فقط در صورت وجود Source Metadata
-    با پارامترهای جدید صدا می‌زند.
-
-    این کار باعث می‌شود مسیرهای قدیمی و تست‌های قبلی
-    همچنان با format_news(text) سازگار بمانند.
-    """
 
     from core.formatter import (
         format_news
@@ -1239,6 +1227,13 @@ def process_text_message(
         Dict[str, Any]
     ] = None
 ) -> bool:
+    """
+    پردازش پیام متنی.
+
+    اصلاح مهم:
+    Branding اکنون برای پیام متنی نیز
+    مانند Single Media و Album اضافه می‌شود.
+    """
 
     try:
 
@@ -1250,6 +1245,10 @@ def process_text_message(
             send_to_bale_for_user
         )
 
+        # =================================================
+        # FORMAT / SOURCE CLEANUP
+        # =================================================
+
         formatted = (
             format_with_source(
                 text,
@@ -1260,12 +1259,44 @@ def process_text_message(
         if not formatted:
             return False
 
-        # فعلاً Entity-aware text path
-        # همان رفتار پایدار قبلی را حفظ می‌کند.
-        if entities and not (
-            forward_source
-            and forward_source.get(
-                "is_forwarded"
+        # =================================================
+        # BRANDING
+        # =================================================
+
+        branding = (
+            build_branding_for_user(
+                chat_id
+            )
+        )
+
+        logger.info(
+            f"🔬 TEXT-BRANDING | "
+            f"formatted={len(formatted)} | "
+            f"branding={len(branding)}"
+        )
+
+        branded_formatted = (
+            formatted.rstrip()
+        )
+
+        if branding:
+
+            branded_formatted += (
+                "\n\n"
+                + branding.strip()
+            )
+
+        # =================================================
+        # TELEGRAM
+        # =================================================
+
+        if (
+            entities
+            and not (
+                forward_source
+                and forward_source.get(
+                    "is_forwarded"
+                )
             )
         ):
 
@@ -1278,6 +1309,19 @@ def process_text_message(
                     )
                 )
 
+                # -----------------------------------------
+                # Branding باید بعد از Entity HTML اضافه شود
+                # تا Offsetهای Telegram دستکاری نشوند.
+                # -----------------------------------------
+
+                if branding:
+
+                    html_content = (
+                        html_content.rstrip()
+                        + "\n\n"
+                        + branding.strip()
+                    )
+
                 success = (
                     send_to_channel(
                         html_content,
@@ -1285,32 +1329,43 @@ def process_text_message(
                     )
                 )
 
-            except Exception:
+            except Exception as e:
+
+                logger.warning(
+                    f"⚠️ HTML text path failed | "
+                    f"{e}"
+                )
 
                 success = (
                     send_to_channel(
-                        formatted
+                        branded_formatted
                     )
                 )
 
         else:
 
-            # برای Forwarded Text از formatted استفاده می‌کنیم
-            # تا Source Signature حذف شود.
+            # Forwarded Text از مسیر Formatter می‌رود
+            # تا اطلاعات مبدأ پاک شود و Branding خودمان
+            # در انتها قرار گیرد.
+
             success = (
                 send_to_channel(
-                    formatted
+                    branded_formatted
                 )
             )
 
         if not success:
             return False
 
+        # =================================================
+        # BALE
+        # =================================================
+
         try:
 
             send_to_bale_for_user(
                 chat_id,
-                formatted
+                branded_formatted
             )
 
         except Exception as e:
@@ -1574,11 +1629,6 @@ def handle_webhook() -> Tuple[
                     handle_media_group_message
                 )
 
-                # -----------------------------------------
-                # اطلاعات منبع را داخل خود Message نگه می‌داریم.
-                # امضای تابع media_handler تغییر نمی‌کند.
-                # -----------------------------------------
-
                 message_for_media = dict(
                     msg
                 )
@@ -1656,8 +1706,6 @@ def handle_webhook() -> Tuple[
                 )
             }
 
-            # برای حفظ Backward Compatibility،
-            # فقط اگر واقعاً Forward باشد این آرگومان اضافه می‌شود.
             if forward_source.get(
                 "is_forwarded"
             ):
