@@ -1,4 +1,19 @@
-from typing import Dict, List, Any, Optional, Tuple
+import logging
+
+from typing import (
+    Dict,
+    List,
+    Any,
+    Optional,
+    Tuple
+)
+
+from core.cleaner import (
+    clean_text
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 # =========================================================
@@ -67,13 +82,49 @@ def normalize_text(
     ).strip()
 
 
+# =========================================================
+# BLOCK CLEANER
+# =========================================================
+
 def normalize_block_text(
     text: Optional[str]
 ) -> str:
+    """
+    متن Blockquote را قبل از ساخت Caption Entity
+    از Cleaner اصلی پروژه عبور می‌دهد.
 
-    return normalize_text(
+    این کار باعث حذف مواردی مثل:
+    🔷
+    🆔
+    📡
+    و سایر تزئینات/امضای خارجی می‌شود.
+    """
+
+    text = normalize_text(
         text
     )
+
+    if not text:
+        return ""
+
+    try:
+
+        cleaned = clean_text(
+            text
+        )
+
+        return normalize_text(
+            cleaned
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Telegram caption entity "
+            f"block cleaning failed | {e}"
+        )
+
+        return text
 
 
 # =========================================================
@@ -92,19 +143,8 @@ def combine_blocks(
     Blockquote و Expandable Blockquote را بر اساس offset
     مرتب می‌کند.
 
-    خروجی داخلی:
-
-        {
-            "type": "blockquote",
-            "text": "...",
-            "offset": 100
-        }
-
-        {
-            "type": "expandable_blockquote",
-            "text": "...",
-            "offset": 200
-        }
+    قبل از اضافه شدن هر Block، متن آن از Cleaner اصلی
+    پروژه عبور می‌کند.
     """
 
     result: List[
@@ -229,15 +269,17 @@ def build_plain_caption_with_entities(
     کپشن Plain Text تولید می‌کند و Entityهای Telegram
     را جداگانه برمی‌گرداند.
 
-    ترتیب:
+    ترتیب نهایی:
 
         main_text
 
-        blockquote / expandable
+        blockquote / expandable_blockquote
 
         branding
 
-    هیچ HTML و هیچ parse_mode استفاده نمی‌شود.
+    هیچ HTML استفاده نمی‌شود.
+    هیچ parse_mode استفاده نمی‌شود.
+    Branding خارج از تمام Entityها باقی می‌ماند.
     """
 
     main_text = normalize_text(
@@ -280,12 +322,13 @@ def build_plain_caption_with_entities(
         )
 
     # =====================================================
-    # BLOCKS
+    # BLOCKQUOTES
     # =====================================================
 
     for block in blocks:
 
-        block_text = normalize_block_text(
+        # متن در combine_blocks قبلاً Clean شده است.
+        block_text = normalize_text(
             block.get(
                 "text",
                 ""
@@ -332,6 +375,8 @@ def build_plain_caption_with_entities(
 
     # =====================================================
     # BRANDING
+    #
+    # همیشه خارج از Blockquote Entity
     # =====================================================
 
     if branding:
@@ -357,7 +402,7 @@ def build_plain_caption_with_entities(
     )
 
     # =====================================================
-    # ENTITIES
+    # CAPTION ENTITIES
     # =====================================================
 
     caption_entities: List[
@@ -370,7 +415,7 @@ def build_plain_caption_with_entities(
         end_index
     ) in block_ranges:
 
-        caption_entities.append(
+        entity = (
             build_message_entity(
                 entity_type,
                 caption,
@@ -378,6 +423,18 @@ def build_plain_caption_with_entities(
                 end_index
             )
         )
+
+        if (
+            entity.get(
+                "length",
+                0
+            )
+            > 0
+        ):
+
+            caption_entities.append(
+                entity
+            )
 
     return {
         "caption": caption,
@@ -396,10 +453,13 @@ def validate_caption_entities(
     ]
 ) -> bool:
     """
-    بررسی ساده برای جلوگیری از Entity خراب.
-
-    Entity نباید از طول UTF-16 کپشن خارج شود.
+    بررسی می‌کند Entityها از محدوده UTF-16
+    کپشن خارج نشده باشند.
     """
+
+    caption = normalize_text(
+        caption
+    )
 
     caption_utf16_length = (
         utf16_length(
@@ -407,38 +467,62 @@ def validate_caption_entities(
         )
     )
 
+    previous_end = 0
+
     for entity in (
         entities
         or []
     ):
 
-        offset = int(
-            entity.get(
-                "offset",
-                0
-            )
-        )
+        try:
 
-        length = int(
-            entity.get(
-                "length",
-                0
+            offset = int(
+                entity.get(
+                    "offset",
+                    0
+                )
             )
-        )
+
+            length = int(
+                entity.get(
+                    "length",
+                    0
+                )
+            )
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            return False
 
         if offset < 0:
             return False
 
-        if length < 0:
+        if length <= 0:
             return False
 
-        if (
+        entity_end = (
             offset
             + length
+        )
+
+        if (
+            entity_end
             > caption_utf16_length
         ):
 
             return False
+
+        # Blockquoteهای تولیدی این ماژول نباید
+        # روی هم Overlap داشته باشند.
+        if offset < previous_end:
+            return False
+
+        previous_end = (
+            entity_end
+        )
 
     return True
 
@@ -464,8 +548,25 @@ def build_telegram_caption_entities(
 
         {
             "caption": "...",
-            "caption_entities": [...]
+            "caption_entities": [
+                {
+                    "type": "expandable_blockquote",
+                    "offset": ...,
+                    "length": ...
+                }
+            ]
         }
+
+    ویژگی‌ها:
+
+    - Plain Text Caption
+    - بدون HTML
+    - بدون parse_mode
+    - UTF-16 صحیح
+    - Blockquote معمولی
+    - Expandable Blockquote
+    - Cleaner اصلی پروژه
+    - Branding خارج از Entity
     """
 
     result = (
@@ -477,13 +578,17 @@ def build_telegram_caption_entities(
         )
     )
 
-    caption = result[
-        "caption"
-    ]
+    caption = (
+        result[
+            "caption"
+        ]
+    )
 
-    entities = result[
-        "caption_entities"
-    ]
+    entities = (
+        result[
+            "caption_entities"
+        ]
+    )
 
     if not validate_caption_entities(
         caption,
@@ -493,5 +598,11 @@ def build_telegram_caption_entities(
         raise ValueError(
             "Invalid Telegram caption entities"
         )
+
+    logger.info(
+        f"✅ Telegram caption entities built | "
+        f"caption={len(caption)} | "
+        f"entities={len(entities)}"
+    )
 
     return result
