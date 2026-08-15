@@ -7,6 +7,14 @@ from typing import Dict, List, Optional, Any, Tuple
 from core.content_entities import build_blockquote_html
 from core.cleaner import clean_text
 
+# =========================================================
+# NEW ENTITY-BASED CAPTION MODULE
+# =========================================================
+
+from core.telegram_caption_entities import (
+    build_telegram_caption_entities
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +52,13 @@ class PublicationPlan:
         self.telegram: Dict[str, Any] = {
             "media_caption": "",
             "media_parse_mode": None,
+
+            # =================================================
+            # NEW
+            # Telegram MessageEntity objects for media caption
+            # =================================================
+            "media_caption_entities": [],
+
             "followup_messages": [],
             "blockquote_messages": [],
             "document_fallback": False
@@ -901,8 +916,6 @@ def build_telegram_html_caption(
             blocks
         )
 
-    # Branding همیشه خارج از Blockquote
-    # و در انتهای Caption قرار می‌گیرد.
     if branding:
 
         parts.append(
@@ -1287,6 +1300,12 @@ def create_telegram_plan(
     plan = {
         "media_caption": "",
         "media_parse_mode": None,
+
+        # =================================================
+        # NEW
+        # =================================================
+        "media_caption_entities": [],
+
         "followup_messages": [],
         "blockquote_messages": [],
         "document_fallback": False
@@ -1304,38 +1323,75 @@ def create_telegram_plan(
     if has_blockquotes:
 
         # =================================================
-        # FULL ORIGINAL
+        # 1. ENTITY-BASED FULL CAPTION
+        #
+        # Plain text + caption_entities
+        # No HTML
+        # No parse_mode
         # =================================================
 
-        full_caption = (
-            build_telegram_html_caption(
-                main_text,
-                blockquote_blocks,
-                expandable_blocks,
-                branding
+        try:
+
+            entity_result = (
+                build_telegram_caption_entities(
+                    main_text=main_text,
+                    blockquote_blocks=blockquote_blocks,
+                    expandable_blocks=expandable_blocks,
+                    branding=branding
+                )
             )
-        )
 
-        if (
-            full_caption
-            and telegram_html_visible_length(
-                full_caption
+            entity_caption = (
+                entity_result[
+                    "caption"
+                ]
             )
-            <= TELEGRAM_CAPTION_LIMIT
-        ):
 
-            plan[
-                "media_caption"
-            ] = full_caption
+            entity_caption_entities = (
+                entity_result[
+                    "caption_entities"
+                ]
+            )
 
-            plan[
-                "media_parse_mode"
-            ] = "HTML"
+            if (
+                entity_caption
+                and len(entity_caption)
+                <= TELEGRAM_CAPTION_LIMIT
+            ):
 
-            return plan
+                plan[
+                    "media_caption"
+                ] = entity_caption
+
+                plan[
+                    "media_parse_mode"
+                ] = None
+
+                plan[
+                    "media_caption_entities"
+                ] = (
+                    entity_caption_entities
+                )
+
+                logger.info(
+                    f"✅ Telegram entity caption | "
+                    f"mode=FULL | "
+                    f"caption={len(entity_caption)} | "
+                    f"entities="
+                    f"{len(entity_caption_entities)}"
+                )
+
+                return plan
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Telegram full entity caption "
+                f"build failed | {e}"
+            )
 
         # =================================================
-        # COMPACT MAIN
+        # 2. ENTITY-BASED COMPACT CAPTION
         # =================================================
 
         compact_main = (
@@ -1345,37 +1401,84 @@ def create_telegram_plan(
             or main_text
         )
 
-        compact_caption = (
-            build_telegram_html_caption(
-                compact_main,
-                blockquote_blocks,
-                expandable_blocks,
-                branding
+        try:
+
+            compact_entity_result = (
+                build_telegram_caption_entities(
+                    main_text=compact_main,
+                    blockquote_blocks=blockquote_blocks,
+                    expandable_blocks=expandable_blocks,
+                    branding=branding
+                )
             )
+
+            compact_entity_caption = (
+                compact_entity_result[
+                    "caption"
+                ]
+            )
+
+            compact_entity_entities = (
+                compact_entity_result[
+                    "caption_entities"
+                ]
+            )
+
+            if (
+                compact_entity_caption
+                and len(
+                    compact_entity_caption
+                )
+                <= TELEGRAM_CAPTION_LIMIT
+            ):
+
+                plan[
+                    "media_caption"
+                ] = (
+                    compact_entity_caption
+                )
+
+                plan[
+                    "media_parse_mode"
+                ] = None
+
+                plan[
+                    "media_caption_entities"
+                ] = (
+                    compact_entity_entities
+                )
+
+                logger.info(
+                    f"✅ Telegram entity caption | "
+                    f"mode=COMPACT | "
+                    f"caption="
+                    f"{len(compact_entity_caption)} | "
+                    f"entities="
+                    f"{len(compact_entity_entities)}"
+                )
+
+                return plan
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Telegram compact entity caption "
+                f"build failed | {e}"
+            )
+
+        # =================================================
+        # 3. REAL OVERFLOW
+        #
+        # IMPORTANT:
+        # فعلاً مسیر پایدار قدیمی حفظ می‌شود.
+        # Entity overflow را در مرحله بعد جداگانه
+        # پیاده‌سازی می‌کنیم.
+        # =================================================
+
+        logger.info(
+            "ℹ️ Telegram entity caption exceeds "
+            "media limit | using stable overflow path"
         )
-
-        if (
-            compact_caption
-            and telegram_html_visible_length(
-                compact_caption
-            )
-            <= TELEGRAM_CAPTION_LIMIT
-        ):
-
-            plan[
-                "media_caption"
-            ] = compact_caption
-
-            plan[
-                "media_parse_mode"
-            ] = "HTML"
-
-            return plan
-
-        # =================================================
-        # REAL OVERFLOW
-        # MAIN TEXT PRIORITY
-        # =================================================
 
         branding_cost = (
             len(branding)
@@ -1513,10 +1616,6 @@ def create_telegram_plan(
                 inline_blocks
             )
 
-        # =================================================
-        # BRANDING ALWAYS LAST
-        # =================================================
-
         if branding:
 
             caption_parts.append(
@@ -1551,9 +1650,17 @@ def create_telegram_plan(
             "media_caption"
         ] = candidate
 
+        # =================================================
+        # OLD/STABLE OVERFLOW PATH ONLY
+        # =================================================
+
         plan[
             "media_parse_mode"
         ] = "HTML"
+
+        plan[
+            "media_caption_entities"
+        ] = []
 
         # =================================================
         # MAIN OVERFLOW
@@ -1610,6 +1717,9 @@ def create_telegram_plan(
 
     # =====================================================
     # NORMAL MEDIA WITHOUT BLOCKQUOTE
+    #
+    # IMPORTANT:
+    # این مسیر عمداً هیچ تغییری نکرده است.
     # =====================================================
 
     normal_final = (
@@ -2246,6 +2356,8 @@ def analyze_content(
     logger.info(
         f"✅ Publication Plan ready | "
         f"tg_caption_visible={telegram_visible} | "
+        f"tg_entities="
+        f"{len(plan.telegram.get('media_caption_entities', []))} | "
         f"tg_followup="
         f"{len(plan.telegram['followup_messages'])} | "
         f"tg_blockquote_followup="
