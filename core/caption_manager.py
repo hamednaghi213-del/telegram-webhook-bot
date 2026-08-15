@@ -940,6 +940,38 @@ def create_telegram_blockquote_messages(
                     html_message
                 )
 
+                continue
+
+            retry_parts = (
+                split_text(
+                    raw_part,
+                    max(
+                        500,
+                        raw_limit // 2
+                    )
+                )
+            )
+
+            for retry_part in retry_parts:
+
+                retry_html = (
+                    build_blockquote_html(
+                        retry_part,
+                        expandable=expandable
+                    )
+                )
+
+                if (
+                    telegram_html_visible_length(
+                        retry_html
+                    )
+                    <= TELEGRAM_MESSAGE_LIMIT
+                ):
+
+                    result.append(
+                        retry_html
+                    )
+
     return result
 
 
@@ -1112,11 +1144,15 @@ def build_smart_expandable_media_caption(
     caption_limit: int
 ) -> Optional[str]:
     """
-    برای خبرهایی که کل متن هنوز داخل Caption جا می‌شود،
-    بخشی از متن عادی و ادامه داخل Expandable قرار می‌گیرد.
+    برای خبرهایی که کل متن هنوز در Caption جا می‌شود،
+    بخش اول عادی و ادامه داخل Expandable قرار می‌گیرد.
 
-    Expandable فقط ظاهر را جمع‌وجور می‌کند و محدودیت
-    Telegram را افزایش نمی‌دهد.
+    دو شرط همزمان داریم:
+
+    1. Visible text <= caption_limit
+    2. Raw HTML <= caption_limit
+
+    شرط دوم برای حفظ Safe Limit داخلی پروژه است.
     """
 
     main_text = normalize_text(
@@ -1218,6 +1254,10 @@ def build_smart_expandable_media_caption(
         )
     )
 
+    # =====================================================
+    # VISIBLE SAFETY
+    # =====================================================
+
     if (
         telegram_html_visible_length(
             html_caption
@@ -1227,12 +1267,29 @@ def build_smart_expandable_media_caption(
 
         return None
 
+    # =====================================================
+    # RAW HTML SAFETY
+    #
+    # این همان اصلاح Fail اول است.
+    # =====================================================
+
+    if len(html_caption) > caption_limit:
+
+        logger.info(
+            f"ℹ️ Smart expandable skipped | "
+            f"raw_html={len(html_caption)} | "
+            f"limit={caption_limit}"
+        )
+
+        return None
+
     logger.info(
         f"🧩 Smart expandable media caption | "
         f"normal={len(normal_part)} | "
         f"expandable={len(expandable_part)} | "
         f"visible="
-        f"{telegram_html_visible_length(html_caption)}"
+        f"{telegram_html_visible_length(html_caption)} | "
+        f"raw={len(html_caption)}"
     )
 
     return html_caption
@@ -1509,10 +1566,6 @@ def create_telegram_plan(
 
     if has_source_blockquotes:
 
-        # -------------------------------------------------
-        # NORMAL FULL VERSION
-        # -------------------------------------------------
-
         normal_html_caption = (
             build_telegram_html_caption(
                 main_text,
@@ -1545,10 +1598,6 @@ def create_telegram_plan(
             )
 
             return plan
-
-        # -------------------------------------------------
-        # COMPACT MAIN + SOURCE BLOCKQUOTE
-        # -------------------------------------------------
 
         compact_main = (
             compact_long_text(
@@ -1595,9 +1644,9 @@ def create_telegram_plan(
 
             return plan
 
-        # -------------------------------------------------
-        # RESERVE SPACE FOR REAL SOURCE BLOCKQUOTE
-        # -------------------------------------------------
+        # =================================================
+        # RESERVE SPACE FOR SOURCE BLOCKQUOTE + BRANDING
+        # =================================================
 
         inline_blockquotes = (
             build_inline_telegram_blockquotes(
@@ -1644,10 +1693,6 @@ def create_telegram_plan(
             )
         )
 
-        # -------------------------------------------------
-        # اگر Safe Limit کافی نبود، تا سقف رسمی امتحان می‌کنیم.
-        # -------------------------------------------------
-
         if available_for_main <= 0:
 
             available_for_main = (
@@ -1659,11 +1704,6 @@ def create_telegram_plan(
                     else 0
                 )
             )
-
-        # -------------------------------------------------
-        # اگر خود Blockquote + Branding داخل Caption جا می‌شود،
-        # بخشی از main text را قبل از آن قرار می‌دهیم.
-        # -------------------------------------------------
 
         if available_for_main > 0:
 
@@ -1785,12 +1825,12 @@ def create_telegram_plan(
 
                 return plan
 
-        # -------------------------------------------------
+        # =================================================
         # EXTREME EDGE CASE
         #
-        # خود blockquote + branding از 1024 بیشتر است.
+        # خود Blockquote بزرگ‌تر از ظرفیت Caption است.
         # انتشار را Abort نمی‌کنیم.
-        # -------------------------------------------------
+        # =================================================
 
         logger.warning(
             f"⚠️ Source blockquote itself cannot fit "
@@ -1860,8 +1900,7 @@ def create_telegram_plan(
                 )
             )
 
-        # فقط در Edge Case بسیار بزرگ،
-        # Blockquote مستقل Safety Net می‌شود.
+        # Safety Net فقط برای Blockquote بسیار بزرگ
         replies.extend(
             create_telegram_blockquote_messages(
                 blockquote_blocks,
@@ -1900,9 +1939,9 @@ def create_telegram_plan(
         )
     )
 
-    # -----------------------------------------------------
-    # SHORT NEWS
-    # -----------------------------------------------------
+    # =====================================================
+    # NORMAL CONTENT FITS
+    # =====================================================
 
     if (
         normal_with_branding
@@ -1910,8 +1949,6 @@ def create_telegram_plan(
         <= TELEGRAM_CAPTION_SAFE_LIMIT
     ):
 
-        # اگر خبر کمی بلند است ولی هنوز جا می‌شود،
-        # حالت Expandable مصنوعی را امتحان می‌کنیم.
         smart_caption = (
             build_smart_expandable_media_caption(
                 main_text,
@@ -1943,7 +1980,6 @@ def create_telegram_plan(
         return plan
 
     # =====================================================
-    # CASE 3
     # TRY COMPACT
     # =====================================================
 
@@ -1995,6 +2031,8 @@ def create_telegram_plan(
 
             return plan
 
+        # اگر HTML خام Expandable از Safe Limit عبور کند،
+        # همان Compact ساده استفاده می‌شود.
         plan[
             "media_caption"
         ] = compact_with_branding
@@ -2002,7 +2040,6 @@ def create_telegram_plan(
         return plan
 
     # =====================================================
-    # CASE 4
     # TOO LONG EVEN AFTER COMPACT
     #
     # CAPTION + REPLY
@@ -2032,7 +2069,8 @@ def create_telegram_plan(
     if available_for_caption <= 0:
 
         logger.error(
-            "❌ Branding itself exceeds Telegram caption capacity"
+            "❌ Branding itself exceeds "
+            "Telegram caption capacity"
         )
 
         plan[
@@ -2068,10 +2106,7 @@ def create_telegram_plan(
         .strip()
     )
 
-    # -----------------------------------------------------
     # Branding زیر Caption اصلی
-    # -----------------------------------------------------
-
     plan[
         "media_caption"
     ] = (
@@ -2081,10 +2116,7 @@ def create_telegram_plan(
         )
     )
 
-    # -----------------------------------------------------
     # ادامه خبر + Branding
-    # -----------------------------------------------------
-
     if remaining_main:
 
         replies = (
@@ -2602,9 +2634,12 @@ def analyze_content(
         ]
     )
 
-    if plan.telegram.get(
-        "media_parse_mode"
-    ) == "HTML":
+    if (
+        plan.telegram.get(
+            "media_parse_mode"
+        )
+        == "HTML"
+    ):
 
         telegram_caption_visible = (
             telegram_html_visible_length(
