@@ -34,43 +34,6 @@ BALE_MESSAGE_SAFE_LIMIT = 4000
 
 
 # =========================================================
-# TELEGRAM TEXT DIRECTION
-# =========================================================
-
-TELEGRAM_RLM = "\u200f"
-
-
-def telegram_branding_text(
-    branding: str
-) -> str:
-    """
-    Branding مخصوص Telegram.
-
-    فقط یک RLM نامرئی قبل از کل Branding قرار می‌گیرد.
-
-    نتیجه:
-
-        #دنیا_۲۴_نیوز  -> RTL / سمت راست
-        @Donya24News   -> LTR / سمت چپ
-
-    خود متن Branding تغییر نمی‌کند و Space مصنوعی
-    نیز اضافه نمی‌شود.
-    """
-
-    branding = normalize_text(
-        branding
-    )
-
-    if not branding:
-        return ""
-
-    return (
-        TELEGRAM_RLM
-        + branding
-    )
-
-
-# =========================================================
 # PUBLICATION PLAN
 # =========================================================
 
@@ -875,9 +838,11 @@ def build_telegram_html_caption(
 
     parts: List[str] = []
 
-    main_text = normalize_text(main_text)
+    main_text = normalize_text(
+        main_text
+    )
 
-    branding = telegram_branding_text(
+    branding = normalize_text(
         branding
     )
 
@@ -887,9 +852,11 @@ def build_telegram_html_caption(
             escape(main_text)
         )
 
-    blocks = build_inline_telegram_blockquotes(
-        blockquote_blocks,
-        expandable_blocks
+    blocks = (
+        build_inline_telegram_blockquotes(
+            blockquote_blocks,
+            expandable_blocks
+        )
     )
 
     if blocks:
@@ -938,6 +905,7 @@ def fit_blockquotes_into_caption(
     )
 
     included_html: List[str] = []
+
     remaining_blocks: List[
         Dict[str, Any]
     ] = []
@@ -1072,10 +1040,8 @@ def build_branded_blockquote_messages(
 
     result: List[str] = []
 
-    telegram_branding = (
-        telegram_branding_text(
-            branding
-        )
+    branding = normalize_text(
+        branding
     )
 
     for block in blocks:
@@ -1091,9 +1057,9 @@ def build_branded_blockquote_messages(
             continue
 
         branding_cost = (
-            len(telegram_branding)
+            len(branding)
             + 2
-            if telegram_branding
+            if branding
             else 0
         )
 
@@ -1123,12 +1089,12 @@ def build_branded_blockquote_messages(
                 )
             )
 
-            if telegram_branding:
+            if branding:
 
                 html_message += (
                     "\n\n"
                     + escape(
-                        telegram_branding
+                        branding
                     )
                 )
 
@@ -1261,14 +1227,8 @@ def create_telegram_plan(
         main_text
     )
 
-    raw_branding = normalize_text(
+    branding = normalize_text(
         branding
-    )
-
-    telegram_branding = (
-        telegram_branding_text(
-            raw_branding
-        )
     )
 
     plan = {
@@ -1299,7 +1259,7 @@ def create_telegram_plan(
                 main_text,
                 blockquote_blocks,
                 expandable_blocks,
-                raw_branding
+                branding
             )
         )
 
@@ -1342,7 +1302,7 @@ def create_telegram_plan(
                 compact_main,
                 blockquote_blocks,
                 expandable_blocks,
-                raw_branding
+                branding
             )
         )
 
@@ -1371,13 +1331,12 @@ def create_telegram_plan(
 
         # =================================================
         # 3. REAL OVERFLOW
+        # MAIN TEXT PRIORITY
         # =================================================
 
         branding_cost = (
-            len(
-                telegram_branding
-            )
-            if telegram_branding
+            len(branding)
+            if branding
             else 0
         )
 
@@ -1385,7 +1344,7 @@ def create_telegram_plan(
             branding_cost
             + (
                 2
-                if telegram_branding
+                if branding
                 else 0
             )
         )
@@ -1455,14 +1414,14 @@ def create_telegram_plan(
 
         if (
             main_for_caption
-            and telegram_branding
+            and branding
         ):
 
             base_separator = 4
 
         elif (
             main_for_caption
-            or telegram_branding
+            or branding
         ):
 
             base_separator = 2
@@ -1530,11 +1489,11 @@ def create_telegram_plan(
             )
 
         # Branding همیشه آخر پست
-        if telegram_branding:
+        if branding:
 
             caption_parts.append(
                 escape(
-                    telegram_branding
+                    branding
                 )
             )
 
@@ -1575,11 +1534,9 @@ def create_telegram_plan(
         if remaining_main:
 
             branding_cost_reply = (
-                len(
-                    telegram_branding
-                )
+                len(branding)
                 + 2
-                if telegram_branding
+                if branding
                 else 0
             )
 
@@ -1602,12 +1559,12 @@ def create_telegram_plan(
 
             for reply in replies:
 
-                if telegram_branding:
+                if branding:
 
                     final_reply = (
                         append_branding(
                             reply,
-                            telegram_branding
+                            branding
                         )
                     )
 
@@ -1632,7 +1589,7 @@ def create_telegram_plan(
             ] = (
                 build_branded_blockquote_messages(
                     remaining_blocks,
-                    raw_branding
+                    branding
                 )
             )
 
@@ -1655,7 +1612,7 @@ def create_telegram_plan(
     normal_final = (
         append_branding(
             main_text,
-            telegram_branding
+            branding
         )
     )
 
@@ -1681,7 +1638,7 @@ def create_telegram_plan(
     compact_final = (
         append_branding(
             compact_main,
-            telegram_branding
+            branding
         )
     )
 
@@ -1698,11 +1655,9 @@ def create_telegram_plan(
         return plan
 
     branding_cost = (
-        len(
-            telegram_branding
-        )
+        len(branding)
         + 2
-        if telegram_branding
+        if branding
         else 0
     )
 
@@ -1749,7 +1704,7 @@ def create_telegram_plan(
     ] = (
         append_branding(
             main_for_caption,
-            telegram_branding
+            branding
         )
     )
 
@@ -1774,12 +1729,12 @@ def create_telegram_plan(
 
         for reply in replies:
 
-            if telegram_branding:
+            if branding:
 
                 final_reply = (
                     append_branding(
                         reply,
-                        telegram_branding
+                        branding
                     )
                 )
 
@@ -1985,19 +1940,13 @@ def create_telegram_text_plan(
         main_text
     )
 
-    raw_branding = normalize_text(
+    branding = normalize_text(
         branding
-    )
-
-    telegram_branding = (
-        telegram_branding_text(
-            raw_branding
-        )
     )
 
     normal_final = append_branding(
         main_text,
-        telegram_branding
+        branding
     )
 
     if (
@@ -2022,7 +1971,7 @@ def create_telegram_text_plan(
         compact_final = (
             append_branding(
                 compact_text,
-                telegram_branding
+                branding
             )
         )
 
@@ -2039,11 +1988,9 @@ def create_telegram_text_plan(
         else:
 
             branding_cost = (
-                len(
-                    telegram_branding
-                )
+                len(branding)
                 + 2
-                if telegram_branding
+                if branding
                 else 0
             )
 
@@ -2064,12 +2011,12 @@ def create_telegram_text_plan(
 
             for message in messages:
 
-                if telegram_branding:
+                if branding:
 
                     branded_messages.append(
                         append_branding(
                             message,
-                            telegram_branding
+                            branding
                         )
                     )
 
