@@ -40,6 +40,50 @@ CHANNEL_ID: Optional[str] = None
 
 
 # =========================================================
+# THREAD-LOCAL TELEGRAM SEND STATE
+# =========================================================
+#
+# برای حفظ سازگاری توابع قدیمی، توابع ارسال Media
+# همچنان True / False برمی‌گردانند.
+#
+# message_id واقعی آخرین Media موفق در Thread-local
+# نگهداری می‌شود تا Follow-upهای متن بلند بتوانند
+# Reply همان پست شوند.
+#
+# Thread-local جلوی تداخل درخواست‌های همزمان را می‌گیرد.
+# =========================================================
+
+telegram_send_state = threading.local()
+
+
+def set_last_media_message_id(
+    message_id: Optional[int]
+) -> None:
+
+    telegram_send_state.last_media_message_id = (
+        message_id
+    )
+
+
+def get_last_media_message_id() -> Optional[int]:
+
+    value = getattr(
+        telegram_send_state,
+        "last_media_message_id",
+        None
+    )
+
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+    ):
+
+        return value
+
+    return None
+
+
+# =========================================================
 # MEDIA GROUP STORAGE
 # =========================================================
 
@@ -105,9 +149,6 @@ def initialize(
     api_url: str,
     channel_id: str
 ) -> None:
-    """
-    مقداردهی Media Handler.
-    """
 
     global API_URL
     global CHANNEL_ID
@@ -322,14 +363,6 @@ def add_to_pending_group(
         Dict[str, Any]
     ] = None
 ) -> None:
-    """
-    اضافه کردن Media به Pending Group.
-
-    علاوه بر Caption و Entityها،
-    اطلاعات منبع Forward نیز در سطح Group ذخیره می‌شود.
-
-    هیچ منبعی Hardcode نشده است.
-    """
 
     group_key = (
         chat_id,
@@ -348,33 +381,21 @@ def add_to_pending_group(
                 group_key
             ] = {
                 "chat_id": chat_id,
-
                 "media_group_id": (
                     media_group_id
                 ),
-
                 "files": [],
-
                 "raw_caption": "",
-
                 "caption_entities": [],
-
                 "main_text": "",
-
                 "expandable_blocks": [],
-
                 "blockquote_blocks": [],
-
                 "other_entities": [],
-
                 "forward_source": {},
-
                 "caption_received": False,
-
                 "last_update": (
                     time.time()
                 ),
-
                 "is_processing": False
             }
 
@@ -389,10 +410,6 @@ def add_to_pending_group(
 
         # =================================================
         # FORWARD SOURCE
-        # =================================================
-        #
-        # اولین Source معتبر ثبت می‌شود.
-        # در یک آلبوم همه Mediaها متعلق به همان منبع هستند.
         # =================================================
 
         if (
@@ -835,12 +852,124 @@ def telegram_response_ok(
 
 
 # =========================================================
+# EXTRACT SINGLE MESSAGE ID
+# =========================================================
+
+def extract_single_message_id(
+    response: Optional[
+        requests.Response
+    ]
+) -> Optional[int]:
+
+    if response is None:
+        return None
+
+    try:
+
+        data = response.json()
+
+        result = data.get(
+            "result"
+        )
+
+        if not isinstance(
+            result,
+            dict
+        ):
+
+            return None
+
+        message_id = result.get(
+            "message_id"
+        )
+
+        if (
+            isinstance(message_id, int)
+            and not isinstance(message_id, bool)
+        ):
+
+            return message_id
+
+    except Exception as e:
+
+        logger.warning(
+            f"⚠️ Cannot extract Telegram message_id | "
+            f"{e}"
+        )
+
+    return None
+
+
+# =========================================================
+# EXTRACT MEDIA GROUP ANCHOR
+# =========================================================
+
+def extract_media_group_message_id(
+    response: Optional[
+        requests.Response
+    ]
+) -> Optional[int]:
+
+    if response is None:
+        return None
+
+    try:
+
+        data = response.json()
+
+        result = data.get(
+            "result"
+        )
+
+        if not isinstance(
+            result,
+            list
+        ):
+
+            return None
+
+        if not result:
+
+            return None
+
+        first_message = result[0]
+
+        if not isinstance(
+            first_message,
+            dict
+        ):
+
+            return None
+
+        message_id = first_message.get(
+            "message_id"
+        )
+
+        if (
+            isinstance(message_id, int)
+            and not isinstance(message_id, bool)
+        ):
+
+            return message_id
+
+    except Exception as e:
+
+        logger.warning(
+            f"⚠️ Cannot extract Media Group message_id | "
+            f"{e}"
+        )
+
+    return None
+
+
+# =========================================================
 # SEND TEXT TO TELEGRAM CHANNEL
 # =========================================================
 
 def send_text_to_channel(
     text: str,
-    parse_mode: Optional[str] = None
+    parse_mode: Optional[str] = None,
+    reply_to_message_id: Optional[int] = None
 ) -> bool:
 
     if not text:
@@ -866,6 +995,34 @@ def send_text_to_channel(
             "parse_mode"
         ] = parse_mode
 
+    # =====================================================
+    # REPLY
+    # =====================================================
+
+    if (
+        isinstance(
+            reply_to_message_id,
+            int
+        )
+        and not isinstance(
+            reply_to_message_id,
+            bool
+        )
+    ):
+
+        payload[
+            "reply_parameters"
+        ] = {
+            "message_id": (
+                reply_to_message_id
+            )
+        }
+
+        logger.info(
+            f"↩️ Telegram reply prepared | "
+            f"reply_to={reply_to_message_id}"
+        )
+
     response = telegram_post(
         "sendMessage",
         payload
@@ -881,7 +1038,9 @@ def send_text_to_channel(
         logger.info(
             f"✅ Telegram text sent | "
             f"length={len(text)} | "
-            f"parse_mode={parse_mode or 'NONE'}"
+            f"parse_mode={parse_mode or 'NONE'} | "
+            f"reply_to="
+            f"{reply_to_message_id or '-'}"
         )
 
     return success
@@ -894,8 +1053,14 @@ def send_text_to_channel(
 def send_single_media_to_channel(
     file_id: str,
     media_type: str,
-    caption: str = ""
+    caption: str = "",
+    parse_mode: Optional[str] = None
 ) -> bool:
+
+    # جلوگیری از استفاده از message_id قبلی
+    set_last_media_message_id(
+        None
+    )
 
     if not API_URL:
 
@@ -925,7 +1090,7 @@ def send_single_media_to_channel(
 
         endpoint = "sendPhoto"
 
-        payload = {
+        payload: Dict[str, Any] = {
             "chat_id": CHANNEL_ID,
             "photo": file_id
         }
@@ -954,6 +1119,12 @@ def send_single_media_to_channel(
             "caption"
         ] = caption
 
+        if parse_mode:
+
+            payload[
+                "parse_mode"
+            ] = parse_mode
+
     response = telegram_post(
         endpoint,
         payload
@@ -964,9 +1135,23 @@ def send_single_media_to_channel(
         endpoint
     ):
 
+        message_id = (
+            extract_single_message_id(
+                response
+            )
+        )
+
+        set_last_media_message_id(
+            message_id
+        )
+
         logger.info(
             f"✅ Single Telegram media sent | "
-            f"type={media_type}"
+            f"type={media_type} | "
+            f"parse_mode="
+            f"{parse_mode or 'NONE'} | "
+            f"message_id="
+            f"{message_id or '-'}"
         )
 
         return True
@@ -982,8 +1167,14 @@ def send_media_group_to_channel(
     files: List[
         Dict[str, str]
     ],
-    caption: str = ""
+    caption: str = "",
+    parse_mode: Optional[str] = None
 ) -> bool:
+
+    # جلوگیری از استفاده از message_id قبلی
+    set_last_media_message_id(
+        None
+    )
 
     file_count = (
         len(files)
@@ -1081,10 +1272,14 @@ def send_media_group_to_channel(
 
             return False
 
-        media_item = {
+        media_item: Dict[str, Any] = {
             "type": media_type,
             "media": file_id
         }
+
+        # =================================================
+        # CAPTION ONLY ON FIRST MEDIA
+        # =================================================
 
         if (
             index == 0
@@ -1094,6 +1289,12 @@ def send_media_group_to_channel(
             media_item[
                 "caption"
             ] = caption
+
+            if parse_mode:
+
+                media_item[
+                    "parse_mode"
+                ] = parse_mode
 
         media_group.append(
             media_item
@@ -1114,9 +1315,23 @@ def send_media_group_to_channel(
         "sendMediaGroup"
     ):
 
+        message_id = (
+            extract_media_group_message_id(
+                response
+            )
+        )
+
+        set_last_media_message_id(
+            message_id
+        )
+
         logger.info(
             f"🎯 Telegram Media Group sent | "
-            f"count={len(media_group)}"
+            f"count={len(media_group)} | "
+            f"parse_mode="
+            f"{parse_mode or 'NONE'} | "
+            f"anchor_message_id="
+            f"{message_id or '-'}"
         )
 
         return True
@@ -1363,6 +1578,13 @@ def execute_telegram_plan(
         or ""
     )
 
+    media_parse_mode = (
+        plan.get(
+            "media_parse_mode"
+        )
+        or None
+    )
+
     followup_messages = list(
         plan.get(
             "followup_messages",
@@ -1399,30 +1621,73 @@ def execute_telegram_plan(
 
         return False
 
+    # =====================================================
+    # RESET ANCHOR
+    # =====================================================
+
+    set_last_media_message_id(
+        None
+    )
+
+    # =====================================================
+    # SEND MEDIA
+    # =====================================================
+
     if len(files) == 1:
 
         file = files[0]
 
-        media_success = (
-            send_single_media_to_channel(
-                file.get(
-                    "file_id"
-                ),
-                file.get(
-                    "type"
-                ),
-                media_caption
+        if media_parse_mode:
+
+            media_success = (
+                send_single_media_to_channel(
+                    file.get(
+                        "file_id"
+                    ),
+                    file.get(
+                        "type"
+                    ),
+                    media_caption,
+                    parse_mode=media_parse_mode
+                )
             )
-        )
+
+        else:
+
+            # سازگاری کامل با Call قدیمی
+            media_success = (
+                send_single_media_to_channel(
+                    file.get(
+                        "file_id"
+                    ),
+                    file.get(
+                        "type"
+                    ),
+                    media_caption
+                )
+            )
 
     else:
 
-        media_success = (
-            send_media_group_to_channel(
-                files,
-                media_caption
+        if media_parse_mode:
+
+            media_success = (
+                send_media_group_to_channel(
+                    files,
+                    media_caption,
+                    parse_mode=media_parse_mode
+                )
             )
-        )
+
+        else:
+
+            # سازگاری کامل با Call قدیمی
+            media_success = (
+                send_media_group_to_channel(
+                    files,
+                    media_caption
+                )
+            )
 
     if not media_success:
 
@@ -1432,13 +1697,57 @@ def execute_telegram_plan(
 
         return False
 
+    # =====================================================
+    # MEDIA ANCHOR MESSAGE ID
+    # =====================================================
+
+    media_message_id = (
+        get_last_media_message_id()
+    )
+
+    logger.info(
+        f"🔗 Telegram media anchor | "
+        f"message_id={media_message_id or '-'} | "
+        f"followups={len(followup_messages)}"
+    )
+
+    # =====================================================
+    # FOLLOW-UP TEXT
+    #
+    # فقط ادامه متن بلند Reply می‌شود.
+    # =====================================================
+
     for index, message in enumerate(
         followup_messages
     ):
 
-        success = send_text_to_channel(
-            message
-        )
+        if media_message_id:
+
+            success = (
+                send_text_to_channel(
+                    message,
+                    reply_to_message_id=(
+                        media_message_id
+                    )
+                )
+            )
+
+        else:
+
+            # اگر به هر دلیل message_id استخراج نشد،
+            # خبر از بین نمی‌رود و مسیر قدیمی اجرا می‌شود.
+
+            logger.warning(
+                f"⚠️ Media message_id unavailable | "
+                f"follow-up will be sent normally | "
+                f"index={index + 1}"
+            )
+
+            success = (
+                send_text_to_channel(
+                    message
+                )
+            )
 
         if not success:
 
@@ -1447,13 +1756,30 @@ def execute_telegram_plan(
                 f"index={index + 1}"
             )
 
+    # =====================================================
+    # LEGACY BLOCKQUOTE MESSAGES
+    #
+    # مسیر جدید Media Planner باید Blockquote را داخل
+    # Caption قرار دهد و این لیست خالی باشد.
+    #
+    # این حلقه فقط برای Backward Compatibility حفظ شده.
+    # Blockquote عمداً Reply نمی‌شود.
+    # =====================================================
+
     for index, html_message in enumerate(
         blockquote_messages
     ):
 
-        success = send_text_to_channel(
-            html_message,
-            parse_mode="HTML"
+        logger.warning(
+            f"⚠️ Legacy standalone blockquote path used | "
+            f"index={index + 1}"
+        )
+
+        success = (
+            send_text_to_channel(
+                html_message,
+                parse_mode="HTML"
+            )
         )
 
         if not success:
@@ -1720,15 +2046,6 @@ def process_media_group(
                     or ""
                 )
 
-                # -----------------------------------------
-                # اگر منبع Forward معتبر داریم،
-                # Formatter همان منبع را از انتهای خبر
-                # حذف می‌کند.
-                #
-                # اگر Source نداریم،
-                # رفتار دقیق قبلی حفظ می‌شود.
-                # -----------------------------------------
-
                 if (
                     forward_source.get(
                         "is_forwarded"
@@ -1821,6 +2138,8 @@ def process_media_group(
             f"📋 Publication Plan received | "
             f"tg_caption="
             f"{len(telegram_plan.get('media_caption', ''))} | "
+            f"tg_parse_mode="
+            f"{telegram_plan.get('media_parse_mode') or 'NONE'} | "
             f"tg_followup="
             f"{len(telegram_plan.get('followup_messages', []))} | "
             f"tg_blockquote="
@@ -2108,20 +2427,6 @@ def handle_media_group_message(
         f"forwarded="
         f"{bool(forward_source.get('is_forwarded'))}"
     )
-
-    # =====================================================
-    # BACKWARD-COMPATIBLE CALL
-    # =====================================================
-    #
-    # اگر Source وجود نداشته باشد، همان Call قدیمی
-    # با 6 آرگومان انجام می‌شود.
-    #
-    # این موضوع باعث می‌شود تست قبلی:
-    #
-    # test_handle_media_group_passes_caption_entities
-    #
-    # همچنان بدون تغییر Pass شود.
-    # =====================================================
 
     if (
         forward_source
