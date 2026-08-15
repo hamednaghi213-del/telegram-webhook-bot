@@ -1369,9 +1369,11 @@ def create_telegram_plan(
         # 1. ENTITY-BASED FULL CAPTION
         #
         # مرحله اول:
-        # فقط متن + Entity
+        # Branding را Pass کن
+        # Entities را Extract کن
         #
-        # Branding عمداً به builder داده نمی‌شود.
+        # تمام Caption + Branding + RTL Marker + Entities
+        # از build_telegram_caption_entities ساخته می‌شوند.
         # =================================================
 
         try:
@@ -1381,11 +1383,12 @@ def create_telegram_plan(
                     main_text=main_text,
                     blockquote_blocks=blockquote_blocks,
                     expandable_blocks=expandable_blocks,
-                    branding=""
+                    branding=branding,
+                    include_branding_entities=True
                 )
             )
 
-            entity_caption_without_branding = (
+            entity_caption = (
                 entity_result[
                     "caption"
                 ]
@@ -1395,14 +1398,6 @@ def create_telegram_plan(
                 entity_result[
                     "caption_entities"
                 ]
-            )
-
-            entity_caption = (
-                append_final_telegram_media_branding(
-                    entity_caption_without_branding,
-                    branding,
-                    has_expandable=has_expandable
-                )
             )
 
             if (
@@ -1431,7 +1426,8 @@ def create_telegram_plan(
                     f"caption={len(entity_caption)} | "
                     f"entities="
                     f"{len(entity_caption_entities)} | "
-                    f"branding_once=True"
+                    f"branding_once=True | "
+                    f"include_branding_entities=True"
                 )
 
                 return plan
@@ -1461,11 +1457,12 @@ def create_telegram_plan(
                     main_text=compact_main,
                     blockquote_blocks=blockquote_blocks,
                     expandable_blocks=expandable_blocks,
-                    branding=""
+                    branding=branding,
+                    include_branding_entities=True
                 )
             )
 
-            compact_caption_without_branding = (
+            compact_entity_caption = (
                 compact_entity_result[
                     "caption"
                 ]
@@ -1475,14 +1472,6 @@ def create_telegram_plan(
                 compact_entity_result[
                     "caption_entities"
                 ]
-            )
-
-            compact_entity_caption = (
-                append_final_telegram_media_branding(
-                    compact_caption_without_branding,
-                    branding,
-                    has_expandable=has_expandable
-                )
             )
 
             if (
@@ -1516,7 +1505,8 @@ def create_telegram_plan(
                     f"{len(compact_entity_caption)} | "
                     f"entities="
                     f"{len(compact_entity_entities)} | "
-                    f"branding_once=True"
+                    f"branding_once=True | "
+                    f"include_branding_entities=True"
                 )
 
                 return plan
