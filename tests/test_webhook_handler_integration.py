@@ -1477,7 +1477,6 @@ def test_formatter_keeps_only_donya24_format_icons():
         )
     )
 
-    # Emojiهای مبدأ حذف شوند
     assert (
         "🇮🇷"
         not in result
@@ -1488,7 +1487,6 @@ def test_formatter_keeps_only_donya24_format_icons():
         not in result
     )
 
-    # Mentionهای خارجی حذف شوند
     assert (
         "@another_account"
         not in result
@@ -1499,13 +1497,11 @@ def test_formatter_keeps_only_donya24_format_icons():
         not in result
     )
 
-    # نام منبع حذف شود
     assert (
         "منبع نمونه"
         not in result
     )
 
-    # متن واقعی خبر باقی بماند
     assert (
         "این ایموجی متعلق به متن منبع است"
         in result
@@ -1516,7 +1512,6 @@ def test_formatter_keeps_only_donya24_format_icons():
         in result
     )
 
-    # آیکون‌های قالب دنیا ۲۴ باقی بمانند
     assert (
         "❇️"
         in result
@@ -1527,7 +1522,6 @@ def test_formatter_keeps_only_donya24_format_icons():
         in result
     )
 
-    # Bullet تکراری نباشد
     assert (
         "🔹 🔹"
         not in result
@@ -1619,4 +1613,190 @@ def test_album_passes_forward_source_metadata():
             "source_username"
         ]
         == "album_source"
+    )
+
+
+# =========================================================
+# TEST 32
+# TEXT MESSAGE PRESERVES DONYA24 BRANDING
+# =========================================================
+
+def test_text_message_preserves_own_branding():
+
+    raw_text = (
+        "تیتر خبر\n\n"
+        "متن اصلی خبر."
+    )
+
+    forward_source = {
+        "is_forwarded": True,
+        "origin_type": "channel",
+        "source_chat_id": -1003455586070,
+        "source_title": "فردای نو",
+        "source_username": "farda_no",
+        "source_message_id": 896
+    }
+
+    expected_formatted = (
+        "❇️ تیتر خبر\n\n"
+        "🔹 متن اصلی خبر."
+    )
+
+    expected_branding = (
+        "#دنیا_۲۴_نیوز\n"
+        "@Donya24News"
+    )
+
+    with patch.object(
+        webhook_handler,
+        "format_with_source",
+        return_value=expected_formatted
+    ) as mock_format, patch.object(
+        webhook_handler,
+        "build_branding_for_user",
+        return_value=expected_branding
+    ) as mock_branding, patch.object(
+        webhook_handler,
+        "send_to_channel",
+        return_value=True
+    ) as mock_telegram, patch(
+        "core.bale_forwarder.send_to_bale_for_user",
+        return_value=True
+    ) as mock_bale:
+
+        success = (
+            webhook_handler.process_text_message(
+                chat_id=1001,
+                text=raw_text,
+                entities=[],
+                forward_source=forward_source
+            )
+        )
+
+    # =====================================================
+    # OPERATION SUCCESS
+    # =====================================================
+
+    assert success is True
+
+    # =====================================================
+    # SOURCE-AWARE FORMATTER MUST BE USED
+    # =====================================================
+
+    mock_format.assert_called_once_with(
+        raw_text,
+        forward_source
+    )
+
+    # =====================================================
+    # BRANDING MUST BE LOADED FOR SAME USER
+    # =====================================================
+
+    mock_branding.assert_called_once_with(
+        1001
+    )
+
+    # =====================================================
+    # TELEGRAM OUTPUT
+    # =====================================================
+
+    mock_telegram.assert_called_once()
+
+    telegram_text = (
+        mock_telegram
+        .call_args
+        .args[0]
+    )
+
+    assert (
+        "❇️ تیتر خبر"
+        in telegram_text
+    )
+
+    assert (
+        "🔹 متن اصلی خبر."
+        in telegram_text
+    )
+
+    assert (
+        "#دنیا_۲۴_نیوز"
+        in telegram_text
+    )
+
+    assert (
+        "@Donya24News"
+        in telegram_text
+    )
+
+    # =====================================================
+    # SOURCE BRANDING MUST NOT APPEAR
+    # =====================================================
+
+    assert (
+        "#فردای_نو"
+        not in telegram_text
+    )
+
+    assert (
+        "@farda_no"
+        not in telegram_text
+    )
+
+    assert (
+        "فردای نو"
+        not in telegram_text
+    )
+
+    # =====================================================
+    # DONYA24 BRANDING MUST APPEAR ONLY ONCE
+    # =====================================================
+
+    assert (
+        telegram_text.count(
+            "#دنیا_۲۴_نیوز"
+        )
+        == 1
+    )
+
+    assert (
+        telegram_text.count(
+            "@Donya24News"
+        )
+        == 1
+    )
+
+    # =====================================================
+    # BALE MUST RECEIVE SAME BRANDED TEXT
+    # =====================================================
+
+    mock_bale.assert_called_once()
+
+    bale_args = (
+        mock_bale
+        .call_args
+        .args
+    )
+
+    assert (
+        bale_args[0]
+        == 1001
+    )
+
+    bale_text = (
+        bale_args[1]
+    )
+
+    assert (
+        "#دنیا_۲۴_نیوز"
+        in bale_text
+    )
+
+    assert (
+        "@Donya24News"
+        in bale_text
+    )
+
+    assert (
+        "@farda_no"
+        not in bale_text
     )
