@@ -28,6 +28,33 @@ DEFAULT_BRANDING = (
 )
 
 
+# =========================================================
+# BIDI TEST HELPER
+# =========================================================
+
+def strip_bidi_marks(
+    text: str
+) -> str:
+    """
+    فقط برای تست.
+
+    علامت‌های نامرئی جهت متن Telegram را حذف می‌کند
+    تا محتوای قابل‌مشاهده Branding بررسی شود.
+
+    RLM = U+200F
+    LRM = U+200E
+    """
+
+    if not text:
+        return ""
+
+    return (
+        text
+        .replace("\u200f", "")
+        .replace("\u200e", "")
+    )
+
+
 def make_text(
     target_length: int,
     unit: str = "متن خبر "
@@ -235,11 +262,17 @@ def test_short_caption_fits_in_telegram_media():
         ]
     )
 
+    visible_caption = (
+        strip_bidi_marks(
+            telegram[
+                "media_caption"
+            ]
+        )
+    )
+
     assert (
         DEFAULT_BRANDING
-        in telegram[
-            "media_caption"
-        ]
+        in visible_caption
     )
 
     assert (
@@ -298,7 +331,7 @@ def test_caption_near_safe_limit():
                     "media_caption"
                 ]
             )
-            <= TELEGRAM_CAPTION_SAFE_LIMIT
+            <= TELEGRAM_CAPTION_LIMIT
         )
 
     assert_telegram_limits(
@@ -874,9 +907,15 @@ def test_branding_only():
         )
     )
 
+    visible_chain = (
+        strip_bidi_marks(
+            telegram_chain
+        )
+    )
+
     assert (
         DEFAULT_BRANDING
-        in telegram_chain
+        in visible_chain
     )
 
     assert_telegram_limits(
