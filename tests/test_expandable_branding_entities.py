@@ -57,198 +57,66 @@ def test_expandable_blockquote_with_explicit_hashtag_mention():
 
     caption = telegram_plan["media_caption"]
     entities = telegram_plan["media_caption_entities"]
+    followup_messages = telegram_plan["followup_messages"]
+    followup_entities = telegram_plan["followup_message_entities"]
 
     # =====================================================
     # VERIFY CAPTION STRUCTURE
     # =====================================================
 
     assert caption, "Caption must not be empty"
-    assert main_text in caption, "Main text must be in caption"
-    assert "ادامه خبر" in caption, "Expandable content must be in caption"
-    assert "#دنیا_۲۴_نیوز" in caption, "Hashtag must be in caption"
-    assert "@Donya24News" in caption, "Mention must be in caption"
+    assert caption == main_text, "Caption must contain only main text"
+    assert "ادامه خبر" not in caption, "Expandable content must not be in caption"
+    assert "#دنیا_۲۴_نیوز" not in caption, "Hashtag must not be in caption"
+    assert "@Donya24News" not in caption, "Mention must not be in caption"
 
     # =====================================================
     # VERIFY ENTITY TYPES
     # =====================================================
 
-    entity_types = [
-        e["type"] for e in entities
-    ]
-
-    assert "expandable_blockquote" in entity_types, (
-        "Expandable blockquote entity must exist"
-    )
-    assert "hashtag" in entity_types, (
-        "Hashtag entity must exist (explicit, not auto-detected)"
-    )
-    assert "mention" in entity_types, (
-        "Mention entity must exist (explicit, not auto-detected)"
+    assert entities == [], (
+        "Expandable/block branding entities must not exist in media caption"
     )
 
     # =====================================================
     # VERIFY ENTITY COUNT
     # =====================================================
 
-    assert len(entities) == 3, (
-        f"Expected 3 entities (expandable, hashtag, mention), "
-        f"got {len(entities)}"
+    assert len(followup_messages) == 2, (
+        f"Expected expandable + branding followups, got {len(followup_messages)}"
     )
 
     # =====================================================
     # FIND EACH ENTITY
     # =====================================================
 
-    expandable_entity = next(
-        (e for e in entities if e["type"] == "expandable_blockquote"),
-        None
+    assert (
+        followup_messages[0]
+        == "ادامه خبر و تحلیل تکمیلی درباره موضوع"
     )
-    hashtag_entity = next(
-        (e for e in entities if e["type"] == "hashtag"),
-        None
+    assert (
+        followup_messages[1]
+        == branding
     )
-    mention_entity = next(
-        (e for e in entities if e["type"] == "mention"),
-        None
-    )
-
-    assert expandable_entity, "Expandable entity not found"
-    assert hashtag_entity, "Hashtag entity not found"
-    assert mention_entity, "Mention entity not found"
 
     # =====================================================
     # VERIFY ENTITY ORDERING
     # =====================================================
 
-    expandable_offset = expandable_entity["offset"]
-    hashtag_offset = hashtag_entity["offset"]
-    mention_offset = mention_entity["offset"]
-
-    assert (
-        expandable_offset < hashtag_offset < mention_offset
-    ), (
-        f"Entity offsets must be ordered: "
-        f"expandable({expandable_offset}) < "
-        f"hashtag({hashtag_offset}) < "
-        f"mention({mention_offset})"
-    )
+    assert len(followup_entities) == 2
+    assert len(followup_entities[0]) == 1
+    assert followup_entities[0][0]["type"] == "expandable_blockquote"
+    assert followup_entities[1] == []
 
     # =====================================================
     # VERIFY HASHTAG ENTITY
     # =====================================================
 
-    hashtag_text = "#دنیا_۲۴_نیوز"
-    hashtag_pos_in_caption = caption.rfind(hashtag_text)
-
-    assert hashtag_pos_in_caption >= 0, (
-        f"Hashtag '{hashtag_text}' not found in caption"
-    )
-
-    assert hashtag_entity["length"] > 0, (
-        "Hashtag entity length must be positive"
-    )
-
-    # =====================================================
-    # VERIFY MENTION ENTITY
-    # =====================================================
-
-    mention_text = "@Donya24News"
-    mention_pos_in_caption = caption.rfind(mention_text)
-
-    assert mention_pos_in_caption >= 0, (
-        f"Mention '{mention_text}' not found in caption"
-    )
-
-    assert mention_entity["length"] > 0, (
-        "Mention entity length must be positive"
-    )
-
-    # =====================================================
-    # VERIFY ENTITY BOUNDARIES DON'T OVERLAP
-    # =====================================================
-
-    expandable_end = (
-        expandable_entity["offset"]
-        + expandable_entity["length"]
-    )
-
-    hashtag_start = hashtag_entity["offset"]
-    hashtag_end = hashtag_start + hashtag_entity["length"]
-
-    mention_start = mention_entity["offset"]
-
-    assert (
-        expandable_end <= hashtag_start
-    ), (
-        "Expandable and hashtag must not overlap"
-    )
-
-    assert (
-        hashtag_end <= mention_start
-    ), (
-        "Hashtag and mention must not overlap"
-    )
-
-    # =====================================================
-    # VERIFY BRANDING AT END OF CAPTION
-    # =====================================================
-
-    assert caption.endswith(mention_text), (
-        "Caption must end with mention"
-    )
-
-    # Find where branding starts
-    branding_start_pos = caption.rfind(hashtag_text)
-    branding_section = caption[branding_start_pos:]
-
-    assert hashtag_text in branding_section, (
-        "Hashtag must be in branding section"
-    )
-    assert mention_text in branding_section, (
-        "Mention must be in branding section"
-    )
-
-    # =====================================================
-    # VERIFY CAPTION LENGTH
-    # =====================================================
-
-    assert len(caption) <= 1024, (
-        f"Caption length {len(caption)} exceeds Telegram limit 1024"
-    )
-
-    # =====================================================
-    # VERIFY PARSE MODE
-    # =====================================================
-
     parse_mode = telegram_plan.get("media_parse_mode")
     assert parse_mode is None, (
-        "Plain text caption (entities only) should have parse_mode=None, "
+        "Plain text caption should have parse_mode=None, "
         f"got {parse_mode}"
     )
-
-    print()
-    print("=" * 70)
-    print("✅ TEST PASSED: Explicit Branding Entities")
-    print("=" * 70)
-    print()
-    print(f"Caption length: {len(caption)}")
-    print(f"Entities count: {len(entities)}")
-    print()
-    print("Entity breakdown:")
-    for entity in entities:
-        entity_type = entity["type"]
-        offset = entity["offset"]
-        length = entity["length"]
-        print(
-            f"  • {entity_type:25} | "
-            f"offset={offset:4} | length={length:3}"
-        )
-    print()
-    print(f"Branding position:")
-    print(f"  Hashtag starts at: {hashtag_offset}")
-    print(f"  Mention starts at: {mention_offset}")
-    print()
-    print("=" * 70)
 
 
 def test_expandable_blockquote_hashtag_position_rtl():
@@ -277,47 +145,10 @@ def test_expandable_blockquote_hashtag_position_rtl():
     )
 
     caption = plan.telegram["media_caption"]
-    entities = plan.telegram["media_caption_entities"]
+    followup_messages = plan.telegram["followup_messages"]
 
-    # Hashtag must be explicit entity
-    hashtag_entity = next(
-        (e for e in entities if e["type"] == "hashtag"),
-        None
-    )
-
-    assert hashtag_entity, "Hashtag entity must exist"
-
-    # Hashtag text must be in caption
-    hashtag_text = "#دنیا_۲۴_نیوز"
-    assert hashtag_text in caption, (
-        "Hashtag must be in caption"
-    )
-
-    # Hashtag offset must point to correct position
-    hashtag_offset = hashtag_entity["offset"]
-    hashtag_length = hashtag_entity["length"]
-
-    # Extract text at entity offset/length
-    caption_utf16 = caption.encode("utf-16-le")
-    start_byte = hashtag_offset * 2
-    end_byte = start_byte + (hashtag_length * 2)
-
-    extracted_text = (
-        caption_utf16[start_byte:end_byte]
-        .decode("utf-16-le")
-    )
-
-    assert extracted_text == hashtag_text, (
-        f"Entity offset/length should point to hashtag. "
-        f"Expected '{hashtag_text}', got '{extracted_text}'"
-    )
-
-    print()
-    print("✅ Hashtag positioned correctly (RTL-safe)")
-    print(f"   Text: {hashtag_text}")
-    print(f"   Offset: {hashtag_offset}")
-    print(f"   Length: {hashtag_length}")
-    print()
+    assert "#دنیا_۲۴_نیوز" not in caption
+    assert followup_messages[1].splitlines()[0] == "#دنیا_۲۴_نیوز"
 
 
 def test_expandable_blockquote_mention_position_ltr():
@@ -343,47 +174,10 @@ def test_expandable_blockquote_mention_position_ltr():
     )
 
     caption = plan.telegram["media_caption"]
-    entities = plan.telegram["media_caption_entities"]
+    followup_messages = plan.telegram["followup_messages"]
 
-    # Mention must be explicit entity
-    mention_entity = next(
-        (e for e in entities if e["type"] == "mention"),
-        None
-    )
-
-    assert mention_entity, "Mention entity must exist"
-
-    # Mention text must be in caption
-    mention_text = "@Donya24News"
-    assert mention_text in caption, (
-        "Mention must be in caption"
-    )
-
-    # Mention offset must point to correct position
-    mention_offset = mention_entity["offset"]
-    mention_length = mention_entity["length"]
-
-    # Extract text at entity offset/length
-    caption_utf16 = caption.encode("utf-16-le")
-    start_byte = mention_offset * 2
-    end_byte = start_byte + (mention_length * 2)
-
-    extracted_text = (
-        caption_utf16[start_byte:end_byte]
-        .decode("utf-16-le")
-    )
-
-    assert extracted_text == mention_text, (
-        f"Entity offset/length should point to mention. "
-        f"Expected '{mention_text}', got '{extracted_text}'"
-    )
-
-    print()
-    print("✅ Mention positioned correctly (LTR)")
-    print(f"   Text: {mention_text}")
-    print(f"   Offset: {mention_offset}")
-    print(f"   Length: {mention_length}")
-    print()
+    assert "@Donya24News" not in caption
+    assert followup_messages[1].splitlines()[1] == "@Donya24News"
 
 
 def test_branding_entities_no_duplication():
@@ -410,28 +204,9 @@ def test_branding_entities_no_duplication():
     )
 
     caption = plan.telegram["media_caption"]
-    entities = plan.telegram["media_caption_entities"]
+    followup_messages = plan.telegram["followup_messages"]
 
-    # Count hashtag entities
-    hashtag_entities = [
-        e for e in entities if e["type"] == "hashtag"
-    ]
-
-    assert len(hashtag_entities) == 1, (
-        f"Expected 1 hashtag entity, got {len(hashtag_entities)}"
-    )
-
-    # Count mention entities
-    mention_entities = [
-        e for e in entities if e["type"] == "mention"
-    ]
-
-    assert len(mention_entities) == 1, (
-        f"Expected 1 mention entity, got {len(mention_entities)}"
-    )
-
-    print()
-    print("✅ No duplication of branding entities")
-    print(f"   Hashtag entities: {len(hashtag_entities)}")
-    print(f"   Mention entities: {len(mention_entities)}")
-    print()
+    assert caption.count("#دنیا_۲۴_نیوز") == 0
+    assert caption.count("@Donya24News") == 0
+    assert followup_messages[-1].count("#دنیا_۲۴_نیوز") == 1
+    assert followup_messages[-1].count("@Donya24News") == 1
