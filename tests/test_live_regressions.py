@@ -1,6 +1,8 @@
 from core.caption_manager import (
     analyze_content,
     TELEGRAM_MESSAGE_LIMIT,
+    TELEGRAM_CAPTION_SAFE_LIMIT,
+    compact_long_text,
 )
 
 
@@ -213,20 +215,6 @@ def test_expandable_blockquote_removes_foreign_emoji():
 
 def test_long_text_compact_mode_avoids_unnecessary_split():
 
-    # =====================================================
-    # BUILD REALISTIC FORMATTED NEWS
-    # =====================================================
-    #
-    # حالت معمول عمداً کمی بیشتر از 4096 است.
-    #
-    # اما با حذف:
-    #
-    #   🔹
-    #   فاصله‌های خالی اضافی بین پاراگراف‌ها
-    #
-    # باید داخل یک پیام Telegram جا شود.
-    # =====================================================
-
     title = (
         "❇️ گزارش تحولات سیاسی"
     )
@@ -261,10 +249,6 @@ def test_long_text_compact_mode_avoids_unnecessary_split():
     # =====================================================
     # PRECONDITION
     # =====================================================
-    #
-    # نسخه عادی باید از سقف عبور کرده باشد،
-    # وگرنه تست Compact معنی ندارد.
-    # =====================================================
 
     assert (
         len(normal_final)
@@ -290,14 +274,6 @@ def test_long_text_compact_mode_avoids_unnecessary_split():
 
     # =====================================================
     # CORE REGRESSION
-    # =====================================================
-    #
-    # انتظار:
-    #
-    # قبل از Split، حالت Compact امتحان شود.
-    #
-    # چون نسخه Compact این نمونه زیر 4096
-    # قرار می‌گیرد، فقط یک پیام باید ساخته شود.
     # =====================================================
 
     assert (
@@ -326,7 +302,6 @@ def test_long_text_compact_mode_avoids_unnecessary_split():
 
     # =====================================================
     # BLUE BULLETS MUST BE REMOVED
-    # IN LONG TEXT COMPACT MODE
     # =====================================================
 
     assert (
@@ -335,7 +310,7 @@ def test_long_text_compact_mode_avoids_unnecessary_split():
     )
 
     # =====================================================
-    # FIRST PARAGRAPH GAP MUST REMAIN
+    # FIRST GAP MUST REMAIN
     # =====================================================
 
     assert (
@@ -344,7 +319,7 @@ def test_long_text_compact_mode_avoids_unnecessary_split():
     )
 
     # =====================================================
-    # BODY PARAGRAPHS MUST BECOME COMPACT
+    # BODY MUST BE COMPACT
     # =====================================================
 
     body_without_branding = (
@@ -359,14 +334,10 @@ def test_long_text_compact_mode_avoids_unnecessary_split():
         .splitlines()
     )
 
-    # تیتر + حداقل تعداد زیادی خط بدنه
     assert (
         len(body_lines)
         > 50
     )
-
-    # بعد از شروع بدنه نباید میان هر پاراگراف
-    # خط خالی باقی مانده باشد.
 
     body_part = (
         body_without_branding
@@ -397,4 +368,137 @@ def test_long_text_compact_mode_avoids_unnecessary_split():
             "@Donya24News"
         )
         == 1
+    )
+
+
+# =========================================================
+# TEST 04
+# SINGLE MEDIA COMPACT MUST AVOID FOLLOWUP
+# WHEN COMPACT CAPTION FITS
+# =========================================================
+
+def test_single_media_compact_avoids_followup_when_compact_fits():
+
+    # =====================================================
+    # BUILD MEDIA TEXT
+    # =====================================================
+
+    title = (
+        "❇️ گزارش رسانه‌ای"
+    )
+
+    paragraphs = [
+        (
+            "🔹 "
+            + (
+                "ا"
+                * 25
+            )
+        )
+        for _ in range(
+            32
+        )
+    ]
+
+    main_text = (
+        title
+        + "\n\n"
+        + "\n\n".join(
+            paragraphs
+        )
+    )
+
+    # =====================================================
+    # PRECONDITION
+    # =====================================================
+
+    assert (
+        len(main_text)
+        > TELEGRAM_CAPTION_SAFE_LIMIT
+    )
+
+    compact_text = (
+        compact_long_text(
+            main_text
+        )
+    )
+
+    assert (
+        len(compact_text)
+        <= TELEGRAM_CAPTION_SAFE_LIMIT
+    )
+
+    # =====================================================
+    # PLAN
+    # =====================================================
+
+    plan = analyze_content(
+        main_text=main_text,
+        branding=""
+    )
+
+    telegram = (
+        plan.telegram
+    )
+
+    # =====================================================
+    # CORE REGRESSION
+    # =====================================================
+
+    assert (
+        telegram[
+            "followup_messages"
+        ]
+        == []
+    )
+
+    assert (
+        telegram[
+            "media_caption"
+        ]
+        == compact_text
+    )
+
+    assert (
+        len(
+            telegram[
+                "media_caption"
+            ]
+        )
+        <= TELEGRAM_CAPTION_SAFE_LIMIT
+    )
+
+    # =====================================================
+    # COMPACT FORMAT
+    # =====================================================
+
+    assert (
+        telegram[
+            "media_caption"
+        ]
+        .startswith(
+            "❇️ گزارش رسانه‌ای\n\n"
+        )
+    )
+
+    assert (
+        "🔹"
+        not in telegram[
+            "media_caption"
+        ]
+    )
+
+    body_part = (
+        telegram[
+            "media_caption"
+        ]
+        .split(
+            "\n\n",
+            1
+        )[1]
+    )
+
+    assert (
+        "\n\n"
+        not in body_part
     )
