@@ -96,7 +96,6 @@ group_lock = threading.RLock()
 # =========================================================
 
 MAX_PENDING_GROUPS = 1000
-
 MAX_GROUP_AGE_SECONDS = 900
 CLEANUP_INTERVAL_SECONDS = 300
 
@@ -194,6 +193,7 @@ def _cleanup_scheduler() -> None:
     while cleanup_running:
 
         try:
+
             time.sleep(
                 CLEANUP_INTERVAL_SECONDS
             )
@@ -201,6 +201,7 @@ def _cleanup_scheduler() -> None:
             cleanup_old_groups()
 
         except Exception as e:
+
             logger.exception(
                 f"❌ Cleanup scheduler error: {e}"
             )
@@ -275,6 +276,7 @@ def cleanup_old_groups() -> None:
                     group_key
                     not in groups_to_remove
                 ):
+
                     groups_to_remove.append(
                         group_key
                     )
@@ -292,6 +294,7 @@ def cleanup_old_groups() -> None:
             )
 
             if timer:
+
                 try:
                     timer.cancel()
                 except Exception:
@@ -810,13 +813,6 @@ def debug_telegram_returned_caption_entities(
     ],
     endpoint: str
 ) -> None:
-    """
-    Diagnostic only.
-
-    Does not modify Telegram messages.
-    Logs the caption and caption_entities returned
-    by Telegram after sendPhoto/sendVideo/sendMediaGroup.
-    """
 
     if response is None:
         return
@@ -838,15 +834,20 @@ def debug_telegram_returned_caption_entities(
             result,
             list
         ):
+
             messages = result
 
         elif isinstance(
             result,
             dict
         ):
-            messages = [result]
+
+            messages = [
+                result
+            ]
 
         else:
+
             return
 
         for index, message in enumerate(
@@ -881,7 +882,8 @@ def debug_telegram_returned_caption_entities(
                 f"item={index + 1} | "
                 f"message_id="
                 f"{message.get('message_id')} | "
-                f"caption_repr={repr(caption)} | "
+                f"caption_repr="
+                f"{repr(caption)} | "
                 f"caption_entities="
                 f"{json.dumps(caption_entities, ensure_ascii=False)}"
             )
@@ -920,6 +922,7 @@ def extract_single_message_id(
             result,
             dict
         ):
+
             return None
 
         message_id = result.get(
@@ -930,6 +933,7 @@ def extract_single_message_id(
             isinstance(message_id, int)
             and not isinstance(message_id, bool)
         ):
+
             return message_id
 
     except Exception as e:
@@ -967,6 +971,7 @@ def extract_media_group_message_id(
             result,
             list
         ):
+
             return None
 
         if not result:
@@ -978,6 +983,7 @@ def extract_media_group_message_id(
             first_message,
             dict
         ):
+
             return None
 
         message_id = first_message.get(
@@ -988,6 +994,7 @@ def extract_media_group_message_id(
             isinstance(message_id, int)
             and not isinstance(message_id, bool)
         ):
+
             return message_id
 
     except Exception as e:
@@ -1175,10 +1182,6 @@ def send_single_media_to_channel(
         response,
         endpoint
     ):
-
-        # =============================================
-        # DIAGNOSTIC ONLY
-        # =============================================
 
         debug_telegram_returned_caption_entities(
             response,
@@ -1370,10 +1373,6 @@ def send_media_group_to_channel(
         response,
         "sendMediaGroup"
     ):
-
-        # =============================================
-        # DIAGNOSTIC ONLY
-        # =============================================
 
         debug_telegram_returned_caption_entities(
             response,
@@ -1695,38 +1694,100 @@ def execute_telegram_plan(
         None
     )
 
+    # =====================================================
+    # SINGLE MEDIA
+    # =====================================================
+
     if len(files) == 1:
 
         file = files[0]
 
-        media_success = (
-            send_single_media_to_channel(
-                file.get(
-                    "file_id"
-                ),
-                file.get(
-                    "type"
-                ),
-                media_caption,
-                parse_mode=media_parse_mode,
-                caption_entities=(
-                    media_caption_entities
+        if media_caption_entities:
+
+            media_success = (
+                send_single_media_to_channel(
+                    file.get(
+                        "file_id"
+                    ),
+                    file.get(
+                        "type"
+                    ),
+                    media_caption,
+                    caption_entities=(
+                        media_caption_entities
+                    )
                 )
             )
-        )
+
+        elif media_parse_mode:
+
+            media_success = (
+                send_single_media_to_channel(
+                    file.get(
+                        "file_id"
+                    ),
+                    file.get(
+                        "type"
+                    ),
+                    media_caption,
+                    parse_mode=(
+                        media_parse_mode
+                    )
+                )
+            )
+
+        else:
+
+            media_success = (
+                send_single_media_to_channel(
+                    file.get(
+                        "file_id"
+                    ),
+                    file.get(
+                        "type"
+                    ),
+                    media_caption
+                )
+            )
+
+    # =====================================================
+    # MEDIA GROUP
+    # =====================================================
 
     else:
 
-        media_success = (
-            send_media_group_to_channel(
-                files,
-                media_caption,
-                parse_mode=media_parse_mode,
-                caption_entities=(
-                    media_caption_entities
+        if media_caption_entities:
+
+            media_success = (
+                send_media_group_to_channel(
+                    files,
+                    media_caption,
+                    caption_entities=(
+                        media_caption_entities
+                    )
                 )
             )
-        )
+
+        elif media_parse_mode:
+
+            media_success = (
+                send_media_group_to_channel(
+                    files,
+                    media_caption,
+                    parse_mode=(
+                        media_parse_mode
+                    )
+                )
+            )
+
+        else:
+
+            media_success = (
+                send_media_group_to_channel(
+                    files,
+                    media_caption
+                )
+            )
 
     if not media_success:
 
@@ -1745,6 +1806,10 @@ def execute_telegram_plan(
         f"message_id={media_message_id or '-'} | "
         f"followups={len(followup_messages)}"
     )
+
+    # =====================================================
+    # FOLLOWUP
+    # =====================================================
 
     for index, message in enumerate(
         followup_messages
@@ -1781,6 +1846,10 @@ def execute_telegram_plan(
                 f"❌ Telegram follow-up failed | "
                 f"index={index + 1}"
             )
+
+    # =====================================================
+    # LEGACY BLOCKQUOTE
+    # =====================================================
 
     for index, html_message in enumerate(
         blockquote_messages
