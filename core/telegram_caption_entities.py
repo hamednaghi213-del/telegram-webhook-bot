@@ -92,12 +92,6 @@ def normalize_block_text(
     """
     متن Blockquote را قبل از ساخت Caption Entity
     از Cleaner اصلی پروژه عبور می‌دهد.
-
-    این کار باعث حذف مواردی مثل:
-    🔷
-    🆔
-    📡
-    و سایر تزئینات/امضای خارجی می‌شود.
     """
 
     text = normalize_text(
@@ -142,9 +136,6 @@ def combine_blocks(
     """
     Blockquote و Expandable Blockquote را بر اساس offset
     مرتب می‌کند.
-
-    قبل از اضافه شدن هر Block، متن آن از Cleaner اصلی
-    پروژه عبور می‌کند.
     """
 
     result: List[
@@ -275,7 +266,13 @@ def build_plain_caption_with_entities(
 
         blockquote / expandable_blockquote
 
+
         branding
+
+    نکته مهم:
+    اگر Blockquote وجود داشته باشد، Branding با سه newline
+    از آن جدا می‌شود تا Telegram آن را به‌عنوان پاراگراف
+    مستقل رندر کند.
 
     هیچ HTML استفاده نمی‌شود.
     هیچ parse_mode استفاده نمی‌شود.
@@ -327,7 +324,6 @@ def build_plain_caption_with_entities(
 
     for block in blocks:
 
-        # متن در combine_blocks قبلاً Clean شده است.
         block_text = normalize_text(
             block.get(
                 "text",
@@ -376,18 +372,34 @@ def build_plain_caption_with_entities(
     # =====================================================
     # BRANDING
     #
-    # همیشه خارج از Blockquote Entity
+    # اگر Blockquote وجود دارد:
+    # سه newline
+    #
+    # اگر Blockquote وجود ندارد:
+    # همان دو newline قبلی
+    #
+    # هیچ RLM / LRM / Direction Mark استفاده نمی‌شود.
     # =====================================================
 
     if branding:
 
         if caption_parts:
 
-            caption_parts.append(
-                "\n\n"
-            )
+            if blocks:
 
-            current_length += 2
+                caption_parts.append(
+                    "\n\n\n"
+                )
+
+                current_length += 3
+
+            else:
+
+                caption_parts.append(
+                    "\n\n"
+                )
+
+                current_length += 2
 
         caption_parts.append(
             branding
@@ -515,8 +527,6 @@ def validate_caption_entities(
 
             return False
 
-        # Blockquoteهای تولیدی این ماژول نباید
-        # روی هم Overlap داشته باشند.
         if offset < previous_end:
             return False
 
@@ -556,17 +566,6 @@ def build_telegram_caption_entities(
                 }
             ]
         }
-
-    ویژگی‌ها:
-
-    - Plain Text Caption
-    - بدون HTML
-    - بدون parse_mode
-    - UTF-16 صحیح
-    - Blockquote معمولی
-    - Expandable Blockquote
-    - Cleaner اصلی پروژه
-    - Branding خارج از Entity
     """
 
     result = (
