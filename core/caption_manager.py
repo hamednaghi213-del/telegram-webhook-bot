@@ -1368,25 +1368,36 @@ def create_telegram_plan(
         # =================================================
         # 1. ENTITY-BASED FULL CAPTION
         #
-        # مرحله اول:
-        # Branding را Pass کن
-        # Entities را Extract کن
-        #
-        # تمام Caption + Branding + RTL Marker + Entities
-        # از build_telegram_caption_entities ساخته می‌شوند.
+        # مرحله او��:
+        # اگر expandable وجود دارد، branding="" را Pass کن
+        # در غیر اینصورت، branding=branding را Pass کن
         # =================================================
 
         try:
 
-            entity_result = (
-                build_telegram_caption_entities(
-                    main_text=main_text,
-                    blockquote_blocks=blockquote_blocks,
-                    expandable_blocks=expandable_blocks,
-                    branding=branding,
-                    include_branding_entities=True
+            if has_expandable:
+
+                entity_result = (
+                    build_telegram_caption_entities(
+                        main_text=main_text,
+                        blockquote_blocks=blockquote_blocks,
+                        expandable_blocks=expandable_blocks,
+                        branding="",
+                        include_branding_entities=False
+                    )
                 )
-            )
+
+            else:
+
+                entity_result = (
+                    build_telegram_caption_entities(
+                        main_text=main_text,
+                        blockquote_blocks=blockquote_blocks,
+                        expandable_blocks=expandable_blocks,
+                        branding=branding,
+                        include_branding_entities=True
+                    )
+                )
 
             entity_caption = (
                 entity_result[
@@ -1420,14 +1431,27 @@ def create_telegram_plan(
                     entity_caption_entities
                 )
 
+                if (
+                    has_expandable
+                    and branding
+                ):
+
+                    plan[
+                        "followup_messages"
+                    ].insert(
+                        0,
+                        branding
+                    )
+
                 logger.info(
                     f"✅ Telegram entity caption | "
                     f"mode=FULL | "
                     f"caption={len(entity_caption)} | "
                     f"entities="
                     f"{len(entity_caption_entities)} | "
-                    f"branding_once=True | "
-                    f"include_branding_entities=True"
+                    f"expandable={has_expandable} | "
+                    f"branding_followup="
+                    f"{bool(branding and has_expandable)}"
                 )
 
                 return plan
@@ -1452,15 +1476,29 @@ def create_telegram_plan(
 
         try:
 
-            compact_entity_result = (
-                build_telegram_caption_entities(
-                    main_text=compact_main,
-                    blockquote_blocks=blockquote_blocks,
-                    expandable_blocks=expandable_blocks,
-                    branding=branding,
-                    include_branding_entities=True
+            if has_expandable:
+
+                compact_entity_result = (
+                    build_telegram_caption_entities(
+                        main_text=compact_main,
+                        blockquote_blocks=blockquote_blocks,
+                        expandable_blocks=expandable_blocks,
+                        branding="",
+                        include_branding_entities=False
+                    )
                 )
-            )
+
+            else:
+
+                compact_entity_result = (
+                    build_telegram_caption_entities(
+                        main_text=compact_main,
+                        blockquote_blocks=blockquote_blocks,
+                        expandable_blocks=expandable_blocks,
+                        branding=branding,
+                        include_branding_entities=True
+                    )
+                )
 
             compact_entity_caption = (
                 compact_entity_result[
@@ -1484,9 +1522,7 @@ def create_telegram_plan(
 
                 plan[
                     "media_caption"
-                ] = (
-                    compact_entity_caption
-                )
+                ] = compact_entity_caption
 
                 plan[
                     "media_parse_mode"
@@ -1498,6 +1534,18 @@ def create_telegram_plan(
                     compact_entity_entities
                 )
 
+                if (
+                    has_expandable
+                    and branding
+                ):
+
+                    plan[
+                        "followup_messages"
+                    ].insert(
+                        0,
+                        branding
+                    )
+
                 logger.info(
                     f"✅ Telegram entity caption | "
                     f"mode=COMPACT | "
@@ -1505,8 +1553,9 @@ def create_telegram_plan(
                     f"{len(compact_entity_caption)} | "
                     f"entities="
                     f"{len(compact_entity_entities)} | "
-                    f"branding_once=True | "
-                    f"include_branding_entities=True"
+                    f"expandable={has_expandable} | "
+                    f"branding_followup="
+                    f"{bool(branding and has_expandable)}"
                 )
 
                 return plan
@@ -1527,24 +1576,35 @@ def create_telegram_plan(
             "media limit | using stable overflow path"
         )
 
-        branding_separator_cost = (
-            3
-            if (
-                branding
-                and has_expandable
-            )
-            else (
+        # =========================================================
+        # CAPTION BRANDING COST
+        #
+        # Expandable:
+        # Branding خارج از media caption است.
+        # بنابراین هیچ ظرفیتی از Caption مصرف نمی‌کند.
+        #
+        # Non-expandable:
+        # Branding داخل Caption باقی می‌ماند.
+        # =========================================================
+
+        if has_expandable:
+
+            branding_separator_cost = 0
+            branding_cost = 0
+
+        else:
+
+            branding_separator_cost = (
                 2
                 if branding
                 else 0
             )
-        )
 
-        branding_cost = (
-            len(branding)
-            if branding
-            else 0
-        )
+            branding_cost = (
+                len(branding)
+                if branding
+                else 0
+            )
 
         fixed_cost = (
             branding_cost
@@ -1664,13 +1724,27 @@ def create_telegram_plan(
             )
         )
 
-        candidate = (
-            append_final_telegram_media_branding(
-                candidate_without_branding,
-                branding,
-                has_expandable=has_expandable
+        # =========================================================
+        # FINAL CANDIDATE
+        # =========================================================
+
+        if has_expandable:
+
+            # Branding خارج از Caption
+            candidate = (
+                candidate_without_branding
             )
-        )
+
+        else:
+
+            # رفتار پایدار قبلی
+            candidate = (
+                append_final_telegram_media_branding(
+                    candidate_without_branding,
+                    branding,
+                    has_expandable=False
+                )
+            )
 
         if (
             telegram_html_visible_length(
@@ -1702,16 +1776,19 @@ def create_telegram_plan(
             "media_caption_entities"
         ] = []
 
-        # =================================================
+        # =========================================================
         # MAIN OVERFLOW
-        # =================================================
+        # =========================================================
 
         if remaining_main:
 
             branding_cost_reply = (
                 len(branding)
                 + 2
-                if branding
+                if (
+                    branding
+                    and not has_expandable
+                )
                 else 0
             )
 
@@ -1728,30 +1805,79 @@ def create_telegram_plan(
                 )
             )
 
+            if has_expandable:
+
+                plan[
+                    "followup_messages"
+                ] = replies
+
+                if branding:
+
+                    plan[
+                        "followup_messages"
+                    ].insert(
+                        0,
+                        branding
+                    )
+
+            else:
+
+                plan[
+                    "followup_messages"
+                ] = (
+                    brand_telegram_media_messages(
+                        replies,
+                        branding,
+                        TELEGRAM_MESSAGE_LIMIT
+                    )
+                )
+
+        # =========================================================
+        # ENSURE BRANDING FOLLOWUP EXISTS
+        # =========================================================
+
+        if (
+            has_expandable
+            and branding
+            and not plan[
+                "followup_messages"
+            ]
+        ):
+
             plan[
                 "followup_messages"
-            ] = (
-                brand_telegram_media_messages(
-                    replies,
-                    branding,
-                    TELEGRAM_MESSAGE_LIMIT
-                )
+            ].insert(
+                0,
+                branding
             )
 
-        # =================================================
+        # =========================================================
         # BLOCKQUOTE OVERFLOW
-        # =================================================
+        # =========================================================
 
         if remaining_blocks:
 
-            plan[
-                "blockquote_messages"
-            ] = (
-                build_branded_blockquote_messages(
-                    remaining_blocks,
-                    branding
+            if has_expandable:
+
+                plan[
+                    "blockquote_messages"
+                ] = (
+                    build_branded_blockquote_messages(
+                        remaining_blocks,
+                        ""
+                    )
                 )
-            )
+
+            else:
+
+                plan[
+                    "blockquote_messages"
+                ] = (
+                    build_branded_blockquote_messages(
+                        remaining_blocks,
+                        branding
+                    )
+                )
 
         return plan
 
