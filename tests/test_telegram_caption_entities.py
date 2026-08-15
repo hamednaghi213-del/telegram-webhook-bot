@@ -665,7 +665,7 @@ def test_exact_target_structure():
             main_text
             + "\n\n"
             + expandable
-            + "\n\n"
+            + "\n\n\n"
             + branding
         )
     )
