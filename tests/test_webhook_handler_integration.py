@@ -1647,156 +1647,204 @@ def test_text_message_preserves_own_branding():
         "@Donya24News"
     )
 
-    with patch.object(
-        webhook_handler,
-        "format_with_source",
-        return_value=expected_formatted
-    ) as mock_format, patch.object(
-        webhook_handler,
-        "build_branding_for_user",
-        return_value=expected_branding
-    ) as mock_branding, patch.object(
-        webhook_handler,
-        "send_to_channel",
-        return_value=True
-    ) as mock_telegram, patch(
-        "core.bale_forwarder.send_to_bale_for_user",
-        return_value=True
-    ) as mock_bale:
+    # =====================================================
+    # FAKE BALE FORWARDER
+    # =====================================================
 
-        success = (
-            webhook_handler.process_text_message(
-                chat_id=1001,
-                text=raw_text,
-                entities=[],
-                forward_source=forward_source
+    fake_bale_forwarder = types.ModuleType(
+        "core.bale_forwarder"
+    )
+
+    fake_bale_forwarder.send_to_bale_for_user = (
+        MagicMock(
+            return_value=True
+        )
+    )
+
+    old_bale_module = sys.modules.get(
+        "core.bale_forwarder"
+    )
+
+    sys.modules[
+        "core.bale_forwarder"
+    ] = fake_bale_forwarder
+
+    try:
+
+        with patch.object(
+            webhook_handler,
+            "format_with_source",
+            return_value=expected_formatted
+        ) as mock_format, patch.object(
+            webhook_handler,
+            "build_branding_for_user",
+            return_value=expected_branding
+        ) as mock_branding, patch.object(
+            webhook_handler,
+            "send_to_channel",
+            return_value=True
+        ) as mock_telegram:
+
+            success = (
+                webhook_handler
+                .process_text_message(
+                    chat_id=1001,
+                    text=raw_text,
+                    entities=[],
+                    forward_source=(
+                        forward_source
+                    )
+                )
             )
+
+        # =================================================
+        # OPERATION SUCCESS
+        # =================================================
+
+        assert success is True
+
+        # =================================================
+        # SOURCE-AWARE FORMATTER
+        # =================================================
+
+        mock_format.assert_called_once_with(
+            raw_text,
+            forward_source
         )
 
-    # =====================================================
-    # OPERATION SUCCESS
-    # =====================================================
+        # =================================================
+        # BRANDING LOADED
+        # =================================================
 
-    assert success is True
+        mock_branding.assert_called_once_with(
+            1001
+        )
 
-    # =====================================================
-    # SOURCE-AWARE FORMATTER MUST BE USED
-    # =====================================================
+        # =================================================
+        # TELEGRAM
+        # =================================================
 
-    mock_format.assert_called_once_with(
-        raw_text,
-        forward_source
-    )
+        mock_telegram.assert_called_once()
 
-    # =====================================================
-    # BRANDING MUST BE LOADED FOR SAME USER
-    # =====================================================
+        telegram_text = (
+            mock_telegram
+            .call_args
+            .args[0]
+        )
 
-    mock_branding.assert_called_once_with(
-        1001
-    )
+        assert (
+            "❇️ تیتر خبر"
+            in telegram_text
+        )
 
-    # =====================================================
-    # TELEGRAM OUTPUT
-    # =====================================================
+        assert (
+            "🔹 متن اصلی خبر."
+            in telegram_text
+        )
 
-    mock_telegram.assert_called_once()
-
-    telegram_text = (
-        mock_telegram
-        .call_args
-        .args[0]
-    )
-
-    assert (
-        "❇️ تیتر خبر"
-        in telegram_text
-    )
-
-    assert (
-        "🔹 متن اصلی خبر."
-        in telegram_text
-    )
-
-    assert (
-        "#دنیا_۲۴_نیوز"
-        in telegram_text
-    )
-
-    assert (
-        "@Donya24News"
-        in telegram_text
-    )
-
-    # =====================================================
-    # SOURCE BRANDING MUST NOT APPEAR
-    # =====================================================
-
-    assert (
-        "#فردای_نو"
-        not in telegram_text
-    )
-
-    assert (
-        "@farda_no"
-        not in telegram_text
-    )
-
-    assert (
-        "فردای نو"
-        not in telegram_text
-    )
-
-    # =====================================================
-    # DONYA24 BRANDING MUST APPEAR ONLY ONCE
-    # =====================================================
-
-    assert (
-        telegram_text.count(
+        assert (
             "#دنیا_۲۴_نیوز"
+            in telegram_text
         )
-        == 1
-    )
 
-    assert (
-        telegram_text.count(
+        assert (
             "@Donya24News"
+            in telegram_text
         )
-        == 1
-    )
 
-    # =====================================================
-    # BALE MUST RECEIVE SAME BRANDED TEXT
-    # =====================================================
+        # =================================================
+        # SOURCE BRANDING MUST NOT RETURN
+        # =================================================
 
-    mock_bale.assert_called_once()
+        assert (
+            "#فردای_نو"
+            not in telegram_text
+        )
 
-    bale_args = (
-        mock_bale
-        .call_args
-        .args
-    )
+        assert (
+            "@farda_no"
+            not in telegram_text
+        )
 
-    assert (
-        bale_args[0]
-        == 1001
-    )
+        assert (
+            "فردای نو"
+            not in telegram_text
+        )
 
-    bale_text = (
-        bale_args[1]
-    )
+        # =================================================
+        # DONYA24 BRANDING EXACTLY ONCE
+        # =================================================
 
-    assert (
-        "#دنیا_۲۴_نیوز"
-        in bale_text
-    )
+        assert (
+            telegram_text.count(
+                "#دنیا_۲۴_نیوز"
+            )
+            == 1
+        )
 
-    assert (
-        "@Donya24News"
-        in bale_text
-    )
+        assert (
+            telegram_text.count(
+                "@Donya24News"
+            )
+            == 1
+        )
 
-    assert (
-        "@farda_no"
-        not in bale_text
-    )
+        # =================================================
+        # BALE
+        # =================================================
+
+        mock_bale = (
+            fake_bale_forwarder
+            .send_to_bale_for_user
+        )
+
+        mock_bale.assert_called_once()
+
+        bale_args = (
+            mock_bale
+            .call_args
+            .args
+        )
+
+        assert (
+            bale_args[0]
+            == 1001
+        )
+
+        bale_text = (
+            bale_args[1]
+        )
+
+        assert (
+            "#دنیا_۲۴_نیوز"
+            in bale_text
+        )
+
+        assert (
+            "@Donya24News"
+            in bale_text
+        )
+
+        assert (
+            "@farda_no"
+            not in bale_text
+        )
+
+    finally:
+
+        # =================================================
+        # RESTORE ORIGINAL BALE MODULE
+        # =================================================
+
+        if old_bale_module is None:
+
+            sys.modules.pop(
+                "core.bale_forwarder",
+                None
+            )
+
+        else:
+
+            sys.modules[
+                "core.bale_forwarder"
+            ] = old_bale_module
