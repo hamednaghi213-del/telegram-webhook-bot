@@ -1,33 +1,114 @@
-from core.media_handler import build_branding_for_user
+import sys
+import types
+
+from core.media_handler import (
+    build_branding_for_user
+)
 
 
-def test_debug_branding_direction_characters(monkeypatch):
+# =========================================================
+# DIRECTION CONTROL CHARACTERS
+# =========================================================
+
+DIRECTION_MARKS = {
+    "LRM": "\u200e",
+    "RLM": "\u200f",
+    "LRE": "\u202a",
+    "RLE": "\u202b",
+    "PDF": "\u202c",
+    "LRO": "\u202d",
+    "RLO": "\u202e",
+    "LRI": "\u2066",
+    "RLI": "\u2067",
+    "FSI": "\u2068",
+    "PDI": "\u2069",
+}
+
+
+# =========================================================
+# DEBUG TEST
+# =========================================================
+
+def test_debug_branding_direction_characters():
 
     fake_branding = {
         "hashtag": "#دنیا_۲۴_نیوز",
         "channel_tag": "@Donya24News"
     }
 
-    import core.branding_manager
+    # =====================================================
+    # FAKE BRANDING MANAGER
+    #
+    # ماژول واقعی import نمی‌شود تا وابستگی Database
+    # وارد این تست تشخیصی نشود.
+    # =====================================================
 
-    monkeypatch.setattr(
-        core.branding_manager,
-        "get_branding",
-        lambda user_id: fake_branding
+    fake_branding_module = types.ModuleType(
+        "core.branding_manager"
     )
 
-    branding = build_branding_for_user(
-        123456
+    def fake_get_branding(
+        user_id
+    ):
+        return dict(
+            fake_branding
+        )
+
+    fake_branding_module.get_branding = (
+        fake_get_branding
     )
 
-    print("\n")
-    print("====================================")
-    print("BRANDING DEBUG")
-    print("====================================")
+    old_module = sys.modules.get(
+        "core.branding_manager"
+    )
+
+    try:
+
+        sys.modules[
+            "core.branding_manager"
+        ] = fake_branding_module
+
+        branding = (
+            build_branding_for_user(
+                123456
+            )
+        )
+
+    finally:
+
+        if old_module is not None:
+
+            sys.modules[
+                "core.branding_manager"
+            ] = old_module
+
+        else:
+
+            sys.modules.pop(
+                "core.branding_manager",
+                None
+            )
+
+    # =====================================================
+    # DEBUG OUTPUT
+    # =====================================================
+
+    print()
+    print(
+        "===================================="
+    )
+    print(
+        "BRANDING DEBUG"
+    )
+    print(
+        "===================================="
+    )
 
     print(
         "REPR:",
-        repr(branding)
+        repr(
+            branding
+        )
     )
 
     print(
@@ -38,64 +119,40 @@ def test_debug_branding_direction_characters(monkeypatch):
         ]
     )
 
-    print(
-        "HAS RLM:",
-        "\u200f" in branding
-    )
+    for name, character in (
+        DIRECTION_MARKS.items()
+    ):
+
+        print(
+            f"HAS {name}:",
+            character in branding
+        )
 
     print(
-        "HAS LRM:",
-        "\u200e" in branding
+        "===================================="
     )
 
-    print(
-        "HAS LRE:",
-        "\u202a" in branding
+    # =====================================================
+    # EXPECTED EXACT VALUE
+    # =====================================================
+
+    assert (
+        branding
+        == (
+            "#دنیا_۲۴_نیوز\n"
+            "@Donya24News"
+        )
     )
 
-    print(
-        "HAS RLE:",
-        "\u202b" in branding
-    )
+    # =====================================================
+    # NO DIRECTION CONTROL CHARACTERS
+    # =====================================================
 
-    print(
-        "HAS PDF:",
-        "\u202c" in branding
-    )
+    for character in (
+        DIRECTION_MARKS.values()
+    ):
 
-    print(
-        "HAS LRO:",
-        "\u202d" in branding
-    )
-
-    print(
-        "HAS RLO:",
-        "\u202e" in branding
-    )
-
-    print(
-        "HAS LRI:",
-        "\u2066" in branding
-    )
-
-    print(
-        "HAS RLI:",
-        "\u2067" in branding
-    )
-
-    print(
-        "HAS FSI:",
-        "\u2068" in branding
-    )
-
-    print(
-        "HAS PDI:",
-        "\u2069" in branding
-    )
-
-    print("====================================")
-
-    assert branding == (
-        "#دنیا_۲۴_نیوز\n"
-        "@Donya24News"
-    )
+        assert (
+            character
+            not in branding
+        )
