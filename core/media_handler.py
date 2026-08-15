@@ -67,7 +67,6 @@ def get_last_media_message_id() -> Optional[int]:
         isinstance(value, int)
         and not isinstance(value, bool)
     ):
-
         return value
 
     return None
@@ -99,7 +98,6 @@ group_lock = threading.RLock()
 MAX_PENDING_GROUPS = 1000
 
 MAX_GROUP_AGE_SECONDS = 900
-
 CLEANUP_INTERVAL_SECONDS = 300
 
 
@@ -143,19 +141,16 @@ def initialize(
     global cleanup_thread
 
     if not api_url:
-
         raise ValueError(
             "api_url cannot be empty"
         )
 
     if not channel_id:
-
         raise ValueError(
             "channel_id cannot be empty"
         )
 
     API_URL = api_url.rstrip("/")
-
     CHANNEL_ID = channel_id
 
     logger.info(
@@ -199,7 +194,6 @@ def _cleanup_scheduler() -> None:
     while cleanup_running:
 
         try:
-
             time.sleep(
                 CLEANUP_INTERVAL_SECONDS
             )
@@ -207,7 +201,6 @@ def _cleanup_scheduler() -> None:
             cleanup_old_groups()
 
         except Exception as e:
-
             logger.exception(
                 f"❌ Cleanup scheduler error: {e}"
             )
@@ -220,7 +213,6 @@ def _cleanup_scheduler() -> None:
 def cleanup_old_groups() -> None:
 
     current_time = time.time()
-
     groups_to_remove = []
 
     with group_lock:
@@ -283,7 +275,6 @@ def cleanup_old_groups() -> None:
                     group_key
                     not in groups_to_remove
                 ):
-
                     groups_to_remove.append(
                         group_key
                     )
@@ -301,13 +292,9 @@ def cleanup_old_groups() -> None:
             )
 
             if timer:
-
                 try:
-
                     timer.cancel()
-
                 except Exception:
-
                     pass
 
     if groups_to_remove:
@@ -365,9 +352,7 @@ def add_to_pending_group(
                 group_key
             ] = {
                 "chat_id": chat_id,
-                "media_group_id": (
-                    media_group_id
-                ),
+                "media_group_id": media_group_id,
                 "files": [],
                 "raw_caption": "",
                 "caption_entities": [],
@@ -377,9 +362,7 @@ def add_to_pending_group(
                 "other_entities": [],
                 "forward_source": {},
                 "caption_received": False,
-                "last_update": (
-                    time.time()
-                ),
+                "last_update": time.time(),
                 "is_processing": False
             }
 
@@ -391,10 +374,6 @@ def add_to_pending_group(
         group = pending_groups[
             group_key
         ]
-
-        # =================================================
-        # FORWARD SOURCE
-        # =================================================
 
         if (
             forward_source
@@ -420,10 +399,6 @@ def add_to_pending_group(
                 f"username="
                 f"{forward_source.get('source_username') or '-'}"
             )
-
-        # =================================================
-        # DUPLICATE MEDIA CHECK
-        # =================================================
 
         already_exists = any(
             item.get(
@@ -458,10 +433,6 @@ def add_to_pending_group(
         group[
             "last_update"
         ] = time.time()
-
-        # =================================================
-        # CAPTION
-        # =================================================
 
         if (
             caption
@@ -599,11 +570,8 @@ def remove_pending_group(
             if timer:
 
                 try:
-
                     timer.cancel()
-
                 except Exception:
-
                     pass
 
             return
@@ -633,11 +601,8 @@ def remove_pending_group(
             if timer:
 
                 try:
-
                     timer.cancel()
-
                 except Exception:
-
                     pass
 
 
@@ -836,6 +801,101 @@ def telegram_response_ok(
 
 
 # =========================================================
+# DEBUG TELEGRAM RETURNED CAPTION ENTITIES
+# =========================================================
+
+def debug_telegram_returned_caption_entities(
+    response: Optional[
+        requests.Response
+    ],
+    endpoint: str
+) -> None:
+    """
+    Diagnostic only.
+
+    Does not modify Telegram messages.
+    Logs the caption and caption_entities returned
+    by Telegram after sendPhoto/sendVideo/sendMediaGroup.
+    """
+
+    if response is None:
+        return
+
+    try:
+
+        data = response.json()
+
+        if data.get(
+            "ok"
+        ) is not True:
+            return
+
+        result = data.get(
+            "result"
+        )
+
+        if isinstance(
+            result,
+            list
+        ):
+            messages = result
+
+        elif isinstance(
+            result,
+            dict
+        ):
+            messages = [result]
+
+        else:
+            return
+
+        for index, message in enumerate(
+            messages
+        ):
+
+            if not isinstance(
+                message,
+                dict
+            ):
+                continue
+
+            caption = (
+                message.get(
+                    "caption",
+                    ""
+                )
+                or ""
+            )
+
+            caption_entities = (
+                message.get(
+                    "caption_entities",
+                    []
+                )
+                or []
+            )
+
+            logger.warning(
+                "🔬 TELEGRAM RETURN DEBUG | "
+                f"endpoint={endpoint} | "
+                f"item={index + 1} | "
+                f"message_id="
+                f"{message.get('message_id')} | "
+                f"caption_repr={repr(caption)} | "
+                f"caption_entities="
+                f"{json.dumps(caption_entities, ensure_ascii=False)}"
+            )
+
+    except Exception as e:
+
+        logger.exception(
+            "❌ Telegram return debug failed | "
+            f"endpoint={endpoint} | "
+            f"{e}"
+        )
+
+
+# =========================================================
 # EXTRACT SINGLE MESSAGE ID
 # =========================================================
 
@@ -860,7 +920,6 @@ def extract_single_message_id(
             result,
             dict
         ):
-
             return None
 
         message_id = result.get(
@@ -871,7 +930,6 @@ def extract_single_message_id(
             isinstance(message_id, int)
             and not isinstance(message_id, bool)
         ):
-
             return message_id
 
     except Exception as e:
@@ -909,11 +967,9 @@ def extract_media_group_message_id(
             result,
             list
         ):
-
             return None
 
         if not result:
-
             return None
 
         first_message = result[0]
@@ -922,7 +978,6 @@ def extract_media_group_message_id(
             first_message,
             dict
         ):
-
             return None
 
         message_id = first_message.get(
@@ -933,7 +988,6 @@ def extract_media_group_message_id(
             isinstance(message_id, int)
             and not isinstance(message_id, bool)
         ):
-
             return message_id
 
     except Exception as e:
@@ -957,7 +1011,6 @@ def send_text_to_channel(
 ) -> bool:
 
     if not text:
-
         return True
 
     if not CHANNEL_ID:
@@ -1101,25 +1154,11 @@ def send_single_media_to_channel(
             "caption"
         ] = caption
 
-        clean_caption_entities = list(
-            caption_entities
-            or []
-        )
-
-        # =================================================
-        # ENTITY MODE HAS PRIORITY OVER PARSE MODE
-        # =================================================
-
-        if clean_caption_entities:
+        if caption_entities:
 
             payload[
                 "caption_entities"
-            ] = clean_caption_entities
-
-            logger.info(
-                f"🧩 Telegram single media entity mode | "
-                f"entities={len(clean_caption_entities)}"
-            )
+            ] = caption_entities
 
         elif parse_mode:
 
@@ -1137,6 +1176,15 @@ def send_single_media_to_channel(
         endpoint
     ):
 
+        # =============================================
+        # DIAGNOSTIC ONLY
+        # =============================================
+
+        debug_telegram_returned_caption_entities(
+            response,
+            endpoint
+        )
+
         message_id = (
             extract_single_message_id(
                 response
@@ -1151,7 +1199,7 @@ def send_single_media_to_channel(
             f"✅ Single Telegram media sent | "
             f"type={media_type} | "
             f"parse_mode="
-            f"{parse_mode if not caption_entities else 'NONE'} | "
+            f"{parse_mode or 'NONE'} | "
             f"caption_entities="
             f"{len(caption_entities or [])} | "
             f"message_id="
@@ -1244,11 +1292,6 @@ def send_media_group_to_channel(
 
     media_group = []
 
-    clean_caption_entities = list(
-        caption_entities
-        or []
-    )
-
     for index, file in enumerate(
         files
     ):
@@ -1288,10 +1331,6 @@ def send_media_group_to_channel(
             "media": file_id
         }
 
-        # =================================================
-        # CAPTION ONLY ON FIRST MEDIA
-        # =================================================
-
         if (
             index == 0
             and caption
@@ -1301,15 +1340,11 @@ def send_media_group_to_channel(
                 "caption"
             ] = caption
 
-            # =============================================
-            # ENTITY MODE HAS PRIORITY
-            # =============================================
-
-            if clean_caption_entities:
+            if caption_entities:
 
                 media_item[
                     "caption_entities"
-                ] = clean_caption_entities
+                ] = caption_entities
 
             elif parse_mode:
 
@@ -1319,13 +1354,6 @@ def send_media_group_to_channel(
 
         media_group.append(
             media_item
-        )
-
-    if clean_caption_entities:
-
-        logger.info(
-            f"🧩 Telegram Media Group entity mode | "
-            f"entities={len(clean_caption_entities)}"
         )
 
     payload = {
@@ -1343,6 +1371,15 @@ def send_media_group_to_channel(
         "sendMediaGroup"
     ):
 
+        # =============================================
+        # DIAGNOSTIC ONLY
+        # =============================================
+
+        debug_telegram_returned_caption_entities(
+            response,
+            "sendMediaGroup"
+        )
+
         message_id = (
             extract_media_group_message_id(
                 response
@@ -1357,9 +1394,9 @@ def send_media_group_to_channel(
             f"🎯 Telegram Media Group sent | "
             f"count={len(media_group)} | "
             f"parse_mode="
-            f"{parse_mode if not clean_caption_entities else 'NONE'} | "
+            f"{parse_mode or 'NONE'} | "
             f"caption_entities="
-            f"{len(clean_caption_entities)} | "
+            f"{len(caption_entities or [])} | "
             f"anchor_message_id="
             f"{message_id or '-'}"
         )
@@ -1414,13 +1451,11 @@ def build_branding_for_user(
         )
 
         if hashtag:
-
             parts.append(
                 hashtag
             )
 
         if channel_tag:
-
             parts.append(
                 channel_tag
             )
@@ -1449,13 +1484,11 @@ def build_branding_for_user(
         parts = []
 
         if HASHTAG:
-
             parts.append(
                 HASHTAG
             )
 
         if CHANNEL_TAG:
-
             parts.append(
                 CHANNEL_TAG
             )
@@ -1545,7 +1578,6 @@ def send_text_to_bale(
 ) -> bool:
 
     if not text:
-
         return True
 
     try:
@@ -1615,11 +1647,6 @@ def execute_telegram_plan(
         or None
     )
 
-    # =====================================================
-    # NEW:
-    # CAPTION ENTITIES
-    # =====================================================
-
     media_caption_entities = list(
         plan.get(
             "media_caption_entities",
@@ -1664,144 +1691,42 @@ def execute_telegram_plan(
 
         return False
 
-    # =====================================================
-    # SAFETY:
-    # ENTITY MODE AND PARSE MODE MUST NOT MIX
-    # =====================================================
-
-    if media_caption_entities:
-
-        if media_parse_mode:
-
-            logger.warning(
-                "⚠️ Telegram caption has entities and "
-                "parse_mode | parse_mode ignored"
-            )
-
-        effective_parse_mode = None
-
-    else:
-
-        effective_parse_mode = (
-            media_parse_mode
-        )
-
-    logger.info(
-        f"🧩 Telegram plan execution | "
-        f"caption={len(media_caption)} | "
-        f"entities={len(media_caption_entities)} | "
-        f"parse_mode="
-        f"{effective_parse_mode or 'NONE'}"
-    )
-
-    # =====================================================
-    # RESET ANCHOR
-    # =====================================================
-
     set_last_media_message_id(
         None
     )
-
-    # =====================================================
-    # SEND MEDIA
-    # =====================================================
 
     if len(files) == 1:
 
         file = files[0]
 
-        # =================================================
-        # NEW ENTITY PATH
-        # =================================================
-
-        if media_caption_entities:
-
-            media_success = (
-                send_single_media_to_channel(
-                    file.get(
-                        "file_id"
-                    ),
-                    file.get(
-                        "type"
-                    ),
-                    media_caption,
-                    caption_entities=(
-                        media_caption_entities
-                    )
+        media_success = (
+            send_single_media_to_channel(
+                file.get(
+                    "file_id"
+                ),
+                file.get(
+                    "type"
+                ),
+                media_caption,
+                parse_mode=media_parse_mode,
+                caption_entities=(
+                    media_caption_entities
                 )
             )
-
-        elif effective_parse_mode:
-
-            media_success = (
-                send_single_media_to_channel(
-                    file.get(
-                        "file_id"
-                    ),
-                    file.get(
-                        "type"
-                    ),
-                    media_caption,
-                    parse_mode=(
-                        effective_parse_mode
-                    )
-                )
-            )
-
-        else:
-
-            # سازگاری کامل با Call قدیمی
-            media_success = (
-                send_single_media_to_channel(
-                    file.get(
-                        "file_id"
-                    ),
-                    file.get(
-                        "type"
-                    ),
-                    media_caption
-                )
-            )
+        )
 
     else:
 
-        # =================================================
-        # NEW ENTITY PATH
-        # =================================================
-
-        if media_caption_entities:
-
-            media_success = (
-                send_media_group_to_channel(
-                    files,
-                    media_caption,
-                    caption_entities=(
-                        media_caption_entities
-                    )
+        media_success = (
+            send_media_group_to_channel(
+                files,
+                media_caption,
+                parse_mode=media_parse_mode,
+                caption_entities=(
+                    media_caption_entities
                 )
             )
-
-        elif effective_parse_mode:
-
-            media_success = (
-                send_media_group_to_channel(
-                    files,
-                    media_caption,
-                    parse_mode=(
-                        effective_parse_mode
-                    )
-                )
-            )
-
-        else:
-
-            # سازگاری کامل با Call قدیمی
-            media_success = (
-                send_media_group_to_channel(
-                    files,
-                    media_caption
-                )
-            )
+        )
 
     if not media_success:
 
@@ -1810,10 +1735,6 @@ def execute_telegram_plan(
         )
 
         return False
-
-    # =====================================================
-    # MEDIA ANCHOR MESSAGE ID
-    # =====================================================
 
     media_message_id = (
         get_last_media_message_id()
@@ -1824,10 +1745,6 @@ def execute_telegram_plan(
         f"message_id={media_message_id or '-'} | "
         f"followups={len(followup_messages)}"
     )
-
-    # =====================================================
-    # FOLLOW-UP TEXT
-    # =====================================================
 
     for index, message in enumerate(
         followup_messages
@@ -1864,10 +1781,6 @@ def execute_telegram_plan(
                 f"❌ Telegram follow-up failed | "
                 f"index={index + 1}"
             )
-
-    # =====================================================
-    # LEGACY BLOCKQUOTE MESSAGES
-    # =====================================================
 
     for index, html_message in enumerate(
         blockquote_messages
@@ -2018,10 +1931,6 @@ def process_media_group(
         f"chat={chat_id}"
     )
 
-    # =====================================================
-    # SNAPSHOT
-    # =====================================================
-
     with group_lock:
 
         group = pending_groups.get(
@@ -2123,10 +2032,6 @@ def process_media_group(
 
     try:
 
-        # =================================================
-        # FORMAT MAIN TEXT
-        # =================================================
-
         formatted_main_text = ""
 
         if raw_main_text:
@@ -2194,10 +2099,6 @@ def process_media_group(
                     raw_main_text
                 )
 
-        # =================================================
-        # BRANDING
-        # =================================================
-
         branding = (
             build_branding_for_user(
                 chat_id
@@ -2208,10 +2109,6 @@ def process_media_group(
             f"🏷️ Branding prepared | "
             f"length={len(branding)}"
         )
-
-        # =================================================
-        # CAPTION MANAGER
-        # =================================================
 
         publication_plan: PublicationPlan = (
             analyze_content(
@@ -2243,7 +2140,7 @@ def process_media_group(
             f"{len(telegram_plan.get('media_caption', ''))} | "
             f"tg_parse_mode="
             f"{telegram_plan.get('media_parse_mode') or 'NONE'} | "
-            f"tg_caption_entities="
+            f"tg_entities="
             f"{len(telegram_plan.get('media_caption_entities', []))} | "
             f"tg_followup="
             f"{len(telegram_plan.get('followup_messages', []))} | "
@@ -2252,10 +2149,6 @@ def process_media_group(
             f"bale_caption="
             f"{len(bale_plan.get('media_caption', ''))}"
         )
-
-        # =================================================
-        # TELEGRAM
-        # =================================================
 
         logger.info(
             "📤 Step 1/2 | Execute Telegram Plan"
@@ -2279,10 +2172,6 @@ def process_media_group(
         logger.info(
             "✅ Telegram Publication Plan completed"
         )
-
-        # =================================================
-        # BALE
-        # =================================================
 
         logger.info(
             "📤 Step 2/2 | Execute Bale Plan"
@@ -2357,11 +2246,8 @@ def schedule_processing(
         if old_timer:
 
             try:
-
                 old_timer.cancel()
-
             except Exception:
-
                 pass
 
         timer = threading.Timer(
@@ -2421,7 +2307,6 @@ def _scheduled_process(
             "is_processing",
             False
         ):
-
             return
 
         last_update = group.get(
