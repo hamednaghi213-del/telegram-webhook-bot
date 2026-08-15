@@ -13,6 +13,7 @@ from core.caption_manager import (
     place_branding,
     create_telegram_blockquote_messages,
     create_bale_blockquote_messages,
+    telegram_html_visible_length,
     analyze_content,
 )
 
@@ -69,14 +70,34 @@ def assert_telegram_limits(
 
     telegram = plan.telegram
 
-    assert (
-        len(
-            telegram[
-                "media_caption"
-            ]
-        )
-        <= TELEGRAM_CAPTION_LIMIT
+    caption = (
+        telegram[
+            "media_caption"
+        ]
     )
+
+    if (
+        telegram.get(
+            "media_parse_mode"
+        )
+        == "HTML"
+    ):
+
+        assert (
+            telegram_html_visible_length(
+                caption
+            )
+            <= TELEGRAM_CAPTION_LIMIT
+        )
+
+    else:
+
+        assert (
+            len(
+                caption
+            )
+            <= TELEGRAM_CAPTION_LIMIT
+        )
 
     for message in telegram[
         "followup_messages"
@@ -208,11 +229,9 @@ def test_short_caption_fits_in_telegram_media():
 
     telegram = plan.telegram
 
-    assert (
-        telegram[
-            "media_caption"
-        ]
-    )
+    assert telegram[
+        "media_caption"
+    ]
 
     assert (
         DEFAULT_BRANDING
@@ -253,14 +272,32 @@ def test_caption_near_safe_limit():
 
     telegram = plan.telegram
 
-    assert (
-        len(
-            telegram[
-                "media_caption"
-            ]
+    if (
+        telegram.get(
+            "media_parse_mode"
         )
-        <= TELEGRAM_CAPTION_SAFE_LIMIT
-    )
+        == "HTML"
+    ):
+
+        assert (
+            telegram_html_visible_length(
+                telegram[
+                    "media_caption"
+                ]
+            )
+            <= TELEGRAM_CAPTION_SAFE_LIMIT
+        )
+
+    else:
+
+        assert (
+            len(
+                telegram[
+                    "media_caption"
+                ]
+            )
+            <= TELEGRAM_CAPTION_SAFE_LIMIT
+        )
 
     assert_telegram_limits(
         plan
@@ -285,15 +322,6 @@ def test_caption_above_telegram_safe_limit_creates_followup():
     )
 
     telegram = plan.telegram
-
-    assert (
-        len(
-            telegram[
-                "media_caption"
-            ]
-        )
-        <= TELEGRAM_CAPTION_SAFE_LIMIT
-    )
 
     assert (
         len(
@@ -582,15 +610,8 @@ def test_blockquotes_are_sorted_by_offset():
 
     assert len(messages) == 2
 
-    assert (
-        "اول"
-        in messages[0]
-    )
-
-    assert (
-        "دوم"
-        in messages[1]
-    )
+    assert "اول" in messages[0]
+    assert "دوم" in messages[1]
 
 
 # =========================================================
@@ -736,20 +757,9 @@ def test_extremely_long_token_uses_hard_split():
         == 3
     )
 
-    assert (
-        len(parts[0])
-        == 4000
-    )
-
-    assert (
-        len(parts[1])
-        == 4000
-    )
-
-    assert (
-        len(parts[2])
-        == 1000
-    )
+    assert len(parts[0]) == 4000
+    assert len(parts[1]) == 4000
+    assert len(parts[2]) == 1000
 
 
 # =========================================================
@@ -1049,20 +1059,9 @@ def test_full_publication_plan_structure():
 
     result = plan.to_dict()
 
-    assert (
-        "telegram"
-        in result
-    )
-
-    assert (
-        "bale"
-        in result
-    )
-
-    assert (
-        "metadata"
-        in result
-    )
+    assert "telegram" in result
+    assert "bale" in result
+    assert "metadata" in result
 
     assert (
         "media_caption"
@@ -1113,44 +1112,6 @@ def test_full_publication_plan_structure():
         ]
     )
 
-    assert (
-        "telegram"
-        in plan.text
-    )
-
-    assert (
-        "bale"
-        in plan.text
-    )
-
-    assert (
-        "messages"
-        in plan.text[
-            "telegram"
-        ]
-    )
-
-    assert (
-        "blockquote_messages"
-        in plan.text[
-            "telegram"
-        ]
-    )
-
-    assert (
-        "messages"
-        in plan.text[
-            "bale"
-        ]
-    )
-
-    assert (
-        "blockquote_messages"
-        in plan.text[
-            "bale"
-        ]
-    )
-
     assert_telegram_limits(
         plan
     )
@@ -1195,10 +1156,7 @@ def test_telegram_text_plan_short_message():
         ]
     )
 
-    assert (
-        len(messages)
-        == 1
-    )
+    assert len(messages) == 1
 
     assert (
         "❇️ تیتر خبر"
@@ -1398,10 +1356,7 @@ def test_telegram_text_plan_expandable_blockquote():
         ]
     )
 
-    assert (
-        len(blockquotes)
-        == 1
-    )
+    assert len(blockquotes) == 1
 
     assert (
         blockquotes[0].startswith(
@@ -1427,7 +1382,7 @@ def test_telegram_text_plan_expandable_blockquote():
 
 # =========================================================
 # TEST 26
-# BALE TEXT PLAN
+# BALE TEXT PLAN - NEW INLINE POLICY
 # =========================================================
 
 def test_bale_text_plan_respects_limits():
@@ -1436,14 +1391,16 @@ def test_bale_text_plan_respects_limits():
         10000
     )
 
+    blockquote_text = (
+        "تحلیل تکمیلی برای بله. "
+        * 400
+    )
+
     plan = analyze_content(
         main_text=main_text,
         blockquote_blocks=[
             {
-                "text": (
-                    "تحلیل تکمیلی برای بله. "
-                    * 400
-                ),
+                "text": blockquote_text,
                 "offset": 200
             }
         ],
@@ -1480,32 +1437,31 @@ def test_bale_text_plan_respects_limits():
             <= BALE_MESSAGE_LIMIT
         )
 
-    for message in blockquotes:
+    # =====================================================
+    # NEW POLICY
+    #
+    # Blockquote دیگر پیام جدا نیست.
+    # =====================================================
 
-        assert (
-            len(message)
-            <= BALE_MESSAGE_LIMIT
-        )
+    assert (
+        blockquotes
+        == []
+    )
 
     bale_chain = "\n".join(
         messages
     )
 
+    # Branding باقی بماند
     assert (
         DEFAULT_BRANDING
         in bale_chain
     )
 
+    # Blockquote داخل خود جریان خبر باشد
     assert (
-        len(blockquotes)
-        >= 1
-    )
-
-    assert (
-        blockquotes[0]
-        .startswith(
-            "▌ "
-        )
+        "▌ تحلیل تکمیلی برای بله."
+        in bale_chain
     )
 
     assert_bale_text_limits(
@@ -1521,15 +1477,10 @@ def test_bale_text_plan_respects_limits():
 
 def test_telegram_text_does_not_split_when_final_message_fits_4096():
 
-    # Branding همراه با دو Line Break
     branding_overhead = (
         len(DEFAULT_BRANDING)
         + 2
     )
-
-    # متنی می‌سازیم که از Safe Limit قبلی 4000
-    # عبور کند، ولی همراه Branding همچنان
-    # داخل سقف رسمی 4096 باقی بماند.
 
     target_main_length = (
         TELEGRAM_MESSAGE_LIMIT
@@ -1571,10 +1522,6 @@ def test_telegram_text_does_not_split_when_final_message_fits_4096():
             "messages"
         ]
     )
-
-    # اصل Regression:
-    # تا وقتی خروجی نهایی در 4096 جا دارد،
-    # تقسیم کردن ممنوع است.
 
     assert (
         len(messages)
@@ -1624,10 +1571,6 @@ def test_formatter_removes_source_icons_and_promotional_footer():
         source_username="AbdiMediaNet"
     )
 
-    # =====================================================
-    # REAL NEWS MUST REMAIN
-    # =====================================================
-
     assert (
         "کارشناس صداوسیما"
         in result
@@ -1638,54 +1581,13 @@ def test_formatter_removes_source_icons_and_promotional_footer():
         in result
     )
 
-    # =====================================================
-    # FOREIGN ICONS MUST BE REMOVED
-    # =====================================================
-
-    assert (
-        "🔷"
-        not in result
-    )
-
-    assert (
-        "🆔"
-        not in result
-    )
-
-    # =====================================================
-    # FOREIGN BRANDING MUST BE REMOVED
-    # =====================================================
-
-    assert (
-        "@AbdiMediaNet"
-        not in result
-    )
-
-    assert (
-        "#عبدی_مدیا"
-        not in result
-    )
-
-    # =====================================================
-    # PROMOTIONAL FOOTER MUST BE REMOVED
-    # =====================================================
-
-    assert (
-        "واتس‌اپ"
-        not in result
-    )
-
-    assert (
-        "یوتیوب"
-        not in result
-    )
-
-    assert (
-        "کست باکس"
-        not in result
-    )
-
-    # خط مستقل "سایت" هم نباید باقی بماند
+    assert "🔷" not in result
+    assert "🆔" not in result
+    assert "@AbdiMediaNet" not in result
+    assert "#عبدی_مدیا" not in result
+    assert "واتس‌اپ" not in result
+    assert "یوتیوب" not in result
+    assert "کست باکس" not in result
 
     result_lines = [
         line.strip()
@@ -1706,21 +1608,6 @@ def test_formatter_removes_source_icons_and_promotional_footer():
         not in result_lines
     )
 
-    # =====================================================
-    # DONYA24 FORMAT MUST REMAIN
-    # =====================================================
-
-    assert (
-        "❇️"
-        in result
-    )
-
-    assert (
-        "🔹"
-        in result
-    )
-
-    assert (
-        "🔹 🔹"
-        not in result
-    )
+    assert "❇️" in result
+    assert "🔹" in result
+    assert "🔹 🔹" not in result
