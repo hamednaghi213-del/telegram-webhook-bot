@@ -669,6 +669,5 @@ def test_execute_telegram_plan_sends_expandable_followup_reply_before_branding()
         "#دنیا_۲۴_نیوز\n@Donya24News",
     )
     assert second_call.kwargs == {
-        "entities": [],
         "reply_to_message_id": 509
     }

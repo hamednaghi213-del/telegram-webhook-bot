@@ -1846,17 +1846,24 @@ def execute_telegram_plan(
                 or []
             )
 
+        send_kwargs: Dict[str, Any] = {}
+
+        if message_entities:
+
+            send_kwargs[
+                "entities"
+            ] = message_entities
+
         if media_message_id:
+
+            send_kwargs[
+                "reply_to_message_id"
+            ] = media_message_id
 
             success = (
                 send_text_to_channel(
                     message,
-                    entities=(
-                        message_entities
-                    ),
-                    reply_to_message_id=(
-                        media_message_id
-                    )
+                    **send_kwargs
                 )
             )
 
@@ -1871,9 +1878,7 @@ def execute_telegram_plan(
             success = (
                 send_text_to_channel(
                     message,
-                    entities=(
-                        message_entities
-                    )
+                    **send_kwargs
                 )
             )
 
