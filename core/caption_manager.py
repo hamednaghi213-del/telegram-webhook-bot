@@ -30,7 +30,8 @@ BALE_MESSAGE_LIMIT = 4096
 # INTERNAL SAFE LIMITS
 # =========================================================
 #
-# از سقف واقعی کمی فاصله نگه می‌داریم.
+# کمی پایین‌تر از سقف رسمی نگه داشته می‌شوند
+# تا فضای امن برای Formatting باقی بماند.
 # =========================================================
 
 TELEGRAM_CAPTION_SAFE_LIMIT = 1000
@@ -46,13 +47,42 @@ BALE_MESSAGE_SAFE_LIMIT = 4000
 
 class PublicationPlan:
     """
-    نقشه انتشار مستقل برای Telegram و Bale.
+    نقشه انتشار محتوا.
 
-    Caption Manager فقط Plan می‌سازد.
-    هیچ API Call در این کلاس یا ماژول انجام نمی‌شود.
+    بخش‌های قدیمی و پایدار:
+
+        telegram
+        bale
+        metadata
+
+    بخش جدید:
+
+        text
+
+    ساختار text:
+
+        {
+            "telegram": {
+                "messages": [],
+                "blockquote_messages": []
+            },
+            "bale": {
+                "messages": [],
+                "blockquote_messages": []
+            }
+        }
+
+    نکته مهم:
+
+    telegram و bale قبلی مخصوص مسیر Media هستند
+    و برای حفظ سازگاری دست نخورده باقی مانده‌اند.
     """
 
     def __init__(self):
+
+        # =================================================
+        # MEDIA PLAN - TELEGRAM
+        # =================================================
 
         self.telegram: Dict[str, Any] = {
             "media_caption": "",
@@ -61,6 +91,10 @@ class PublicationPlan:
             "document_fallback": False
         }
 
+        # =================================================
+        # MEDIA PLAN - BALE
+        # =================================================
+
         self.bale: Dict[str, Any] = {
             "media_caption": "",
             "followup_messages": [],
@@ -68,12 +102,43 @@ class PublicationPlan:
             "document_fallback": False
         }
 
-        # برای توسعه آینده Entityها
+        # =================================================
+        # TEXT PLAN
+        # =================================================
+
+        self.text: Dict[str, Any] = {
+            "telegram": {
+                "messages": [],
+                "blockquote_messages": []
+            },
+            "bale": {
+                "messages": [],
+                "blockquote_messages": []
+            }
+        }
+
+        # =================================================
+        # METADATA
+        # =================================================
+
         self.metadata: Dict[str, Any] = {
             "other_entities": []
         }
 
     def to_dict(self) -> Dict[str, Any]:
+        """
+        خروجی قدیمی عمداً حفظ شده است.
+
+        علت:
+        ممکن است بخش‌های دیگر پروژه یا تست‌های فعلی
+        روی ساختار قدیمی to_dict وابسته باشند.
+
+        Text Plan از طریق:
+
+            publication_plan.text
+
+        قابل دسترسی است.
+        """
 
         return {
             "telegram": self.telegram,
@@ -96,7 +161,9 @@ def normalize_text(
     if not text:
         return ""
 
-    return str(text).strip()
+    return str(
+        text
+    ).strip()
 
 
 def get_text_length(
@@ -109,7 +176,9 @@ def get_text_length(
     if not text:
         return 0
 
-    return len(text)
+    return len(
+        text
+    )
 
 
 def append_branding(
@@ -118,9 +187,6 @@ def append_branding(
 ) -> str:
     """
     افزودن Branding با فاصله استاندارد.
-
-    Branding فقط در مرحله تصمیم‌گیری نهایی
-    باید اضافه شود.
     """
 
     text = normalize_text(
@@ -160,7 +226,7 @@ def find_split_position(
     2. Line
     3. Sentence
     4. Word
-    5. Hard cut فقط در شرایط اجتناب‌ناپذیر
+    5. Hard Cut
     """
 
     if not text:
@@ -172,14 +238,18 @@ def find_split_position(
     if len(text) <= limit:
         return len(text)
 
-    search_text = text[:limit]
+    search_text = text[
+        :limit
+    ]
 
     # =====================================================
     # 1. PARAGRAPH
     # =====================================================
 
-    position = search_text.rfind(
-        "\n\n"
+    position = (
+        search_text.rfind(
+            "\n\n"
+        )
     )
 
     if position > 0:
@@ -189,8 +259,10 @@ def find_split_position(
     # 2. LINE
     # =====================================================
 
-    position = search_text.rfind(
-        "\n"
+    position = (
+        search_text.rfind(
+            "\n"
+        )
     )
 
     if position > 0:
@@ -205,21 +277,33 @@ def find_split_position(
         "!",
         ".",
         "?",
-        "۔"
+        "۔",
+        "…"
     )
 
     best_sentence_position = -1
 
     for mark in sentence_marks:
 
-        position = search_text.rfind(
-            mark
+        position = (
+            search_text.rfind(
+                mark
+            )
         )
 
-        if position > best_sentence_position:
-            best_sentence_position = position
+        if (
+            position
+            > best_sentence_position
+        ):
 
-    if best_sentence_position > 0:
+            best_sentence_position = (
+                position
+            )
+
+    if (
+        best_sentence_position
+        > 0
+    ):
 
         return (
             best_sentence_position
@@ -230,15 +314,17 @@ def find_split_position(
     # 4. WORD
     # =====================================================
 
-    position = search_text.rfind(
-        " "
+    position = (
+        search_text.rfind(
+            " "
+        )
     )
 
     if position > 0:
         return position
 
     # =====================================================
-    # 5. EXTREMELY LONG TOKEN
+    # 5. HARD CUT
     # =====================================================
 
     logger.warning(
@@ -259,7 +345,8 @@ def split_text(
     limit: int
 ) -> List[str]:
     """
-    تقسیم منطقی متن به بخش‌های حداکثر limit.
+    تقسیم منطقی متن به بخش‌هایی
+    که از limit بیشتر نمی‌شوند.
     """
 
     text = normalize_text(
@@ -299,7 +386,10 @@ def split_text(
 
             break
 
-        if len(remaining) <= limit:
+        if (
+            len(remaining)
+            <= limit
+        ):
 
             final_part = (
                 remaining.strip()
@@ -343,7 +433,10 @@ def split_text(
             .strip()
         )
 
-        if new_remaining == remaining:
+        if (
+            new_remaining
+            == remaining
+        ):
 
             logger.error(
                 "❌ split_text made no progress"
@@ -351,7 +444,9 @@ def split_text(
 
             break
 
-        remaining = new_remaining
+        remaining = (
+            new_remaining
+        )
 
     logger.info(
         f"✂️ Text split | "
@@ -373,13 +468,13 @@ def split_for_media(
     message_limit: int
 ) -> Dict[str, Any]:
     """
-    Split دو مرحله‌ای.
+    Split مخصوص Media.
 
-    اولین Chunk:
-        مناسب Media Caption
+    اولین قسمت:
+        Media Caption
 
-    باقی متن:
-        مناسب sendMessage
+    ادامه:
+        sendMessage
     """
 
     text = normalize_text(
@@ -398,7 +493,10 @@ def split_for_media(
     # ENTIRE TEXT FITS CAPTION
     # =====================================================
 
-    if len(text) <= caption_limit:
+    if (
+        len(text)
+        <= caption_limit
+    ):
 
         result[
             "media_caption"
@@ -407,7 +505,7 @@ def split_for_media(
         return result
 
     # =====================================================
-    # FIRST PART FOR CAPTION
+    # FIRST PART
     # =====================================================
 
     split_position = (
@@ -439,7 +537,7 @@ def split_for_media(
     ] = first_part
 
     # =====================================================
-    # REMAINING TEXT USES MESSAGE LIMIT
+    # FOLLOW-UP
     # =====================================================
 
     if remaining:
@@ -455,7 +553,7 @@ def split_for_media(
 
 
 # =========================================================
-# BRANDING PLACEMENT
+# MEDIA BRANDING PLACEMENT
 # =========================================================
 
 def place_branding(
@@ -466,18 +564,13 @@ def place_branding(
     message_limit: int
 ) -> Dict[str, Any]:
     """
-    Branding را فقط یک بار و در آخرین محل منطقی قرار می‌دهد.
+    Branding مسیر Media را فقط یک بار قرار می‌دهد.
 
     اولویت:
 
-    1. اگر Follow-up وجود ندارد و Caption جا دارد:
-       Caption
-
-    2. اگر Follow-up وجود دارد و آخرین Follow-up جا دارد:
-       آخرین Follow-up
-
-    3. در غیر این صورت:
-       Follow-up مستقل Branding
+    1. آخرین Follow-up
+    2. Caption
+    3. پیام مستقل
     """
 
     media_caption = normalize_text(
@@ -489,7 +582,8 @@ def place_branding(
     )
 
     messages = list(
-        followup_messages or []
+        followup_messages
+        or []
     )
 
     if not branding:
@@ -505,20 +599,32 @@ def place_branding(
 
     if messages:
 
-        last_message = messages[-1]
-
-        combined = append_branding(
-            last_message,
-            branding
+        last_message = (
+            messages[-1]
         )
 
-        if len(combined) <= message_limit:
+        combined = (
+            append_branding(
+                last_message,
+                branding
+            )
+        )
 
-            messages[-1] = combined
+        if (
+            len(combined)
+            <= message_limit
+        ):
+
+            messages[-1] = (
+                combined
+            )
 
         else:
 
-            if len(branding) <= message_limit:
+            if (
+                len(branding)
+                <= message_limit
+            ):
 
                 messages.append(
                     branding
@@ -526,9 +632,11 @@ def place_branding(
 
             else:
 
-                branding_parts = split_text(
-                    branding,
-                    message_limit
+                branding_parts = (
+                    split_text(
+                        branding,
+                        message_limit
+                    )
                 )
 
                 messages.extend(
@@ -542,15 +650,19 @@ def place_branding(
 
     # =====================================================
     # NO FOLLOW-UP
-    # TRY MEDIA CAPTION
     # =====================================================
 
-    combined_caption = append_branding(
-        media_caption,
-        branding
+    combined_caption = (
+        append_branding(
+            media_caption,
+            branding
+        )
     )
 
-    if len(combined_caption) <= caption_limit:
+    if (
+        len(combined_caption)
+        <= caption_limit
+    ):
 
         media_caption = (
             combined_caption
@@ -558,7 +670,10 @@ def place_branding(
 
     else:
 
-        if len(branding) <= message_limit:
+        if (
+            len(branding)
+            <= message_limit
+        ):
 
             messages.append(
                 branding
@@ -580,6 +695,114 @@ def place_branding(
 
 
 # =========================================================
+# TEXT BRANDING PLACEMENT
+# =========================================================
+
+def place_branding_in_text_messages(
+    messages: List[str],
+    branding: str,
+    message_limit: int
+) -> List[str]:
+    """
+    Branding مخصوص Text Plan.
+
+    Branding باید فقط یک بار اضافه شود.
+
+    اولویت:
+
+    1. آخرین پیام Text
+    2. پیام مستقل Branding
+    3. Split Branding در صورت بسیار طولانی بودن
+    """
+
+    result = list(
+        messages
+        or []
+    )
+
+    branding = normalize_text(
+        branding
+    )
+
+    if not branding:
+        return result
+
+    # =====================================================
+    # NO MAIN MESSAGE
+    # =====================================================
+
+    if not result:
+
+        if (
+            len(branding)
+            <= message_limit
+        ):
+
+            return [
+                branding
+            ]
+
+        return split_text(
+            branding,
+            message_limit
+        )
+
+    # =====================================================
+    # TRY LAST MESSAGE
+    # =====================================================
+
+    last_message = (
+        result[-1]
+    )
+
+    combined = (
+        append_branding(
+            last_message,
+            branding
+        )
+    )
+
+    if (
+        len(combined)
+        <= message_limit
+    ):
+
+        result[-1] = (
+            combined
+        )
+
+        return result
+
+    # =====================================================
+    # SEPARATE BRANDING MESSAGE
+    # =====================================================
+
+    if (
+        len(branding)
+        <= message_limit
+    ):
+
+        result.append(
+            branding
+        )
+
+        return result
+
+    # =====================================================
+    # EXTREMELY LONG BRANDING
+    # =====================================================
+
+    result.extend(
+        split_text(
+            branding,
+            message_limit
+        )
+    )
+
+    return result
+
+
+# =========================================================
 # TELEGRAM BLOCKQUOTE
 # =========================================================
 
@@ -593,8 +816,6 @@ def create_telegram_blockquote_messages(
 ) -> List[str]:
     """
     ساخت Telegram HTML Blockquote Messages.
-
-    Blockquote قبل از HTML شدن Split می‌شود.
     """
 
     combined_blocks: List[
@@ -602,7 +823,7 @@ def create_telegram_blockquote_messages(
     ] = []
 
     # =====================================================
-    # NORMAL
+    # NORMAL BLOCKQUOTE
     # =====================================================
 
     for block in (
@@ -623,7 +844,7 @@ def create_telegram_blockquote_messages(
         })
 
     # =====================================================
-    # EXPANDABLE
+    # EXPANDABLE BLOCKQUOTE
     # =====================================================
 
     for block in (
@@ -682,9 +903,11 @@ def create_telegram_blockquote_messages(
             - 100
         )
 
-        raw_parts = split_text(
-            raw_text,
-            raw_limit
+        raw_parts = (
+            split_text(
+                raw_text,
+                raw_limit
+            )
         )
 
         for raw_part in raw_parts:
@@ -712,9 +935,11 @@ def create_telegram_blockquote_messages(
                 raw_limit // 2
             )
 
-            retry_parts = split_text(
-                raw_part,
-                retry_limit
+            retry_parts = (
+                split_text(
+                    raw_part,
+                    retry_limit
+                )
             )
 
             for retry_part in retry_parts:
@@ -755,10 +980,10 @@ def build_bale_blockquote(
     """
     Blockquote Plain Text برای Bale.
 
-    مثال:
+    نمونه:
 
-    ▌ خط اول
-    ▌ خط دوم
+        ▌ خط اول
+        ▌ خط دوم
     """
 
     text = normalize_text(
@@ -768,13 +993,17 @@ def build_bale_blockquote(
     if not text:
         return ""
 
-    lines = text.splitlines()
+    lines = (
+        text.splitlines()
+    )
 
     output_lines = []
 
     for line in lines:
 
-        line = line.strip()
+        line = (
+            line.strip()
+        )
 
         if not line:
             continue
@@ -797,7 +1026,7 @@ def create_bale_blockquote_messages(
     ]
 ) -> List[str]:
     """
-    تبدیل تمام Blockquoteها به Plain Text برای Bale.
+    تبدیل Blockquoteها به Plain Text برای Bale.
     """
 
     combined_blocks = []
@@ -862,9 +1091,11 @@ def create_bale_blockquote_messages(
             - 200
         )
 
-        raw_parts = split_text(
-            raw_text,
-            raw_limit
+        raw_parts = (
+            split_text(
+                raw_text,
+                raw_limit
+            )
         )
 
         for raw_part in raw_parts:
@@ -886,11 +1117,13 @@ def create_bale_blockquote_messages(
 
                 continue
 
-            retry_parts = split_text(
-                raw_part,
-                max(
-                    500,
-                    raw_limit // 2
+            retry_parts = (
+                split_text(
+                    raw_part,
+                    max(
+                        500,
+                        raw_limit // 2
+                    )
                 )
             )
 
@@ -922,7 +1155,7 @@ def create_bale_blockquote_messages(
 
 
 # =========================================================
-# TELEGRAM PLAN
+# TELEGRAM MEDIA PLAN
 # =========================================================
 
 def create_telegram_plan(
@@ -936,7 +1169,7 @@ def create_telegram_plan(
     branding: str
 ) -> Dict[str, Any]:
     """
-    ساخت Publication Plan برای Telegram.
+    ساخت Publication Plan برای Telegram Media.
     """
 
     main_text = normalize_text(
@@ -958,43 +1191,55 @@ def create_telegram_plan(
     # MAIN TEXT
     # =====================================================
 
-    split_result = split_for_media(
-        main_text,
-        TELEGRAM_CAPTION_SAFE_LIMIT,
-        TELEGRAM_MESSAGE_SAFE_LIMIT
+    split_result = (
+        split_for_media(
+            main_text,
+            TELEGRAM_CAPTION_SAFE_LIMIT,
+            TELEGRAM_MESSAGE_SAFE_LIMIT
+        )
     )
 
-    media_caption = split_result[
-        "media_caption"
-    ]
+    media_caption = (
+        split_result[
+            "media_caption"
+        ]
+    )
 
-    followup_messages = split_result[
-        "followup_messages"
-    ]
+    followup_messages = (
+        split_result[
+            "followup_messages"
+        ]
+    )
 
     # =====================================================
     # BRANDING
     # =====================================================
 
-    branded_result = place_branding(
-        media_caption,
-        followup_messages,
-        branding,
-        TELEGRAM_CAPTION_SAFE_LIMIT,
-        TELEGRAM_MESSAGE_SAFE_LIMIT
+    branded_result = (
+        place_branding(
+            media_caption,
+            followup_messages,
+            branding,
+            TELEGRAM_CAPTION_SAFE_LIMIT,
+            TELEGRAM_MESSAGE_SAFE_LIMIT
+        )
     )
 
     plan[
         "media_caption"
-    ] = branded_result[
-        "media_caption"
-    ]
+    ] = (
+        branded_result[
+            "media_caption"
+        ]
+    )
 
     plan[
         "followup_messages"
-    ] = branded_result[
-        "followup_messages"
-    ]
+    ] = (
+        branded_result[
+            "followup_messages"
+        ]
+    )
 
     # =====================================================
     # BLOCKQUOTES
@@ -1062,18 +1307,22 @@ def create_telegram_plan(
     ] = valid_followups
 
     logger.info(
-        f"📋 Telegram plan | "
-        f"caption={len(plan['media_caption'])} | "
-        f"followup={len(plan['followup_messages'])} | "
-        f"blockquote={len(plan['blockquote_messages'])} | "
-        f"fallback={plan['document_fallback']}"
+        f"📋 Telegram media plan | "
+        f"caption="
+        f"{len(plan['media_caption'])} | "
+        f"followup="
+        f"{len(plan['followup_messages'])} | "
+        f"blockquote="
+        f"{len(plan['blockquote_messages'])} | "
+        f"fallback="
+        f"{plan['document_fallback']}"
     )
 
     return plan
 
 
 # =========================================================
-# BALE PLAN
+# BALE MEDIA PLAN
 # =========================================================
 
 def create_bale_plan(
@@ -1087,7 +1336,7 @@ def create_bale_plan(
     branding: str
 ) -> Dict[str, Any]:
     """
-    ساخت Publication Plan مستقل برای Bale.
+    ساخت Publication Plan برای Bale Media.
     """
 
     main_text = normalize_text(
@@ -1109,43 +1358,55 @@ def create_bale_plan(
     # MAIN TEXT
     # =====================================================
 
-    split_result = split_for_media(
-        main_text,
-        BALE_CAPTION_SAFE_LIMIT,
-        BALE_MESSAGE_SAFE_LIMIT
+    split_result = (
+        split_for_media(
+            main_text,
+            BALE_CAPTION_SAFE_LIMIT,
+            BALE_MESSAGE_SAFE_LIMIT
+        )
     )
 
-    media_caption = split_result[
-        "media_caption"
-    ]
+    media_caption = (
+        split_result[
+            "media_caption"
+        ]
+    )
 
-    followup_messages = split_result[
-        "followup_messages"
-    ]
+    followup_messages = (
+        split_result[
+            "followup_messages"
+        ]
+    )
 
     # =====================================================
     # BRANDING
     # =====================================================
 
-    branded_result = place_branding(
-        media_caption,
-        followup_messages,
-        branding,
-        BALE_CAPTION_SAFE_LIMIT,
-        BALE_MESSAGE_SAFE_LIMIT
+    branded_result = (
+        place_branding(
+            media_caption,
+            followup_messages,
+            branding,
+            BALE_CAPTION_SAFE_LIMIT,
+            BALE_MESSAGE_SAFE_LIMIT
+        )
     )
 
     plan[
         "media_caption"
-    ] = branded_result[
-        "media_caption"
-    ]
+    ] = (
+        branded_result[
+            "media_caption"
+        ]
+    )
 
     plan[
         "followup_messages"
-    ] = branded_result[
-        "followup_messages"
-    ]
+    ] = (
+        branded_result[
+            "followup_messages"
+        ]
+    )
 
     # =====================================================
     # BLOCKQUOTES
@@ -1213,11 +1474,240 @@ def create_bale_plan(
     ] = valid_followups
 
     logger.info(
-        f"📋 Bale plan | "
-        f"caption={len(plan['media_caption'])} | "
-        f"followup={len(plan['followup_messages'])} | "
-        f"blockquote={len(plan['blockquote_messages'])} | "
-        f"fallback={plan['document_fallback']}"
+        f"📋 Bale media plan | "
+        f"caption="
+        f"{len(plan['media_caption'])} | "
+        f"followup="
+        f"{len(plan['followup_messages'])} | "
+        f"blockquote="
+        f"{len(plan['blockquote_messages'])} | "
+        f"fallback="
+        f"{plan['document_fallback']}"
+    )
+
+    return plan
+
+
+# =========================================================
+# TELEGRAM TEXT PLAN
+# =========================================================
+
+def create_telegram_text_plan(
+    main_text: str,
+    blockquote_blocks: List[
+        Dict[str, Any]
+    ],
+    expandable_blocks: List[
+        Dict[str, Any]
+    ],
+    branding: str
+) -> Dict[str, Any]:
+    """
+    ساخت Plan مستقل برای پیام متنی Telegram.
+
+    تفاوت اصلی با Media Plan:
+
+    اینجا Caption وجود ندارد.
+
+    تمام main_text با سقف sendMessage
+    تقسیم می‌شود.
+
+    سپس Branding فقط یک بار
+    به آخرین پیام منطقی اضافه می‌شود.
+
+    Blockquoteها جداگانه و با HTML
+    تولید می‌شوند.
+    """
+
+    main_text = normalize_text(
+        main_text
+    )
+
+    branding = normalize_text(
+        branding
+    )
+
+    # =====================================================
+    # MAIN MESSAGES
+    # =====================================================
+
+    messages = []
+
+    if main_text:
+
+        messages = split_text(
+            main_text,
+            TELEGRAM_MESSAGE_SAFE_LIMIT
+        )
+
+    # =====================================================
+    # BRANDING
+    # =====================================================
+
+    messages = (
+        place_branding_in_text_messages(
+            messages,
+            branding,
+            TELEGRAM_MESSAGE_SAFE_LIMIT
+        )
+    )
+
+    # =====================================================
+    # FINAL SAFETY
+    # =====================================================
+
+    safe_messages = []
+
+    for message in messages:
+
+        if (
+            len(message)
+            <= TELEGRAM_MESSAGE_LIMIT
+        ):
+
+            safe_messages.append(
+                message
+            )
+
+        else:
+
+            safe_messages.extend(
+                split_text(
+                    message,
+                    TELEGRAM_MESSAGE_SAFE_LIMIT
+                )
+            )
+
+    # =====================================================
+    # BLOCKQUOTES
+    # =====================================================
+
+    blockquote_messages = (
+        create_telegram_blockquote_messages(
+            blockquote_blocks,
+            expandable_blocks
+        )
+    )
+
+    plan = {
+        "messages": safe_messages,
+        "blockquote_messages": (
+            blockquote_messages
+        )
+    }
+
+    logger.info(
+        f"📋 Telegram text plan | "
+        f"messages="
+        f"{len(plan['messages'])} | "
+        f"blockquote="
+        f"{len(plan['blockquote_messages'])}"
+    )
+
+    return plan
+
+
+# =========================================================
+# BALE TEXT PLAN
+# =========================================================
+
+def create_bale_text_plan(
+    main_text: str,
+    blockquote_blocks: List[
+        Dict[str, Any]
+    ],
+    expandable_blocks: List[
+        Dict[str, Any]
+    ],
+    branding: str
+) -> Dict[str, Any]:
+    """
+    ساخت Plan مستقل برای پیام متنی Bale.
+    """
+
+    main_text = normalize_text(
+        main_text
+    )
+
+    branding = normalize_text(
+        branding
+    )
+
+    # =====================================================
+    # MAIN MESSAGES
+    # =====================================================
+
+    messages = []
+
+    if main_text:
+
+        messages = split_text(
+            main_text,
+            BALE_MESSAGE_SAFE_LIMIT
+        )
+
+    # =====================================================
+    # BRANDING
+    # =====================================================
+
+    messages = (
+        place_branding_in_text_messages(
+            messages,
+            branding,
+            BALE_MESSAGE_SAFE_LIMIT
+        )
+    )
+
+    # =====================================================
+    # FINAL SAFETY
+    # =====================================================
+
+    safe_messages = []
+
+    for message in messages:
+
+        if (
+            len(message)
+            <= BALE_MESSAGE_LIMIT
+        ):
+
+            safe_messages.append(
+                message
+            )
+
+        else:
+
+            safe_messages.extend(
+                split_text(
+                    message,
+                    BALE_MESSAGE_SAFE_LIMIT
+                )
+            )
+
+    # =====================================================
+    # BLOCKQUOTES
+    # =====================================================
+
+    blockquote_messages = (
+        create_bale_blockquote_messages(
+            blockquote_blocks,
+            expandable_blocks
+        )
+    )
+
+    plan = {
+        "messages": safe_messages,
+        "blockquote_messages": (
+            blockquote_messages
+        )
+    }
+
+    logger.info(
+        f"📋 Bale text plan | "
+        f"messages="
+        f"{len(plan['messages'])} | "
+        f"blockquote="
+        f"{len(plan['blockquote_messages'])}"
     )
 
     return plan
@@ -1243,19 +1733,16 @@ def analyze_content(
     """
     تحلیل کامل محتوا و ساخت Publication Plan.
 
-    این تابع هیچ ارسال واقعی انجام نمی‌دهد.
+    یک ورودی واحد دریافت می‌کند و همزمان:
 
-    INPUT:
+    1. Media Plan Telegram
+    2. Media Plan Bale
+    3. Text Plan Telegram
+    4. Text Plan Bale
 
-        main_text
-        blockquote_blocks
-        expandable_blocks
-        other_entities
-        branding
+    را می‌سازد.
 
-    OUTPUT:
-
-        PublicationPlan
+    هیچ API Call در این ماژول انجام نمی‌شود.
     """
 
     main_text = normalize_text(
@@ -1284,25 +1771,33 @@ def analyze_content(
     logger.info(
         f"🔍 Caption Manager analyzing | "
         f"main={len(main_text)} | "
-        f"blockquote={len(blockquote_blocks)} | "
-        f"expandable={len(expandable_blocks)} | "
-        f"other={len(other_entities)} | "
+        f"blockquote="
+        f"{len(blockquote_blocks)} | "
+        f"expandable="
+        f"{len(expandable_blocks)} | "
+        f"other="
+        f"{len(other_entities)} | "
         f"branding={len(branding)}"
     )
 
     # =====================================================
-    # PLAN
+    # PLAN OBJECT
     # =====================================================
 
     plan = PublicationPlan()
 
-    # سایر Entityها برای آینده حفظ می‌شوند.
+    # =====================================================
+    # METADATA
+    # =====================================================
+
     plan.metadata[
         "other_entities"
-    ] = other_entities
+    ] = (
+        other_entities
+    )
 
     # =====================================================
-    # TELEGRAM
+    # TELEGRAM MEDIA
     # =====================================================
 
     plan.telegram = (
@@ -1315,7 +1810,7 @@ def analyze_content(
     )
 
     # =====================================================
-    # BALE
+    # BALE MEDIA
     # =====================================================
 
     plan.bale = (
@@ -1328,7 +1823,37 @@ def analyze_content(
     )
 
     # =====================================================
-    # SUMMARY
+    # TELEGRAM TEXT
+    # =====================================================
+
+    plan.text[
+        "telegram"
+    ] = (
+        create_telegram_text_plan(
+            main_text,
+            blockquote_blocks,
+            expandable_blocks,
+            branding
+        )
+    )
+
+    # =====================================================
+    # BALE TEXT
+    # =====================================================
+
+    plan.text[
+        "bale"
+    ] = (
+        create_bale_text_plan(
+            main_text,
+            blockquote_blocks,
+            expandable_blocks,
+            branding
+        )
+    )
+
+    # =====================================================
+    # MEDIA SUMMARY
     # =====================================================
 
     telegram_total_messages = (
@@ -1359,12 +1884,54 @@ def analyze_content(
         )
     )
 
+    # =====================================================
+    # TEXT SUMMARY
+    # =====================================================
+
+    telegram_text_total = (
+        len(
+            plan.text[
+                "telegram"
+            ][
+                "messages"
+            ]
+        )
+        + len(
+            plan.text[
+                "telegram"
+            ][
+                "blockquote_messages"
+            ]
+        )
+    )
+
+    bale_text_total = (
+        len(
+            plan.text[
+                "bale"
+            ][
+                "messages"
+            ]
+        )
+        + len(
+            plan.text[
+                "bale"
+            ][
+                "blockquote_messages"
+            ]
+        )
+    )
+
     logger.info(
         f"✅ Publication Plan ready | "
-        f"telegram_messages="
+        f"telegram_media_messages="
         f"{telegram_total_messages} | "
-        f"bale_messages="
-        f"{bale_total_messages}"
+        f"bale_media_messages="
+        f"{bale_total_messages} | "
+        f"telegram_text_messages="
+        f"{telegram_text_total} | "
+        f"bale_text_messages="
+        f"{bale_text_total}"
     )
 
     return plan
