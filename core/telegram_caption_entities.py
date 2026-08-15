@@ -222,6 +222,170 @@ def build_message_entity(
 
 
 # =========================================================
+# BRANDING ENTITY EXTRACTION
+# =========================================================
+
+def extract_branding_entities(
+    caption: str,
+    branding: str
+) -> List[Dict[str, Any]]:
+    """
+    Explicitly build hashtag and mention entities
+    from the FINAL branding block only.
+
+    This avoids Telegram auto-detection and prevents
+    accidental matching of the same hashtag/mention
+    elsewhere in the news text.
+
+    Args:
+        caption: Full caption text (with branding at end)
+        branding: Branding text ("#hashtag\n@mention")
+
+    Returns:
+        List of entity dicts with type, offset, length
+    """
+
+    entities: List[Dict[str, Any]] = []
+
+    caption = str(
+        caption
+        or ""
+    )
+
+    branding = normalize_text(
+        branding
+    )
+
+    if not caption or not branding:
+        return entities
+
+    # =====================================================
+    # LOCATE THE FINAL BRANDING BLOCK
+    # =====================================================
+
+    branding_start = caption.rfind(
+        branding
+    )
+
+    if branding_start < 0:
+
+        logger.error(
+            "❌ Final branding block not found "
+            "inside Telegram caption"
+        )
+
+        return entities
+
+    # =====================================================
+    # BRANDING LINES
+    # =====================================================
+
+    for line in branding.splitlines():
+
+        line = line.strip()
+
+        if not line:
+            continue
+
+        # -------------------------------------------------
+        # HASHTAG
+        # -------------------------------------------------
+
+        if line.startswith("#"):
+
+            local_position = branding.find(
+                line
+            )
+
+            if local_position < 0:
+                continue
+
+            start_index = (
+                branding_start
+                + local_position
+            )
+
+            end_index = (
+                start_index
+                + len(line)
+            )
+
+            entity = build_message_entity(
+                "hashtag",
+                caption,
+                start_index,
+                end_index
+            )
+
+            entities.append(
+                entity
+            )
+
+            logger.info(
+                f"🏷️ Explicit hashtag entity | "
+                f"text={line} | "
+                f"offset={entity['offset']} | "
+                f"length={entity['length']}"
+            )
+
+        # -------------------------------------------------
+        # MENTION
+        # -------------------------------------------------
+
+        elif line.startswith("@"):
+
+            local_position = branding.find(
+                line
+            )
+
+            if local_position < 0:
+                continue
+
+            start_index = (
+                branding_start
+                + local_position
+            )
+
+            end_index = (
+                start_index
+                + len(line)
+            )
+
+            entity = build_message_entity(
+                "mention",
+                caption,
+                start_index,
+                end_index
+            )
+
+            entities.append(
+                entity
+            )
+
+            logger.info(
+                f"👤 Explicit mention entity | "
+                f"text={line} | "
+                f"offset={entity['offset']} | "
+                f"length={entity['length']}"
+            )
+
+    # =====================================================
+    # GUARANTEE ENTITY ORDER
+    # =====================================================
+
+    entities.sort(
+        key=lambda item: (
+            item.get(
+                "offset",
+                0
+            )
+        )
+    )
+
+    return entities
+
+
+# =========================================================
 # CAPTION BUILDER
 # =========================================================
 
@@ -233,7 +397,8 @@ def build_plain_caption_with_entities(
     expandable_blocks: Optional[
         List[Dict[str, Any]]
     ] = None,
-    branding: str = ""
+    branding: str = "",
+    include_branding_entities: bool = False
 ) -> Dict[str, Any]:
 
     main_text = normalize_text(
@@ -412,6 +577,23 @@ def build_plain_caption_with_entities(
                 entity
             )
 
+    # =====================================================
+    # BRANDING ENTITIES (NEW)
+    # =====================================================
+
+    if include_branding_entities and branding:
+
+        branding_entities = (
+            extract_branding_entities(
+                caption,
+                branding
+            )
+        )
+
+        caption_entities.extend(
+            branding_entities
+        )
+
     return {
         "caption": caption,
         "caption_entities": caption_entities
@@ -509,7 +691,8 @@ def build_telegram_caption_entities(
     expandable_blocks: Optional[
         List[Dict[str, Any]]
     ] = None,
-    branding: str = ""
+    branding: str = "",
+    include_branding_entities: bool = False
 ) -> Dict[str, Any]:
 
     result = (
@@ -517,7 +700,8 @@ def build_telegram_caption_entities(
             main_text=main_text,
             blockquote_blocks=blockquote_blocks,
             expandable_blocks=expandable_blocks,
-            branding=branding
+            branding=branding,
+            include_branding_entities=include_branding_entities
         )
     )
 
@@ -545,7 +729,9 @@ def build_telegram_caption_entities(
     logger.info(
         f"✅ Telegram caption entities built | "
         f"caption={len(caption)} | "
-        f"entities={len(entities)}"
+        f"entities={len(entities)} | "
+        f"include_branding_entities="
+        f"{include_branding_entities}"
     )
 
     return result
