@@ -34,6 +34,43 @@ BALE_MESSAGE_SAFE_LIMIT = 4000
 
 
 # =========================================================
+# TELEGRAM TEXT DIRECTION
+# =========================================================
+
+TELEGRAM_RLM = "\u200f"
+
+
+def telegram_branding_text(
+    branding: str
+) -> str:
+    """
+    Branding مخصوص Telegram.
+
+    فقط یک RLM نامرئی قبل از کل Branding قرار می‌گیرد.
+
+    نتیجه:
+
+        #دنیا_۲۴_نیوز  -> RTL / سمت راست
+        @Donya24News   -> LTR / سمت چپ
+
+    خود متن Branding تغییر نمی‌کند و Space مصنوعی
+    نیز اضافه نمی‌شود.
+    """
+
+    branding = normalize_text(
+        branding
+    )
+
+    if not branding:
+        return ""
+
+    return (
+        TELEGRAM_RLM
+        + branding
+    )
+
+
+# =========================================================
 # PUBLICATION PLAN
 # =========================================================
 
@@ -555,7 +592,6 @@ def place_branding(
 
     if messages:
 
-        # Caption اصلی هم Branding خودش را دارد.
         candidate = append_branding(
             media_caption,
             branding
@@ -840,9 +876,13 @@ def build_telegram_html_caption(
     parts: List[str] = []
 
     main_text = normalize_text(main_text)
-    branding = normalize_text(branding)
+
+    branding = telegram_branding_text(
+        branding
+    )
 
     if main_text:
+
         parts.append(
             escape(main_text)
         )
@@ -857,6 +897,7 @@ def build_telegram_html_caption(
 
     # Branding همیشه آخر Caption است.
     if branding:
+
         parts.append(
             escape(branding)
         )
@@ -876,7 +917,10 @@ def fit_blockquotes_into_caption(
         Dict[str, Any]
     ],
     visible_capacity: int
-) -> Tuple[str, List[Dict[str, Any]]]:
+) -> Tuple[
+    str,
+    List[Dict[str, Any]]
+]:
 
     if visible_capacity <= 0:
 
@@ -894,11 +938,15 @@ def fit_blockquotes_into_caption(
     )
 
     included_html: List[str] = []
-    remaining_blocks: List[Dict[str, Any]] = []
+    remaining_blocks: List[
+        Dict[str, Any]
+    ] = []
 
     capacity = visible_capacity
 
-    for index, block in enumerate(blocks):
+    for index, block in enumerate(
+        blocks
+    ):
 
         text = clean_blockquote_text(
             block.get(
@@ -950,7 +998,6 @@ def fit_blockquotes_into_caption(
 
             continue
 
-        # بخشی از Blockquote را تا ظرفیت قرار می‌دهیم.
         position = find_media_split_position(
             text,
             available,
@@ -1017,13 +1064,19 @@ def fit_blockquotes_into_caption(
 
 
 def build_branded_blockquote_messages(
-    blocks: List[Dict[str, Any]],
+    blocks: List[
+        Dict[str, Any]
+    ],
     branding: str
 ) -> List[str]:
 
     result: List[str] = []
 
-    branding = normalize_text(branding)
+    telegram_branding = (
+        telegram_branding_text(
+            branding
+        )
+    )
 
     for block in blocks:
 
@@ -1038,9 +1091,9 @@ def build_branded_blockquote_messages(
             continue
 
         branding_cost = (
-            len(branding)
+            len(telegram_branding)
             + 2
-            if branding
+            if telegram_branding
             else 0
         )
 
@@ -1070,11 +1123,13 @@ def build_branded_blockquote_messages(
                 )
             )
 
-            if branding:
+            if telegram_branding:
 
                 html_message += (
                     "\n\n"
-                    + escape(branding)
+                    + escape(
+                        telegram_branding
+                    )
                 )
 
             result.append(
@@ -1202,8 +1257,19 @@ def create_telegram_plan(
     branding: str
 ) -> Dict[str, Any]:
 
-    main_text = normalize_text(main_text)
-    branding = normalize_text(branding)
+    main_text = normalize_text(
+        main_text
+    )
+
+    raw_branding = normalize_text(
+        branding
+    )
+
+    telegram_branding = (
+        telegram_branding_text(
+            raw_branding
+        )
+    )
 
     plan = {
         "media_caption": "",
@@ -1228,11 +1294,13 @@ def create_telegram_plan(
         # 1. FULL ORIGINAL
         # =================================================
 
-        full_caption = build_telegram_html_caption(
-            main_text,
-            blockquote_blocks,
-            expandable_blocks,
-            branding
+        full_caption = (
+            build_telegram_html_caption(
+                main_text,
+                blockquote_blocks,
+                expandable_blocks,
+                raw_branding
+            )
         )
 
         if (
@@ -1243,8 +1311,13 @@ def create_telegram_plan(
             <= TELEGRAM_CAPTION_LIMIT
         ):
 
-            plan["media_caption"] = full_caption
-            plan["media_parse_mode"] = "HTML"
+            plan[
+                "media_caption"
+            ] = full_caption
+
+            plan[
+                "media_parse_mode"
+            ] = "HTML"
 
             logger.info(
                 "✅ Telegram one-post mode | "
@@ -1264,11 +1337,13 @@ def create_telegram_plan(
             or main_text
         )
 
-        compact_caption = build_telegram_html_caption(
-            compact_main,
-            blockquote_blocks,
-            expandable_blocks,
-            branding
+        compact_caption = (
+            build_telegram_html_caption(
+                compact_main,
+                blockquote_blocks,
+                expandable_blocks,
+                raw_branding
+            )
         )
 
         if (
@@ -1279,8 +1354,13 @@ def create_telegram_plan(
             <= TELEGRAM_CAPTION_LIMIT
         ):
 
-            plan["media_caption"] = compact_caption
-            plan["media_parse_mode"] = "HTML"
+            plan[
+                "media_caption"
+            ] = compact_caption
+
+            plan[
+                "media_parse_mode"
+            ] = "HTML"
 
             logger.info(
                 "✅ Telegram one-post mode | "
@@ -1291,23 +1371,21 @@ def create_telegram_plan(
 
         # =================================================
         # 3. REAL OVERFLOW
-        #
-        # MAIN TEXT HAS PRIORITY.
-        # BLOCKQUOTE MUST NOT PUSH MAIN TEXT OUT.
         # =================================================
 
         branding_cost = (
-            len(branding)
-            if branding
+            len(
+                telegram_branding
+            )
+            if telegram_branding
             else 0
         )
 
-        # حداقل یک جداکننده بین Main و Branding.
         fixed_cost = (
             branding_cost
             + (
                 2
-                if branding
+                if telegram_branding
                 else 0
             )
         )
@@ -1319,56 +1397,78 @@ def create_telegram_plan(
 
         if main_capacity <= 0:
 
-            plan["document_fallback"] = True
+            plan[
+                "document_fallback"
+            ] = True
+
             return plan
 
         # =================================================
-        # KEEP MAIN TEXT FIRST
+        # MAIN TEXT FIRST
         # =================================================
 
-        if len(compact_main) <= main_capacity:
+        if (
+            len(compact_main)
+            <= main_capacity
+        ):
 
-            main_for_caption = compact_main
+            main_for_caption = (
+                compact_main
+            )
+
             remaining_main = ""
 
         else:
 
-            position = find_media_split_position(
-                compact_main,
-                main_capacity,
-                minimum_fill_ratio=0.70
+            position = (
+                find_media_split_position(
+                    compact_main,
+                    main_capacity,
+                    minimum_fill_ratio=0.70
+                )
             )
 
             if position <= 0:
                 position = main_capacity
 
             main_for_caption = (
-                compact_main[:position]
+                compact_main[
+                    :position
+                ]
                 .strip()
             )
 
             remaining_main = (
-                compact_main[position:]
+                compact_main[
+                    position:
+                ]
                 .strip()
             )
 
         # =================================================
-        # AFTER MAIN, USE REMAINING CAPACITY FOR BLOCKQUOTE
+        # AVAILABLE SPACE FOR BLOCKQUOTE
         # =================================================
 
         used_visible = len(
             main_for_caption
         )
 
-        if main_for_caption and branding:
-            # Main -> something -> Branding
+        if (
+            main_for_caption
+            and telegram_branding
+        ):
+
             base_separator = 4
+
         elif (
             main_for_caption
-            or branding
+            or telegram_branding
         ):
+
             base_separator = 2
+
         else:
+
             base_separator = 0
 
         block_capacity = (
@@ -1379,6 +1479,7 @@ def create_telegram_plan(
         )
 
         inline_blocks = ""
+
         remaining_blocks: List[
             Dict[str, Any]
         ] = []
@@ -1391,16 +1492,16 @@ def create_telegram_plan(
             (
                 inline_blocks,
                 remaining_blocks
-            ) = fit_blockquotes_into_caption(
-                blockquote_blocks,
-                expandable_blocks,
-                block_capacity
+            ) = (
+                fit_blockquotes_into_caption(
+                    blockquote_blocks,
+                    expandable_blocks,
+                    block_capacity
+                )
             )
 
         else:
 
-            # اگر Main خودش Overflow دارد،
-            # Blockquote دیگر Main را قربانی نمی‌کند.
             remaining_blocks = (
                 _combined_blockquotes(
                     blockquote_blocks,
@@ -1428,22 +1529,18 @@ def create_telegram_plan(
                 inline_blocks
             )
 
-        # Branding همیشه آخر Caption اول
-        if branding:
+        # Branding همیشه آخر پست
+        if telegram_branding:
 
             caption_parts.append(
                 escape(
-                    branding
+                    telegram_branding
                 )
             )
 
         candidate = "\n\n".join(
             caption_parts
         )
-
-        # =================================================
-        # ABSOLUTE SAFETY
-        # =================================================
 
         if (
             telegram_html_visible_length(
@@ -1457,11 +1554,19 @@ def create_telegram_plan(
                 "official visible limit"
             )
 
-            plan["document_fallback"] = True
+            plan[
+                "document_fallback"
+            ] = True
+
             return plan
 
-        plan["media_caption"] = candidate
-        plan["media_parse_mode"] = "HTML"
+        plan[
+            "media_caption"
+        ] = candidate
+
+        plan[
+            "media_parse_mode"
+        ] = "HTML"
 
         # =================================================
         # MAIN OVERFLOW
@@ -1469,13 +1574,18 @@ def create_telegram_plan(
 
         if remaining_main:
 
+            branding_cost_reply = (
+                len(
+                    telegram_branding
+                )
+                + 2
+                if telegram_branding
+                else 0
+            )
+
             reply_limit = (
                 TELEGRAM_MESSAGE_SAFE_LIMIT
-                - (
-                    len(branding) + 2
-                    if branding
-                    else 0
-                )
+                - branding_cost_reply
             )
 
             replies = split_text(
@@ -1486,27 +1596,43 @@ def create_telegram_plan(
                 )
             )
 
-            plan["followup_messages"] = (
-                brand_every_message(
-                    replies,
-                    branding,
-                    TELEGRAM_MESSAGE_LIMIT
+            plan[
+                "followup_messages"
+            ] = []
+
+            for reply in replies:
+
+                if telegram_branding:
+
+                    final_reply = (
+                        append_branding(
+                            reply,
+                            telegram_branding
+                        )
+                    )
+
+                else:
+
+                    final_reply = reply
+
+                plan[
+                    "followup_messages"
+                ].append(
+                    final_reply
                 )
-            )
 
         # =================================================
         # BLOCKQUOTE OVERFLOW
-        #
-        # Only the part that truly could not fit leaves
-        # the first post.
         # =================================================
 
         if remaining_blocks:
 
-            plan["blockquote_messages"] = (
+            plan[
+                "blockquote_messages"
+            ] = (
                 build_branded_blockquote_messages(
                     remaining_blocks,
-                    branding
+                    raw_branding
                 )
             )
 
@@ -1526,9 +1652,11 @@ def create_telegram_plan(
     # NORMAL MEDIA WITHOUT SOURCE BLOCKQUOTE
     # =====================================================
 
-    normal_final = append_branding(
-        main_text,
-        branding
+    normal_final = (
+        append_branding(
+            main_text,
+            telegram_branding
+        )
     )
 
     if (
@@ -1537,7 +1665,10 @@ def create_telegram_plan(
         <= TELEGRAM_CAPTION_SAFE_LIMIT
     ):
 
-        plan["media_caption"] = normal_final
+        plan[
+            "media_caption"
+        ] = normal_final
+
         return plan
 
     compact_main = (
@@ -1547,24 +1678,31 @@ def create_telegram_plan(
         or main_text
     )
 
-    compact_final = append_branding(
-        compact_main,
-        branding
+    compact_final = (
+        append_branding(
+            compact_main,
+            telegram_branding
+        )
     )
 
-    # اگر Compact جا می‌شود، هیچ Split لازم نیست.
     if (
         compact_final
         and len(compact_final)
         <= TELEGRAM_CAPTION_SAFE_LIMIT
     ):
 
-        plan["media_caption"] = compact_final
+        plan[
+            "media_caption"
+        ] = compact_final
+
         return plan
 
     branding_cost = (
-        len(branding) + 2
-        if branding
+        len(
+            telegram_branding
+        )
+        + 2
+        if telegram_branding
         else 0
     )
 
@@ -1575,32 +1713,43 @@ def create_telegram_plan(
 
     if available <= 0:
 
-        plan["document_fallback"] = True
+        plan[
+            "document_fallback"
+        ] = True
+
         return plan
 
-    position = find_media_split_position(
-        compact_main,
-        available,
-        minimum_fill_ratio=0.70
+    position = (
+        find_media_split_position(
+            compact_main,
+            available,
+            minimum_fill_ratio=0.70
+        )
     )
 
     if position <= 0:
         position = available
 
     main_for_caption = (
-        compact_main[:position]
+        compact_main[
+            :position
+        ]
         .strip()
     )
 
     remaining = (
-        compact_main[position:]
+        compact_main[
+            position:
+        ]
         .strip()
     )
 
-    plan["media_caption"] = (
+    plan[
+        "media_caption"
+    ] = (
         append_branding(
             main_for_caption,
-            branding
+            telegram_branding
         )
     )
 
@@ -1619,22 +1768,43 @@ def create_telegram_plan(
             )
         )
 
-        plan["followup_messages"] = (
-            brand_every_message(
-                replies,
-                branding,
-                TELEGRAM_MESSAGE_LIMIT
+        plan[
+            "followup_messages"
+        ] = []
+
+        for reply in replies:
+
+            if telegram_branding:
+
+                final_reply = (
+                    append_branding(
+                        reply,
+                        telegram_branding
+                    )
+                )
+
+            else:
+
+                final_reply = reply
+
+            plan[
+                "followup_messages"
+            ].append(
+                final_reply
             )
-        )
 
     if (
         len(
-            plan["media_caption"]
+            plan[
+                "media_caption"
+            ]
         )
         > TELEGRAM_CAPTION_LIMIT
     ):
 
-        plan["document_fallback"] = True
+        plan[
+            "document_fallback"
+        ] = True
 
     return plan
 
@@ -1654,8 +1824,13 @@ def create_bale_plan(
     branding: str
 ) -> Dict[str, Any]:
 
-    main_text = normalize_text(main_text)
-    branding = normalize_text(branding)
+    main_text = normalize_text(
+        main_text
+    )
+
+    branding = normalize_text(
+        branding
+    )
 
     plan = {
         "media_caption": "",
@@ -1692,7 +1867,10 @@ def create_bale_plan(
         <= BALE_CAPTION_SAFE_LIMIT
     ):
 
-        plan["media_caption"] = full_caption
+        plan[
+            "media_caption"
+        ] = full_caption
+
         return plan
 
     compact_main = (
@@ -1705,17 +1883,22 @@ def create_bale_plan(
     content_parts: List[str] = []
 
     if compact_main:
-        content_parts.append(compact_main)
+        content_parts.append(
+            compact_main
+        )
 
     if inline_blocks:
-        content_parts.append(inline_blocks)
+        content_parts.append(
+            inline_blocks
+        )
 
     source_content = "\n\n".join(
         content_parts
     )
 
     branding_cost = (
-        len(branding) + 2
+        len(branding)
+        + 2
         if branding
         else 0
     )
@@ -1734,7 +1917,9 @@ def create_bale_plan(
         BALE_MESSAGE_SAFE_LIMIT
     )
 
-    plan["media_caption"] = append_branding(
+    plan[
+        "media_caption"
+    ] = append_branding(
         split_result[
             "media_caption"
         ],
@@ -1766,17 +1951,17 @@ def create_bale_plan(
                 )
             )
 
-        plan["followup_messages"] = (
-            brand_every_message(
-                rebuilt,
-                branding,
-                BALE_MESSAGE_LIMIT
-            )
+        plan[
+            "followup_messages"
+        ] = brand_every_message(
+            rebuilt,
+            branding,
+            BALE_MESSAGE_LIMIT
         )
 
-    # سیاست بله:
-    # Blockquote داخل جریان خبر است.
-    plan["blockquote_messages"] = []
+    plan[
+        "blockquote_messages"
+    ] = []
 
     return plan
 
@@ -1796,12 +1981,23 @@ def create_telegram_text_plan(
     branding: str
 ) -> Dict[str, Any]:
 
-    main_text = normalize_text(main_text)
-    branding = normalize_text(branding)
+    main_text = normalize_text(
+        main_text
+    )
+
+    raw_branding = normalize_text(
+        branding
+    )
+
+    telegram_branding = (
+        telegram_branding_text(
+            raw_branding
+        )
+    )
 
     normal_final = append_branding(
         main_text,
-        branding
+        telegram_branding
     )
 
     if (
@@ -1823,9 +2019,11 @@ def create_telegram_text_plan(
             or main_text
         )
 
-        compact_final = append_branding(
-            compact_text,
-            branding
+        compact_final = (
+            append_branding(
+                compact_text,
+                telegram_branding
+            )
         )
 
         if (
@@ -1841,8 +2039,11 @@ def create_telegram_text_plan(
         else:
 
             branding_cost = (
-                len(branding) + 2
-                if branding
+                len(
+                    telegram_branding
+                )
+                + 2
+                if telegram_branding
                 else 0
             )
 
@@ -1859,11 +2060,26 @@ def create_telegram_text_plan(
                 )
             )
 
-            messages = brand_every_message(
-                messages,
-                branding,
-                TELEGRAM_MESSAGE_LIMIT
-            )
+            branded_messages: List[str] = []
+
+            for message in messages:
+
+                if telegram_branding:
+
+                    branded_messages.append(
+                        append_branding(
+                            message,
+                            telegram_branding
+                        )
+                    )
+
+                else:
+
+                    branded_messages.append(
+                        message
+                    )
+
+            messages = branded_messages
 
     return {
         "messages": messages,
@@ -1891,8 +2107,13 @@ def create_bale_text_plan(
     branding: str
 ) -> Dict[str, Any]:
 
-    main_text = normalize_text(main_text)
-    branding = normalize_text(branding)
+    main_text = normalize_text(
+        main_text
+    )
+
+    branding = normalize_text(
+        branding
+    )
 
     inline_blocks = (
         build_inline_bale_blockquotes(
@@ -1907,7 +2128,9 @@ def create_bale_text_plan(
         parts.append(main_text)
 
     if inline_blocks:
-        parts.append(inline_blocks)
+        parts.append(
+            inline_blocks
+        )
 
     normal_content = "\n\n".join(
         parts
@@ -1941,17 +2164,22 @@ def create_bale_text_plan(
     compact_parts: List[str] = []
 
     if compact_main:
-        compact_parts.append(compact_main)
+        compact_parts.append(
+            compact_main
+        )
 
     if inline_blocks:
-        compact_parts.append(inline_blocks)
+        compact_parts.append(
+            inline_blocks
+        )
 
     source_content = "\n\n".join(
         compact_parts
     )
 
     branding_cost = (
-        len(branding) + 2
+        len(branding)
+        + 2
         if branding
         else 0
     )
@@ -1999,7 +2227,9 @@ def analyze_content(
     branding: str = ""
 ) -> PublicationPlan:
 
-    main_text = normalize_text(main_text)
+    main_text = normalize_text(
+        main_text
+    )
 
     blockquote_blocks = list(
         blockquote_blocks
@@ -2016,7 +2246,9 @@ def analyze_content(
         or []
     )
 
-    branding = normalize_text(branding)
+    branding = normalize_text(
+        branding
+    )
 
     logger.info(
         f"🔍 Caption Manager analyzing | "
