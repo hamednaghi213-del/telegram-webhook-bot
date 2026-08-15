@@ -98,7 +98,7 @@ def test_expandable_blockquote_removes_foreign_emoji():
 
     expandable_text = (
         "🔷 بخش اول تحلیل\n"
-        "🆔 بخش دوم تحلی��\n"
+        "🆔 بخش دوم تحلیل\n"
         "📡 بخش سوم تحلیل"
     )
 
