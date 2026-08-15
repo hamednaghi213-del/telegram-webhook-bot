@@ -1,4 +1,64 @@
-from unittest.mock import patch
+import sys
+import types
+
+from unittest.mock import (
+    patch,
+    MagicMock
+)
+
+
+# =========================================================
+# FAKE MODULES BEFORE IMPORTING WEBHOOK HANDLER
+# =========================================================
+#
+# دلیل:
+#
+# core.database هنگام import شدن انتظار دارد:
+#
+# SUPABASE_URL
+# SUPABASE_KEY
+#
+# در GitHub Actions این متغیرها وجود ندارند.
+#
+# ما برای تست webhook_handler نیازی به اتصال واقعی
+# به Supabase نداریم.
+#
+# بنابراین قبل از import webhook_handler،
+# نسخه‌های Fake از database و command_handler
+# داخل sys.modules قرار می‌دهیم.
+# =========================================================
+
+
+fake_database = types.ModuleType(
+    "core.database"
+)
+
+fake_database.get_tenant = MagicMock(
+    return_value={
+        "telegram_channel": "@channel"
+    }
+)
+
+
+fake_command_handler = types.ModuleType(
+    "core.command_handler"
+)
+
+fake_command_handler.handle_command = MagicMock()
+
+
+sys.modules[
+    "core.database"
+] = fake_database
+
+sys.modules[
+    "core.command_handler"
+] = fake_command_handler
+
+
+# =========================================================
+# IMPORT AFTER FAKE MODULE REGISTRATION
+# =========================================================
 
 from core import webhook_handler
 
@@ -71,6 +131,24 @@ TEXT_MESSAGE = {
     "text": "خبر متنی",
     "entities": []
 }
+
+
+# =========================================================
+# RESET FAKE MODULES BEFORE EACH TEST
+# =========================================================
+
+def setup_function():
+    """
+    Reset mock state before each test.
+    """
+
+    fake_database.get_tenant.reset_mock()
+
+    fake_database.get_tenant.return_value = {
+        "telegram_channel": "@channel"
+    }
+
+    fake_command_handler.handle_command.reset_mock()
 
 
 # =========================================================
@@ -177,15 +255,24 @@ def test_get_media_from_photo_uses_last_file_id():
         )
     )
 
-    assert media["type"] == "photo"
+    assert (
+        media[
+            "type"
+        ]
+        == "photo"
+    )
 
     assert (
-        media["file_id"]
+        media[
+            "file_id"
+        ]
         == "large"
     )
 
     assert (
-        media["caption"]
+        media[
+            "caption"
+        ]
         == "خبر تصویری"
     )
 
@@ -203,10 +290,17 @@ def test_get_media_from_video():
         )
     )
 
-    assert media["type"] == "video"
+    assert (
+        media[
+            "type"
+        ]
+        == "video"
+    )
 
     assert (
-        media["file_id"]
+        media[
+            "file_id"
+        ]
         == "video_1"
     )
 
@@ -363,7 +457,9 @@ def test_single_video_uses_entity_pipeline():
     assert success is True
 
     files = (
-        mock_tg.call_args.args[0]
+        mock_tg
+        .call_args
+        .args[0]
     )
 
     assert files == [
@@ -506,11 +602,6 @@ def test_media_group_passes_caption_entities():
         "send_message",
         return_value=True
     ), patch(
-        "core.database.get_tenant",
-        return_value={
-            "telegram_channel": "@channel"
-        }
-    ), patch(
         "core.media_handler.handle_media_group_message",
         return_value=True
     ) as mock_group, patch.object(
@@ -551,7 +642,7 @@ def test_media_group_passes_caption_entities():
 
 # =========================================================
 # TEST 12
-# MEDIA GROUP USES ORIGINAL GROUP ID
+# MEDIA GROUP KEEPS GROUP ID
 # =========================================================
 
 def test_media_group_keeps_media_group_id():
@@ -564,11 +655,6 @@ def test_media_group_keeps_media_group_id():
         webhook_handler,
         "send_message",
         return_value=True
-    ), patch(
-        "core.database.get_tenant",
-        return_value={
-            "telegram_channel": "@channel"
-        }
     ), patch(
         "core.media_handler.handle_media_group_message",
         return_value=True
@@ -600,7 +686,7 @@ def test_media_group_keeps_media_group_id():
 
 # =========================================================
 # TEST 13
-# MEDIA GROUP DOES NOT USE SINGLE PROCESSOR
+# ALBUM DOES NOT USE SINGLE PROCESSOR
 # =========================================================
 
 def test_album_does_not_use_single_media_processor():
@@ -613,11 +699,6 @@ def test_album_does_not_use_single_media_processor():
         webhook_handler,
         "send_message",
         return_value=True
-    ), patch(
-        "core.database.get_tenant",
-        return_value={
-            "telegram_channel": "@channel"
-        }
     ), patch(
         "core.media_handler.handle_media_group_message",
         return_value=True
@@ -653,11 +734,6 @@ def test_single_photo_webhook_path():
         webhook_handler,
         "send_message",
         return_value=True
-    ), patch(
-        "core.database.get_tenant",
-        return_value={
-            "telegram_channel": "@channel"
-        }
     ), patch.object(
         webhook_handler,
         "process_single_photo_video",
@@ -684,13 +760,19 @@ def test_single_photo_webhook_path():
         .kwargs
     )
 
-    assert kwargs[
-        "media_type"
-    ] == "photo"
+    assert (
+        kwargs[
+            "media_type"
+        ]
+        == "photo"
+    )
 
-    assert kwargs[
-        "file_id"
-    ] == "large"
+    assert (
+        kwargs[
+            "file_id"
+        ]
+        == "large"
+    )
 
 
 # =========================================================
@@ -708,11 +790,6 @@ def test_single_video_webhook_path():
         webhook_handler,
         "send_message",
         return_value=True
-    ), patch(
-        "core.database.get_tenant",
-        return_value={
-            "telegram_channel": "@channel"
-        }
     ), patch.object(
         webhook_handler,
         "process_single_photo_video",
@@ -766,11 +843,6 @@ def test_document_uses_legacy_path():
         webhook_handler,
         "send_message",
         return_value=True
-    ), patch(
-        "core.database.get_tenant",
-        return_value={
-            "telegram_channel": "@channel"
-        }
     ), patch.object(
         webhook_handler,
         "process_legacy_single_media",
@@ -790,7 +862,7 @@ def test_document_uses_legacy_path():
 
 # =========================================================
 # TEST 17
-# TEXT USES TEXT PROCESSOR
+# TEXT WEBHOOK PATH
 # =========================================================
 
 def test_text_webhook_path():
@@ -803,11 +875,6 @@ def test_text_webhook_path():
         webhook_handler,
         "send_message",
         return_value=True
-    ), patch(
-        "core.database.get_tenant",
-        return_value={
-            "telegram_channel": "@channel"
-        }
     ), patch.object(
         webhook_handler,
         "process_text_message",
@@ -860,6 +927,10 @@ def test_invalid_secret_token_rejected():
 
 def test_missing_tenant_stops_processing():
 
+    fake_database.get_tenant.return_value = (
+        None
+    )
+
     with patch.object(
         webhook_handler,
         "validate_webhook_token",
@@ -868,10 +939,7 @@ def test_missing_tenant_stops_processing():
         webhook_handler,
         "send_message",
         return_value=True
-    ) as mock_status, patch(
-        "core.database.get_tenant",
-        return_value=None
-    ), patch.object(
+    ) as mock_status, patch.object(
         webhook_handler.request,
         "get_json",
         return_value={
@@ -906,9 +974,7 @@ def test_command_path():
         webhook_handler,
         "validate_webhook_token",
         return_value=True
-    ), patch(
-        "core.command_handler.handle_command"
-    ) as mock_command, patch.object(
+    ), patch.object(
         webhook_handler.request,
         "get_json",
         return_value={
@@ -922,7 +988,7 @@ def test_command_path():
 
     assert status == 200
 
-    mock_command.assert_called_once_with(
+    fake_command_handler.handle_command.assert_called_once_with(
         "/start",
         1001
     )
@@ -939,11 +1005,6 @@ def test_album_status_message_sent():
         webhook_handler,
         "validate_webhook_token",
         return_value=True
-    ), patch(
-        "core.database.get_tenant",
-        return_value={
-            "telegram_channel": "@channel"
-        }
     ), patch(
         "core.media_handler.handle_media_group_message",
         return_value=True
@@ -969,7 +1030,7 @@ def test_album_status_message_sent():
 
 # =========================================================
 # TEST 22
-# SINGLE PHOTO STATUS MESSAGE
+# SINGLE PHOTO SUCCESS STATUS
 # =========================================================
 
 def test_single_photo_success_status():
@@ -978,11 +1039,6 @@ def test_single_photo_success_status():
         webhook_handler,
         "validate_webhook_token",
         return_value=True
-    ), patch(
-        "core.database.get_tenant",
-        return_value={
-            "telegram_channel": "@channel"
-        }
     ), patch.object(
         webhook_handler,
         "process_single_photo_video",
@@ -1010,7 +1066,7 @@ def test_single_photo_success_status():
 
 # =========================================================
 # TEST 23
-# ALBUM FAILURE STATUS MESSAGE
+# ALBUM FAILURE STATUS
 # =========================================================
 
 def test_album_failure_status():
@@ -1019,11 +1075,6 @@ def test_album_failure_status():
         webhook_handler,
         "validate_webhook_token",
         return_value=True
-    ), patch(
-        "core.database.get_tenant",
-        return_value={
-            "telegram_channel": "@channel"
-        }
     ), patch(
         "core.media_handler.handle_media_group_message",
         return_value=False
@@ -1074,11 +1125,6 @@ def test_single_media_caption_entities_forwarded():
         webhook_handler,
         "validate_webhook_token",
         return_value=True
-    ), patch(
-        "core.database.get_tenant",
-        return_value={
-            "telegram_channel": "@channel"
-        }
     ), patch.object(
         webhook_handler,
         "send_message",
