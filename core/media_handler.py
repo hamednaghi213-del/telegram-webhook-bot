@@ -42,16 +42,6 @@ CHANNEL_ID: Optional[str] = None
 # =========================================================
 # THREAD-LOCAL TELEGRAM SEND STATE
 # =========================================================
-#
-# برای حفظ سازگاری توابع قدیمی، توابع ارسال Media
-# همچنان True / False برمی‌گردانند.
-#
-# message_id واقعی آخرین Media موفق در Thread-local
-# نگهداری می‌شود تا Follow-upهای متن بلند بتوانند
-# Reply همان پست شوند.
-#
-# Thread-local جلوی تداخل درخواست‌های همزمان را می‌گیرد.
-# =========================================================
 
 telegram_send_state = threading.local()
 
@@ -109,10 +99,8 @@ group_lock = threading.RLock()
 MAX_PENDING_GROUPS = 1000
 
 MAX_GROUP_AGE_SECONDS = 900
-# 15 minutes
 
 CLEANUP_INTERVAL_SECONDS = 300
-# 5 minutes
 
 
 cleanup_thread: Optional[
@@ -370,10 +358,6 @@ def add_to_pending_group(
     )
 
     with group_lock:
-
-        # =================================================
-        # CREATE GROUP
-        # =================================================
 
         if group_key not in pending_groups:
 
@@ -995,10 +979,6 @@ def send_text_to_channel(
             "parse_mode"
         ] = parse_mode
 
-    # =====================================================
-    # REPLY
-    # =====================================================
-
     if (
         isinstance(
             reply_to_message_id,
@@ -1054,10 +1034,12 @@ def send_single_media_to_channel(
     file_id: str,
     media_type: str,
     caption: str = "",
-    parse_mode: Optional[str] = None
+    parse_mode: Optional[str] = None,
+    caption_entities: Optional[
+        List[Dict[str, Any]]
+    ] = None
 ) -> bool:
 
-    # جلوگیری از استفاده از message_id قبلی
     set_last_media_message_id(
         None
     )
@@ -1119,7 +1101,27 @@ def send_single_media_to_channel(
             "caption"
         ] = caption
 
-        if parse_mode:
+        clean_caption_entities = list(
+            caption_entities
+            or []
+        )
+
+        # =================================================
+        # ENTITY MODE HAS PRIORITY OVER PARSE MODE
+        # =================================================
+
+        if clean_caption_entities:
+
+            payload[
+                "caption_entities"
+            ] = clean_caption_entities
+
+            logger.info(
+                f"🧩 Telegram single media entity mode | "
+                f"entities={len(clean_caption_entities)}"
+            )
+
+        elif parse_mode:
 
             payload[
                 "parse_mode"
@@ -1149,7 +1151,9 @@ def send_single_media_to_channel(
             f"✅ Single Telegram media sent | "
             f"type={media_type} | "
             f"parse_mode="
-            f"{parse_mode or 'NONE'} | "
+            f"{parse_mode if not caption_entities else 'NONE'} | "
+            f"caption_entities="
+            f"{len(caption_entities or [])} | "
             f"message_id="
             f"{message_id or '-'}"
         )
@@ -1168,10 +1172,12 @@ def send_media_group_to_channel(
         Dict[str, str]
     ],
     caption: str = "",
-    parse_mode: Optional[str] = None
+    parse_mode: Optional[str] = None,
+    caption_entities: Optional[
+        List[Dict[str, Any]]
+    ] = None
 ) -> bool:
 
-    # جلوگیری از استفاده از message_id قبلی
     set_last_media_message_id(
         None
     )
@@ -1238,6 +1244,11 @@ def send_media_group_to_channel(
 
     media_group = []
 
+    clean_caption_entities = list(
+        caption_entities
+        or []
+    )
+
     for index, file in enumerate(
         files
     ):
@@ -1290,7 +1301,17 @@ def send_media_group_to_channel(
                 "caption"
             ] = caption
 
-            if parse_mode:
+            # =============================================
+            # ENTITY MODE HAS PRIORITY
+            # =============================================
+
+            if clean_caption_entities:
+
+                media_item[
+                    "caption_entities"
+                ] = clean_caption_entities
+
+            elif parse_mode:
 
                 media_item[
                     "parse_mode"
@@ -1298,6 +1319,13 @@ def send_media_group_to_channel(
 
         media_group.append(
             media_item
+        )
+
+    if clean_caption_entities:
+
+        logger.info(
+            f"🧩 Telegram Media Group entity mode | "
+            f"entities={len(clean_caption_entities)}"
         )
 
     payload = {
@@ -1329,7 +1357,9 @@ def send_media_group_to_channel(
             f"🎯 Telegram Media Group sent | "
             f"count={len(media_group)} | "
             f"parse_mode="
-            f"{parse_mode or 'NONE'} | "
+            f"{parse_mode if not clean_caption_entities else 'NONE'} | "
+            f"caption_entities="
+            f"{len(clean_caption_entities)} | "
             f"anchor_message_id="
             f"{message_id or '-'}"
         )
@@ -1585,6 +1615,19 @@ def execute_telegram_plan(
         or None
     )
 
+    # =====================================================
+    # NEW:
+    # CAPTION ENTITIES
+    # =====================================================
+
+    media_caption_entities = list(
+        plan.get(
+            "media_caption_entities",
+            []
+        )
+        or []
+    )
+
     followup_messages = list(
         plan.get(
             "followup_messages",
@@ -1622,6 +1665,36 @@ def execute_telegram_plan(
         return False
 
     # =====================================================
+    # SAFETY:
+    # ENTITY MODE AND PARSE MODE MUST NOT MIX
+    # =====================================================
+
+    if media_caption_entities:
+
+        if media_parse_mode:
+
+            logger.warning(
+                "⚠️ Telegram caption has entities and "
+                "parse_mode | parse_mode ignored"
+            )
+
+        effective_parse_mode = None
+
+    else:
+
+        effective_parse_mode = (
+            media_parse_mode
+        )
+
+    logger.info(
+        f"🧩 Telegram plan execution | "
+        f"caption={len(media_caption)} | "
+        f"entities={len(media_caption_entities)} | "
+        f"parse_mode="
+        f"{effective_parse_mode or 'NONE'}"
+    )
+
+    # =====================================================
     # RESET ANCHOR
     # =====================================================
 
@@ -1637,7 +1710,11 @@ def execute_telegram_plan(
 
         file = files[0]
 
-        if media_parse_mode:
+        # =================================================
+        # NEW ENTITY PATH
+        # =================================================
+
+        if media_caption_entities:
 
             media_success = (
                 send_single_media_to_channel(
@@ -1648,7 +1725,26 @@ def execute_telegram_plan(
                         "type"
                     ),
                     media_caption,
-                    parse_mode=media_parse_mode
+                    caption_entities=(
+                        media_caption_entities
+                    )
+                )
+            )
+
+        elif effective_parse_mode:
+
+            media_success = (
+                send_single_media_to_channel(
+                    file.get(
+                        "file_id"
+                    ),
+                    file.get(
+                        "type"
+                    ),
+                    media_caption,
+                    parse_mode=(
+                        effective_parse_mode
+                    )
                 )
             )
 
@@ -1669,13 +1765,31 @@ def execute_telegram_plan(
 
     else:
 
-        if media_parse_mode:
+        # =================================================
+        # NEW ENTITY PATH
+        # =================================================
+
+        if media_caption_entities:
 
             media_success = (
                 send_media_group_to_channel(
                     files,
                     media_caption,
-                    parse_mode=media_parse_mode
+                    caption_entities=(
+                        media_caption_entities
+                    )
+                )
+            )
+
+        elif effective_parse_mode:
+
+            media_success = (
+                send_media_group_to_channel(
+                    files,
+                    media_caption,
+                    parse_mode=(
+                        effective_parse_mode
+                    )
                 )
             )
 
@@ -1713,8 +1827,6 @@ def execute_telegram_plan(
 
     # =====================================================
     # FOLLOW-UP TEXT
-    #
-    # فقط ادامه متن بلند Reply می‌شود.
     # =====================================================
 
     for index, message in enumerate(
@@ -1733,9 +1845,6 @@ def execute_telegram_plan(
             )
 
         else:
-
-            # اگر به هر دلیل message_id استخراج نشد،
-            # خبر از بین نمی‌رود و مسیر قدیمی اجرا می‌شود.
 
             logger.warning(
                 f"⚠️ Media message_id unavailable | "
@@ -1758,12 +1867,6 @@ def execute_telegram_plan(
 
     # =====================================================
     # LEGACY BLOCKQUOTE MESSAGES
-    #
-    # مسیر جدید Media Planner باید Blockquote را داخل
-    # Caption قرار دهد و این لیست خالی باشد.
-    #
-    # این حلقه فقط برای Backward Compatibility حفظ شده.
-    # Blockquote عمداً Reply نمی‌شود.
     # =====================================================
 
     for index, html_message in enumerate(
@@ -2140,6 +2243,8 @@ def process_media_group(
             f"{len(telegram_plan.get('media_caption', ''))} | "
             f"tg_parse_mode="
             f"{telegram_plan.get('media_parse_mode') or 'NONE'} | "
+            f"tg_caption_entities="
+            f"{len(telegram_plan.get('media_caption_entities', []))} | "
             f"tg_followup="
             f"{len(telegram_plan.get('followup_messages', []))} | "
             f"tg_blockquote="
