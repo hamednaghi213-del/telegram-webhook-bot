@@ -379,10 +379,6 @@ def test_long_text_compact_mode_avoids_unnecessary_split():
 
 def test_single_media_compact_avoids_followup_when_compact_fits():
 
-    # =====================================================
-    # BUILD MEDIA TEXT
-    # =====================================================
-
     title = (
         "❇️ گزارش رسانه‌ای"
     )
@@ -396,7 +392,7 @@ def test_single_media_compact_avoids_followup_when_compact_fits():
             )
         )
         for _ in range(
-            32
+            35
         )
     ]
 
