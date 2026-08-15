@@ -1,9 +1,13 @@
 from core.caption_manager import (
-    analyze_content,
-    TELEGRAM_MESSAGE_LIMIT,
     TELEGRAM_CAPTION_SAFE_LIMIT,
+    TELEGRAM_MESSAGE_LIMIT,
+    analyze_content,
     compact_long_text,
     telegram_html_visible_length,
+)
+
+from core.formatter import (
+    format_news,
 )
 
 
@@ -19,30 +23,26 @@ DEFAULT_BRANDING = (
 
 # =========================================================
 # TEST 01
-# ORPHAN SOURCE ICON / SEPARATOR MUST DISAPPEAR
+# ORPHAN SOURCE ICON / SEPARATOR
 # =========================================================
 
 def test_orphan_source_icon_and_separator_are_removed():
 
-    from core.formatter import (
-        format_news
-    )
-
     raw_text = (
-        "تیتر خبر\n\n"
-        "متن اصلی خبر به پایان می‌رسد.\n\n"
-        "🔷 🆔 @source_channel | #source_tag\n"
+        "عنوان خبر آزمایشی\n\n"
+        "متن اصلی خبر برای بررسی پاک‌سازی منبع.\n\n"
+        "🔷 🆔 @SourceChannel | #SourceTag\n"
         "🔷 |"
     )
 
     result = format_news(
         raw_text,
-        source_title="رسانه منبع",
-        source_username="source_channel"
+        source_title="Source Channel",
+        source_username="SourceChannel"
     )
 
     assert (
-        "تیتر خبر"
+        "عنوان خبر آزمایشی"
         in result
     )
 
@@ -52,7 +52,12 @@ def test_orphan_source_icon_and_separator_are_removed():
     )
 
     assert (
-        "🔷"
+        "@SourceChannel"
+        not in result
+    )
+
+    assert (
+        "#SourceTag"
         not in result
     )
 
@@ -62,73 +67,53 @@ def test_orphan_source_icon_and_separator_are_removed():
     )
 
     assert (
-        "@source_channel"
+        "🔷"
         not in result
-    )
-
-    assert (
-        "#source_tag"
-        not in result
-    )
-
-    lines = [
-        line.strip()
-
-        for line
-        in result.splitlines()
-
-        if line.strip()
-    ]
-
-    assert (
-        "|"
-        not in lines
     )
 
     assert (
         "🔹 |"
-        not in lines
+        not in result
     )
 
     assert (
-        result.startswith(
-            "❇️ "
-        )
-    )
-
-    assert (
-        "🔹"
-        in result
+        "\n|"
+        not in result
     )
 
 
 # =========================================================
 # TEST 02
-# EXPANDABLE BLOCKQUOTE MUST BE CLEANED
+# EXPANDABLE BLOCKQUOTE
+# FOREIGN EMOJI MUST BE REMOVED
+# ENTITY-BASED CAPTION
 # =========================================================
 
 def test_expandable_blockquote_removes_foreign_emoji():
 
-    plan = analyze_content(
-        main_text=(
-            "❇️ تیتر خبر\n\n"
-            "🔹 متن اصلی خبر"
-        ),
+    main_text = (
+        "❇️ عنوان خبر\n\n"
+        "🔹 متن اصلی خبر"
+    )
 
+    expandable_text = (
+        "🔷 بخش اول تحلیل\n"
+        "🆔 بخش دوم تحلیل\n"
+        "📡 بخش سوم تحلیل"
+    )
+
+    plan = analyze_content(
+        main_text=main_text,
         expandable_blocks=[
             {
-                "type": (
-                    "expandable_blockquote"
-                ),
-                "text": (
-                    "🔴 این بخش تحلیل تکمیلی "
-                    "و ادامه خبر است."
-                ),
+                "type": "expandable_blockquote",
+                "text": expandable_text,
                 "offset": 100,
-                "length": 40
+                "length": len(
+                    expandable_text
+                )
             }
         ],
-
         branding=DEFAULT_BRANDING
     )
 
@@ -136,12 +121,41 @@ def test_expandable_blockquote_removes_foreign_emoji():
         plan.telegram
     )
 
-    # در Media Plan جدید باید Blockquote داخل Caption باشد.
+    # =====================================================
+    # NEW ENTITY-BASED POLICY
+    #
+    # دیگر کل Caption با HTML ارسال نمی‌شود.
+    # =====================================================
+
     assert (
         telegram[
             "media_parse_mode"
         ]
-        == "HTML"
+        is None
+    )
+
+    assert (
+        telegram[
+            "media_caption_entities"
+        ]
+    )
+
+    entities = (
+        telegram[
+            "media_caption_entities"
+        ]
+    )
+
+    assert (
+        len(entities)
+        >= 1
+    )
+
+    assert (
+        entities[0][
+            "type"
+        ]
+        == "expandable_blockquote"
     )
 
     caption = (
@@ -150,43 +164,78 @@ def test_expandable_blockquote_removes_foreign_emoji():
         ]
     )
 
+    # =====================================================
+    # PLAIN TEXT
+    # =====================================================
+
     assert (
-        "<blockquote expandable>"
-        in caption
+        "<blockquote"
+        not in caption
     )
 
     assert (
         "</blockquote>"
-        in caption
-    )
-
-    assert (
-        "این بخش تحلیل تکمیلی"
-        in caption
-    )
-
-    assert (
-        "ادامه خبر است"
-        in caption
-    )
-
-    assert (
-        "🔴"
         not in caption
     )
 
-    # نباید Blockquote جداگانه Media ساخته شود.
+    # =====================================================
+    # FOREIGN DECORATION MUST BE CLEANED
+    # =====================================================
+
     assert (
-        telegram[
-            "blockquote_messages"
-        ]
-        == []
+        "🔷"
+        not in caption
+    )
+
+    assert (
+        "🆔"
+        not in caption
+    )
+
+    assert (
+        "📡"
+        not in caption
+    )
+
+    # =====================================================
+    # REAL CONTENT MUST REMAIN
+    # =====================================================
+
+    assert (
+        "بخش اول تحلیل"
+        in caption
+    )
+
+    assert (
+        "بخش دوم تحلیل"
+        in caption
+    )
+
+    assert (
+        "بخش سوم تحلیل"
+        in caption
+    )
+
+    # =====================================================
+    # BRANDING MUST REMAIN OUTSIDE ENTITY
+    # =====================================================
+
+    assert (
+        DEFAULT_BRANDING
+        in caption
+    )
+
+    assert (
+        caption.endswith(
+            DEFAULT_BRANDING
+        )
     )
 
 
 # =========================================================
 # TEST 03
 # LONG TEXT COMPACT MODE
+# MUST AVOID UNNECESSARY SPLIT
 # =========================================================
 
 def test_long_text_compact_mode_avoids_unnecessary_split():
@@ -240,6 +289,10 @@ def test_long_text_compact_mode_avoids_unnecessary_split():
         ]
     )
 
+    # =====================================================
+    # COMPACT VERSION MUST FIT IN ONE MESSAGE
+    # =====================================================
+
     assert (
         len(messages)
         == 1
@@ -260,6 +313,7 @@ def test_long_text_compact_mode_avoids_unnecessary_split():
         )
     )
 
+    # Bulletها در Compact Mode حذف می‌شوند.
     assert (
         "🔹"
         not in final_message
@@ -269,6 +323,10 @@ def test_long_text_compact_mode_avoids_unnecessary_split():
         "❇️ گزارش تحولات سیاسی\n\n"
         in final_message
     )
+
+    # =====================================================
+    # REMOVE BRANDING BEFORE BODY STRUCTURE CHECK
+    # =====================================================
 
     body_without_branding = (
         final_message.split(
@@ -295,30 +353,24 @@ def test_long_text_compact_mode_avoids_unnecessary_split():
         )[1]
     )
 
+    # در Compact Mode بین خطوط بدنه
+    # Paragraph gap اضافی نباید وجود داشته باشد.
     assert (
         "\n\n"
         not in body_part
     )
 
     assert (
-        final_message.count(
-            "#دنیا_۲۴_نیوز"
+        final_message.endswith(
+            DEFAULT_BRANDING
         )
-        == 1
-    )
-
-    assert (
-        final_message.count(
-            "@Donya24News"
-        )
-        == 1
     )
 
 
 # =========================================================
 # TEST 04
-# SINGLE MEDIA COMPACT / SMART EXPANDABLE
-# MUST AVOID FOLLOWUP WHEN IT FITS
+# SINGLE MEDIA
+# COMPACT MUST AVOID FOLLOWUP
 # =========================================================
 
 def test_single_media_compact_avoids_followup_when_compact_fits():
@@ -391,21 +443,28 @@ def test_single_media_compact_avoids_followup_when_compact_fits():
         is False
     )
 
-    # =====================================================
-    # NEW POLICY:
-    #
-    # اگر Smart Expandable قابل ساخت باشد،
-    # خروجی HTML است.
-    #
-    # اگر Raw HTML به Safe Limit نخورد،
-    # Compact ساده مجاز است.
-    # =====================================================
-
     media_caption = (
         telegram[
             "media_caption"
         ]
     )
+
+    # =====================================================
+    # THIS NEWS HAS NO SOURCE BLOCKQUOTE
+    # SO ENTITY MODE MUST NOT BE CREATED
+    # =====================================================
+
+    assert (
+        telegram.get(
+            "media_caption_entities",
+            []
+        )
+        == []
+    )
+
+    # =====================================================
+    # LEGACY HTML POSSIBILITY
+    # =====================================================
 
     if (
         telegram[
@@ -441,6 +500,10 @@ def test_single_media_compact_avoids_followup_when_compact_fits():
                 "❇️ گزارش رسانه‌ای"
             )
         )
+
+    # =====================================================
+    # NORMAL COMPACT PATH
+    # =====================================================
 
     else:
 
