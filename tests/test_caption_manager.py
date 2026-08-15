@@ -71,7 +71,7 @@ def assert_telegram_limits(
     plan: PublicationPlan
 ) -> None:
     """
-    بررسی تمام Limitهای Telegram.
+    بررسی تمام Limitهای Telegram Media.
     """
 
     telegram = plan.telegram
@@ -108,7 +108,7 @@ def assert_bale_limits(
     plan: PublicationPlan
 ) -> None:
     """
-    بررسی تمام Limitهای Bale.
+    بررسی تمام Limitهای Bale Media.
     """
 
     bale = plan.bale
@@ -132,6 +132,70 @@ def assert_bale_limits(
         )
 
     for message in bale[
+        "blockquote_messages"
+    ]:
+
+        assert (
+            len(message)
+            <= BALE_MESSAGE_LIMIT
+        )
+
+
+def assert_telegram_text_limits(
+    plan: PublicationPlan
+) -> None:
+    """
+    بررسی Limitهای Telegram Text Plan.
+    """
+
+    telegram_text = (
+        plan.text[
+            "telegram"
+        ]
+    )
+
+    for message in telegram_text[
+        "messages"
+    ]:
+
+        assert (
+            len(message)
+            <= TELEGRAM_MESSAGE_LIMIT
+        )
+
+    for message in telegram_text[
+        "blockquote_messages"
+    ]:
+
+        assert (
+            len(message)
+            <= TELEGRAM_MESSAGE_LIMIT
+        )
+
+
+def assert_bale_text_limits(
+    plan: PublicationPlan
+) -> None:
+    """
+    بررسی Limitهای Bale Text Plan.
+    """
+
+    bale_text = (
+        plan.text[
+            "bale"
+        ]
+    )
+
+    for message in bale_text[
+        "messages"
+    ]:
+
+        assert (
+            len(message)
+            <= BALE_MESSAGE_LIMIT
+        )
+
+    for message in bale_text[
         "blockquote_messages"
     ]:
 
@@ -744,6 +808,24 @@ def test_empty_input():
         == ""
     )
 
+    assert (
+        plan.text[
+            "telegram"
+        ][
+            "messages"
+        ]
+        == []
+    )
+
+    assert (
+        plan.text[
+            "bale"
+        ][
+            "messages"
+        ]
+        == []
+    )
+
 
 # =========================================================
 # TEST 16
@@ -898,6 +980,10 @@ def test_no_telegram_output_exceeds_official_limits():
         plan
     )
 
+    assert_telegram_text_limits(
+        plan
+    )
+
 
 # =========================================================
 # TEST 20
@@ -928,6 +1014,10 @@ def test_no_bale_output_exceeds_configured_limits():
     )
 
     assert_bale_limits(
+        plan
+    )
+
+    assert_bale_text_limits(
         plan
     )
 
@@ -1039,10 +1129,401 @@ def test_full_publication_plan_structure():
         ]
     )
 
+    assert (
+        "telegram"
+        in plan.text
+    )
+
+    assert (
+        "bale"
+        in plan.text
+    )
+
+    assert (
+        "messages"
+        in plan.text[
+            "telegram"
+        ]
+    )
+
+    assert (
+        "blockquote_messages"
+        in plan.text[
+            "telegram"
+        ]
+    )
+
+    assert (
+        "messages"
+        in plan.text[
+            "bale"
+        ]
+    )
+
+    assert (
+        "blockquote_messages"
+        in plan.text[
+            "bale"
+        ]
+    )
+
     assert_telegram_limits(
         plan
     )
 
     assert_bale_limits(
+        plan
+    )
+
+    assert_telegram_text_limits(
+        plan
+    )
+
+    assert_bale_text_limits(
+        plan
+    )
+
+
+# =========================================================
+# TEST 22
+# TELEGRAM TEXT PLAN SHORT MESSAGE
+# =========================================================
+
+def test_telegram_text_plan_short_message():
+
+    plan = analyze_content(
+        main_text=(
+            "❇️ تیتر خبر\n\n"
+            "🔹 متن کوتاه خبر"
+        ),
+        branding=DEFAULT_BRANDING
+    )
+
+    telegram_text = (
+        plan.text[
+            "telegram"
+        ]
+    )
+
+    messages = (
+        telegram_text[
+            "messages"
+        ]
+    )
+
+    assert (
+        len(messages)
+        == 1
+    )
+
+    assert (
+        "❇️ تیتر خبر"
+        in messages[0]
+    )
+
+    assert (
+        "🔹 متن کوتاه خبر"
+        in messages[0]
+    )
+
+    assert (
+        DEFAULT_BRANDING
+        in messages[0]
+    )
+
+    assert (
+        telegram_text[
+            "blockquote_messages"
+        ]
+        == []
+    )
+
+    assert_telegram_text_limits(
+        plan
+    )
+
+
+# =========================================================
+# TEST 23
+# TELEGRAM TEXT PLAN LONG MESSAGE SPLITS
+# =========================================================
+
+def test_telegram_text_plan_long_message_splits():
+
+    main_text = make_text(
+        9500
+    )
+
+    plan = analyze_content(
+        main_text=main_text,
+        branding=DEFAULT_BRANDING
+    )
+
+    telegram_text = (
+        plan.text[
+            "telegram"
+        ]
+    )
+
+    messages = (
+        telegram_text[
+            "messages"
+        ]
+    )
+
+    assert (
+        len(messages)
+        >= 3
+    )
+
+    for message in messages:
+
+        assert (
+            len(message)
+            <= TELEGRAM_MESSAGE_LIMIT
+        )
+
+    combined = "\n".join(
+        messages
+    )
+
+    assert (
+        DEFAULT_BRANDING
+        in combined
+    )
+
+    assert_telegram_text_limits(
+        plan
+    )
+
+
+# =========================================================
+# TEST 24
+# TEXT PLAN BRANDING ONLY ONCE
+# =========================================================
+
+def test_text_plan_branding_added_only_once():
+
+    main_text = make_text(
+        8500
+    )
+
+    plan = analyze_content(
+        main_text=main_text,
+        branding=DEFAULT_BRANDING
+    )
+
+    telegram_messages = (
+        plan.text[
+            "telegram"
+        ][
+            "messages"
+        ]
+    )
+
+    telegram_chain = "\n".join(
+        telegram_messages
+    )
+
+    assert (
+        telegram_chain.count(
+            "#دنیا_۲۴_نیوز"
+        )
+        == 1
+    )
+
+    assert (
+        telegram_chain.count(
+            "@Donya24News"
+        )
+        == 1
+    )
+
+    assert (
+        DEFAULT_BRANDING
+        in telegram_messages[-1]
+    )
+
+    bale_messages = (
+        plan.text[
+            "bale"
+        ][
+            "messages"
+        ]
+    )
+
+    bale_chain = "\n".join(
+        bale_messages
+    )
+
+    assert (
+        bale_chain.count(
+            "#دنیا_۲۴_نیوز"
+        )
+        == 1
+    )
+
+    assert (
+        bale_chain.count(
+            "@Donya24News"
+        )
+        == 1
+    )
+
+    assert_telegram_text_limits(
+        plan
+    )
+
+    assert_bale_text_limits(
+        plan
+    )
+
+
+# =========================================================
+# TEST 25
+# TELEGRAM TEXT PLAN EXPANDABLE BLOCKQUOTE
+# =========================================================
+
+def test_telegram_text_plan_expandable_blockquote():
+
+    plan = analyze_content(
+        main_text=(
+            "❇️ تیتر خبر\n\n"
+            "🔹 متن اصلی"
+        ),
+        expandable_blocks=[
+            {
+                "text": (
+                    "این تحلیل تکمیلی است"
+                ),
+                "offset": 100
+            }
+        ],
+        branding=DEFAULT_BRANDING
+    )
+
+    telegram_text = (
+        plan.text[
+            "telegram"
+        ]
+    )
+
+    blockquotes = (
+        telegram_text[
+            "blockquote_messages"
+        ]
+    )
+
+    assert (
+        len(blockquotes)
+        == 1
+    )
+
+    assert (
+        blockquotes[0].startswith(
+            "<blockquote expandable>"
+        )
+    )
+
+    assert (
+        "این تحلیل تکمیلی است"
+        in blockquotes[0]
+    )
+
+    assert (
+        blockquotes[0].endswith(
+            "</blockquote>"
+        )
+    )
+
+    assert_telegram_text_limits(
+        plan
+    )
+
+
+# =========================================================
+# TEST 26
+# BALE TEXT PLAN LIMITS
+# =========================================================
+
+def test_bale_text_plan_respects_limits():
+
+    main_text = make_text(
+        10000
+    )
+
+    plan = analyze_content(
+        main_text=main_text,
+        blockquote_blocks=[
+            {
+                "text": (
+                    "تحلیل تکمیلی برای بله. "
+                    * 400
+                ),
+                "offset": 200
+            }
+        ],
+        branding=DEFAULT_BRANDING
+    )
+
+    bale_text = (
+        plan.text[
+            "bale"
+        ]
+    )
+
+    messages = (
+        bale_text[
+            "messages"
+        ]
+    )
+
+    blockquotes = (
+        bale_text[
+            "blockquote_messages"
+        ]
+    )
+
+    assert (
+        len(messages)
+        >= 2
+    )
+
+    for message in messages:
+
+        assert (
+            len(message)
+            <= BALE_MESSAGE_LIMIT
+        )
+
+    for message in blockquotes:
+
+        assert (
+            len(message)
+            <= BALE_MESSAGE_LIMIT
+        )
+
+    bale_chain = "\n".join(
+        messages
+    )
+
+    assert (
+        DEFAULT_BRANDING
+        in bale_chain
+    )
+
+    assert (
+        len(blockquotes)
+        >= 1
+    )
+
+    assert (
+        blockquotes[0]
+        .startswith(
+            "▌ "
+        )
+    )
+
+    assert_bale_text_limits(
         plan
     )
