@@ -23,10 +23,6 @@ logger = logging.getLogger(__name__)
 def utf16_length(
     text: str
 ) -> int:
-    """
-    Telegram offset/length را بر اساس UTF-16 code units
-    محاسبه می‌کند.
-    """
 
     if not text:
         return 0
@@ -45,10 +41,6 @@ def python_index_to_utf16_offset(
     text: str,
     index: int
 ) -> int:
-    """
-    Python character index را به UTF-16 offset
-    موردنیاز Telegram تبدیل می‌کند.
-    """
 
     if not text:
         return 0
@@ -89,10 +81,6 @@ def normalize_text(
 def normalize_block_text(
     text: Optional[str]
 ) -> str:
-    """
-    متن Blockquote را قبل از ساخت Caption Entity
-    از Cleaner اصلی پروژه عبور می‌دهد.
-    """
 
     text = normalize_text(
         text
@@ -133,10 +121,6 @@ def combine_blocks(
         List[Dict[str, Any]]
     ] = None
 ) -> List[Dict[str, Any]]:
-    """
-    Blockquote و Expandable Blockquote را بر اساس offset
-    مرتب می‌کند.
-    """
 
     result: List[
         Dict[str, Any]
@@ -212,11 +196,6 @@ def build_message_entity(
     start_index: int,
     end_index: int
 ) -> Dict[str, Any]:
-    """
-    MessageEntity استاندارد Telegram را می‌سازد.
-
-    offset و length به UTF-16 تبدیل می‌شوند.
-    """
 
     start_offset = (
         python_index_to_utf16_offset(
@@ -256,28 +235,6 @@ def build_plain_caption_with_entities(
     ] = None,
     branding: str = ""
 ) -> Dict[str, Any]:
-    """
-    کپشن Plain Text تولید می‌کند و Entityهای Telegram
-    را جداگانه برمی‌گرداند.
-
-    ترتیب نهایی:
-
-        main_text
-
-        blockquote / expandable_blockquote
-
-
-        branding
-
-    نکته مهم:
-    اگر Blockquote وجود داشته باشد، Branding با سه newline
-    از آن جدا می‌شود تا Telegram آن را به‌عنوان پاراگراف
-    مستقل رندر کند.
-
-    هیچ HTML استفاده نمی‌شود.
-    هیچ parse_mode استفاده نمی‌شود.
-    Branding خارج از تمام Entityها باقی می‌ماند.
-    """
 
     main_text = normalize_text(
         main_text
@@ -372,20 +329,27 @@ def build_plain_caption_with_entities(
     # =====================================================
     # BRANDING
     #
-    # اگر Blockquote وجود دارد:
-    # سه newline
+    # فقط اگر expandable_blockquote وجود داشته باشد
+    # سه newline استفاده می‌کنیم.
     #
-    # اگر Blockquote وجود ندارد:
-    # همان دو newline قبلی
-    #
-    # هیچ RLM / LRM / Direction Mark استفاده نمی‌شود.
+    # normal blockquote و خبر عادی همان دو newline قبلی.
     # =====================================================
 
     if branding:
 
         if caption_parts:
 
-            if blocks:
+            has_expandable = any(
+                block.get(
+                    "type"
+                )
+                == "expandable_blockquote"
+
+                for block
+                in blocks
+            )
+
+            if has_expandable:
 
                 caption_parts.append(
                     "\n\n\n"
@@ -464,10 +428,6 @@ def validate_caption_entities(
         Dict[str, Any]
     ]
 ) -> bool:
-    """
-    بررسی می‌کند Entityها از محدوده UTF-16
-    کپشن خارج نشده باشند.
-    """
 
     caption = normalize_text(
         caption
@@ -551,22 +511,6 @@ def build_telegram_caption_entities(
     ] = None,
     branding: str = ""
 ) -> Dict[str, Any]:
-    """
-    API اصلی ماژول.
-
-    خروجی:
-
-        {
-            "caption": "...",
-            "caption_entities": [
-                {
-                    "type": "expandable_blockquote",
-                    "offset": ...,
-                    "length": ...
-                }
-            ]
-        }
-    """
 
     result = (
         build_plain_caption_with_entities(
