@@ -40,4 +40,7 @@ jobs:
             tests/test_media_handler_integration.py \
             tests/test_content_entities.py \
             tests/test_webhook_handler_integration.py \
-            tests/test_live_regressions.py
+            tests/test_live_regressions.py \
+            tests/test_telegram_caption_entities.py \
+            tests/test_media_caption_entities_send.py \
+            tests/test_branding_direction_debug.py
