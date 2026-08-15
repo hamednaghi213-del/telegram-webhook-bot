@@ -193,10 +193,6 @@ def extract_forward_source_metadata(
 
     try:
 
-        # =================================================
-        # MODERN FORWARD_ORIGIN
-        # =================================================
-
         forward_origin = msg.get(
             "forward_origin"
         )
@@ -273,10 +269,6 @@ def extract_forward_source_metadata(
                 )
                 or ""
             )
-
-        # =================================================
-        # LEGACY FORWARD FORMAT
-        # =================================================
 
         forward_from_chat = (
             msg.get(
@@ -1228,17 +1220,37 @@ def process_text_message(
     ] = None
 ) -> bool:
     """
-    پردازش پیام متنی.
+    پردازش استاندارد پیام متنی.
 
-    اصلاح مهم:
-    Branding اکنون برای پیام متنی نیز
-    مانند Single Media و Album اضافه می‌شود.
+    Pipeline:
+
+        Raw Telegram Text
+                ↓
+        Entity Parser
+                ↓
+        Main Text / Blockquotes
+                ↓
+        Formatter
+                ↓
+        Branding
+                ↓
+        Caption Manager
+                ↓
+        Text Publication Plan
+                ↓
+        Telegram
+                ↓
+        Bale
     """
 
     try:
 
         from core.content_entities import (
-            build_full_html
+            parse_telegram_entities
+        )
+
+        from core.caption_manager import (
+            analyze_content
         )
 
         from core.bale_forwarder import (
@@ -1246,18 +1258,101 @@ def process_text_message(
         )
 
         # =================================================
+        # ENTITY PARSING
+        # =================================================
+
+        try:
+
+            parsed = (
+                parse_telegram_entities(
+                    text or "",
+                    entities or []
+                )
+            )
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Text entity parser failed | "
+                f"{e}"
+            )
+
+            parsed = {
+                "main_text": text or "",
+                "blockquote_blocks": [],
+                "expandable_blocks": [],
+                "other_entities": []
+            }
+
+        main_text = (
+            parsed.get(
+                "main_text",
+                ""
+            )
+            or ""
+        )
+
+        blockquote_blocks = list(
+            parsed.get(
+                "blockquote_blocks",
+                []
+            )
+            or []
+        )
+
+        expandable_blocks = list(
+            parsed.get(
+                "expandable_blocks",
+                []
+            )
+            or []
+        )
+
+        other_entities = list(
+            parsed.get(
+                "other_entities",
+                []
+            )
+            or []
+        )
+
+        logger.info(
+            f"🔬 TEXT-PRE-FORMAT | "
+            f"raw={len(text or '')} | "
+            f"main={len(main_text)} | "
+            f"blockquote={len(blockquote_blocks)} | "
+            f"expandable={len(expandable_blocks)} | "
+            f"other_entities={len(other_entities)}"
+        )
+
+        # =================================================
         # FORMAT / SOURCE CLEANUP
         # =================================================
 
-        formatted = (
-            format_with_source(
-                text,
-                forward_source
-            )
-        )
+        formatted_main_text = ""
 
-        if not formatted:
-            return False
+        if main_text:
+
+            try:
+
+                formatted_main_text = (
+                    format_with_source(
+                        main_text,
+                        forward_source
+                    )
+                    or main_text
+                )
+
+            except Exception as e:
+
+                logger.exception(
+                    f"❌ Text formatter failed | "
+                    f"{e}"
+                )
+
+                formatted_main_text = (
+                    main_text
+                )
 
         # =================================================
         # BRANDING
@@ -1271,109 +1366,205 @@ def process_text_message(
 
         logger.info(
             f"🔬 TEXT-BRANDING | "
-            f"formatted={len(formatted)} | "
+            f"formatted={len(formatted_main_text)} | "
             f"branding={len(branding)}"
         )
 
-        branded_formatted = (
-            formatted.rstrip()
+        # =================================================
+        # PUBLICATION PLAN
+        # =================================================
+
+        publication_plan = (
+            analyze_content(
+                main_text=formatted_main_text,
+                blockquote_blocks=(
+                    blockquote_blocks
+                ),
+                expandable_blocks=(
+                    expandable_blocks
+                ),
+                other_entities=(
+                    other_entities
+                ),
+                branding=branding
+            )
         )
 
-        if branding:
+        telegram_plan = (
+            publication_plan.text[
+                "telegram"
+            ]
+        )
 
-            branded_formatted += (
-                "\n\n"
-                + branding.strip()
-            )
+        bale_plan = (
+            publication_plan.text[
+                "bale"
+            ]
+        )
+
+        logger.info(
+            f"🔬 TEXT-PLAN | "
+            f"telegram_messages="
+            f"{len(telegram_plan.get('messages', []))} | "
+            f"telegram_blockquotes="
+            f"{len(telegram_plan.get('blockquote_messages', []))} | "
+            f"bale_messages="
+            f"{len(bale_plan.get('messages', []))} | "
+            f"bale_blockquotes="
+            f"{len(bale_plan.get('blockquote_messages', []))}"
+        )
 
         # =================================================
-        # TELEGRAM
+        # TELEGRAM MAIN MESSAGES
         # =================================================
 
-        if (
-            entities
-            and not (
-                forward_source
-                and forward_source.get(
-                    "is_forwarded"
-                )
+        telegram_messages = list(
+            telegram_plan.get(
+                "messages",
+                []
             )
-        ):
+            or []
+        )
 
-            try:
+        telegram_blockquotes = list(
+            telegram_plan.get(
+                "blockquote_messages",
+                []
+            )
+            or []
+        )
 
-                html_content = (
-                    build_full_html(
-                        text,
-                        entities
-                    )
-                )
+        for message in telegram_messages:
 
-                # -----------------------------------------
-                # Branding باید بعد از Entity HTML اضافه شود
-                # تا Offsetهای Telegram دستکاری نشوند.
-                # -----------------------------------------
-
-                if branding:
-
-                    html_content = (
-                        html_content.rstrip()
-                        + "\n\n"
-                        + branding.strip()
-                    )
-
-                success = (
-                    send_to_channel(
-                        html_content,
-                        parse_mode="HTML"
-                    )
-                )
-
-            except Exception as e:
-
-                logger.warning(
-                    f"⚠️ HTML text path failed | "
-                    f"{e}"
-                )
-
-                success = (
-                    send_to_channel(
-                        branded_formatted
-                    )
-                )
-
-        else:
-
-            # Forwarded Text از مسیر Formatter می‌رود
-            # تا اطلاعات مبدأ پاک شود و Branding خودمان
-            # در انتها قرار گیرد.
+            if not message:
+                continue
 
             success = (
                 send_to_channel(
-                    branded_formatted
+                    message
                 )
             )
 
-        if not success:
-            return False
+            if not success:
+
+                logger.error(
+                    "❌ Telegram text plan "
+                    "main message failed"
+                )
+
+                return False
+
+        # =================================================
+        # TELEGRAM BLOCKQUOTES
+        # =================================================
+
+        for blockquote_message in (
+            telegram_blockquotes
+        ):
+
+            if not blockquote_message:
+                continue
+
+            success = (
+                send_to_channel(
+                    blockquote_message,
+                    parse_mode="HTML"
+                )
+            )
+
+            if not success:
+
+                logger.error(
+                    "❌ Telegram text plan "
+                    "blockquote failed"
+                )
+
+                return False
 
         # =================================================
         # BALE
         # =================================================
+        #
+        # Telegram موفق شده است.
+        # شکست Bale باعث False شدن کل عملیات نمی‌شود.
+        # این رفتار با مسیر Media فعلی سازگار است.
+        # =================================================
 
-        try:
-
-            send_to_bale_for_user(
-                chat_id,
-                branded_formatted
+        bale_messages = list(
+            bale_plan.get(
+                "messages",
+                []
             )
+            or []
+        )
 
-        except Exception as e:
-
-            logger.warning(
-                f"⚠️ Bale text failed | "
-                f"{e}"
+        bale_blockquotes = list(
+            bale_plan.get(
+                "blockquote_messages",
+                []
             )
+            or []
+        )
+
+        for message in bale_messages:
+
+            if not message:
+                continue
+
+            try:
+
+                bale_success = (
+                    send_to_bale_for_user(
+                        chat_id,
+                        message
+                    )
+                )
+
+                if bale_success is False:
+
+                    logger.warning(
+                        "⚠️ Bale text plan "
+                        "main message failed"
+                    )
+
+            except Exception as e:
+
+                logger.warning(
+                    f"⚠️ Bale text plan "
+                    f"main message exception | "
+                    f"{e}"
+                )
+
+        for blockquote_message in (
+            bale_blockquotes
+        ):
+
+            if not blockquote_message:
+                continue
+
+            try:
+
+                bale_success = (
+                    send_to_bale_for_user(
+                        chat_id,
+                        blockquote_message
+                    )
+                )
+
+                if bale_success is False:
+
+                    logger.warning(
+                        "⚠️ Bale text plan "
+                        "blockquote failed"
+                    )
+
+            except Exception as e:
+
+                logger.warning(
+                    f"⚠️ Bale text plan "
+                    f"blockquote exception | "
+                    f"{e}"
+                )
 
         return True
 
