@@ -148,7 +148,7 @@ def append_branding(
 
 
 # =========================================================
-# TELEGRAM HTML VISIBLE LENGTH
+# TELEGRAM HTML LENGTH
 # =========================================================
 
 def telegram_html_visible_text(
@@ -197,8 +197,10 @@ def clean_blockquote_text(
 
     try:
 
-        cleaned = clean_text(
-            text
+        cleaned = (
+            clean_text(
+                text
+            )
         )
 
         return normalize_text(
@@ -230,13 +232,11 @@ def compact_long_text(
     if not text:
         return ""
 
-    raw_lines = (
-        text.splitlines()
-    )
-
     content_lines: List[str] = []
 
-    for line in raw_lines:
+    for line in (
+        text.splitlines()
+    ):
 
         stripped = (
             line.strip()
@@ -278,12 +278,11 @@ def compact_long_text(
                 .lstrip()
             )
 
-        if not cleaned_line:
-            continue
+        if cleaned_line:
 
-        body_lines.append(
-            cleaned_line
-        )
+            body_lines.append(
+                cleaned_line
+            )
 
     if not body_lines:
         return title
@@ -328,10 +327,6 @@ def find_split_position(
         text[:limit]
     )
 
-    # =====================================================
-    # PARAGRAPH
-    # =====================================================
-
     position = (
         search_text.rfind(
             "\n\n"
@@ -340,10 +335,6 @@ def find_split_position(
 
     if position > 0:
         return position
-
-    # =====================================================
-    # LINE
-    # =====================================================
 
     position = (
         search_text.rfind(
@@ -354,10 +345,6 @@ def find_split_position(
     if position > 0:
         return position
 
-    # =====================================================
-    # SENTENCE
-    # =====================================================
-
     sentence_marks = (
         "؟",
         "!",
@@ -367,7 +354,7 @@ def find_split_position(
         "…"
     )
 
-    best_sentence_position = -1
+    best_position = -1
 
     for mark in sentence_marks:
 
@@ -377,25 +364,18 @@ def find_split_position(
             )
         )
 
-        if (
-            position
-            > best_sentence_position
-        ):
+        if position > best_position:
 
-            best_sentence_position = (
+            best_position = (
                 position
             )
 
-    if best_sentence_position > 0:
+    if best_position > 0:
 
         return (
-            best_sentence_position
+            best_position
             + 1
         )
-
-    # =====================================================
-    # WORD
-    # =====================================================
 
     position = (
         search_text.rfind(
@@ -405,16 +385,6 @@ def find_split_position(
 
     if position > 0:
         return position
-
-    # =====================================================
-    # HARD CUT
-    # =====================================================
-
-    logger.warning(
-        f"⚠️ Hard split required | "
-        f"limit={limit} | "
-        f"preview={text[:80]!r}"
-    )
 
     return limit
 
@@ -449,7 +419,9 @@ def split_text(
 
     parts: List[str] = []
 
-    remaining = text
+    remaining = (
+        text
+    )
 
     safety_counter = 0
 
@@ -512,27 +484,13 @@ def split_text(
             .strip()
         )
 
-        if (
-            new_remaining
-            == remaining
-        ):
-
-            logger.error(
-                "❌ split_text made no progress"
-            )
+        if new_remaining == remaining:
 
             break
 
         remaining = (
             new_remaining
         )
-
-    logger.info(
-        f"✂️ Text split | "
-        f"original={len(text)} | "
-        f"limit={limit} | "
-        f"parts={len(parts)}"
-    )
 
     return parts
 
@@ -583,12 +541,6 @@ def split_for_media(
             "media_caption"
         ] = compact_text
 
-        logger.info(
-            f"🗜️ Media compact mode used | "
-            f"before={len(text)} | "
-            f"after={len(compact_text)}"
-        )
-
         return result
 
     source_text = (
@@ -609,7 +561,9 @@ def split_for_media(
             caption_limit
         )
 
-    first_part = (
+    result[
+        "media_caption"
+    ] = (
         source_text[
             :split_position
         ]
@@ -622,10 +576,6 @@ def split_for_media(
         ]
         .strip()
     )
-
-    result[
-        "media_caption"
-    ] = first_part
 
     if remaining:
 
@@ -642,7 +592,7 @@ def split_for_media(
 
 
 # =========================================================
-# MEDIA BRANDING PLACEMENT
+# BRANDING HELPERS
 # =========================================================
 
 def place_branding(
@@ -675,13 +625,9 @@ def place_branding(
 
     if messages:
 
-        last_message = (
-            messages[-1]
-        )
-
         combined = (
             append_branding(
-                last_message,
+                messages[-1],
                 branding
             )
         )
@@ -692,19 +638,10 @@ def place_branding(
                 combined
             )
 
-        elif len(branding) <= message_limit:
+        else:
 
             messages.append(
                 branding
-            )
-
-        else:
-
-            messages.extend(
-                split_text(
-                    branding,
-                    message_limit
-                )
             )
 
         return {
@@ -712,32 +649,23 @@ def place_branding(
             "followup_messages": messages
         }
 
-    combined_caption = (
+    combined = (
         append_branding(
             media_caption,
             branding
         )
     )
 
-    if len(combined_caption) <= caption_limit:
+    if len(combined) <= caption_limit:
 
         media_caption = (
-            combined_caption
-        )
-
-    elif len(branding) <= message_limit:
-
-        messages.append(
-            branding
+            combined
         )
 
     else:
 
-        messages.extend(
-            split_text(
-                branding,
-                message_limit
-            )
+        messages.append(
+            branding
         )
 
     return {
@@ -745,10 +673,6 @@ def place_branding(
         "followup_messages": messages
     }
 
-
-# =========================================================
-# TEXT BRANDING PLACEMENT
-# =========================================================
 
 def place_branding_in_text_messages(
     messages: List[str],
@@ -770,24 +694,13 @@ def place_branding_in_text_messages(
 
     if not result:
 
-        if len(branding) <= message_limit:
-
-            return [
-                branding
-            ]
-
-        return split_text(
-            branding,
-            message_limit
-        )
-
-    last_message = (
-        result[-1]
-    )
+        return [
+            branding
+        ]
 
     combined = (
         append_branding(
-            last_message,
+            result[-1],
             branding
         )
     )
@@ -798,506 +711,14 @@ def place_branding_in_text_messages(
             combined
         )
 
-        return result
-
-    if len(branding) <= message_limit:
+    else:
 
         result.append(
             branding
         )
 
-        return result
-
-    result.extend(
-        split_text(
-            branding,
-            message_limit
-        )
-    )
-
     return result
 
-
-# =========================================================
-# TELEGRAM BLOCKQUOTE MESSAGES
-# =========================================================
-
-def create_telegram_blockquote_messages(
-    blockquote_blocks: List[
-        Dict[str, Any]
-    ],
-    expandable_blocks: List[
-        Dict[str, Any]
-    ]
-) -> List[str]:
-
-    combined_blocks: List[
-        Dict[str, Any]
-    ] = []
-
-    for block in (
-        blockquote_blocks
-        or []
-    ):
-
-        combined_blocks.append({
-            "offset": block.get(
-                "offset",
-                0
-            ),
-            "text": block.get(
-                "text",
-                ""
-            ),
-            "expandable": False
-        })
-
-    for block in (
-        expandable_blocks
-        or []
-    ):
-
-        combined_blocks.append({
-            "offset": block.get(
-                "offset",
-                0
-            ),
-            "text": block.get(
-                "text",
-                ""
-            ),
-            "expandable": True
-        })
-
-    combined_blocks.sort(
-        key=lambda item: (
-            item.get(
-                "offset",
-                0
-            )
-        )
-    )
-
-    result: List[str] = []
-
-    for block in combined_blocks:
-
-        raw_text = normalize_text(
-            block.get(
-                "text",
-                ""
-            )
-        )
-
-        if not raw_text:
-            continue
-
-        cleaned_text = (
-            clean_blockquote_text(
-                raw_text
-            )
-        )
-
-        if not cleaned_text:
-            continue
-
-        expandable = bool(
-            block.get(
-                "expandable",
-                False
-            )
-        )
-
-        raw_limit = (
-            TELEGRAM_MESSAGE_SAFE_LIMIT
-            - 100
-        )
-
-        raw_parts = (
-            split_text(
-                cleaned_text,
-                raw_limit
-            )
-        )
-
-        for raw_part in raw_parts:
-
-            html_message = (
-                build_blockquote_html(
-                    raw_part,
-                    expandable=expandable
-                )
-            )
-
-            if (
-                telegram_html_visible_length(
-                    html_message
-                )
-                <= TELEGRAM_MESSAGE_SAFE_LIMIT
-            ):
-
-                result.append(
-                    html_message
-                )
-
-                continue
-
-            retry_parts = (
-                split_text(
-                    raw_part,
-                    max(
-                        500,
-                        raw_limit // 2
-                    )
-                )
-            )
-
-            for retry_part in retry_parts:
-
-                retry_html = (
-                    build_blockquote_html(
-                        retry_part,
-                        expandable=expandable
-                    )
-                )
-
-                if (
-                    telegram_html_visible_length(
-                        retry_html
-                    )
-                    <= TELEGRAM_MESSAGE_LIMIT
-                ):
-
-                    result.append(
-                        retry_html
-                    )
-
-    return result
-
-
-# =========================================================
-# BUILD INLINE TELEGRAM BLOCKQUOTES
-# =========================================================
-
-def build_inline_telegram_blockquotes(
-    blockquote_blocks: List[
-        Dict[str, Any]
-    ],
-    expandable_blocks: List[
-        Dict[str, Any]
-    ]
-) -> str:
-
-    combined_blocks: List[
-        Dict[str, Any]
-    ] = []
-
-    for block in (
-        blockquote_blocks
-        or []
-    ):
-
-        combined_blocks.append({
-            "offset": block.get(
-                "offset",
-                0
-            ),
-            "text": block.get(
-                "text",
-                ""
-            ),
-            "expandable": False
-        })
-
-    for block in (
-        expandable_blocks
-        or []
-    ):
-
-        combined_blocks.append({
-            "offset": block.get(
-                "offset",
-                0
-            ),
-            "text": block.get(
-                "text",
-                ""
-            ),
-            "expandable": True
-        })
-
-    combined_blocks.sort(
-        key=lambda item: (
-            item.get(
-                "offset",
-                0
-            )
-        )
-    )
-
-    html_parts: List[str] = []
-
-    for block in combined_blocks:
-
-        raw_text = normalize_text(
-            block.get(
-                "text",
-                ""
-            )
-        )
-
-        if not raw_text:
-            continue
-
-        cleaned_text = (
-            clean_blockquote_text(
-                raw_text
-            )
-        )
-
-        if not cleaned_text:
-            continue
-
-        html_parts.append(
-            build_blockquote_html(
-                cleaned_text,
-                expandable=bool(
-                    block.get(
-                        "expandable",
-                        False
-                    )
-                )
-            )
-        )
-
-    return "\n\n".join(
-        html_parts
-    )
-
-
-# =========================================================
-# BUILD TELEGRAM HTML MEDIA CAPTION
-# =========================================================
-
-def build_telegram_html_caption(
-    main_text: str,
-    blockquote_blocks: List[
-        Dict[str, Any]
-    ],
-    expandable_blocks: List[
-        Dict[str, Any]
-    ],
-    branding: str
-) -> str:
-
-    parts: List[str] = []
-
-    main_text = normalize_text(
-        main_text
-    )
-
-    branding = normalize_text(
-        branding
-    )
-
-    if main_text:
-
-        parts.append(
-            escape(
-                main_text
-            )
-        )
-
-    inline_blockquotes = (
-        build_inline_telegram_blockquotes(
-            blockquote_blocks,
-            expandable_blocks
-        )
-    )
-
-    if inline_blockquotes:
-
-        parts.append(
-            inline_blockquotes
-        )
-
-    if branding:
-
-        parts.append(
-            escape(
-                branding
-            )
-        )
-
-    return "\n\n".join(
-        parts
-    )
-
-
-# =========================================================
-# BUILD SMART EXPANDABLE MEDIA CAPTION
-# =========================================================
-
-def build_smart_expandable_media_caption(
-    main_text: str,
-    branding: str,
-    caption_limit: int
-) -> Optional[str]:
-    """
-    برای خبرهایی که کل متن هنوز در Caption جا می‌شود،
-    بخش اول عادی و ادامه داخل Expandable قرار می‌گیرد.
-
-    دو شرط همزمان داریم:
-
-    1. Visible text <= caption_limit
-    2. Raw HTML <= caption_limit
-
-    شرط دوم برای حفظ Safe Limit داخلی پروژه است.
-    """
-
-    main_text = normalize_text(
-        main_text
-    )
-
-    branding = normalize_text(
-        branding
-    )
-
-    if not main_text:
-        return None
-
-    visible_length = (
-        len(main_text)
-        + (
-            len(branding)
-            + 2
-            if branding
-            else 0
-        )
-    )
-
-    if visible_length > caption_limit:
-        return None
-
-    # خبر خیلی کوتاه نیازی به Expandable مصنوعی ندارد.
-    if len(main_text) < 350:
-        return None
-
-    target_position = max(
-        200,
-        int(
-            len(main_text)
-            * 0.55
-        )
-    )
-
-    target_position = min(
-        target_position,
-        len(main_text) - 1
-    )
-
-    split_position = (
-        find_split_position(
-            main_text,
-            target_position
-        )
-    )
-
-    if split_position <= 0:
-
-        split_position = (
-            target_position
-        )
-
-    normal_part = (
-        main_text[
-            :split_position
-        ]
-        .strip()
-    )
-
-    expandable_part = (
-        main_text[
-            split_position:
-        ]
-        .strip()
-    )
-
-    if (
-        not normal_part
-        or not expandable_part
-    ):
-
-        return None
-
-    parts: List[str] = [
-        escape(
-            normal_part
-        ),
-        build_blockquote_html(
-            expandable_part,
-            expandable=True
-        )
-    ]
-
-    if branding:
-
-        parts.append(
-            escape(
-                branding
-            )
-        )
-
-    html_caption = (
-        "\n\n".join(
-            parts
-        )
-    )
-
-    # =====================================================
-    # VISIBLE SAFETY
-    # =====================================================
-
-    if (
-        telegram_html_visible_length(
-            html_caption
-        )
-        > caption_limit
-    ):
-
-        return None
-
-    # =====================================================
-    # RAW HTML SAFETY
-    #
-    # این همان اصلاح Fail اول است.
-    # =====================================================
-
-    if len(html_caption) > caption_limit:
-
-        logger.info(
-            f"ℹ️ Smart expandable skipped | "
-            f"raw_html={len(html_caption)} | "
-            f"limit={caption_limit}"
-        )
-
-        return None
-
-    logger.info(
-        f"🧩 Smart expandable media caption | "
-        f"normal={len(normal_part)} | "
-        f"expandable={len(expandable_part)} | "
-        f"visible="
-        f"{telegram_html_visible_length(html_caption)} | "
-        f"raw={len(html_caption)}"
-    )
-
-    return html_caption
-
-
-# =========================================================
-# BRAND FOLLOWUPS
-# =========================================================
 
 def brand_followup_messages(
     messages: List[str],
@@ -1312,9 +733,6 @@ def brand_followup_messages(
     branding = normalize_text(
         branding
     )
-
-    if not messages:
-        return []
 
     if not branding:
         return messages
@@ -1349,6 +767,351 @@ def brand_followup_messages(
 
 
 # =========================================================
+# TELEGRAM BLOCKQUOTE HELPERS
+# =========================================================
+
+def _combined_blockquotes(
+    blockquote_blocks: List[
+        Dict[str, Any]
+    ],
+    expandable_blocks: List[
+        Dict[str, Any]
+    ]
+) -> List[Dict[str, Any]]:
+
+    combined: List[
+        Dict[str, Any]
+    ] = []
+
+    for block in (
+        blockquote_blocks
+        or []
+    ):
+
+        combined.append({
+            "offset": block.get(
+                "offset",
+                0
+            ),
+            "text": block.get(
+                "text",
+                ""
+            ),
+            "expandable": False
+        })
+
+    for block in (
+        expandable_blocks
+        or []
+    ):
+
+        combined.append({
+            "offset": block.get(
+                "offset",
+                0
+            ),
+            "text": block.get(
+                "text",
+                ""
+            ),
+            "expandable": True
+        })
+
+    combined.sort(
+        key=lambda item: (
+            item.get(
+                "offset",
+                0
+            )
+        )
+    )
+
+    return combined
+
+
+def create_telegram_blockquote_messages(
+    blockquote_blocks: List[
+        Dict[str, Any]
+    ],
+    expandable_blocks: List[
+        Dict[str, Any]
+    ]
+) -> List[str]:
+
+    result: List[str] = []
+
+    for block in (
+        _combined_blockquotes(
+            blockquote_blocks,
+            expandable_blocks
+        )
+    ):
+
+        text = (
+            clean_blockquote_text(
+                block.get(
+                    "text",
+                    ""
+                )
+            )
+        )
+
+        if not text:
+            continue
+
+        parts = (
+            split_text(
+                text,
+                TELEGRAM_MESSAGE_SAFE_LIMIT
+                - 100
+            )
+        )
+
+        for part in parts:
+
+            result.append(
+                build_blockquote_html(
+                    part,
+                    expandable=bool(
+                        block.get(
+                            "expandable",
+                            False
+                        )
+                    )
+                )
+            )
+
+    return result
+
+
+def build_inline_telegram_blockquotes(
+    blockquote_blocks: List[
+        Dict[str, Any]
+    ],
+    expandable_blocks: List[
+        Dict[str, Any]
+    ]
+) -> str:
+
+    result: List[str] = []
+
+    for block in (
+        _combined_blockquotes(
+            blockquote_blocks,
+            expandable_blocks
+        )
+    ):
+
+        text = (
+            clean_blockquote_text(
+                block.get(
+                    "text",
+                    ""
+                )
+            )
+        )
+
+        if not text:
+            continue
+
+        result.append(
+            build_blockquote_html(
+                text,
+                expandable=bool(
+                    block.get(
+                        "expandable",
+                        False
+                    )
+                )
+            )
+        )
+
+    return "\n\n".join(
+        result
+    )
+
+
+def build_telegram_html_caption(
+    main_text: str,
+    blockquote_blocks: List[
+        Dict[str, Any]
+    ],
+    expandable_blocks: List[
+        Dict[str, Any]
+    ],
+    branding: str
+) -> str:
+
+    parts: List[str] = []
+
+    main_text = normalize_text(
+        main_text
+    )
+
+    branding = normalize_text(
+        branding
+    )
+
+    if main_text:
+
+        parts.append(
+            escape(
+                main_text
+            )
+        )
+
+    inline_blocks = (
+        build_inline_telegram_blockquotes(
+            blockquote_blocks,
+            expandable_blocks
+        )
+    )
+
+    if inline_blocks:
+
+        parts.append(
+            inline_blocks
+        )
+
+    # Branding همیشه آخرین جزء Caption است.
+    if branding:
+
+        parts.append(
+            escape(
+                branding
+            )
+        )
+
+    return "\n\n".join(
+        parts
+    )
+
+
+# =========================================================
+# SMART ARTIFICIAL EXPANDABLE
+# =========================================================
+
+def build_smart_expandable_media_caption(
+    main_text: str,
+    branding: str,
+    caption_limit: int
+) -> Optional[str]:
+
+    main_text = normalize_text(
+        main_text
+    )
+
+    branding = normalize_text(
+        branding
+    )
+
+    if not main_text:
+        return None
+
+    if (
+        len(main_text)
+        + (
+            len(branding) + 2
+            if branding
+            else 0
+        )
+        > caption_limit
+    ):
+
+        return None
+
+    if len(main_text) < 350:
+        return None
+
+    target = max(
+        200,
+        int(
+            len(main_text)
+            * 0.55
+        )
+    )
+
+    target = min(
+        target,
+        len(main_text) - 1
+    )
+
+    position = (
+        find_split_position(
+            main_text,
+            target
+        )
+    )
+
+    if position <= 0:
+
+        position = (
+            target
+        )
+
+    normal_part = (
+        main_text[
+            :position
+        ]
+        .strip()
+    )
+
+    expandable_part = (
+        main_text[
+            position:
+        ]
+        .strip()
+    )
+
+    if (
+        not normal_part
+        or not expandable_part
+    ):
+
+        return None
+
+    parts = [
+        escape(
+            normal_part
+        ),
+        build_blockquote_html(
+            expandable_part,
+            expandable=True
+        )
+    ]
+
+    if branding:
+
+        parts.append(
+            escape(
+                branding
+            )
+        )
+
+    html_caption = (
+        "\n\n".join(
+            parts
+        )
+    )
+
+    if (
+        telegram_html_visible_length(
+            html_caption
+        )
+        > caption_limit
+    ):
+
+        return None
+
+    # Safe limit داخلی تست‌های فعلی
+    if len(html_caption) > caption_limit:
+
+        return None
+
+    return html_caption
+
+
+# =========================================================
 # BALE BLOCKQUOTE
 # =========================================================
 
@@ -1363,27 +1126,24 @@ def build_bale_blockquote(
     if not text:
         return ""
 
-    lines = (
+    output = []
+
+    for line in (
         text.splitlines()
-    )
-
-    output_lines = []
-
-    for line in lines:
+    ):
 
         line = (
             line.strip()
         )
 
-        if not line:
-            continue
+        if line:
 
-        output_lines.append(
-            f"▌ {line}"
-        )
+            output.append(
+                f"▌ {line}"
+            )
 
     return "\n".join(
-        output_lines
+        output
     )
 
 
@@ -1396,129 +1156,40 @@ def create_bale_blockquote_messages(
     ]
 ) -> List[str]:
 
-    combined_blocks = []
-
-    for block in (
-        blockquote_blocks
-        or []
-    ):
-
-        combined_blocks.append({
-            "offset": block.get(
-                "offset",
-                0
-            ),
-            "text": block.get(
-                "text",
-                ""
-            )
-        })
-
-    for block in (
-        expandable_blocks
-        or []
-    ):
-
-        combined_blocks.append({
-            "offset": block.get(
-                "offset",
-                0
-            ),
-            "text": block.get(
-                "text",
-                ""
-            )
-        })
-
-    combined_blocks.sort(
-        key=lambda item: (
-            item.get(
-                "offset",
-                0
-            )
-        )
-    )
-
     result = []
 
-    for block in combined_blocks:
-
-        raw_text = normalize_text(
-            block.get(
-                "text",
-                ""
-            )
+    for block in (
+        _combined_blockquotes(
+            blockquote_blocks,
+            expandable_blocks
         )
+    ):
 
-        if not raw_text:
-            continue
-
-        cleaned_text = (
+        text = (
             clean_blockquote_text(
-                raw_text
+                block.get(
+                    "text",
+                    ""
+                )
             )
         )
 
-        if not cleaned_text:
+        if not text:
             continue
 
-        raw_limit = (
-            BALE_MESSAGE_SAFE_LIMIT
-            - 200
-        )
-
-        raw_parts = (
+        for part in (
             split_text(
-                cleaned_text,
-                raw_limit
+                text,
+                BALE_MESSAGE_SAFE_LIMIT
+                - 200
             )
-        )
+        ):
 
-        for raw_part in raw_parts:
-
-            bale_message = (
+            result.append(
                 build_bale_blockquote(
-                    raw_part
+                    part
                 )
             )
-
-            if (
-                len(bale_message)
-                <= BALE_MESSAGE_SAFE_LIMIT
-            ):
-
-                result.append(
-                    bale_message
-                )
-
-                continue
-
-            retry_parts = (
-                split_text(
-                    raw_part,
-                    max(
-                        500,
-                        raw_limit // 2
-                    )
-                )
-            )
-
-            for retry_part in retry_parts:
-
-                retry_message = (
-                    build_bale_blockquote(
-                        retry_part
-                    )
-                )
-
-                if (
-                    len(retry_message)
-                    <= BALE_MESSAGE_LIMIT
-                ):
-
-                    result.append(
-                        retry_message
-                    )
 
     return result
 
@@ -1560,13 +1231,17 @@ def create_telegram_plan(
     )
 
     # =====================================================
-    # CASE 1
-    # SOURCE HAS BLOCKQUOTE / EXPANDABLE
+    # REAL SOURCE EXPANDABLE / BLOCKQUOTE
     # =====================================================
 
     if has_source_blockquotes:
 
-        normal_html_caption = (
+        # -------------------------------------------------
+        # 1. FIRST PRIORITY:
+        # FULL ORIGINAL MAIN + BLOCKQUOTE + BRANDING
+        # -------------------------------------------------
+
+        full_caption = (
             build_telegram_html_caption(
                 main_text,
                 blockquote_blocks,
@@ -1575,80 +1250,102 @@ def create_telegram_plan(
             )
         )
 
-        if (
-            normal_html_caption
-            and telegram_html_visible_length(
-                normal_html_caption
+        full_visible = (
+            telegram_html_visible_length(
+                full_caption
             )
-            <= TELEGRAM_CAPTION_SAFE_LIMIT
+        )
+
+        if (
+            full_caption
+            and full_visible
+            <= TELEGRAM_CAPTION_LIMIT
+            and len(full_caption)
+            <= TELEGRAM_CAPTION_LIMIT
         ):
 
             plan[
                 "media_caption"
-            ] = normal_html_caption
+            ] = full_caption
 
             plan[
                 "media_parse_mode"
             ] = "HTML"
 
             logger.info(
-                f"🧩 Source blockquote preserved inline | "
-                f"visible="
-                f"{telegram_html_visible_length(normal_html_caption)}"
+                f"🧩 Full source blockquote caption | "
+                f"visible={full_visible} | "
+                f"raw={len(full_caption)}"
             )
 
             return plan
+
+        # -------------------------------------------------
+        # 2. COMPACT MAIN, BUT KEEP ALL MAIN BEFORE BLOCK
+        # -------------------------------------------------
 
         compact_main = (
             compact_long_text(
                 main_text
             )
-        )
-
-        compact_source = (
-            compact_main
             or main_text
         )
 
-        compact_html_caption = (
+        compact_caption = (
             build_telegram_html_caption(
-                compact_source,
+                compact_main,
                 blockquote_blocks,
                 expandable_blocks,
                 branding
             )
         )
 
-        if (
-            compact_html_caption
-            and telegram_html_visible_length(
-                compact_html_caption
+        compact_visible = (
+            telegram_html_visible_length(
+                compact_caption
             )
-            <= TELEGRAM_CAPTION_SAFE_LIMIT
+        )
+
+        if (
+            compact_caption
+            and compact_visible
+            <= TELEGRAM_CAPTION_LIMIT
+            and len(compact_caption)
+            <= TELEGRAM_CAPTION_LIMIT
         ):
 
             plan[
                 "media_caption"
-            ] = compact_html_caption
+            ] = compact_caption
 
             plan[
                 "media_parse_mode"
             ] = "HTML"
 
             logger.info(
-                f"🗜️ Source blockquote preserved "
-                f"with compact main | "
-                f"visible="
-                f"{telegram_html_visible_length(compact_html_caption)}"
+                f"🗜️ Compact main + source blockquote | "
+                f"visible={compact_visible} | "
+                f"raw={len(compact_caption)}"
             )
 
             return plan
 
-        # =================================================
-        # RESERVE SPACE FOR SOURCE BLOCKQUOTE + BRANDING
-        # =================================================
+        # -------------------------------------------------
+        # 3. REAL OVERFLOW
+        #
+        # Caption order:
+        #
+        # main prefix
+        # source expandable
+        # branding
+        #
+        # Reply:
+        #
+        # remaining main
+        # branding
+        # -------------------------------------------------
 
-        inline_blockquotes = (
+        inline_blocks = (
             build_inline_telegram_blockquotes(
                 blockquote_blocks,
                 expandable_blocks
@@ -1657,10 +1354,10 @@ def create_telegram_plan(
 
         suffix_parts: List[str] = []
 
-        if inline_blockquotes:
+        if inline_blocks:
 
             suffix_parts.append(
-                inline_blockquotes
+                inline_blocks
             )
 
         if branding:
@@ -1671,81 +1368,57 @@ def create_telegram_plan(
                 )
             )
 
-        suffix_html = (
+        suffix = (
             "\n\n".join(
                 suffix_parts
             )
         )
 
-        suffix_visible_length = (
+        # از Visible length برای ظرفیت واقعی استفاده می‌کنیم.
+        suffix_visible = (
             telegram_html_visible_length(
-                suffix_html
+                suffix
             )
         )
 
         available_for_main = (
-            TELEGRAM_CAPTION_SAFE_LIMIT
-            - suffix_visible_length
+            TELEGRAM_CAPTION_LIMIT
+            - suffix_visible
             - (
                 2
-                if suffix_html
+                if suffix
                 else 0
             )
         )
 
-        if available_for_main <= 0:
+        if available_for_main > 0:
 
-            available_for_main = (
-                TELEGRAM_CAPTION_LIMIT
-                - suffix_visible_length
-                - (
-                    2
-                    if suffix_html
-                    else 0
+            split_position = (
+                find_split_position(
+                    compact_main,
+                    available_for_main
                 )
             )
 
-        if available_for_main > 0:
-
-            if (
-                len(compact_source)
-                <= available_for_main
-            ):
-
-                main_for_caption = (
-                    compact_source
-                )
-
-                remaining_main = ""
-
-            else:
+            if split_position <= 0:
 
                 split_position = (
-                    find_split_position(
-                        compact_source,
-                        available_for_main
-                    )
+                    available_for_main
                 )
 
-                if split_position <= 0:
+            main_for_caption = (
+                compact_main[
+                    :split_position
+                ]
+                .strip()
+            )
 
-                    split_position = (
-                        available_for_main
-                    )
-
-                main_for_caption = (
-                    compact_source[
-                        :split_position
-                    ]
-                    .strip()
-                )
-
-                remaining_main = (
-                    compact_source[
-                        split_position:
-                    ]
-                    .strip()
-                )
+            remaining_main = (
+                compact_main[
+                    split_position:
+                ]
+                .strip()
+            )
 
             html_parts: List[str] = []
 
@@ -1757,12 +1430,13 @@ def create_telegram_plan(
                     )
                 )
 
-            if inline_blockquotes:
+            if inline_blocks:
 
                 html_parts.append(
-                    inline_blockquotes
+                    inline_blocks
                 )
 
+            # Branding همیشه آخر
             if branding:
 
                 html_parts.append(
@@ -1771,22 +1445,27 @@ def create_telegram_plan(
                     )
                 )
 
-            final_html_caption = (
+            candidate = (
                 "\n\n".join(
                     html_parts
                 )
             )
 
-            if (
+            candidate_visible = (
                 telegram_html_visible_length(
-                    final_html_caption
+                    candidate
                 )
+            )
+
+            if (
+                candidate
+                and candidate_visible
                 <= TELEGRAM_CAPTION_LIMIT
             ):
 
                 plan[
                     "media_caption"
-                ] = final_html_caption
+                ] = candidate
 
                 plan[
                     "media_parse_mode"
@@ -1815,27 +1494,29 @@ def create_telegram_plan(
                     )
 
                 logger.info(
-                    f"🧩 Source blockquote kept inside "
-                    f"long media caption | "
-                    f"visible_caption="
-                    f"{telegram_html_visible_length(final_html_caption)} | "
+                    f"🧩 Source blockquote overflow plan | "
+                    f"caption_visible="
+                    f"{candidate_visible} | "
+                    f"main_in_caption="
+                    f"{len(main_for_caption)} | "
+                    f"remaining="
+                    f"{len(remaining_main)} | "
                     f"followups="
                     f"{len(plan['followup_messages'])}"
                 )
 
                 return plan
 
-        # =================================================
-        # EXTREME EDGE CASE
+        # -------------------------------------------------
+        # EXTREME CASE:
+        # Blockquote itself too large.
         #
-        # خود Blockquote بزرگ‌تر از ظرفیت Caption است.
-        # انتشار را Abort نمی‌کنیم.
-        # =================================================
+        # Do not abort publication.
+        # -------------------------------------------------
 
         logger.warning(
-            f"⚠️ Source blockquote itself cannot fit "
-            f"Telegram media caption | "
-            f"visible_suffix={suffix_visible_length}"
+            "⚠️ Source blockquote is larger than "
+            "Telegram media caption capacity"
         )
 
         branding_cost = (
@@ -1847,35 +1528,35 @@ def create_telegram_plan(
             )
         )
 
-        available_for_caption = max(
+        available = max(
             100,
             TELEGRAM_CAPTION_SAFE_LIMIT
             - branding_cost
         )
 
-        split_position = (
+        position = (
             find_split_position(
-                compact_source,
-                available_for_caption
+                compact_main,
+                available
             )
         )
 
-        if split_position <= 0:
+        if position <= 0:
 
-            split_position = (
-                available_for_caption
+            position = (
+                available
             )
 
-        main_for_caption = (
-            compact_source[
-                :split_position
+        first_part = (
+            compact_main[
+                :position
             ]
             .strip()
         )
 
-        remaining_main = (
-            compact_source[
-                split_position:
+        remaining = (
+            compact_main[
+                position:
             ]
             .strip()
         )
@@ -1884,23 +1565,23 @@ def create_telegram_plan(
             "media_caption"
         ] = (
             append_branding(
-                main_for_caption,
+                first_part,
                 branding
             )
         )
 
         replies: List[str] = []
 
-        if remaining_main:
+        if remaining:
 
             replies.extend(
                 split_text(
-                    remaining_main,
+                    remaining,
                     TELEGRAM_MESSAGE_SAFE_LIMIT
                 )
             )
 
-        # Safety Net فقط برای Blockquote بسیار بزرگ
+        # فقط Edge Case غیرقابل اجتناب
         replies.extend(
             create_telegram_blockquote_messages(
                 blockquote_blocks,
@@ -1918,17 +1599,12 @@ def create_telegram_plan(
         )
 
         plan[
-            "blockquote_messages"
-        ] = []
-
-        plan[
             "document_fallback"
         ] = False
 
         return plan
 
     # =====================================================
-    # CASE 2
     # NO SOURCE BLOCKQUOTE
     # =====================================================
 
@@ -1938,10 +1614,6 @@ def create_telegram_plan(
             branding
         )
     )
-
-    # =====================================================
-    # NORMAL CONTENT FITS
-    # =====================================================
 
     if (
         normal_with_branding
@@ -1967,10 +1639,6 @@ def create_telegram_plan(
                 "media_parse_mode"
             ] = "HTML"
 
-            logger.info(
-                "🧩 Smart expandable caption selected"
-            )
-
             return plan
 
         plan[
@@ -1987,16 +1655,12 @@ def create_telegram_plan(
         compact_long_text(
             main_text
         )
-    )
-
-    compact_source = (
-        compact_main
         or main_text
     )
 
     compact_with_branding = (
         append_branding(
-            compact_source,
+            compact_main,
             branding
         )
     )
@@ -2009,7 +1673,7 @@ def create_telegram_plan(
 
         smart_caption = (
             build_smart_expandable_media_caption(
-                compact_source,
+                compact_main,
                 branding,
                 TELEGRAM_CAPTION_SAFE_LIMIT
             )
@@ -2025,14 +1689,8 @@ def create_telegram_plan(
                 "media_parse_mode"
             ] = "HTML"
 
-            logger.info(
-                "🧩 Smart expandable compact caption selected"
-            )
-
             return plan
 
-        # اگر HTML خام Expandable از Safe Limit عبور کند،
-        # همان Compact ساده استفاده می‌شود.
         plan[
             "media_caption"
         ] = compact_with_branding
@@ -2040,8 +1698,6 @@ def create_telegram_plan(
         return plan
 
     # =====================================================
-    # TOO LONG EVEN AFTER COMPACT
-    #
     # CAPTION + REPLY
     # =====================================================
 
@@ -2054,24 +1710,19 @@ def create_telegram_plan(
         )
     )
 
-    available_for_caption = (
+    available = (
         TELEGRAM_CAPTION_SAFE_LIMIT
         - branding_cost
     )
 
-    if available_for_caption <= 0:
+    if available <= 0:
 
-        available_for_caption = (
+        available = (
             TELEGRAM_CAPTION_LIMIT
             - branding_cost
         )
 
-    if available_for_caption <= 0:
-
-        logger.error(
-            "❌ Branding itself exceeds "
-            "Telegram caption capacity"
-        )
+    if available <= 0:
 
         plan[
             "document_fallback"
@@ -2079,34 +1730,34 @@ def create_telegram_plan(
 
         return plan
 
-    split_position = (
+    position = (
         find_split_position(
-            compact_source,
-            available_for_caption
+            compact_main,
+            available
         )
     )
 
-    if split_position <= 0:
+    if position <= 0:
 
-        split_position = (
-            available_for_caption
+        position = (
+            available
         )
 
     main_for_caption = (
-        compact_source[
-            :split_position
+        compact_main[
+            :position
         ]
         .strip()
     )
 
-    remaining_main = (
-        compact_source[
-            split_position:
+    remaining = (
+        compact_main[
+            position:
         ]
         .strip()
     )
 
-    # Branding زیر Caption اصلی
+    # Branding زیر خبر اصلی
     plan[
         "media_caption"
     ] = (
@@ -2116,16 +1767,16 @@ def create_telegram_plan(
         )
     )
 
-    # ادامه خبر + Branding
-    if remaining_main:
+    if remaining:
 
         replies = (
             split_text(
-                remaining_main,
+                remaining,
                 TELEGRAM_MESSAGE_SAFE_LIMIT
             )
         )
 
+        # Branding زیر Reply هم قرار می‌گیرد.
         plan[
             "followup_messages"
         ] = (
@@ -2134,18 +1785,6 @@ def create_telegram_plan(
                 branding
             )
         )
-
-    plan[
-        "blockquote_messages"
-    ] = []
-
-    plan[
-        "document_fallback"
-    ] = False
-
-    # =====================================================
-    # FINAL SAFETY
-    # =====================================================
 
     if (
         len(
@@ -2156,27 +1795,9 @@ def create_telegram_plan(
         > TELEGRAM_CAPTION_LIMIT
     ):
 
-        logger.error(
-            f"❌ Telegram caption safety violation | "
-            f"length="
-            f"{len(plan['media_caption'])}"
-        )
-
         plan[
             "document_fallback"
         ] = True
-
-    logger.info(
-        f"📋 Telegram smart media plan | "
-        f"caption="
-        f"{len(plan['media_caption'])} | "
-        f"parse_mode="
-        f"{plan['media_parse_mode'] or 'NONE'} | "
-        f"followup="
-        f"{len(plan['followup_messages'])} | "
-        f"fallback="
-        f"{plan['document_fallback']}"
-    )
 
     return plan
 
@@ -2219,22 +1840,14 @@ def create_bale_plan(
         )
     )
 
-    media_caption = (
-        split_result[
-            "media_caption"
-        ]
-    )
-
-    followup_messages = (
-        split_result[
-            "followup_messages"
-        ]
-    )
-
-    branded_result = (
+    branded = (
         place_branding(
-            media_caption,
-            followup_messages,
+            split_result[
+                "media_caption"
+            ],
+            split_result[
+                "followup_messages"
+            ],
             branding,
             BALE_CAPTION_SAFE_LIMIT,
             BALE_MESSAGE_SAFE_LIMIT
@@ -2244,7 +1857,7 @@ def create_bale_plan(
     plan[
         "media_caption"
     ] = (
-        branded_result[
+        branded[
             "media_caption"
         ]
     )
@@ -2252,7 +1865,7 @@ def create_bale_plan(
     plan[
         "followup_messages"
     ] = (
-        branded_result[
+        branded[
             "followup_messages"
         ]
     )
@@ -2275,44 +1888,9 @@ def create_bale_plan(
         > BALE_CAPTION_LIMIT
     ):
 
-        logger.error(
-            "❌ Bale media caption exceeds "
-            "configured platform limit"
-        )
-
         plan[
             "document_fallback"
         ] = True
-
-    valid_followups = []
-
-    for message in (
-        plan[
-            "followup_messages"
-        ]
-    ):
-
-        if (
-            len(message)
-            <= BALE_MESSAGE_LIMIT
-        ):
-
-            valid_followups.append(
-                message
-            )
-
-        else:
-
-            valid_followups.extend(
-                split_text(
-                    message,
-                    BALE_MESSAGE_SAFE_LIMIT
-                )
-            )
-
-    plan[
-        "followup_messages"
-    ] = valid_followups
 
     return plan
 
@@ -2340,14 +1918,14 @@ def create_telegram_text_plan(
         branding
     )
 
-    messages: List[str] = []
-
     normal_final = (
         append_branding(
             main_text,
             branding
         )
     )
+
+    messages: List[str] = []
 
     if (
         normal_final
@@ -2361,7 +1939,7 @@ def create_telegram_text_plan(
 
     else:
 
-        compact_text = (
+        compact = (
             compact_long_text(
                 main_text
             )
@@ -2369,7 +1947,7 @@ def create_telegram_text_plan(
 
         compact_final = (
             append_branding(
-                compact_text,
+                compact,
                 branding
             )
         )
@@ -2386,19 +1964,13 @@ def create_telegram_text_plan(
 
         else:
 
-            source_for_split = (
-                compact_text
-                or main_text
-            )
-
-            if source_for_split:
-
-                messages = (
-                    split_text(
-                        source_for_split,
-                        TELEGRAM_MESSAGE_LIMIT
-                    )
+            messages = (
+                split_text(
+                    compact
+                    or main_text,
+                    TELEGRAM_MESSAGE_LIMIT
                 )
+            )
 
             messages = (
                 place_branding_in_text_messages(
@@ -2408,42 +1980,13 @@ def create_telegram_text_plan(
                 )
             )
 
-    safe_messages: List[str] = []
-
-    for message in messages:
-
-        if not message:
-            continue
-
-        if (
-            len(message)
-            <= TELEGRAM_MESSAGE_LIMIT
-        ):
-
-            safe_messages.append(
-                message
-            )
-
-        else:
-
-            safe_messages.extend(
-                split_text(
-                    message,
-                    TELEGRAM_MESSAGE_LIMIT
-                )
-            )
-
-    blockquote_messages = (
-        create_telegram_blockquote_messages(
-            blockquote_blocks,
-            expandable_blocks
-        )
-    )
-
     return {
-        "messages": safe_messages,
+        "messages": messages,
         "blockquote_messages": (
-            blockquote_messages
+            create_telegram_blockquote_messages(
+                blockquote_blocks,
+                expandable_blocks
+            )
         )
     }
 
@@ -2490,39 +2033,13 @@ def create_bale_text_plan(
         )
     )
 
-    safe_messages = []
-
-    for message in messages:
-
-        if (
-            len(message)
-            <= BALE_MESSAGE_LIMIT
-        ):
-
-            safe_messages.append(
-                message
-            )
-
-        else:
-
-            safe_messages.extend(
-                split_text(
-                    message,
-                    BALE_MESSAGE_SAFE_LIMIT
-                )
-            )
-
-    blockquote_messages = (
-        create_bale_blockquote_messages(
-            blockquote_blocks,
-            expandable_blocks
-        )
-    )
-
     return {
-        "messages": safe_messages,
+        "messages": messages,
         "blockquote_messages": (
-            blockquote_messages
+            create_bale_blockquote_messages(
+                blockquote_blocks,
+                expandable_blocks
+            )
         )
     }
 
@@ -2571,16 +2088,14 @@ def analyze_content(
     logger.info(
         f"🔍 Caption Manager analyzing | "
         f"main={len(main_text)} | "
-        f"blockquote="
-        f"{len(blockquote_blocks)} | "
-        f"expandable="
-        f"{len(expandable_blocks)} | "
-        f"other="
-        f"{len(other_entities)} | "
+        f"blockquote={len(blockquote_blocks)} | "
+        f"expandable={len(expandable_blocks)} | "
         f"branding={len(branding)}"
     )
 
-    plan = PublicationPlan()
+    plan = (
+        PublicationPlan()
+    )
 
     plan.metadata[
         "other_entities"
@@ -2628,7 +2143,7 @@ def analyze_content(
         )
     )
 
-    telegram_caption = (
+    caption = (
         plan.telegram[
             "media_caption"
         ]
@@ -2641,30 +2156,28 @@ def analyze_content(
         == "HTML"
     ):
 
-        telegram_caption_visible = (
+        visible_length = (
             telegram_html_visible_length(
-                telegram_caption
+                caption
             )
         )
 
     else:
 
-        telegram_caption_visible = (
+        visible_length = (
             len(
-                telegram_caption
+                caption
             )
         )
 
     logger.info(
         f"✅ Publication Plan ready | "
-        f"tg_caption_raw="
-        f"{len(telegram_caption)} | "
-        f"tg_caption_visible="
-        f"{telegram_caption_visible} | "
+        f"tg_caption_raw={len(caption)} | "
+        f"tg_caption_visible={visible_length} | "
         f"tg_followup="
         f"{len(plan.telegram['followup_messages'])} | "
-        f"tg_inline_html="
-        f"{bool(plan.telegram.get('media_parse_mode'))} | "
+        f"tg_parse_mode="
+        f"{plan.telegram.get('media_parse_mode') or 'NONE'} | "
         f"tg_fallback="
         f"{plan.telegram.get('document_fallback', False)}"
     )
