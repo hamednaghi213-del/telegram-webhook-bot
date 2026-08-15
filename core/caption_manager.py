@@ -50,10 +50,6 @@ class PublicationPlan:
 
     def __init__(self):
 
-        # =================================================
-        # TELEGRAM MEDIA
-        # =================================================
-
         self.telegram: Dict[str, Any] = {
             "media_caption": "",
             "followup_messages": [],
@@ -61,20 +57,12 @@ class PublicationPlan:
             "document_fallback": False
         }
 
-        # =================================================
-        # BALE MEDIA
-        # =================================================
-
         self.bale: Dict[str, Any] = {
             "media_caption": "",
             "followup_messages": [],
             "blockquote_messages": [],
             "document_fallback": False
         }
-
-        # =================================================
-        # TEXT PLANS
-        # =================================================
 
         self.text: Dict[str, Any] = {
             "telegram": {
@@ -87,17 +75,11 @@ class PublicationPlan:
             }
         }
 
-        # =================================================
-        # METADATA
-        # =================================================
-
         self.metadata: Dict[str, Any] = {
             "other_entities": []
         }
 
     def to_dict(self) -> Dict[str, Any]:
-
-        # ساختار قدیمی عمداً حفظ شده است.
 
         return {
             "telegram": self.telegram,
@@ -166,21 +148,6 @@ def append_branding(
 def clean_blockquote_text(
     text: str
 ) -> str:
-    """
-    پاکسازی محتوای Blockquote قبل از ساخت HTML.
-
-    نکته:
-    خود ساختار Blockquote دست نمی‌خورد.
-    فقط متن داخلی آن از Cleaner عبور می‌کند.
-
-    مثال:
-
-        🔴 تحلیل خبر
-
-    تبدیل می‌شود به:
-
-        تحلیل خبر
-    """
 
     text = normalize_text(
         text
@@ -206,9 +173,6 @@ def clean_blockquote_text(
             f"{e}"
         )
 
-        # Safe fallback:
-        # در صورت خطای Cleaner محتوا از بین نمی‌رود.
-
         return text
 
 
@@ -220,36 +184,15 @@ def compact_long_text(
     text: str
 ) -> str:
     """
-    نسخه فشرده متن برای Telegram Long Text.
-
-    فقط زمانی استفاده می‌شود که نسخه معمولی
-    همراه Branding از سقف 4096 عبور کند.
+    حالت فشرده برای متن بلند.
 
     سیاست:
 
-    1. اولین خط غیرخالی به عنوان تیتر حفظ می‌شود.
-    2. فاصله خالی بعد از تیتر حفظ می‌شود.
-    3. Bullet آبی ابتدای خطوط بدنه حذف می‌شود.
-    4. فاصله‌های خالی میان پاراگراف‌های بدنه حذف می‌شوند.
-    5. محتوای واقعی هیچ خطی حذف نمی‌شود.
-
-    نمونه:
-
-        ❇️ تیتر
-
-        🔹 پاراگراف اول
-
-        🔹 پاراگراف دوم
-
-        🔹 پاراگراف سوم
-
-    تبدیل می‌شود به:
-
-        ❇️ تیتر
-
-        پاراگراف اول
-        پاراگراف دوم
-        پاراگراف سوم
+    - تیتر حفظ می‌شود
+    - فاصله بعد از تیتر حفظ می‌شود
+    - 🔹 از ابتدای خطوط بدنه حذف می‌شود
+    - فاصله‌های خالی بین پاراگراف‌های بدنه حذف می‌شوند
+    - هیچ متن واقعی حذف نمی‌شود
     """
 
     text = normalize_text(
@@ -289,12 +232,7 @@ def compact_long_text(
         content_lines[0]
     )
 
-    # =====================================================
-    # NO BODY
-    # =====================================================
-
     if len(content_lines) == 1:
-
         return title
 
     # =====================================================
@@ -308,10 +246,6 @@ def compact_long_text(
         cleaned_line = (
             line.strip()
         )
-
-        # -------------------------------------------------
-        # REMOVE DONYA24 BODY BULLET
-        # -------------------------------------------------
 
         if cleaned_line.startswith(
             "🔹"
@@ -331,12 +265,7 @@ def compact_long_text(
             cleaned_line
         )
 
-    # =====================================================
-    # RESULT
-    # =====================================================
-
     if not body_lines:
-
         return title
 
     result = (
@@ -602,6 +531,27 @@ def split_for_media(
     caption_limit: int,
     message_limit: int
 ) -> Dict[str, Any]:
+    """
+    Media Caption Planner.
+
+    ترتیب:
+
+    1. اگر متن عادی جا می‌شود:
+       بدون تغییر استفاده شود.
+
+    2. اگر متن عادی جا نمی‌شود:
+       ابتدا Compact Mode اجرا شود.
+
+    3. اگر نسخه Compact جا شد:
+       Caption یک‌تکه و بدون Follow-up ساخته شود.
+
+    4. فقط اگر Compact هم جا نشد:
+       Split انجام شود.
+
+    نکته مهم:
+    در صورت Split نیز نسخه Compact تقسیم می‌شود،
+    نه نسخه حجیم اولیه.
+    """
 
     text = normalize_text(
         text
@@ -616,7 +566,8 @@ def split_for_media(
         return result
 
     # =====================================================
-    # FITS MEDIA CAPTION
+    # CASE 1
+    # NORMAL FITS
     # =====================================================
 
     if (
@@ -628,31 +579,86 @@ def split_for_media(
             "media_caption"
         ] = text
 
+        logger.info(
+            f"🖼️ Media caption normal mode | "
+            f"length={len(text)} | "
+            f"limit={caption_limit}"
+        )
+
         return result
 
     # =====================================================
-    # FIRST PART
+    # CASE 2
+    # TRY COMPACT BEFORE SPLIT
     # =====================================================
+
+    compact_text = (
+        compact_long_text(
+            text
+        )
+    )
+
+    if (
+        compact_text
+        and len(compact_text)
+        <= caption_limit
+    ):
+
+        result[
+            "media_caption"
+        ] = (
+            compact_text
+        )
+
+        logger.info(
+            f"🗜️ Media caption compact mode | "
+            f"normal={len(text)} | "
+            f"compact={len(compact_text)} | "
+            f"limit={caption_limit} | "
+            f"followups=0"
+        )
+
+        return result
+
+    # =====================================================
+    # CASE 3
+    # COMPACT STILL TOO LONG
+    # =====================================================
+
+    source_for_split = (
+        compact_text
+        or text
+    )
+
+    logger.info(
+        f"✂️ Media caption requires split | "
+        f"normal={len(text)} | "
+        f"compact={len(source_for_split)} | "
+        f"caption_limit={caption_limit}"
+    )
 
     split_position = (
         find_split_position(
-            text,
+            source_for_split,
             caption_limit
         )
     )
 
     if split_position <= 0:
-        split_position = caption_limit
+
+        split_position = (
+            caption_limit
+        )
 
     first_part = (
-        text[
+        source_for_split[
             :split_position
         ]
         .strip()
     )
 
     remaining = (
-        text[
+        source_for_split[
             split_position:
         ]
         .strip()
@@ -660,7 +666,9 @@ def split_for_media(
 
     result[
         "media_caption"
-    ] = first_part
+    ] = (
+        first_part
+    )
 
     # =====================================================
     # FOLLOW-UP
@@ -676,6 +684,14 @@ def split_for_media(
                 message_limit
             )
         )
+
+    logger.info(
+        f"✂️ Media split completed | "
+        f"caption={len(first_part)} | "
+        f"remaining={len(remaining)} | "
+        f"followups="
+        f"{len(result['followup_messages'])}"
+    )
 
     return result
 
@@ -831,10 +847,6 @@ def place_branding_in_text_messages(
     if not branding:
         return result
 
-    # =====================================================
-    # BRANDING ONLY
-    # =====================================================
-
     if not result:
 
         if (
@@ -852,10 +864,6 @@ def place_branding_in_text_messages(
                 message_limit
             )
         )
-
-    # =====================================================
-    # TRY LAST MESSAGE
-    # =====================================================
 
     last_message = (
         result[-1]
@@ -879,10 +887,6 @@ def place_branding_in_text_messages(
 
         return result
 
-    # =====================================================
-    # SEPARATE BRANDING
-    # =====================================================
-
     if (
         len(branding)
         <= message_limit
@@ -893,10 +897,6 @@ def place_branding_in_text_messages(
         )
 
         return result
-
-    # =====================================================
-    # EXTREME BRANDING
-    # =====================================================
 
     result.extend(
         split_text(
@@ -925,10 +925,6 @@ def create_telegram_blockquote_messages(
         Dict[str, Any]
     ] = []
 
-    # =====================================================
-    # NORMAL
-    # =====================================================
-
     for block in (
         blockquote_blocks
         or []
@@ -945,10 +941,6 @@ def create_telegram_blockquote_messages(
             ),
             "expandable": False
         })
-
-    # =====================================================
-    # EXPANDABLE
-    # =====================================================
 
     for block in (
         expandable_blocks
@@ -978,10 +970,6 @@ def create_telegram_blockquote_messages(
 
     result: List[str] = []
 
-    # =====================================================
-    # BUILD
-    # =====================================================
-
     for block in combined_blocks:
 
         raw_text = normalize_text(
@@ -993,11 +981,6 @@ def create_telegram_blockquote_messages(
 
         if not raw_text:
             continue
-
-        # =================================================
-        # NEW:
-        # CLEAN CONTENT INSIDE BLOCKQUOTE
-        # =================================================
 
         cleaned_text = (
             clean_blockquote_text(
@@ -1137,10 +1120,6 @@ def create_bale_blockquote_messages(
 
     combined_blocks = []
 
-    # =====================================================
-    # NORMAL
-    # =====================================================
-
     for block in (
         blockquote_blocks
         or []
@@ -1156,10 +1135,6 @@ def create_bale_blockquote_messages(
                 ""
             )
         })
-
-    # =====================================================
-    # EXPANDABLE
-    # =====================================================
 
     for block in (
         expandable_blocks
@@ -1188,10 +1163,6 @@ def create_bale_blockquote_messages(
 
     result = []
 
-    # =====================================================
-    # BUILD
-    # =====================================================
-
     for block in combined_blocks:
 
         raw_text = normalize_text(
@@ -1203,10 +1174,6 @@ def create_bale_blockquote_messages(
 
         if not raw_text:
             continue
-
-        # =================================================
-        # CLEAN BLOCKQUOTE CONTENT
-        # =================================================
 
         cleaned_text = (
             clean_blockquote_text(
@@ -1315,10 +1282,6 @@ def create_telegram_plan(
         "document_fallback": False
     }
 
-    # =====================================================
-    # MAIN
-    # =====================================================
-
     split_result = (
         split_for_media(
             main_text,
@@ -1338,10 +1301,6 @@ def create_telegram_plan(
             "followup_messages"
         ]
     )
-
-    # =====================================================
-    # BRANDING
-    # =====================================================
 
     branded_result = (
         place_branding(
@@ -1369,10 +1328,6 @@ def create_telegram_plan(
         ]
     )
 
-    # =====================================================
-    # BLOCKQUOTES
-    # =====================================================
-
     plan[
         "blockquote_messages"
     ] = (
@@ -1381,10 +1336,6 @@ def create_telegram_plan(
             expandable_blocks
         )
     )
-
-    # =====================================================
-    # FINAL VALIDATION
-    # =====================================================
 
     if (
         len(
@@ -1479,10 +1430,6 @@ def create_bale_plan(
         "document_fallback": False
     }
 
-    # =====================================================
-    # MAIN
-    # =====================================================
-
     split_result = (
         split_for_media(
             main_text,
@@ -1502,10 +1449,6 @@ def create_bale_plan(
             "followup_messages"
         ]
     )
-
-    # =====================================================
-    # BRANDING
-    # =====================================================
 
     branded_result = (
         place_branding(
@@ -1533,10 +1476,6 @@ def create_bale_plan(
         ]
     )
 
-    # =====================================================
-    # BLOCKQUOTES
-    # =====================================================
-
     plan[
         "blockquote_messages"
     ] = (
@@ -1545,10 +1484,6 @@ def create_bale_plan(
             expandable_blocks
         )
     )
-
-    # =====================================================
-    # FINAL VALIDATION
-    # =====================================================
 
     if (
         len(
@@ -1627,31 +1562,6 @@ def create_telegram_text_plan(
     ],
     branding: str
 ) -> Dict[str, Any]:
-    """
-    ساخت Telegram Text Plan.
-
-    ترتیب تصمیم‌گیری:
-
-    1. نسخه معمولی + Branding
-       اگر <= 4096:
-           یک پیام معمولی
-
-    2. اگر نسخه معمولی > 4096:
-       Long Text Compact ساخته می‌شود.
-
-       در Compact:
-           🔹 حذف می‌شود
-           فاصله‌های خالی بدنه حذف می‌شوند
-           فاصله بعد از تیتر حفظ می‌شود
-
-    3. اگر Compact + Branding <= 4096:
-           یک پیام Compact
-
-    4. اگر Compact همچنان > 4096:
-           Compact به صورت منطقی Split می‌شود.
-
-    Branding فقط یک بار در انتها قرار می‌گیرد.
-    """
 
     main_text = normalize_text(
         main_text
@@ -1663,10 +1573,6 @@ def create_telegram_text_plan(
 
     messages: List[str] = []
 
-    # =====================================================
-    # NORMAL VERSION
-    # =====================================================
-
     normal_final = (
         append_branding(
             main_text,
@@ -1675,7 +1581,6 @@ def create_telegram_text_plan(
     )
 
     # =====================================================
-    # CASE 1
     # NORMAL FITS
     # =====================================================
 
@@ -1697,8 +1602,7 @@ def create_telegram_text_plan(
     else:
 
         # =================================================
-        # CASE 2
-        # LONG TEXT COMPACT MODE
+        # COMPACT
         # =================================================
 
         compact_text = (
@@ -1713,10 +1617,6 @@ def create_telegram_text_plan(
                 branding
             )
         )
-
-        # =================================================
-        # COMPACT FITS
-        # =================================================
 
         if (
             compact_final
@@ -1735,14 +1635,6 @@ def create_telegram_text_plan(
             )
 
         else:
-
-            # =============================================
-            # COMPACT STILL TOO LONG
-            # =============================================
-            #
-            # حتی اگر هنوز Split لازم باشد،
-            # نسخه Compact تقسیم می‌شود نه نسخه حجیم قبلی.
-            # =============================================
 
             source_for_split = (
                 compact_text
@@ -1800,10 +1692,6 @@ def create_telegram_text_plan(
                     TELEGRAM_MESSAGE_LIMIT
                 )
             )
-
-    # =====================================================
-    # BLOCKQUOTES
-    # =====================================================
 
     blockquote_messages = (
         create_telegram_blockquote_messages(
@@ -1874,10 +1762,6 @@ def create_bale_text_plan(
         )
     )
 
-    # =====================================================
-    # FINAL SAFETY
-    # =====================================================
-
     safe_messages = []
 
     for message in messages:
@@ -1899,10 +1783,6 @@ def create_bale_text_plan(
                     BALE_MESSAGE_SAFE_LIMIT
                 )
             )
-
-    # =====================================================
-    # BLOCKQUOTES
-    # =====================================================
 
     blockquote_messages = (
         create_bale_blockquote_messages(
@@ -1982,25 +1862,13 @@ def analyze_content(
         f"branding={len(branding)}"
     )
 
-    # =====================================================
-    # PLAN
-    # =====================================================
-
     plan = PublicationPlan()
-
-    # =====================================================
-    # METADATA
-    # =====================================================
 
     plan.metadata[
         "other_entities"
     ] = (
         other_entities
     )
-
-    # =====================================================
-    # TELEGRAM MEDIA
-    # =====================================================
 
     plan.telegram = (
         create_telegram_plan(
@@ -2011,10 +1879,6 @@ def analyze_content(
         )
     )
 
-    # =====================================================
-    # BALE MEDIA
-    # =====================================================
-
     plan.bale = (
         create_bale_plan(
             main_text,
@@ -2023,10 +1887,6 @@ def analyze_content(
             branding
         )
     )
-
-    # =====================================================
-    # TELEGRAM TEXT
-    # =====================================================
 
     plan.text[
         "telegram"
@@ -2039,10 +1899,6 @@ def analyze_content(
         )
     )
 
-    # =====================================================
-    # BALE TEXT
-    # =====================================================
-
     plan.text[
         "bale"
     ] = (
@@ -2053,10 +1909,6 @@ def analyze_content(
             branding
         )
     )
-
-    # =====================================================
-    # MEDIA SUMMARY
-    # =====================================================
 
     telegram_total_messages = (
         1
@@ -2085,10 +1937,6 @@ def analyze_content(
             ]
         )
     )
-
-    # =====================================================
-    # TEXT SUMMARY
-    # =====================================================
 
     telegram_text_total = (
         len(
