@@ -1,4 +1,5 @@
 import logging
+from html import escape
 from typing import (
     Dict,
     List,
@@ -22,11 +23,9 @@ logger = logging.getLogger(__name__)
 # PLATFORM LIMITS
 # =========================================================
 
-# Telegram
 TELEGRAM_CAPTION_LIMIT = 1024
 TELEGRAM_MESSAGE_LIMIT = 4096
 
-# Bale
 BALE_CAPTION_LIMIT = 4096
 BALE_MESSAGE_LIMIT = 4096
 
@@ -52,6 +51,7 @@ class PublicationPlan:
 
         self.telegram: Dict[str, Any] = {
             "media_caption": "",
+            "media_parse_mode": None,
             "followup_messages": [],
             "blockquote_messages": [],
             "document_fallback": False
@@ -99,9 +99,7 @@ def normalize_text(
     if not text:
         return ""
 
-    return str(
-        text
-    ).strip()
+    return str(text).strip()
 
 
 def get_text_length(
@@ -111,9 +109,7 @@ def get_text_length(
     if not text:
         return 0
 
-    return len(
-        text
-    )
+    return len(text)
 
 
 def append_branding(
@@ -121,13 +117,8 @@ def append_branding(
     branding: str
 ) -> str:
 
-    text = normalize_text(
-        text
-    )
-
-    branding = normalize_text(
-        branding
-    )
+    text = normalize_text(text)
+    branding = normalize_text(branding)
 
     if not branding:
         return text
@@ -149,28 +140,21 @@ def clean_blockquote_text(
     text: str
 ) -> str:
 
-    text = normalize_text(
-        text
-    )
+    text = normalize_text(text)
 
     if not text:
         return ""
 
     try:
 
-        cleaned = clean_text(
-            text
-        )
+        cleaned = clean_text(text)
 
-        return normalize_text(
-            cleaned
-        )
+        return normalize_text(cleaned)
 
     except Exception as e:
 
         logger.exception(
-            f"❌ Blockquote cleaning failed | "
-            f"{e}"
+            f"❌ Blockquote cleaning failed | {e}"
         )
 
         return text
@@ -183,73 +167,40 @@ def clean_blockquote_text(
 def compact_long_text(
     text: str
 ) -> str:
-    """
-    حالت فشرده برای متن بلند.
 
-    سیاست:
-
-    - تیتر حفظ می‌شود
-    - فاصله بعد از تیتر حفظ می‌شود
-    - 🔹 از ابتدای خطوط بدنه حذف می‌شود
-    - فاصله‌های خالی بین پاراگراف‌های بدنه حذف می‌شوند
-    - هیچ متن واقعی حذف نمی‌شود
-    """
-
-    text = normalize_text(
-        text
-    )
+    text = normalize_text(text)
 
     if not text:
         return ""
 
-    raw_lines = (
-        text.splitlines()
-    )
+    raw_lines = text.splitlines()
 
     content_lines: List[str] = []
 
     for line in raw_lines:
 
-        stripped = (
-            line.strip()
-        )
+        stripped = line.strip()
 
         if not stripped:
             continue
 
-        content_lines.append(
-            stripped
-        )
+        content_lines.append(stripped)
 
     if not content_lines:
         return ""
 
-    # =====================================================
-    # TITLE
-    # =====================================================
-
-    title = (
-        content_lines[0]
-    )
+    title = content_lines[0]
 
     if len(content_lines) == 1:
         return title
-
-    # =====================================================
-    # BODY
-    # =====================================================
 
     body_lines: List[str] = []
 
     for line in content_lines[1:]:
 
-        cleaned_line = (
-            line.strip()
-        )
+        cleaned_line = line.strip()
 
-        if cleaned_line.startswith(
-            "🔹"
-        ):
+        if cleaned_line.startswith("🔹"):
 
             cleaned_line = (
                 cleaned_line[
@@ -261,9 +212,7 @@ def compact_long_text(
         if not cleaned_line:
             continue
 
-        body_lines.append(
-            cleaned_line
-        )
+        body_lines.append(cleaned_line)
 
     if not body_lines:
         return title
@@ -271,9 +220,7 @@ def compact_long_text(
     result = (
         title
         + "\n\n"
-        + "\n".join(
-            body_lines
-        )
+        + "\n".join(body_lines)
     )
 
     logger.info(
@@ -304,41 +251,17 @@ def find_split_position(
     if len(text) <= limit:
         return len(text)
 
-    search_text = (
-        text[
-            :limit
-        ]
-    )
+    search_text = text[:limit]
 
-    # =====================================================
-    # 1. PARAGRAPH
-    # =====================================================
-
-    position = (
-        search_text.rfind(
-            "\n\n"
-        )
-    )
+    position = search_text.rfind("\n\n")
 
     if position > 0:
         return position
 
-    # =====================================================
-    # 2. LINE
-    # =====================================================
-
-    position = (
-        search_text.rfind(
-            "\n"
-        )
-    )
+    position = search_text.rfind("\n")
 
     if position > 0:
         return position
-
-    # =====================================================
-    # 3. SENTENCE
-    # =====================================================
 
     sentence_marks = (
         "؟",
@@ -353,47 +276,20 @@ def find_split_position(
 
     for mark in sentence_marks:
 
-        position = (
-            search_text.rfind(
-                mark
-            )
-        )
+        position = search_text.rfind(mark)
 
-        if (
-            position
-            > best_sentence_position
-        ):
+        if position > best_sentence_position:
 
-            best_sentence_position = (
-                position
-            )
+            best_sentence_position = position
 
-    if (
-        best_sentence_position
-        > 0
-    ):
+    if best_sentence_position > 0:
 
-        return (
-            best_sentence_position
-            + 1
-        )
+        return best_sentence_position + 1
 
-    # =====================================================
-    # 4. WORD
-    # =====================================================
-
-    position = (
-        search_text.rfind(
-            " "
-        )
-    )
+    position = search_text.rfind(" ")
 
     if position > 0:
         return position
-
-    # =====================================================
-    # 5. HARD CUT
-    # =====================================================
 
     logger.warning(
         f"⚠️ Hard split required | "
@@ -413,9 +309,7 @@ def split_text(
     limit: int
 ) -> List[str]:
 
-    text = normalize_text(
-        text
-    )
+    text = normalize_text(text)
 
     if not text:
         return []
@@ -427,10 +321,7 @@ def split_text(
         )
 
     if len(text) <= limit:
-
-        return [
-            text
-        ]
+        return [text]
 
     parts: List[str] = []
 
@@ -450,20 +341,13 @@ def split_text(
 
             break
 
-        if (
-            len(remaining)
-            <= limit
-        ):
+        if len(remaining) <= limit:
 
-            final_part = (
-                remaining.strip()
-            )
+            final_part = remaining.strip()
 
             if final_part:
 
-                parts.append(
-                    final_part
-                )
+                parts.append(final_part)
 
             break
 
@@ -478,29 +362,19 @@ def split_text(
             split_position = limit
 
         part = (
-            remaining[
-                :split_position
-            ]
+            remaining[:split_position]
             .strip()
         )
 
         if part:
-
-            parts.append(
-                part
-            )
+            parts.append(part)
 
         new_remaining = (
-            remaining[
-                split_position:
-            ]
+            remaining[split_position:]
             .strip()
         )
 
-        if (
-            new_remaining
-            == remaining
-        ):
+        if new_remaining == remaining:
 
             logger.error(
                 "❌ split_text made no progress"
@@ -508,9 +382,7 @@ def split_text(
 
             break
 
-        remaining = (
-            new_remaining
-        )
+        remaining = new_remaining
 
     logger.info(
         f"✂️ Text split | "
@@ -531,31 +403,8 @@ def split_for_media(
     caption_limit: int,
     message_limit: int
 ) -> Dict[str, Any]:
-    """
-    Media Caption Planner.
 
-    ترتیب:
-
-    1. اگر متن عادی جا می‌شود:
-       بدون تغییر استفاده شود.
-
-    2. اگر متن عادی جا نمی‌شود:
-       ابتدا Compact Mode اجرا شود.
-
-    3. اگر نسخه Compact جا شد:
-       Caption یک‌تکه و بدون Follow-up ساخته شود.
-
-    4. فقط اگر Compact هم جا نشد:
-       Split انجام شود.
-
-    نکته مهم:
-    در صورت Split نیز نسخه Compact تقسیم می‌شود،
-    نه نسخه حجیم اولیه.
-    """
-
-    text = normalize_text(
-        text
-    )
+    text = normalize_text(text)
 
     result = {
         "media_caption": "",
@@ -566,132 +415,78 @@ def split_for_media(
         return result
 
     # =====================================================
-    # CASE 1
-    # NORMAL FITS
+    # NORMAL VERSION FITS
     # =====================================================
 
-    if (
-        len(text)
-        <= caption_limit
-    ):
+    if len(text) <= caption_limit:
 
-        result[
-            "media_caption"
-        ] = text
-
-        logger.info(
-            f"🖼️ Media caption normal mode | "
-            f"length={len(text)} | "
-            f"limit={caption_limit}"
-        )
+        result["media_caption"] = text
 
         return result
 
     # =====================================================
-    # CASE 2
-    # TRY COMPACT BEFORE SPLIT
+    # TRY COMPACT VERSION FIRST
     # =====================================================
 
-    compact_text = (
-        compact_long_text(
-            text
-        )
-    )
+    compact_text = compact_long_text(text)
 
     if (
         compact_text
-        and len(compact_text)
-        <= caption_limit
+        and len(compact_text) <= caption_limit
     ):
 
-        result[
-            "media_caption"
-        ] = (
-            compact_text
-        )
+        result["media_caption"] = compact_text
 
         logger.info(
-            f"🗜️ Media caption compact mode | "
-            f"normal={len(text)} | "
-            f"compact={len(compact_text)} | "
-            f"limit={caption_limit} | "
-            f"followups=0"
+            f"🗜️ Media compact mode used | "
+            f"before={len(text)} | "
+            f"after={len(compact_text)}"
         )
 
         return result
 
     # =====================================================
-    # CASE 3
     # COMPACT STILL TOO LONG
+    #
+    # ادامه متن بعداً توسط Media Handler به صورت Reply
+    # ارسال خواهد شد.
     # =====================================================
 
-    source_for_split = (
+    source_text = (
         compact_text
         or text
     )
 
-    logger.info(
-        f"✂️ Media caption requires split | "
-        f"normal={len(text)} | "
-        f"compact={len(source_for_split)} | "
-        f"caption_limit={caption_limit}"
-    )
-
     split_position = (
         find_split_position(
-            source_for_split,
+            source_text,
             caption_limit
         )
     )
 
     if split_position <= 0:
-
-        split_position = (
-            caption_limit
-        )
+        split_position = caption_limit
 
     first_part = (
-        source_for_split[
-            :split_position
-        ]
+        source_text[:split_position]
         .strip()
     )
 
     remaining = (
-        source_for_split[
-            split_position:
-        ]
+        source_text[split_position:]
         .strip()
     )
 
-    result[
-        "media_caption"
-    ] = (
-        first_part
-    )
-
-    # =====================================================
-    # FOLLOW-UP
-    # =====================================================
+    result["media_caption"] = first_part
 
     if remaining:
 
-        result[
-            "followup_messages"
-        ] = (
+        result["followup_messages"] = (
             split_text(
                 remaining,
                 message_limit
             )
         )
-
-    logger.info(
-        f"✂️ Media split completed | "
-        f"caption={len(first_part)} | "
-        f"remaining={len(remaining)} | "
-        f"followups="
-        f"{len(result['followup_messages'])}"
-    )
 
     return result
 
@@ -734,9 +529,7 @@ def place_branding(
 
     if messages:
 
-        last_message = (
-            messages[-1]
-        )
+        last_message = messages[-1]
 
         combined = (
             append_branding(
@@ -745,34 +538,22 @@ def place_branding(
             )
         )
 
-        if (
-            len(combined)
-            <= message_limit
-        ):
+        if len(combined) <= message_limit:
 
-            messages[-1] = (
-                combined
-            )
+            messages[-1] = combined
+
+        elif len(branding) <= message_limit:
+
+            messages.append(branding)
 
         else:
 
-            if (
-                len(branding)
-                <= message_limit
-            ):
-
-                messages.append(
-                    branding
+            messages.extend(
+                split_text(
+                    branding,
+                    message_limit
                 )
-
-            else:
-
-                messages.extend(
-                    split_text(
-                        branding,
-                        message_limit
-                    )
-                )
+            )
 
         return {
             "media_caption": media_caption,
@@ -790,34 +571,22 @@ def place_branding(
         )
     )
 
-    if (
-        len(combined_caption)
-        <= caption_limit
-    ):
+    if len(combined_caption) <= caption_limit:
 
-        media_caption = (
-            combined_caption
-        )
+        media_caption = combined_caption
+
+    elif len(branding) <= message_limit:
+
+        messages.append(branding)
 
     else:
 
-        if (
-            len(branding)
-            <= message_limit
-        ):
-
-            messages.append(
-                branding
+        messages.extend(
+            split_text(
+                branding,
+                message_limit
             )
-
-        else:
-
-            messages.extend(
-                split_text(
-                    branding,
-                    message_limit
-                )
-            )
+        )
 
     return {
         "media_caption": media_caption,
@@ -840,34 +609,22 @@ def place_branding_in_text_messages(
         or []
     )
 
-    branding = normalize_text(
-        branding
-    )
+    branding = normalize_text(branding)
 
     if not branding:
         return result
 
     if not result:
 
-        if (
-            len(branding)
-            <= message_limit
-        ):
+        if len(branding) <= message_limit:
+            return [branding]
 
-            return [
-                branding
-            ]
-
-        return (
-            split_text(
-                branding,
-                message_limit
-            )
+        return split_text(
+            branding,
+            message_limit
         )
 
-    last_message = (
-        result[-1]
-    )
+    last_message = result[-1]
 
     combined = (
         append_branding(
@@ -876,25 +633,15 @@ def place_branding_in_text_messages(
         )
     )
 
-    if (
-        len(combined)
-        <= message_limit
-    ):
+    if len(combined) <= message_limit:
 
-        result[-1] = (
-            combined
-        )
+        result[-1] = combined
 
         return result
 
-    if (
-        len(branding)
-        <= message_limit
-    ):
+    if len(branding) <= message_limit:
 
-        result.append(
-            branding
-        )
+        result.append(branding)
 
         return result
 
@@ -1060,14 +807,182 @@ def create_telegram_blockquote_messages(
                         retry_html
                     )
 
-                else:
-
-                    logger.error(
-                        "❌ Telegram blockquote "
-                        "still exceeds message limit"
-                    )
-
     return result
+
+
+# =========================================================
+# BUILD INLINE TELEGRAM BLOCKQUOTES
+# =========================================================
+
+def build_inline_telegram_blockquotes(
+    blockquote_blocks: List[
+        Dict[str, Any]
+    ],
+    expandable_blocks: List[
+        Dict[str, Any]
+    ]
+) -> str:
+    """
+    Blockquoteهای Telegram را برای قرار گرفتن داخل
+    همان Caption خبر می‌سازد.
+
+    این تابع مخصوص Media Caption است.
+
+    نکته مهم:
+    Blockquote دیگر ذاتاً پیام جدا نیست.
+    ابتدا تلاش می‌کنیم آن را داخل خود Caption قرار دهیم.
+    """
+
+    combined_blocks: List[
+        Dict[str, Any]
+    ] = []
+
+    for block in (
+        blockquote_blocks
+        or []
+    ):
+
+        combined_blocks.append({
+            "offset": block.get(
+                "offset",
+                0
+            ),
+            "text": block.get(
+                "text",
+                ""
+            ),
+            "expandable": False
+        })
+
+    for block in (
+        expandable_blocks
+        or []
+    ):
+
+        combined_blocks.append({
+            "offset": block.get(
+                "offset",
+                0
+            ),
+            "text": block.get(
+                "text",
+                ""
+            ),
+            "expandable": True
+        })
+
+    combined_blocks.sort(
+        key=lambda item: (
+            item.get(
+                "offset",
+                0
+            )
+        )
+    )
+
+    html_parts: List[str] = []
+
+    for block in combined_blocks:
+
+        raw_text = normalize_text(
+            block.get(
+                "text",
+                ""
+            )
+        )
+
+        if not raw_text:
+            continue
+
+        cleaned_text = (
+            clean_blockquote_text(
+                raw_text
+            )
+        )
+
+        if not cleaned_text:
+            continue
+
+        html_parts.append(
+            build_blockquote_html(
+                cleaned_text,
+                expandable=bool(
+                    block.get(
+                        "expandable",
+                        False
+                    )
+                )
+            )
+        )
+
+    return "\n\n".join(
+        html_parts
+    )
+
+
+# =========================================================
+# BUILD TELEGRAM HTML MEDIA CAPTION
+# =========================================================
+
+def build_telegram_html_caption(
+    main_text: str,
+    blockquote_blocks: List[
+        Dict[str, Any]
+    ],
+    expandable_blocks: List[
+        Dict[str, Any]
+    ],
+    branding: str
+) -> str:
+    """
+    ساخت Caption کامل Telegram با HTML.
+
+    main_text و branding escape می‌شوند.
+    Blockquote HTML واقعی باقی می‌ماند.
+    """
+
+    parts: List[str] = []
+
+    main_text = normalize_text(
+        main_text
+    )
+
+    branding = normalize_text(
+        branding
+    )
+
+    if main_text:
+
+        parts.append(
+            escape(
+                main_text
+            )
+        )
+
+    inline_blockquotes = (
+        build_inline_telegram_blockquotes(
+            blockquote_blocks,
+            expandable_blocks
+        )
+    )
+
+    if inline_blockquotes:
+
+        parts.append(
+            inline_blockquotes
+        )
+
+    if branding:
+
+        parts.append(
+            escape(
+                branding
+            )
+        )
+
+    return "\n\n".join(
+        parts
+    )
 
 
 # =========================================================
@@ -1078,24 +993,18 @@ def build_bale_blockquote(
     text: str
 ) -> str:
 
-    text = normalize_text(
-        text
-    )
+    text = normalize_text(text)
 
     if not text:
         return ""
 
-    lines = (
-        text.splitlines()
-    )
+    lines = text.splitlines()
 
     output_lines = []
 
     for line in lines:
 
-        line = (
-            line.strip()
-        )
+        line = line.strip()
 
         if not line:
             continue
@@ -1242,13 +1151,6 @@ def create_bale_blockquote_messages(
                         retry_message
                     )
 
-                else:
-
-                    logger.error(
-                        "❌ Bale blockquote "
-                        "still exceeds message limit"
-                    )
-
     return result
 
 
@@ -1277,10 +1179,115 @@ def create_telegram_plan(
 
     plan = {
         "media_caption": "",
+        "media_parse_mode": None,
         "followup_messages": [],
         "blockquote_messages": [],
         "document_fallback": False
     }
+
+    has_blockquotes = bool(
+        blockquote_blocks
+        or expandable_blocks
+    )
+
+    # =====================================================
+    # FIRST TRY:
+    # EVERYTHING INSIDE THE SAME MEDIA CAPTION
+    # =====================================================
+
+    if has_blockquotes:
+
+        normal_html_caption = (
+            build_telegram_html_caption(
+                main_text,
+                blockquote_blocks,
+                expandable_blocks,
+                branding
+            )
+        )
+
+        if (
+            normal_html_caption
+            and len(normal_html_caption)
+            <= TELEGRAM_CAPTION_SAFE_LIMIT
+        ):
+
+            plan[
+                "media_caption"
+            ] = normal_html_caption
+
+            plan[
+                "media_parse_mode"
+            ] = "HTML"
+
+            logger.info(
+                f"🧩 Telegram inline blockquote caption | "
+                f"length={len(normal_html_caption)}"
+            )
+
+            return plan
+
+        # =================================================
+        # TRY COMPACT MAIN TEXT + INLINE BLOCKQUOTE
+        # =================================================
+
+        compact_main = (
+            compact_long_text(
+                main_text
+            )
+        )
+
+        compact_html_caption = (
+            build_telegram_html_caption(
+                compact_main,
+                blockquote_blocks,
+                expandable_blocks,
+                branding
+            )
+        )
+
+        if (
+            compact_html_caption
+            and len(compact_html_caption)
+            <= TELEGRAM_CAPTION_SAFE_LIMIT
+        ):
+
+            plan[
+                "media_caption"
+            ] = compact_html_caption
+
+            plan[
+                "media_parse_mode"
+            ] = "HTML"
+
+            logger.info(
+                f"🗜️ Telegram compact inline "
+                f"blockquote caption | "
+                f"length={len(compact_html_caption)}"
+            )
+
+            return plan
+
+        # =================================================
+        # BLOCKQUOTE CANNOT FIT WITH FULL MAIN TEXT
+        #
+        # برای جلوگیری از ارسال مستقل Blockquote،
+        # متن اصلی تا جای ممکن فشرده می‌شود و Caption
+        # به صورت HTML ساخته می‌شود.
+        #
+        # اگر کل مجموعه هنوز جا نشود، مسیر طولانی
+        # main text استفاده می‌شود. Blockquote مستقل
+        # تولید نمی‌کنیم.
+        # =================================================
+
+        logger.info(
+            "ℹ️ Inline blockquote caption exceeds "
+            "Telegram caption safe limit"
+        )
+
+    # =====================================================
+    # MAIN TEXT MEDIA PLAN
+    # =====================================================
 
     split_result = (
         split_for_media(
@@ -1296,11 +1303,272 @@ def create_telegram_plan(
         ]
     )
 
-    followup_messages = (
+    followup_messages = list(
         split_result[
             "followup_messages"
         ]
     )
+
+    # =====================================================
+    # IF BLOCKQUOTE EXISTS:
+    # TRY TO APPEND IT TO CURRENT CAPTION
+    # =====================================================
+
+    if has_blockquotes:
+
+        inline_blockquotes = (
+            build_inline_telegram_blockquotes(
+                blockquote_blocks,
+                expandable_blocks
+            )
+        )
+
+        candidate_parts: List[str] = []
+
+        if media_caption:
+
+            candidate_parts.append(
+                escape(
+                    media_caption
+                )
+            )
+
+        if inline_blockquotes:
+
+            candidate_parts.append(
+                inline_blockquotes
+            )
+
+        candidate_without_branding = (
+            "\n\n".join(
+                candidate_parts
+            )
+        )
+
+        candidate = (
+            candidate_without_branding
+        )
+
+        if branding:
+
+            candidate = (
+                candidate
+                + (
+                    "\n\n"
+                    if candidate
+                    else ""
+                )
+                + escape(
+                    branding
+                )
+            )
+
+        if (
+            candidate
+            and len(candidate)
+            <= TELEGRAM_CAPTION_SAFE_LIMIT
+        ):
+
+            plan[
+                "media_caption"
+            ] = candidate
+
+            plan[
+                "media_parse_mode"
+            ] = "HTML"
+
+            plan[
+                "followup_messages"
+            ] = followup_messages
+
+            # Blockquote عمداً جدا ارسال نمی‌شود.
+            plan[
+                "blockquote_messages"
+            ] = []
+
+            return plan
+
+        # =================================================
+        # LAST INLINE ATTEMPT:
+        # reserve caption room for blockquote + branding
+        # =================================================
+
+        suffix_parts: List[str] = []
+
+        if inline_blockquotes:
+
+            suffix_parts.append(
+                inline_blockquotes
+            )
+
+        if branding:
+
+            suffix_parts.append(
+                escape(
+                    branding
+                )
+            )
+
+        suffix = "\n\n".join(
+            suffix_parts
+        )
+
+        separator_length = (
+            2
+            if suffix
+            else 0
+        )
+
+        available_for_main = (
+            TELEGRAM_CAPTION_SAFE_LIMIT
+            - len(suffix)
+            - separator_length
+        )
+
+        if available_for_main > 50:
+
+            compact_source = (
+                compact_long_text(
+                    main_text
+                )
+                or main_text
+            )
+
+            if (
+                len(compact_source)
+                <= available_for_main
+            ):
+
+                main_for_caption = (
+                    compact_source
+                )
+
+                remaining_main = ""
+
+            else:
+
+                split_position = (
+                    find_split_position(
+                        compact_source,
+                        available_for_main
+                    )
+                )
+
+                if split_position <= 0:
+
+                    split_position = (
+                        available_for_main
+                    )
+
+                main_for_caption = (
+                    compact_source[
+                        :split_position
+                    ]
+                    .strip()
+                )
+
+                remaining_main = (
+                    compact_source[
+                        split_position:
+                    ]
+                    .strip()
+                )
+
+            html_parts: List[str] = []
+
+            if main_for_caption:
+
+                html_parts.append(
+                    escape(
+                        main_for_caption
+                    )
+                )
+
+            if suffix:
+
+                html_parts.append(
+                    suffix
+                )
+
+            final_html_caption = (
+                "\n\n".join(
+                    html_parts
+                )
+            )
+
+            if (
+                final_html_caption
+                and len(final_html_caption)
+                <= TELEGRAM_CAPTION_SAFE_LIMIT
+            ):
+
+                plan[
+                    "media_caption"
+                ] = final_html_caption
+
+                plan[
+                    "media_parse_mode"
+                ] = "HTML"
+
+                plan[
+                    "blockquote_messages"
+                ] = []
+
+                if remaining_main:
+
+                    plan[
+                        "followup_messages"
+                    ] = (
+                        split_text(
+                            remaining_main,
+                            TELEGRAM_MESSAGE_SAFE_LIMIT
+                        )
+                    )
+
+                    # Branding داخل Caption قرار گرفته،
+                    # پس به Reply اضافه نمی‌شود.
+
+                else:
+
+                    plan[
+                        "followup_messages"
+                    ] = []
+
+                logger.info(
+                    f"🧩 Telegram blockquote preserved "
+                    f"inside long media caption | "
+                    f"caption={len(final_html_caption)} | "
+                    f"followup="
+                    f"{len(plan['followup_messages'])}"
+                )
+
+                return plan
+
+        # =================================================
+        # EXTREME EDGE CASE
+        #
+        # خود Blockquote + Branding آنقدر بزرگ است که
+        # در Caption جا نمی‌شود.
+        #
+        # در این حالت نمی‌توان با محدودیت Telegram
+        # Blockquote کامل را داخل Caption نگه داشت.
+        # برای جلوگیری از ارسال ناقص، fallback فعال می‌شود.
+        # =================================================
+
+        logger.error(
+            "❌ Inline Telegram blockquote itself "
+            "cannot fit media caption"
+        )
+
+        plan[
+            "document_fallback"
+        ] = True
+
+        return plan
+
+    # =====================================================
+    # NORMAL MEDIA WITHOUT BLOCKQUOTE
+    # =====================================================
 
     branded_result = (
         place_branding(
@@ -1328,14 +1596,9 @@ def create_telegram_plan(
         ]
     )
 
-    plan[
-        "blockquote_messages"
-    ] = (
-        create_telegram_blockquote_messages(
-            blockquote_blocks,
-            expandable_blocks
-        )
-    )
+    # =====================================================
+    # FINAL VALIDATION
+    # =====================================================
 
     if (
         len(
@@ -1389,6 +1652,8 @@ def create_telegram_plan(
         f"📋 Telegram media plan | "
         f"caption="
         f"{len(plan['media_caption'])} | "
+        f"parse_mode="
+        f"{plan['media_parse_mode'] or 'NONE'} | "
         f"followup="
         f"{len(plan['followup_messages'])} | "
         f"blockquote="
@@ -1533,18 +1798,6 @@ def create_bale_plan(
         "followup_messages"
     ] = valid_followups
 
-    logger.info(
-        f"📋 Bale media plan | "
-        f"caption="
-        f"{len(plan['media_caption'])} | "
-        f"followup="
-        f"{len(plan['followup_messages'])} | "
-        f"blockquote="
-        f"{len(plan['blockquote_messages'])} | "
-        f"fallback="
-        f"{plan['document_fallback']}"
-    )
-
     return plan
 
 
@@ -1580,10 +1833,6 @@ def create_telegram_text_plan(
         )
     )
 
-    # =====================================================
-    # NORMAL FITS
-    # =====================================================
-
     if (
         normal_final
         and len(normal_final)
@@ -1594,16 +1843,7 @@ def create_telegram_text_plan(
             normal_final
         ]
 
-        logger.info(
-            f"📝 Telegram text normal mode | "
-            f"length={len(normal_final)}"
-        )
-
     else:
-
-        # =================================================
-        # COMPACT
-        # =================================================
 
         compact_text = (
             compact_long_text(
@@ -1628,12 +1868,6 @@ def create_telegram_text_plan(
                 compact_final
             ]
 
-            logger.info(
-                f"🗜️ Telegram text compact mode | "
-                f"length={len(compact_final)} | "
-                f"messages=1"
-            )
-
         else:
 
             source_for_split = (
@@ -1657,16 +1891,6 @@ def create_telegram_text_plan(
                     TELEGRAM_MESSAGE_LIMIT
                 )
             )
-
-            logger.info(
-                f"✂️ Telegram long text split "
-                f"after compact | "
-                f"messages={len(messages)}"
-            )
-
-    # =====================================================
-    # FINAL SAFETY
-    # =====================================================
 
     safe_messages: List[str] = []
 
@@ -1700,24 +1924,12 @@ def create_telegram_text_plan(
         )
     )
 
-    plan = {
+    return {
         "messages": safe_messages,
         "blockquote_messages": (
             blockquote_messages
         )
     }
-
-    logger.info(
-        f"📋 Telegram text plan | "
-        f"messages="
-        f"{len(plan['messages'])} | "
-        f"blockquote="
-        f"{len(plan['blockquote_messages'])} | "
-        f"main={len(main_text)} | "
-        f"branding={len(branding)}"
-    )
-
-    return plan
 
 
 # =========================================================
@@ -1791,22 +2003,12 @@ def create_bale_text_plan(
         )
     )
 
-    plan = {
+    return {
         "messages": safe_messages,
         "blockquote_messages": (
             blockquote_messages
         )
     }
-
-    logger.info(
-        f"📋 Bale text plan | "
-        f"messages="
-        f"{len(plan['messages'])} | "
-        f"blockquote="
-        f"{len(plan['blockquote_messages'])}"
-    )
-
-    return plan
 
 
 # =========================================================
@@ -1910,78 +2112,14 @@ def analyze_content(
         )
     )
 
-    telegram_total_messages = (
-        1
-        + len(
-            plan.telegram[
-                "followup_messages"
-            ]
-        )
-        + len(
-            plan.telegram[
-                "blockquote_messages"
-            ]
-        )
-    )
-
-    bale_total_messages = (
-        1
-        + len(
-            plan.bale[
-                "followup_messages"
-            ]
-        )
-        + len(
-            plan.bale[
-                "blockquote_messages"
-            ]
-        )
-    )
-
-    telegram_text_total = (
-        len(
-            plan.text[
-                "telegram"
-            ][
-                "messages"
-            ]
-        )
-        + len(
-            plan.text[
-                "telegram"
-            ][
-                "blockquote_messages"
-            ]
-        )
-    )
-
-    bale_text_total = (
-        len(
-            plan.text[
-                "bale"
-            ][
-                "messages"
-            ]
-        )
-        + len(
-            plan.text[
-                "bale"
-            ][
-                "blockquote_messages"
-            ]
-        )
-    )
-
     logger.info(
         f"✅ Publication Plan ready | "
-        f"telegram_media_messages="
-        f"{telegram_total_messages} | "
-        f"bale_media_messages="
-        f"{bale_total_messages} | "
-        f"telegram_text_messages="
-        f"{telegram_text_total} | "
-        f"bale_text_messages="
-        f"{bale_text_total}"
+        f"tg_caption="
+        f"{len(plan.telegram['media_caption'])} | "
+        f"tg_followup="
+        f"{len(plan.telegram['followup_messages'])} | "
+        f"tg_inline_html="
+        f"{bool(plan.telegram.get('media_parse_mode'))}"
     )
 
     return plan
