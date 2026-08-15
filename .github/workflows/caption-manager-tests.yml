@@ -39,4 +39,5 @@ jobs:
             tests/test_caption_manager.py \
             tests/test_media_handler_integration.py \
             tests/test_content_entities.py \
-            tests/test_webhook_handler_integration.py
+            tests/test_webhook_handler_integration.py \
+            tests/test_live_regressions.py
