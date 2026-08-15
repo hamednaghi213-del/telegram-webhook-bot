@@ -34,68 +34,6 @@ BALE_MESSAGE_SAFE_LIMIT = 4000
 
 
 # =========================================================
-# TELEGRAM MEDIA BRANDING DIRECTION
-# =========================================================
-
-RTL_MARK = "\u200f"
-LTR_MARK = "\u200e"
-
-
-def telegram_media_branding(
-    branding: str
-) -> str:
-    """
-    Branding مخصوص Caption و Follow-up رسانه‌ای Telegram.
-
-    هر خط جهت مستقل خودش را می‌گیرد:
-
-    #دنیا_۲۴_نیوز  -> RTL
-    @Donya24News   -> LTR
-
-    این تابع فقط در مسیر Media Telegram استفاده می‌شود.
-    Text Plan و Bale دست‌نخورده باقی می‌مانند.
-    """
-
-    branding = normalize_text(
-        branding
-    )
-
-    if not branding:
-        return ""
-
-    output: List[str] = []
-
-    for line in branding.splitlines():
-
-        line = line.strip()
-
-        if not line:
-            continue
-
-        if line.startswith("#"):
-
-            output.append(
-                RTL_MARK + line
-            )
-
-        elif line.startswith("@"):
-
-            output.append(
-                LTR_MARK + line
-            )
-
-        else:
-
-            output.append(
-                line
-            )
-
-    return "\n".join(
-        output
-    )
-
-
-# =========================================================
 # PUBLICATION PLAN
 # =========================================================
 
@@ -669,7 +607,9 @@ def brand_every_message(
     message_limit: int
 ) -> List[str]:
 
-    branding = normalize_text(branding)
+    branding = normalize_text(
+        branding
+    )
 
     result: List[str] = []
 
@@ -678,7 +618,9 @@ def brand_every_message(
         or []
     ):
 
-        message = normalize_text(message)
+        message = normalize_text(
+            message
+        )
 
         if not message:
             continue
@@ -741,9 +683,7 @@ def append_telegram_media_branding(
 
     return append_branding(
         text,
-        telegram_media_branding(
-            branding
-        )
+        branding
     )
 
 
@@ -753,52 +693,11 @@ def brand_telegram_media_messages(
     message_limit: int
 ) -> List[str]:
 
-    media_branding = (
-        telegram_media_branding(
-            branding
-        )
+    return brand_every_message(
+        messages,
+        branding,
+        message_limit
     )
-
-    result: List[str] = []
-
-    for message in (
-        messages
-        or []
-    ):
-
-        message = normalize_text(
-            message
-        )
-
-        if not message:
-            continue
-
-        if not media_branding:
-
-            result.append(
-                message
-            )
-
-            continue
-
-        candidate = append_branding(
-            message,
-            media_branding
-        )
-
-        if len(candidate) <= message_limit:
-
-            result.append(
-                candidate
-            )
-
-        else:
-
-            result.append(
-                message
-            )
-
-    return result
 
 
 # =========================================================
@@ -955,7 +854,9 @@ def build_inline_telegram_blockquotes(
             )
         )
 
-    return "\n\n".join(result)
+    return "\n\n".join(
+        result
+    )
 
 
 def build_telegram_html_caption(
@@ -975,16 +876,16 @@ def build_telegram_html_caption(
         main_text
     )
 
-    media_branding = (
-        telegram_media_branding(
-            branding
-        )
+    branding = normalize_text(
+        branding
     )
 
     if main_text:
 
         parts.append(
-            escape(main_text)
+            escape(
+                main_text
+            )
         )
 
     blocks = (
@@ -995,19 +896,24 @@ def build_telegram_html_caption(
     )
 
     if blocks:
-        parts.append(blocks)
 
-    # Branding همیشه بعد از بسته‌شدن Blockquote
-    # و آخرین بخش Caption است.
-    if media_branding:
+        parts.append(
+            blocks
+        )
+
+    # Branding همیشه خارج از Blockquote
+    # و در انتهای Caption قرار می‌گیرد.
+    if branding:
 
         parts.append(
             escape(
-                media_branding
+                branding
             )
         )
 
-    return "\n\n".join(parts)
+    return "\n\n".join(
+        parts
+    )
 
 
 # =========================================================
@@ -1104,13 +1010,16 @@ def fit_blockquotes_into_caption(
 
             continue
 
-        position = find_media_split_position(
-            text,
-            available,
-            minimum_fill_ratio=0.50
+        position = (
+            find_media_split_position(
+                text,
+                available,
+                minimum_fill_ratio=0.50
+            )
         )
 
         if position <= 0:
+
             position = available
 
         first_part = (
@@ -1178,10 +1087,8 @@ def build_branded_blockquote_messages(
 
     result: List[str] = []
 
-    media_branding = (
-        telegram_media_branding(
-            branding
-        )
+    branding = normalize_text(
+        branding
     )
 
     for block in blocks:
@@ -1197,9 +1104,9 @@ def build_branded_blockquote_messages(
             continue
 
         branding_cost = (
-            len(media_branding)
+            len(branding)
             + 2
-            if media_branding
+            if branding
             else 0
         )
 
@@ -1229,12 +1136,12 @@ def build_branded_blockquote_messages(
                 )
             )
 
-            if media_branding:
+            if branding:
 
                 html_message += (
                     "\n\n"
                     + escape(
-                        media_branding
+                        branding
                     )
                 )
 
@@ -1253,7 +1160,9 @@ def build_bale_blockquote(
     text: str
 ) -> str:
 
-    text = normalize_text(text)
+    text = normalize_text(
+        text
+    )
 
     if not text:
         return ""
@@ -1270,7 +1179,9 @@ def build_bale_blockquote(
                 f"▌ {line}"
             )
 
-    return "\n".join(result)
+    return "\n".join(
+        result
+    )
 
 
 def build_inline_bale_blockquotes(
@@ -1304,7 +1215,9 @@ def build_inline_bale_blockquotes(
                 )
             )
 
-    return "\n\n".join(result)
+    return "\n\n".join(
+        result
+    )
 
 
 def create_bale_blockquote_messages(
@@ -1369,12 +1282,6 @@ def create_telegram_plan(
 
     branding = normalize_text(
         branding
-    )
-
-    media_branding = (
-        telegram_media_branding(
-            branding
-        )
     )
 
     plan = {
@@ -1471,8 +1378,8 @@ def create_telegram_plan(
         # =================================================
 
         branding_cost = (
-            len(media_branding)
-            if media_branding
+            len(branding)
+            if branding
             else 0
         )
 
@@ -1480,7 +1387,7 @@ def create_telegram_plan(
             branding_cost
             + (
                 2
-                if media_branding
+                if branding
                 else 0
             )
         )
@@ -1500,10 +1407,7 @@ def create_telegram_plan(
 
         if len(compact_main) <= main_capacity:
 
-            main_for_caption = (
-                compact_main
-            )
-
+            main_for_caption = compact_main
             remaining_main = ""
 
         else:
@@ -1539,14 +1443,14 @@ def create_telegram_plan(
 
         if (
             main_for_caption
-            and media_branding
+            and branding
         ):
 
             base_separator = 4
 
         elif (
             main_for_caption
-            or media_branding
+            or branding
         ):
 
             base_separator = 2
@@ -1610,14 +1514,14 @@ def create_telegram_plan(
             )
 
         # =================================================
-        # BRANDING ALWAYS OUTSIDE BLOCKQUOTE AND LAST
+        # BRANDING ALWAYS LAST
         # =================================================
 
-        if media_branding:
+        if branding:
 
             caption_parts.append(
                 escape(
-                    media_branding
+                    branding
                 )
             )
 
@@ -1658,9 +1562,9 @@ def create_telegram_plan(
         if remaining_main:
 
             branding_cost_reply = (
-                len(media_branding)
+                len(branding)
                 + 2
-                if media_branding
+                if branding
                 else 0
             )
 
@@ -1754,9 +1658,9 @@ def create_telegram_plan(
         return plan
 
     branding_cost = (
-        len(media_branding)
+        len(branding)
         + 2
-        if media_branding
+        if branding
         else 0
     )
 
