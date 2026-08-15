@@ -47,7 +47,14 @@ HASH_PATTERN = re.compile(
 
 
 # =========================================================
-# INVITE PATTERNS
+# INVITE / FOLLOW PATTERNS
+# =========================================================
+#
+# این Patternها عمومی هستند و به اسم هیچ کانال خاصی
+# وابسته نیستند.
+#
+# عبارت عمومی "عضویت" به تنهایی عمداً حذف نمی‌شود،
+# چون ممکن است داخل متن واقعی خبر استفاده شده باشد.
 # =========================================================
 
 INVITE_PATTERNS = [
@@ -89,6 +96,50 @@ INVITE_PATTERNS = [
 
     re.compile(
         r'برای مشاهده کانال',
+        re.IGNORECASE
+    ),
+
+    # =====================================================
+    # FOLLOW PROMPTS
+    # =====================================================
+
+    re.compile(
+        r'[^\n]{0,80}\s+را\s+در\s+بله\s+دنبال\s+کنید',
+        re.IGNORECASE
+    ),
+
+    re.compile(
+        r'[^\n]{0,80}\s+را\s+در\s+تلگرام\s+دنبال\s+کنید',
+        re.IGNORECASE
+    ),
+
+    re.compile(
+        r'ما\s+را\s+در\s+بله\s+دنبال\s+کنید',
+        re.IGNORECASE
+    ),
+
+    re.compile(
+        r'ما\s+را\s+در\s+تلگرام\s+دنبال\s+کنید',
+        re.IGNORECASE
+    ),
+
+    re.compile(
+        r'در\s+بله\s+ما\s+را\s+دنبال\s+کنید',
+        re.IGNORECASE
+    ),
+
+    re.compile(
+        r'در\s+تلگرام\s+ما\s+را\s+دنبال\s+کنید',
+        re.IGNORECASE
+    ),
+
+    re.compile(
+        r'[^\n]{0,80}\s+را\s+در\s+ایتا\s+دنبال\s+کنید',
+        re.IGNORECASE
+    ),
+
+    re.compile(
+        r'[^\n]{0,80}\s+را\s+در\s+روبیکا\s+دنبال\s+کنید',
         re.IGNORECASE
     )
 ]
@@ -132,23 +183,29 @@ SENTENCE_ENDINGS = (
     "…"
 )
 
+
 FOOTER_HINT_PATTERN = re.compile(
     (
         r'('
         r'کانال|'
         r'تلگرام|'
+        r'بله|'
+        r'ایتا|'
+        r'روبیکا|'
         r'خبرگزاری|'
         r'رسانه|'
         r'منبع|'
         r'اخبار|'
         r'عضویت|'
+        r'دنبال کنید|'
         r'لینک|'
         r'بیشتر|'
         r'ادامه|'
         r'channel|'
         r'telegram|'
         r'news|'
-        r'media'
+        r'media|'
+        r'follow'
         r')'
     ),
     re.IGNORECASE
@@ -160,6 +217,10 @@ FOOTER_HINT_PATTERN = re.compile(
 # =========================================================
 
 def normalize_spaces(text: str) -> str:
+    """
+    فاصله‌های اضافی داخل هر خط را اصلاح می‌کند
+    و Line Breakها را حفظ می‌کند.
+    """
 
     if not text:
         return ""
@@ -193,6 +254,10 @@ def normalize_blank_lines(
     text: str,
     max_blank_lines: int = 1
 ) -> str:
+    """
+    چند خط خالی متوالی را محدود می‌کند
+    ولی ساختار پاراگرافی را حفظ می‌کند.
+    """
 
     if not text:
         return ""
@@ -200,6 +265,7 @@ def normalize_blank_lines(
     lines = text.splitlines()
 
     result = []
+
     blank_count = 0
 
     for line in lines:
@@ -234,12 +300,12 @@ def normalize_blank_lines(
 
 def remove_all_emojis(text: str) -> str:
     """
-    حذف Emojiهای منبع.
+    Emojiهای منبع حذف می‌شوند.
 
-    دو علامت قالب دنیا ۲۴ حفظ می‌شوند:
+    فقط دو علامت قالب دنیا ۲۴ حفظ می‌شوند:
 
-    ❇️
-    🔹
+        ❇️
+        🔹
     """
 
     if not text:
@@ -268,6 +334,7 @@ def remove_all_emojis(text: str) -> str:
         text
     )
 
+    # Variation Selectors
     text = text.replace(
         "\uFE0F",
         ""
@@ -294,15 +361,24 @@ def remove_all_emojis(text: str) -> str:
 
 
 # =========================================================
-# CLEAN FOREIGN MENTIONS AND HASHTAGS
+# CLEAN FOREIGN MENTIONS / HASHTAGS / URLS
 # =========================================================
 
 def clean_foreign_mentions_and_hashtags(
     text: str
 ) -> str:
+    """
+    Mention و Hashtag خارجی و لینک‌ها را پاک می‌کند.
+
+    Branding خود دنیا ۲۴ در صورت وجود حفظ می‌شود.
+    """
 
     if not text:
         return ""
+
+    # =====================================================
+    # MENTION
+    # =====================================================
 
     def replace_at(match):
 
@@ -323,6 +399,10 @@ def clean_foreign_mentions_and_hashtags(
         text
     )
 
+    # =====================================================
+    # HASHTAG
+    # =====================================================
+
     def replace_hash(match):
 
         full = match.group(0)
@@ -341,10 +421,18 @@ def clean_foreign_mentions_and_hashtags(
         text
     )
 
+    # =====================================================
+    # URL
+    # =====================================================
+
     text = URL_PATTERN.sub(
         "",
         text
     )
+
+    # =====================================================
+    # INVITE / FOLLOW PROMPTS
+    # =====================================================
 
     for pattern in INVITE_PATTERNS:
 
@@ -418,9 +506,10 @@ def is_decimal_period(
     index: int
 ) -> bool:
     """
-    تشخیص نقطه اعشاری.
+    نقطه داخل عدد اعشاری را تشخیص می‌دهد.
 
     مثال:
+
         2.5
         ۲.۵
     """
@@ -456,8 +545,7 @@ def find_last_sentence_end(
     """
     آخرین پایان واقعی جمله را پیدا می‌کند.
 
-    نقطه اعشاری به‌عنوان پایان جمله
-    در نظر گرفته نمی‌شود.
+    نقطه اعشاری پایان جمله محسوب نمی‌شود.
     """
 
     if not text:
@@ -503,8 +591,8 @@ def looks_like_footer(
     text: str
 ) -> bool:
     """
-    بررسی محافظه‌کارانه اینکه بخش انتهایی
-    شبیه Footer رسانه‌ای است یا نه.
+    بررسی می‌کند آیا بخش انتهایی متن
+    احتمالاً Footer رسانه‌ای است یا خیر.
     """
 
     if not text:
@@ -519,14 +607,17 @@ def looks_like_footer(
 
     lines = [
         line.strip()
-        for line in value.splitlines()
+
+        for line
+        in value.splitlines()
+
         if line.strip()
     ]
 
     if not lines:
         return False
 
-    # Footer باید کوچک باشد.
+    # Footer نباید خیلی بلند باشد.
     if len(lines) > 4:
 
         return False
@@ -535,31 +626,39 @@ def looks_like_footer(
 
         return False
 
-    # Mention
+    # =====================================================
+    # MENTION
+    # =====================================================
+
     if AT_PATTERN.search(
         value
     ):
 
         return True
 
+    # =====================================================
     # URL
+    # =====================================================
+
     if URL_PATTERN.search(
         value
     ):
 
         return True
 
-    # عبارت‌های شناخته‌شده
+    # =====================================================
+    # FOOTER KEYWORDS
+    # =====================================================
+
     if FOOTER_HINT_PATTERN.search(
         value
     ):
 
         return True
 
-    # -----------------------------------------------------
-    # حالت بسیار رایج:
-    #
-    # متن تمام شده و فقط یک نام کوتاه رسانه مانده.
+    # =====================================================
+    # SHORT MEDIA NAME
+    # =====================================================
     #
     # مثال:
     #
@@ -567,15 +666,16 @@ def looks_like_footer(
     #
     # یا:
     #
-    # رسانه اقتصاد ایران
+    # فردای نو
     #
-    # -----------------------------------------------------
+    # =====================================================
 
     if (
         len(lines) == 1
         and len(value) <= 60
         and not any(
             ending in value
+
             for ending
             in SENTENCE_ENDINGS
         )
@@ -594,14 +694,12 @@ def clean_after_last_sentence(
     text: str
 ) -> str:
     """
-    نسخه امن منطق قدیمی.
+    نسخه امن‌تر رفتار قدیمی.
 
-    اگر بعد از آخرین پایان جمله
-    فقط Footer کوتاه رسانه‌ای وجود داشته باشد،
-    آن Footer حذف می‌شود.
+    فقط اگر محتوای بعد از آخرین پایان جمله
+    شبیه Footer باشد حذف می‌شود.
 
-    اگر Tail شبیه متن واقعی خبر باشد،
-    هیچ چیزی حذف نمی‌شود.
+    در غیر این صورت متن دست‌نخورده باقی می‌ماند.
     """
 
     if not text:
@@ -655,28 +753,35 @@ def clean_after_last_sentence(
 def clean_media_footer(
     text: str
 ) -> str:
+    """
+    Footerهای متداول انتهای متن را حذف می‌کند.
+    """
 
     if not text:
         return ""
 
+    # / MediaName English
     text = re.sub(
         r'/\s*[^\s/]+\s+[A-Za-z]+\.?\s*$',
         '',
         text
     )
 
+    # / MediaName
     text = re.sub(
         r'/\s*[^\s/]+\.?\s*$',
         '',
         text
     )
 
+    # Domain-like footer
     text = re.sub(
         r'[A-Za-z]+\.[A-Za-z]*\s*$',
         '',
         text
     )
 
+    # @channel - Link
     text = re.sub(
         (
             r'@[a-zA-Z0-9_]+\s*'
@@ -698,9 +803,16 @@ def clean_media_footer(
 def clean_all_trailing_content(
     text: str
 ) -> str:
+    """
+    حذف Footerها و محتوای تبلیغاتی انتهایی.
+    """
 
     if not text:
         return ""
+
+    # =====================================================
+    # CONTENT AFTER |
+    # =====================================================
 
     text = re.sub(
         r'\|.*$',
@@ -709,15 +821,24 @@ def clean_all_trailing_content(
         flags=re.MULTILINE
     )
 
+    # =====================================================
+    # CHANNEL / TELEGRAM FOOTER
+    # =====================================================
+
     text = re.sub(
         (
-            r'(اخبار|کانال|تلگرام|channel|telegram)'
+            r'(اخبار|کانال|تلگرام|بله|ایتا|روبیکا|'
+            r'channel|telegram)'
             r'\s+[^\s]+$'
         ),
         '',
         text,
         flags=re.IGNORECASE
     )
+
+    # =====================================================
+    # TRAILING FOREIGN MENTION
+    # =====================================================
 
     def replace_trailing_mention(
         match
@@ -740,12 +861,27 @@ def clean_all_trailing_content(
         text
     )
 
+    # =====================================================
+    # GENERIC PROMOTIONAL WORDS
+    # =====================================================
+
     text = re.sub(
-        r'\b(کانال|تلگرام|channel|telegram)\b',
+        (
+            r'\b('
+            r'کانال|'
+            r'تلگرام|'
+            r'channel|'
+            r'telegram'
+            r')\b'
+        ),
         '',
         text,
         flags=re.IGNORECASE
     )
+
+    # =====================================================
+    # LINK / MORE FOOTER
+    # =====================================================
 
     text = re.sub(
         (
@@ -757,6 +893,10 @@ def clean_all_trailing_content(
         text,
         flags=re.IGNORECASE
     )
+
+    # =====================================================
+    # COMMON MEDIA NAMES
+    # =====================================================
 
     media_names = [
 
@@ -804,6 +944,10 @@ def clean_all_trailing_content(
             flags=re.IGNORECASE
         )
 
+    # =====================================================
+    # GENERIC FOOTER
+    # =====================================================
+
     text = re.sub(
         r'/\s*[^\s/]+\s*\.?\s*$',
         '',
@@ -816,6 +960,10 @@ def clean_all_trailing_content(
         text
     )
 
+    # =====================================================
+    # LINE-BY-LINE CLEANUP
+    # =====================================================
+
     lines = text.splitlines()
 
     cleaned_lines = []
@@ -824,6 +972,10 @@ def clean_all_trailing_content(
 
         stripped = line.strip()
 
+        # -------------------------------------------------
+        # Preserve blank line
+        # -------------------------------------------------
+
         if not stripped:
 
             cleaned_lines.append(
@@ -831,6 +983,10 @@ def clean_all_trailing_content(
             )
 
             continue
+
+        # -------------------------------------------------
+        # Mention / link-only line
+        # -------------------------------------------------
 
         if re.match(
             (
@@ -842,6 +998,10 @@ def clean_all_trailing_content(
         ):
 
             continue
+
+        # -------------------------------------------------
+        # Mention + Link
+        # -------------------------------------------------
 
         match = re.search(
             (
@@ -868,6 +1028,26 @@ def clean_all_trailing_content(
             ):
 
                 continue
+
+        # -------------------------------------------------
+        # Generic follow prompts
+        # -------------------------------------------------
+
+        follow_line = False
+
+        for pattern in INVITE_PATTERNS:
+
+            if pattern.fullmatch(
+                stripped
+            ):
+
+                follow_line = True
+
+                break
+
+        if follow_line:
+
+            continue
 
         cleaned_lines.append(
             stripped
@@ -903,21 +1083,29 @@ def clean_text(
     """
     پاکسازی کامل متن خبری.
 
-    ترتیب:
+    ترتیب صحیح:
 
-    Entity Parsing
-        ↓
-    Emoji Cleanup
-        ↓
-    Mention / URL Cleanup
-        ↓
-    Trailing Cleanup
-        ↓
-    Safe Last Sentence Cleanup
-        ↓
-    Media Footer Cleanup
-        ↓
-    Final Normalization
+        Telegram raw text
+                +
+        Telegram entities
+                ↓
+        parse_telegram_entities()
+                ↓
+            main_text
+                ↓
+            clean_text()
+                ↓
+            format_news()
+
+    مراحل Cleaner:
+
+    1. حذف Emojiهای منبع
+    2. حذف Mention / Hashtag / URL خارجی
+    3. حذف عبارت‌های Follow / Invite
+    4. حذف Footerهای عمومی
+    5. حذف امن محتوای بعد از آخرین جمله
+    6. حذف Media Footer
+    7. Normalization نهایی
     """
 
     if not text:
@@ -938,15 +1126,27 @@ def clean_text(
         text
     )
 
+    logger.debug(
+        f"After emojis | "
+        f"length={len(text)} | "
+        f"preview={text[:80]!r}"
+    )
+
     # =====================================================
     # STEP 2
-    # MENTIONS / HASHTAGS / URLS
+    # MENTION / HASHTAG / URL / INVITE
     # =====================================================
 
     text = (
         clean_foreign_mentions_and_hashtags(
             text
         )
+    )
+
+    logger.debug(
+        f"After mentions/invites | "
+        f"length={len(text)} | "
+        f"preview={text[:80]!r}"
     )
 
     # =====================================================
@@ -960,15 +1160,27 @@ def clean_text(
         )
     )
 
+    logger.debug(
+        f"After trailing cleanup | "
+        f"length={len(text)} | "
+        f"preview={text[:80]!r}"
+    )
+
     # =====================================================
     # STEP 4
-    # SAFE OLD BEHAVIOR
+    # SAFE LAST SENTENCE CLEANUP
     # =====================================================
 
     text = (
         clean_after_last_sentence(
             text
         )
+    )
+
+    logger.debug(
+        f"After last sentence cleanup | "
+        f"length={len(text)} | "
+        f"preview={text[:80]!r}"
     )
 
     # =====================================================
