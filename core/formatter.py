@@ -67,13 +67,17 @@ def normalize_username(
     if not username:
         return ""
 
-    username = str(username).strip()
+    username = str(
+        username
+    ).strip()
 
     if not username:
         return ""
 
     if not username.startswith("@"):
-        username = f"@{username}"
+        username = (
+            f"@{username}"
+        )
 
     return username.lower()
 
@@ -89,7 +93,9 @@ def strip_leading_decoration(
     if not text:
         return ""
 
-    value = text.strip()
+    value = (
+        text.strip()
+    )
 
     changed = True
 
@@ -99,11 +105,16 @@ def strip_leading_decoration(
 
         for bullet in KNOWN_BULLETS:
 
-            if value.startswith(bullet):
+            if value.startswith(
+                bullet
+            ):
 
-                value = value[
-                    len(bullet):
-                ].strip()
+                value = (
+                    value[
+                        len(bullet):
+                    ]
+                    .strip()
+                )
 
                 changed = True
                 break
@@ -118,150 +129,114 @@ def strip_leading_decoration(
 
 
 # =========================================================
-# ORPHAN DECORATION DETECTION
+# ORPHAN DECORATION / SEPARATOR
 # =========================================================
 
-def is_orphan_decoration_line(
+def is_orphan_separator_line(
     line: str
 ) -> bool:
     """
-    تشخیص خطوط باقی‌مانده از امضای منبع.
+    خطوط یتیم باقی‌مانده از امضای منبع را تشخیص می‌دهد.
 
-    نمونه‌هایی که باید حذف شوند:
+    نمونه‌هایی که حذف می‌شوند:
 
-        🔷 |
-        🔹 |
         |
-        🔷
-        🆔
-        🔷 🆔 |
-        🔹 🔷 |
-
-    این تابع فقط خطوطی را حذف می‌کند که عملاً
-    هیچ محتوای خبری واقعی ندارند.
+        ||
+        🔹 |
+        🔷 |
+        🆔 |
+        • |
+        - |
+        — |
     """
 
     if not line:
-        return True
+        return False
 
-    value = line.strip()
+    value = (
+        line.strip()
+    )
+
+    if not value:
+        return False
+
+    # حذف Bulletهای ابتدایی
+    value = (
+        strip_leading_decoration(
+            value
+        )
+    )
+
+    # حذف علامت‌های معرفی منبع
+    value = re.sub(
+        r"^(?:🆔|📡|📢|🔗|🌐|🇮🇷)\s*",
+        "",
+        value
+    ).strip()
 
     if not value:
         return True
 
-    # حذف تزئینات شناخته‌شده
-    previous = None
-
-    while (
+    # فقط Separator / Decoration
+    if re.fullmatch(
+        r"[\|\-–—_•·▪▫◾◽:؛,،.]+",
         value
-        and value != previous
     ):
+        return True
 
-        previous = value
-
-        for token in (
-            "🔹",
-            "🔷",
-            "▪️",
-            "▫️",
-            "◾",
-            "◽",
-            "•",
-            "▪",
-            "▫",
-            "🆔",
-            "📡",
-            "📢",
-            "🔗",
-            "🌐",
-            "🇮🇷",
-        ):
-
-            value = value.replace(
-                token,
-                ""
-            )
-
-        value = value.strip()
-
-    # جداکننده‌هایی که بعد از حذف Source
-    # ممکن است تنها بمانند.
-    value = re.sub(
-        r"[\s|｜¦:：\-–—_/\\]+",
-        "",
-        value
-    )
-
-    return not bool(
-        value.strip()
-    )
+    return False
 
 
 # =========================================================
-# REMOVE ORPHAN DECORATIONS
+# REMOVE ORPHAN SEPARATORS
 # =========================================================
 
-def remove_orphan_decorations(
+def remove_orphan_separators(
     text: str
 ) -> str:
-    """
-    خطوط تزئینی بدون محتوای واقعی را حذف می‌کند.
-
-    این مرحله عمداً بعد از Source Cleanup نیز
-    قابل اجراست تا چیزی مثل:
-
-        🔷 |
-
-    وارد Formatter نهایی نشود.
-    """
 
     if not text:
         return ""
 
-    lines = text.splitlines()
+    lines = (
+        text.splitlines()
+    )
 
-    result: List[str] = []
+    cleaned_lines: List[str] = []
 
-    removed = 0
+    removed_count = 0
 
     for line in lines:
 
-        stripped = line.strip()
-
-        if (
-            stripped
-            and is_orphan_decoration_line(
-                stripped
-            )
+        if is_orphan_separator_line(
+            line
         ):
 
-            removed += 1
+            removed_count += 1
             continue
 
-        result.append(
+        cleaned_lines.append(
             line
         )
 
     # حذف خطوط خالی انتهایی
     while (
-        result
-        and not result[-1].strip()
+        cleaned_lines
+        and not cleaned_lines[-1].strip()
     ):
 
-        result.pop()
+        cleaned_lines.pop()
 
-    cleaned = "\n".join(
-        result
-    )
-
-    if removed:
+    if removed_count:
 
         logger.info(
-            f"🧹 Orphan decoration removed | "
-            f"count={removed}"
+            f"🧹 Orphan separators removed | "
+            f"count={removed_count}"
         )
 
-    return cleaned
+    return "\n".join(
+        cleaned_lines
+    )
 
 
 # =========================================================
@@ -277,7 +252,9 @@ def is_source_line(
     if not line:
         return False
 
-    stripped = line.strip()
+    stripped = (
+        line.strip()
+    )
 
     if not stripped:
         return False
@@ -292,15 +269,15 @@ def is_source_line(
         normalized_line.lower()
     )
 
+    # =====================================================
+    # SOURCE USERNAME
+    # =====================================================
+
     normalized_source_username = (
         normalize_username(
             source_username
         )
     )
-
-    # =====================================================
-    # SOURCE USERNAME
-    # =====================================================
 
     if normalized_source_username:
 
@@ -308,17 +285,23 @@ def is_source_line(
             normalized_line_lower
             == normalized_source_username
         ):
+
             return True
 
         if (
             normalized_source_username
             in normalized_line_lower
-            and len(normalized_line_lower)
+            and len(
+                normalized_line_lower
+            )
             <= (
-                len(normalized_source_username)
+                len(
+                    normalized_source_username
+                )
                 + 20
             )
         ):
+
             return True
 
     # =====================================================
@@ -328,7 +311,9 @@ def is_source_line(
     if source_title:
 
         source_title_clean = (
-            str(source_title)
+            str(
+                source_title
+            )
             .strip()
         )
 
@@ -342,18 +327,27 @@ def is_source_line(
                 normalized_line_lower
                 == source_title_lower
             ):
+
                 return True
 
             if (
                 normalized_line_lower
-                == f"کانال {source_title_lower}"
+                == (
+                    f"کانال "
+                    f"{source_title_lower}"
+                )
             ):
+
                 return True
 
             if (
                 normalized_line_lower
-                == f"{source_title_lower} کانال"
+                == (
+                    f"{source_title_lower} "
+                    f"کانال"
+                )
             ):
+
                 return True
 
     return False
@@ -372,7 +366,9 @@ def remove_source_signature(
     if not text:
         return ""
 
-    lines = text.splitlines()
+    lines = (
+        text.splitlines()
+    )
 
     if not lines:
         return text
@@ -384,16 +380,14 @@ def remove_source_signature(
 
     removable_indexes = set()
 
-    # =====================================================
-    # FIND SOURCE LINES
-    # =====================================================
-
     for index in range(
         start_index,
         len(lines)
     ):
 
-        line = lines[index]
+        line = (
+            lines[index]
+        )
 
         if is_source_line(
             line,
@@ -406,7 +400,7 @@ def remove_source_signature(
             )
 
     # =====================================================
-    # REMOVE ADJACENT DECORATION
+    # NEIGHBOR DECORATION CLEANUP
     # =====================================================
 
     if removable_indexes:
@@ -431,13 +425,10 @@ def remove_source_signature(
                     if (
                         neighbor < start_index
                         or neighbor >= len(lines)
-                    ):
-                        continue
-
-                    if (
-                        neighbor
+                        or neighbor
                         in removable_indexes
                     ):
+
                         continue
 
                     candidate = (
@@ -446,11 +437,17 @@ def remove_source_signature(
                         ].strip()
                     )
 
-                    if (
-                        not candidate
-                        or is_orphan_decoration_line(
-                            candidate
+                    if not candidate:
+
+                        removable_indexes.add(
+                            neighbor
                         )
+
+                        changed = True
+                        continue
+
+                    if is_orphan_separator_line(
+                        candidate
                     ):
 
                         removable_indexes.add(
@@ -458,26 +455,41 @@ def remove_source_signature(
                         )
 
                         changed = True
+                        continue
 
-    # =====================================================
-    # REBUILD
-    # =====================================================
+                    decoration_only = (
+                        re.fullmatch(
+                            r"[\s🔹🔷▪▫◾◽•🆔📡📢🔗🌐🇮🇷\|]+",
+                            candidate
+                        )
+                    )
 
-    if removable_indexes:
+                    if decoration_only:
 
-        cleaned_lines = [
-            line
-            for index, line
-            in enumerate(lines)
-            if index
-            not in removable_indexes
-        ]
+                        removable_indexes.add(
+                            neighbor
+                        )
 
-    else:
+                        changed = True
 
-        cleaned_lines = list(
+    if not removable_indexes:
+
+        # حتی بدون Source match ممکن است | یتیم مانده باشد.
+        return remove_orphan_separators(
+            text
+        )
+
+    cleaned_lines = [
+        line
+
+        for index, line
+        in enumerate(
             lines
         )
+
+        if index
+        not in removable_indexes
+    ]
 
     while (
         cleaned_lines
@@ -486,33 +498,29 @@ def remove_source_signature(
 
         cleaned_lines.pop()
 
-    cleaned_text = "\n".join(
-        cleaned_lines
+    cleaned_text = (
+        "\n".join(
+            cleaned_lines
+        )
     )
 
-    # =====================================================
-    # FINAL ORPHAN CLEANUP
-    # =====================================================
-
     cleaned_text = (
-        remove_orphan_decorations(
+        remove_orphan_separators(
             cleaned_text
         )
     )
 
-    if removable_indexes:
-
-        logger.info(
-            f"🧹 Source signature removed | "
-            f"title={source_title or '-'} | "
-            f"username={source_username or '-'}"
-        )
+    logger.info(
+        f"🧹 Source signature removed | "
+        f"title={source_title or '-'} | "
+        f"username={source_username or '-'}"
+    )
 
     return cleaned_text
 
 
 # =========================================================
-# SPLIT LINES PRESERVING STRUCTURE
+# SPLIT LINES
 # =========================================================
 
 def split_lines(
@@ -522,7 +530,9 @@ def split_lines(
     if not text:
         return []
 
-    return text.splitlines()
+    return (
+        text.splitlines()
+    )
 
 
 # =========================================================
@@ -536,13 +546,17 @@ def has_known_bullet(
     if not text:
         return False
 
-    stripped = text.strip()
+    stripped = (
+        text.strip()
+    )
 
     return any(
         stripped.startswith(
             bullet
         )
-        for bullet in KNOWN_BULLETS
+
+        for bullet
+        in KNOWN_BULLETS
     )
 
 
@@ -558,30 +572,27 @@ def normalize_body_line(
     if not line:
         return ""
 
-    stripped = line.strip()
+    stripped = (
+        line.strip()
+    )
 
     if not stripped:
         return ""
 
-    # =====================================================
-    # SAFETY:
-    # ORPHAN DECORATION MUST NEVER BECOME BODY CONTENT
-    # =====================================================
-
-    if is_orphan_decoration_line(
+    # یتیم‌های منبع نباید تبدیل به 🔹 | شوند.
+    if is_orphan_separator_line(
         stripped
     ):
-        return ""
 
-    # =====================================================
-    # EXISTING BULLET
-    # =====================================================
+        return ""
 
     if has_known_bullet(
         stripped
     ):
 
-        cleaned = stripped
+        cleaned = (
+            stripped
+        )
 
         changed = True
 
@@ -595,34 +606,30 @@ def normalize_body_line(
                     existing_bullet
                 ):
 
-                    cleaned = cleaned[
-                        len(
-                            existing_bullet
-                        ):
-                    ].strip()
+                    cleaned = (
+                        cleaned[
+                            len(
+                                existing_bullet
+                            ):
+                        ]
+                        .strip()
+                    )
 
                     changed = True
                     break
 
-        # ---------------------------------------------
-        # بعد از حذف Bullet ممکن است فقط "|" بماند.
-        # ---------------------------------------------
-
         if (
             not cleaned
-            or is_orphan_decoration_line(
+            or is_orphan_separator_line(
                 cleaned
             )
         ):
+
             return ""
 
         return (
             f"{bullet} {cleaned}"
         )
-
-    # =====================================================
-    # NO BULLET
-    # =====================================================
 
     return (
         f"{bullet} {stripped}"
@@ -674,17 +681,22 @@ def normalize_title(
     if not title:
         return ""
 
-    value = title.strip()
+    value = (
+        title.strip()
+    )
 
     if value.startswith(
         TITLE_ICON
     ):
 
-        value = value[
-            len(
-                TITLE_ICON
-            ):
-        ].strip()
+        value = (
+            value[
+                len(
+                    TITLE_ICON
+                ):
+            ]
+            .strip()
+        )
 
     return value
 
@@ -713,8 +725,10 @@ def format_news(
     # CLEAN TEXT
     # =====================================================
 
-    cleaned = clean_text(
-        raw_text
+    cleaned = (
+        clean_text(
+            raw_text
+        )
     )
 
     if not cleaned:
@@ -727,7 +741,7 @@ def format_news(
 
     # =====================================================
     # STEP 2
-    # REMOVE SOURCE SIGNATURE
+    # SOURCE CLEANUP
     # =====================================================
 
     cleaned = (
@@ -735,6 +749,17 @@ def format_news(
             cleaned,
             source_title=source_title,
             source_username=source_username
+        )
+    )
+
+    # =====================================================
+    # STEP 3
+    # ORPHAN SEPARATOR CLEANUP
+    # =====================================================
+
+    cleaned = (
+        remove_orphan_separators(
+            cleaned
         )
     )
 
@@ -747,36 +772,14 @@ def format_news(
         return ""
 
     # =====================================================
-    # STEP 3
-    # FINAL ORPHAN CLEANUP BEFORE FORMATTING
-    # =====================================================
-
-    cleaned = (
-        remove_orphan_decorations(
-            cleaned
-        )
-    )
-
-    if not cleaned:
-
-        logger.warning(
-            "⚠️ Text empty after orphan cleanup"
-        )
-
-        return ""
-
-    logger.debug(
-        f"After cleanup | "
-        f"length={len(cleaned)}"
-    )
-
-    # =====================================================
     # STEP 4
     # SPLIT LINES
     # =====================================================
 
-    all_lines = split_lines(
-        cleaned
+    all_lines = (
+        split_lines(
+            cleaned
+        )
     )
 
     if not all_lines:
@@ -803,24 +806,25 @@ def format_news(
             line.strip()
         )
 
-        if (
+        if not stripped:
+            continue
+
+        if is_orphan_separator_line(
             stripped
-            and not is_orphan_decoration_line(
+        ):
+            continue
+
+        title = (
+            normalize_title(
                 stripped
             )
-        ):
+        )
 
-            title = (
-                normalize_title(
-                    stripped
-                )
-            )
+        title_index = (
+            index
+        )
 
-            title_index = (
-                index
-            )
-
-            break
+        break
 
     if (
         title is None
@@ -838,9 +842,11 @@ def format_news(
     # BODY
     # =====================================================
 
-    body_lines = all_lines[
-        title_index + 1:
-    ]
+    body_lines = (
+        all_lines[
+            title_index + 1:
+        ]
+    )
 
     # =====================================================
     # STEP 7
@@ -860,10 +866,6 @@ def format_news(
             stripped = (
                 line.strip()
             )
-
-            # ---------------------------------------------
-            # EMPTY LINE
-            # ---------------------------------------------
 
             if not stripped:
 
@@ -886,27 +888,15 @@ def format_news(
 
                 continue
 
-            # ---------------------------------------------
-            # ORPHAN DECORATION
-            # ---------------------------------------------
-
-            if is_orphan_decoration_line(
+            if is_orphan_separator_line(
                 stripped
             ):
 
                 continue
 
-            # ---------------------------------------------
-            # NORMAL LINE
-            # ---------------------------------------------
-
             current_paragraph.append(
                 stripped
             )
-
-        # =================================================
-        # LAST PARAGRAPH
-        # =================================================
 
         if current_paragraph:
 
@@ -923,39 +913,11 @@ def format_news(
                     + formatted_paragraph
                 )
 
-    # =====================================================
-    # STEP 8
-    # ABSOLUTE FINAL SAFETY
-    # =====================================================
-
-    final_lines = []
-
-    for line in result.splitlines():
-
-        stripped = line.strip()
-
-        if (
-            stripped
-            and is_orphan_decoration_line(
-                stripped
-            )
-        ):
-
-            continue
-
-        final_lines.append(
-            line
+    # Safety نهایی
+    result = (
+        remove_orphan_separators(
+            result
         )
-
-    while (
-        final_lines
-        and not final_lines[-1].strip()
-    ):
-
-        final_lines.pop()
-
-    result = "\n".join(
-        final_lines
     )
 
     logger.debug(
@@ -985,10 +947,6 @@ def add_branding(
 
     branding_lines = []
 
-    # =====================================================
-    # HASHTAG
-    # =====================================================
-
     if (
         include_hashtag
         and HASHTAG
@@ -998,10 +956,6 @@ def add_branding(
             HASHTAG
         )
 
-    # =====================================================
-    # CHANNEL TAG
-    # =====================================================
-
     if (
         include_channel
         and CHANNEL_TAG
@@ -1010,10 +964,6 @@ def add_branding(
         branding_lines.append(
             CHANNEL_TAG
         )
-
-    # =====================================================
-    # APPEND BRANDING
-    # =====================================================
 
     if branding_lines:
 
