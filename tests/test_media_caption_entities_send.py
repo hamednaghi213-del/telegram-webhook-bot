@@ -584,3 +584,90 @@ def test_normal_media_path_without_entities_or_parse_mode():
             "@Donya24News"
         )
     )
+
+
+# =========================================================
+# TEST 08
+# EXPANDABLE FOLLOWUP MUST REPLY WITH ENTITY
+# =========================================================
+
+def test_execute_telegram_plan_sends_expandable_followup_reply_before_branding():
+
+    files = [
+        {
+            "type": "photo",
+            "file_id": "PHOTO_FILE_ID"
+        }
+    ]
+
+    plan = {
+        "media_caption": "❇️ خبر\n\n🔹 متن اصلی",
+        "media_parse_mode": None,
+        "media_caption_entities": [],
+        "followup_messages": [
+            "تحلیل کامل",
+            "#دنیا_۲۴_نیوز\n@Donya24News"
+        ],
+        "followup_message_entities": [
+            [
+                {
+                    "type": "expandable_blockquote",
+                    "offset": 0,
+                    "length": len("تحلیل کامل")
+                }
+            ],
+            []
+        ],
+        "blockquote_messages": [],
+        "document_fallback": False
+    }
+
+    with patch.object(
+        media_handler,
+        "send_single_media_to_channel",
+        return_value=True
+    ), patch.object(
+        media_handler,
+        "get_last_media_message_id",
+        return_value=509
+    ), patch.object(
+        media_handler,
+        "send_text_to_channel",
+        return_value=True
+    ) as mocked_send_text:
+
+        success = (
+            media_handler
+            .execute_telegram_plan(
+                files,
+                plan
+            )
+        )
+
+    assert success is True
+
+    assert mocked_send_text.call_count == 2
+
+    first_call = mocked_send_text.call_args_list[0]
+    second_call = mocked_send_text.call_args_list[1]
+
+    assert first_call.args == (
+        "تحلیل کامل",
+    )
+    assert first_call.kwargs == {
+        "entities": [
+            {
+                "type": "expandable_blockquote",
+                "offset": 0,
+                "length": len("تحلیل کامل")
+            }
+        ],
+        "reply_to_message_id": 509
+    }
+
+    assert second_call.args == (
+        "#دنیا_۲۴_نیوز\n@Donya24News",
+    )
+    assert second_call.kwargs == {
+        "reply_to_message_id": 509
+    }

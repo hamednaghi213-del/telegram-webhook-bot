@@ -8,6 +8,7 @@ from core.content_entities import build_blockquote_html
 from core.cleaner import clean_text
 
 from core.telegram_caption_entities import (
+    build_message_entity,
     build_telegram_caption_entities
 )
 
@@ -50,6 +51,7 @@ class PublicationPlan:
             "media_parse_mode": None,
             "media_caption_entities": [],
             "followup_messages": [],
+            "followup_message_entities": [],
             "blockquote_messages": [],
             "document_fallback": False
         }
@@ -1209,6 +1211,53 @@ def build_branded_blockquote_messages(
     return result
 
 
+def build_expandable_followup_messages(
+    blocks: List[
+        Dict[str, Any]
+    ]
+) -> Tuple[
+    List[str],
+    List[List[Dict[str, Any]]]
+]:
+
+    messages: List[str] = []
+    entities: List[
+        List[Dict[str, Any]]
+    ] = []
+
+    for block in blocks:
+
+        text = clean_blockquote_text(
+            block.get(
+                "text",
+                ""
+            )
+        )
+
+        if not text:
+            continue
+
+        for part in split_text(
+            text,
+            TELEGRAM_MESSAGE_LIMIT
+        ):
+
+            messages.append(
+                part
+            )
+
+            entities.append([
+                build_message_entity(
+                    "expandable_blockquote",
+                    part,
+                    0,
+                    len(part)
+                )
+            ])
+
+    return messages, entities
+
+
 # =========================================================
 # BALE BLOCKQUOTES
 # =========================================================
@@ -1346,6 +1395,7 @@ def create_telegram_plan(
         "media_parse_mode": None,
         "media_caption_entities": [],
         "followup_messages": [],
+        "followup_message_entities": [],
         "blockquote_messages": [],
         "document_fallback": False
     }
@@ -1358,6 +1408,131 @@ def create_telegram_plan(
     has_expandable = bool(
         expandable_blocks
     )
+
+    if has_expandable:
+
+        compact_main = (
+            compact_long_text(
+                main_text
+            )
+            or main_text
+        )
+
+        main_source = (
+            main_text
+            if len(main_text)
+            <= TELEGRAM_CAPTION_LIMIT
+            else compact_main
+        )
+
+        main_for_caption = main_source
+        remaining_main = ""
+
+        if len(main_source) > TELEGRAM_CAPTION_LIMIT:
+
+            position = (
+                find_media_split_position(
+                    main_source,
+                    TELEGRAM_CAPTION_LIMIT,
+                    minimum_fill_ratio=0.70
+                )
+            )
+
+            if position <= 0:
+                position = (
+                    TELEGRAM_CAPTION_LIMIT
+                )
+
+            main_for_caption = (
+                main_source[
+                    :position
+                ]
+                .strip()
+            )
+
+            remaining_main = (
+                main_source[
+                    position:
+                ]
+                .strip()
+            )
+
+        if not main_for_caption:
+
+            plan[
+                "document_fallback"
+            ] = True
+
+            return plan
+
+        (
+            expandable_messages,
+            expandable_entities
+        ) = build_expandable_followup_messages(
+            expandable_blocks
+        )
+
+        plan[
+            "media_caption"
+        ] = main_for_caption
+
+        if remaining_main:
+
+            main_replies = split_text(
+                remaining_main,
+                TELEGRAM_MESSAGE_SAFE_LIMIT
+            )
+
+            plan[
+                "followup_messages"
+            ].extend(
+                main_replies
+            )
+
+            plan[
+                "followup_message_entities"
+            ].extend(
+                [[] for _ in main_replies]
+            )
+
+        plan[
+            "followup_messages"
+        ].extend(
+            expandable_messages
+        )
+
+        plan[
+            "followup_message_entities"
+        ].extend(
+            expandable_entities
+        )
+
+        if branding:
+
+            plan[
+                "followup_messages"
+            ].append(
+                branding
+            )
+
+            plan[
+                "followup_message_entities"
+            ].append(
+                []
+            )
+
+        if blockquote_blocks:
+
+            plan[
+                "blockquote_messages"
+            ] = (
+                build_branded_blockquote_messages(
+                    blockquote_blocks,
+                    ""
+                )
+            )
+
+        return plan
 
     # =====================================================
     # SOURCE BLOCKQUOTE EXISTS

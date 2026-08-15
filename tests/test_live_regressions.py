@@ -121,10 +121,14 @@ def test_expandable_blockquote_removes_foreign_emoji():
         plan.telegram
     )
 
+    caption = (
+        telegram[
+            "media_caption"
+        ]
+    )
+
     # =====================================================
-    # NEW ENTITY-BASED POLICY
-    #
-    # دیگر کل Caption با HTML ارسال نمی‌شود.
+    # MAIN TEXT ONLY
     # =====================================================
 
     assert (
@@ -138,44 +142,12 @@ def test_expandable_blockquote_removes_foreign_emoji():
         telegram[
             "media_caption_entities"
         ]
-    )
-
-    entities = (
-        telegram[
-            "media_caption_entities"
-        ]
+        == []
     )
 
     assert (
-        len(entities)
-        >= 1
-    )
-
-    assert (
-        entities[0][
-            "type"
-        ]
-        == "expandable_blockquote"
-    )
-
-    caption = (
-        telegram[
-            "media_caption"
-        ]
-    )
-
-    # =====================================================
-    # PLAIN TEXT
-    # =====================================================
-
-    assert (
-        "<blockquote"
-        not in caption
-    )
-
-    assert (
-        "</blockquote>"
-        not in caption
+        caption
+        == main_text
     )
 
     # =====================================================
@@ -198,27 +170,26 @@ def test_expandable_blockquote_removes_foreign_emoji():
     )
 
     # =====================================================
-    # REAL CONTENT MUST REMAIN
+    # REAL CONTENT MUST MOVE TO EXPANDABLE FOLLOWUP
     # =====================================================
 
     assert (
         "بخش اول تحلیل"
-        in caption
+        not in caption
     )
 
     assert (
         "بخش دوم تحلیل"
-        in caption
+        not in caption
     )
 
     assert (
         "بخش سوم تحلیل"
-        in caption
+        not in caption
     )
 
     # =====================================================
-    # BRANDING MUST BE IN FOLLOWUP MESSAGES
-    # (ENTITY-BASED OVERFLOW PATH)
+    # FOLLOWUP ORDER
     # =====================================================
 
     followup_messages = (
@@ -229,12 +200,42 @@ def test_expandable_blockquote_removes_foreign_emoji():
 
     assert (
         len(followup_messages)
-        >= 1
+        == 2
+    )
+
+    assert (
+        "بخش اول تحلیل\n"
+        "بخش دوم تحلیل\n"
+        "بخش سوم تحلیل"
+        == followup_messages[0]
     )
 
     assert (
         DEFAULT_BRANDING
-        == followup_messages[0]
+        == followup_messages[1]
+    )
+
+    followup_entities = (
+        telegram[
+            "followup_message_entities"
+        ]
+    )
+
+    assert (
+        len(followup_entities)
+        == 2
+    )
+
+    assert (
+        followup_entities[0][0][
+            "type"
+        ]
+        == "expandable_blockquote"
+    )
+
+    assert (
+        followup_entities[1]
+        == []
     )
 
 

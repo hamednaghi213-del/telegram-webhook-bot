@@ -1014,6 +1014,9 @@ def extract_media_group_message_id(
 def send_text_to_channel(
     text: str,
     parse_mode: Optional[str] = None,
+    entities: Optional[
+        List[Dict[str, Any]]
+    ] = None,
     reply_to_message_id: Optional[int] = None
 ) -> bool:
 
@@ -1038,6 +1041,12 @@ def send_text_to_channel(
         payload[
             "parse_mode"
         ] = parse_mode
+
+    if entities:
+
+        payload[
+            "entities"
+        ] = entities
 
     if (
         isinstance(
@@ -1079,6 +1088,7 @@ def send_text_to_channel(
             f"✅ Telegram text sent | "
             f"length={len(text)} | "
             f"parse_mode={parse_mode or 'NONE'} | "
+            f"entities={len(entities or [])} | "
             f"reply_to="
             f"{reply_to_message_id or '-'}"
         )
@@ -1662,6 +1672,14 @@ def execute_telegram_plan(
         or []
     )
 
+    followup_message_entities = list(
+        plan.get(
+            "followup_message_entities",
+            []
+        )
+        or []
+    )
+
     blockquote_messages = list(
         plan.get(
             "blockquote_messages",
@@ -1815,14 +1833,37 @@ def execute_telegram_plan(
         followup_messages
     ):
 
+        message_entities = []
+
+        if index < len(
+            followup_message_entities
+        ):
+
+            message_entities = list(
+                followup_message_entities[
+                    index
+                ]
+                or []
+            )
+
+        send_kwargs: Dict[str, Any] = {}
+
+        if message_entities:
+
+            send_kwargs[
+                "entities"
+            ] = message_entities
+
         if media_message_id:
+
+            send_kwargs[
+                "reply_to_message_id"
+            ] = media_message_id
 
             success = (
                 send_text_to_channel(
                     message,
-                    reply_to_message_id=(
-                        media_message_id
-                    )
+                    **send_kwargs
                 )
             )
 
@@ -1836,7 +1877,8 @@ def execute_telegram_plan(
 
             success = (
                 send_text_to_channel(
-                    message
+                    message,
+                    **send_kwargs
                 )
             )
 
@@ -1848,24 +1890,33 @@ def execute_telegram_plan(
             )
 
     # =====================================================
-    # LEGACY BLOCKQUOTE
+    # BLOCKQUOTE FOLLOWUP
     # =====================================================
 
     for index, html_message in enumerate(
         blockquote_messages
     ):
 
-        logger.warning(
-            f"⚠️ Legacy standalone blockquote path used | "
-            f"index={index + 1}"
-        )
+        if media_message_id:
 
-        success = (
-            send_text_to_channel(
-                html_message,
-                parse_mode="HTML"
+            success = (
+                send_text_to_channel(
+                    html_message,
+                    parse_mode="HTML",
+                    reply_to_message_id=(
+                        media_message_id
+                    )
+                )
             )
-        )
+
+        else:
+
+            success = (
+                send_text_to_channel(
+                    html_message,
+                    parse_mode="HTML"
+                )
+            )
 
         if not success:
 
