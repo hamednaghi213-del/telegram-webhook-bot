@@ -37,9 +37,6 @@ def initialize(
     channel_id: str,
     secret_token: str
 ) -> None:
-    """
-    مقداردهی Webhook Handler.
-    """
 
     global API_URL
     global CHANNEL_ID
@@ -65,6 +62,7 @@ def initialize(
     API_URL = api_url.rstrip("/")
     CHANNEL_ID = channel_id
     SECRET_TOKEN = secret_token
+
     WEBHOOK_INITIALIZED = True
 
     logger.info(
@@ -78,9 +76,6 @@ def initialize(
 # =========================================================
 
 def validate_webhook_token() -> bool:
-    """
-    اعتبارسنجی Telegram Webhook Secret Token.
-    """
 
     if not WEBHOOK_INITIALIZED:
 
@@ -110,22 +105,16 @@ def validate_webhook_token() -> bool:
 
         return False
 
-    is_valid = secrets.compare_digest(
+    if not secrets.compare_digest(
         request_token,
         SECRET_TOKEN
-    )
-
-    if not is_valid:
+    ):
 
         logger.error(
             "❌ Invalid Telegram webhook secret token"
         )
 
         return False
-
-    logger.debug(
-        "✅ Telegram webhook token validated"
-    )
 
     return True
 
@@ -137,9 +126,6 @@ def validate_webhook_token() -> bool:
 def get_message_text(
     msg: Dict[str, Any]
 ) -> str:
-    """
-    استخراج text یا caption.
-    """
 
     caption = msg.get(
         "caption"
@@ -159,19 +145,12 @@ def get_message_text(
 
 
 # =========================================================
-# GET CORRECT ENTITIES
+# GET MESSAGE ENTITIES
 # =========================================================
 
 def get_message_entities(
     msg: Dict[str, Any]
 ) -> List[Dict[str, Any]]:
-    """
-    Caption:
-        caption_entities
-
-    Text:
-        entities
-    """
 
     if msg.get(
         "caption"
@@ -202,11 +181,9 @@ def extract_forward_source_metadata(
     msg: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    استخراج اطلاعات کانال یا منبع Forward.
+    استخراج پویا و عمومی اطلاعات منبع Forward.
 
-    این تابع فعلاً فقط برای Diagnostic استفاده می‌شود.
-
-    هیچ متنی حذف یا تغییر داده نمی‌شود.
+    هیچ کانالی در این تابع Hardcode نشده است.
     """
 
     result: Dict[str, Any] = {
@@ -221,13 +198,13 @@ def extract_forward_source_metadata(
 
     try:
 
+        # =================================================
+        # MODERN FORWARD_ORIGIN
+        # =================================================
+
         forward_origin = msg.get(
             "forward_origin"
         )
-
-        # =================================================
-        # MODERN TELEGRAM FORWARD_ORIGIN
-        # =================================================
 
         if isinstance(
             forward_origin,
@@ -247,10 +224,6 @@ def extract_forward_source_metadata(
                 )
                 or ""
             )
-
-            # ---------------------------------------------
-            # CHANNEL OR CHAT ORIGIN
-            # ---------------------------------------------
 
             origin_chat = (
                 forward_origin.get(
@@ -307,7 +280,7 @@ def extract_forward_source_metadata(
             )
 
         # =================================================
-        # BACKWARD COMPATIBILITY
+        # LEGACY FORWARD FORMAT
         # =================================================
 
         forward_from_chat = (
@@ -399,7 +372,7 @@ def extract_forward_source_metadata(
     except Exception as e:
 
         logger.exception(
-            f"❌ Forward metadata parse error | "
+            f"❌ Forward source extraction failed | "
             f"{e}"
         )
 
@@ -414,17 +387,6 @@ def log_message_diagnostics(
     req_id: str,
     msg: Dict[str, Any]
 ) -> None:
-    """
-    Diagnostic برای بررسی:
-
-    1. دو تکه شدن Caption
-    2. Forward source
-    3. Channel username/title
-    4. Entities
-    5. Media Group
-
-    این تابع هیچ تغییری در Message ایجاد نمی‌کند.
-    """
 
     try:
 
@@ -460,21 +422,11 @@ def log_message_diagnostics(
             or []
         )
 
-        media_group_id = (
-            msg.get(
-                "media_group_id"
-            )
-        )
-
         forward_info = (
             extract_forward_source_metadata(
                 msg
             )
         )
-
-        # =================================================
-        # BASIC LENGTH DIAGNOSTIC
-        # =================================================
 
         logger.info(
             f"[{req_id}] 🔬 MESSAGE-DIAGNOSTIC | "
@@ -482,12 +434,9 @@ def log_message_diagnostics(
             f"text_length={len(raw_text)} | "
             f"has_caption={bool(raw_caption)} | "
             f"caption_length={len(raw_caption)} | "
-            f"media_group_id={media_group_id or '-'}"
+            f"media_group_id="
+            f"{msg.get('media_group_id') or '-'}"
         )
-
-        # =================================================
-        # ENTITY DIAGNOSTIC
-        # =================================================
 
         logger.info(
             f"[{req_id}] 🔬 ENTITY-DIAGNOSTIC | "
@@ -496,26 +445,9 @@ def log_message_diagnostics(
             f"{len(caption_entities)}"
         )
 
-        if entities:
-
-            entity_types = [
-                str(
-                    entity.get(
-                        "type",
-                        ""
-                    )
-                )
-                for entity in entities
-            ]
-
-            logger.info(
-                f"[{req_id}] 🔬 TEXT-ENTITY-TYPES | "
-                f"{entity_types}"
-            )
-
         if caption_entities:
 
-            caption_entity_types = [
+            types = [
                 str(
                     entity.get(
                         "type",
@@ -528,12 +460,8 @@ def log_message_diagnostics(
 
             logger.info(
                 f"[{req_id}] 🔬 CAPTION-ENTITY-TYPES | "
-                f"{caption_entity_types}"
+                f"{types}"
             )
-
-        # =================================================
-        # FORWARD DIAGNOSTIC
-        # =================================================
 
         logger.info(
             f"[{req_id}] 🔬 FORWARD-DIAGNOSTIC | "
@@ -548,78 +476,44 @@ def log_message_diagnostics(
             f"source_username="
             f"{forward_info.get('source_username') or '-'} | "
             f"source_message_id="
-            f"{forward_info.get('source_message_id') or '-'} | "
-            f"sender_name="
-            f"{forward_info.get('sender_name') or '-'}"
+            f"{forward_info.get('source_message_id') or '-'}"
         )
-
-        # =================================================
-        # TAIL DIAGNOSTIC
-        # =================================================
-        #
-        # برای دیدن همان بخش‌هایی مثل:
-        #
-        # 🔷 🆔
-        # کانال ...
-        # @username
-        #
-        # فقط 500 کاراکتر انتهایی Caption را Log می‌کنیم.
-        # =================================================
 
         if raw_caption:
 
-            caption_tail = (
-                raw_caption[
-                    -500:
-                ]
-            )
-
             logger.info(
                 f"[{req_id}] 🔬 CAPTION-TAIL | "
-                f"{caption_tail!r}"
+                f"{raw_caption[-500:]!r}"
             )
 
         elif raw_text:
 
-            text_tail = (
-                raw_text[
-                    -500:
-                ]
-            )
-
             logger.info(
                 f"[{req_id}] 🔬 TEXT-TAIL | "
-                f"{text_tail!r}"
+                f"{raw_text[-500:]!r}"
             )
 
     except Exception as e:
 
         logger.exception(
-            f"[{req_id}] ❌ Diagnostic logging failed | "
+            f"[{req_id}] ❌ Diagnostic error | "
             f"{e}"
         )
 
 
 # =========================================================
-# GET MEDIA FROM MESSAGE
+# GET MEDIA
 # =========================================================
 
 def get_media_from_message(
     msg: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """
-    استخراج Media از Telegram Message.
-    """
 
     result: Dict[str, Any] = {
         "type": None,
         "file_id": None,
         "caption": ""
     }
-
-    # =====================================================
-    # VIDEO
-    # =====================================================
 
     if "video" in msg:
 
@@ -649,10 +543,6 @@ def get_media_from_message(
 
         return result
 
-    # =====================================================
-    # PHOTO
-    # =====================================================
-
     if "photo" in msg:
 
         photos = (
@@ -672,9 +562,7 @@ def get_media_from_message(
             result[
                 "file_id"
             ] = (
-                photos[
-                    -1
-                ].get(
+                photos[-1].get(
                     "file_id"
                 )
             )
@@ -690,10 +578,6 @@ def get_media_from_message(
             )
 
         return result
-
-    # =====================================================
-    # DOCUMENT
-    # =====================================================
 
     if "document" in msg:
 
@@ -723,10 +607,6 @@ def get_media_from_message(
 
         return result
 
-    # =====================================================
-    # VOICE
-    # =====================================================
-
     if "voice" in msg:
 
         result[
@@ -754,10 +634,6 @@ def get_media_from_message(
         )
 
         return result
-
-    # =====================================================
-    # AUDIO
-    # =====================================================
 
     if "audio" in msg:
 
@@ -799,9 +675,6 @@ def send_message(
     text: str,
     parse_mode: Optional[str] = None
 ) -> bool:
-    """
-    ارسال Status Message به کاربر.
-    """
 
     if not API_URL:
 
@@ -831,11 +704,10 @@ def send_message(
         )
 
         if response.status_code == 200:
-
             return True
 
         logger.error(
-            f"❌ User status message failed | "
+            f"❌ User message failed | "
             f"status={response.status_code} | "
             f"response={response.text[:500]}"
         )
@@ -845,7 +717,7 @@ def send_message(
     except Exception as e:
 
         logger.exception(
-            f"❌ send_message exception | "
+            f"❌ send_message failed | "
             f"{e}"
         )
 
@@ -860,9 +732,6 @@ def send_to_channel(
     text: str,
     parse_mode: Optional[str] = None
 ) -> bool:
-    """
-    ارسال Text Message مستقیم به کانال.
-    """
 
     if not API_URL or not CHANNEL_ID:
 
@@ -873,7 +742,6 @@ def send_to_channel(
         return False
 
     if not text:
-
         return False
 
     try:
@@ -896,16 +764,10 @@ def send_to_channel(
         )
 
         if response.status_code == 200:
-
-            logger.info(
-                f"✅ Telegram channel text sent | "
-                f"length={len(text)}"
-            )
-
             return True
 
         logger.error(
-            f"❌ Telegram channel text failed | "
+            f"❌ send_to_channel failed | "
             f"status={response.status_code} | "
             f"response={response.text[:1000]}"
         )
@@ -923,15 +785,12 @@ def send_to_channel(
 
 
 # =========================================================
-# BUILD USER BRANDING
+# BRANDING
 # =========================================================
 
 def build_branding_for_user(
     user_id: int
 ) -> str:
-    """
-    ساخت Branding مخصوص Tenant.
-    """
 
     try:
 
@@ -965,13 +824,11 @@ def build_branding_for_user(
         )
 
         if hashtag:
-
             parts.append(
                 hashtag
             )
 
         if channel_tag:
-
             parts.append(
                 channel_tag
             )
@@ -983,12 +840,84 @@ def build_branding_for_user(
     except Exception as e:
 
         logger.exception(
-            f"❌ Branding load failed | "
+            f"❌ Branding failed | "
             f"user={user_id} | "
             f"{e}"
         )
 
         return ""
+
+
+# =========================================================
+# FORMAT WITH OPTIONAL SOURCE
+# =========================================================
+
+def format_with_source(
+    text: str,
+    forward_source: Optional[
+        Dict[str, Any]
+    ] = None
+) -> str:
+    """
+    Formatter را فقط در صورت وجود Source Metadata
+    با پارامترهای جدید صدا می‌زند.
+
+    این کار باعث می‌شود مسیرهای قدیمی و تست‌های قبلی
+    همچنان با format_news(text) سازگار بمانند.
+    """
+
+    from core.formatter import (
+        format_news
+    )
+
+    source = (
+        forward_source
+        or {}
+    )
+
+    source_title = (
+        source.get(
+            "source_title",
+            ""
+        )
+        or ""
+    )
+
+    source_username = (
+        source.get(
+            "source_username",
+            ""
+        )
+        or ""
+    )
+
+    if (
+        source.get(
+            "is_forwarded"
+        )
+        and (
+            source_title
+            or source_username
+        )
+    ):
+
+        logger.info(
+            f"🧹 SOURCE-FORMAT | "
+            f"title={source_title or '-'} | "
+            f"username={source_username or '-'}"
+        )
+
+        return (
+            format_news(
+                text,
+                source_title=source_title,
+                source_username=source_username
+            )
+        )
+
+    return format_news(
+        text
+    )
 
 
 # =========================================================
@@ -1002,20 +931,16 @@ def process_single_photo_video(
     caption: str,
     caption_entities: List[
         Dict[str, Any]
-    ]
+    ],
+    forward_source: Optional[
+        Dict[str, Any]
+    ] = None
 ) -> bool:
-    """
-    Single Photo/Video را از معماری جدید عبور می‌دهد.
-    """
 
     try:
 
         from core.content_entities import (
             parse_telegram_entities
-        )
-
-        from core.formatter import (
-            format_news
         )
 
         from core.caption_manager import (
@@ -1026,10 +951,6 @@ def process_single_photo_video(
             execute_telegram_plan,
             execute_bale_plan
         )
-
-        # =================================================
-        # ENTITY PARSING
-        # =================================================
 
         parsed = (
             parse_telegram_entities(
@@ -1079,10 +1000,6 @@ def process_single_photo_video(
             f"other_entities={len(other_entities)}"
         )
 
-        # =================================================
-        # FORMAT
-        # =================================================
-
         formatted_main_text = ""
 
         if main_text:
@@ -1090,8 +1007,9 @@ def process_single_photo_video(
             try:
 
                 formatted_main_text = (
-                    format_news(
-                        main_text
+                    format_with_source(
+                        main_text,
+                        forward_source
                     )
                     or main_text
                 )
@@ -1099,17 +1017,13 @@ def process_single_photo_video(
             except Exception as e:
 
                 logger.exception(
-                    f"❌ Single media formatter failed | "
+                    f"❌ Formatter failed | "
                     f"{e}"
                 )
 
                 formatted_main_text = (
                     main_text
                 )
-
-        # =================================================
-        # BRANDING
-        # =================================================
 
         branding = (
             build_branding_for_user(
@@ -1124,10 +1038,6 @@ def process_single_photo_video(
             f"combined_estimate="
             f"{len(formatted_main_text) + len(branding)}"
         )
-
-        # =================================================
-        # PLAN
-        # =================================================
 
         publication_plan = (
             analyze_content(
@@ -1168,10 +1078,6 @@ def process_single_photo_video(
             }
         ]
 
-        # =================================================
-        # TELEGRAM
-        # =================================================
-
         telegram_success = (
             execute_telegram_plan(
                 files,
@@ -1182,14 +1088,10 @@ def process_single_photo_video(
         if not telegram_success:
 
             logger.error(
-                "❌ Single media Telegram plan failed"
+                "❌ Telegram single media failed"
             )
 
             return False
-
-        # =================================================
-        # BALE
-        # =================================================
 
         bale_success = (
             execute_bale_plan(
@@ -1202,8 +1104,7 @@ def process_single_photo_video(
         if not bale_success:
 
             logger.warning(
-                "⚠️ Single media Telegram succeeded "
-                "but Bale failed"
+                "⚠️ Telegram succeeded but Bale failed"
             )
 
         return True
@@ -1211,7 +1112,7 @@ def process_single_photo_video(
     except Exception as e:
 
         logger.exception(
-            f"❌ Single photo/video processing failed | "
+            f"❌ Single media processing failed | "
             f"{e}"
         )
 
@@ -1219,27 +1120,23 @@ def process_single_photo_video(
 
 
 # =========================================================
-# PROCESS LEGACY SINGLE MEDIA
+# LEGACY MEDIA
 # =========================================================
 
 def process_legacy_single_media(
     chat_id: int,
     file_id: str,
     media_type: str,
-    caption: str
+    caption: str,
+    forward_source: Optional[
+        Dict[str, Any]
+    ] = None
 ) -> bool:
-    """
-    مسیر قبلی برای document / voice / audio.
-    """
 
     try:
 
         from core.media_sender import (
             send_media_to_channel
-        )
-
-        from core.formatter import (
-            format_news
         )
 
         from core.bale_forwarder import (
@@ -1253,8 +1150,9 @@ def process_legacy_single_media(
             try:
 
                 formatted_caption = (
-                    format_news(
-                        caption
+                    format_with_source(
+                        caption,
+                        forward_source
                     )
                     or caption
                 )
@@ -1297,7 +1195,6 @@ def process_legacy_single_media(
         )
 
         if not success:
-
             return False
 
         try:
@@ -1329,7 +1226,7 @@ def process_legacy_single_media(
 
 
 # =========================================================
-# PROCESS TEXT MESSAGE
+# TEXT MESSAGE
 # =========================================================
 
 def process_text_message(
@@ -1337,17 +1234,13 @@ def process_text_message(
     text: str,
     entities: List[
         Dict[str, Any]
-    ]
+    ],
+    forward_source: Optional[
+        Dict[str, Any]
+    ] = None
 ) -> bool:
-    """
-    مسیر Text-only.
-    """
 
     try:
-
-        from core.formatter import (
-            format_news
-        )
 
         from core.content_entities import (
             build_full_html
@@ -1358,16 +1251,23 @@ def process_text_message(
         )
 
         formatted = (
-            format_news(
-                text
+            format_with_source(
+                text,
+                forward_source
             )
         )
 
         if not formatted:
-
             return False
 
-        if entities:
+        # فعلاً Entity-aware text path
+        # همان رفتار پایدار قبلی را حفظ می‌کند.
+        if entities and not (
+            forward_source
+            and forward_source.get(
+                "is_forwarded"
+            )
+        ):
 
             try:
 
@@ -1385,12 +1285,7 @@ def process_text_message(
                     )
                 )
 
-            except Exception as e:
-
-                logger.warning(
-                    f"⚠️ Text HTML fallback | "
-                    f"{e}"
-                )
+            except Exception:
 
                 success = (
                     send_to_channel(
@@ -1400,6 +1295,8 @@ def process_text_message(
 
         else:
 
+            # برای Forwarded Text از formatted استفاده می‌کنیم
+            # تا Source Signature حذف شود.
             success = (
                 send_to_channel(
                     formatted
@@ -1407,7 +1304,6 @@ def process_text_message(
             )
 
         if not success:
-
             return False
 
         try:
@@ -1444,9 +1340,6 @@ def handle_webhook() -> Tuple[
     Dict[str, Any],
     int
 ]:
-    """
-    پردازش اصلی Telegram Webhook.
-    """
 
     req_id = (
         str(
@@ -1466,10 +1359,6 @@ def handle_webhook() -> Tuple[
 
         if not validate_webhook_token():
 
-            logger.error(
-                f"[{req_id}] 🔒 Webhook validation failed"
-            )
-
             return {
                 "ok": False
             }, 403
@@ -1484,27 +1373,15 @@ def handle_webhook() -> Tuple[
 
         if not data:
 
-            logger.warning(
-                f"[{req_id}] ⚠️ Empty Webhook JSON"
-            )
-
             return {
                 "ok": True
             }, 200
-
-        # =================================================
-        # MESSAGE
-        # =================================================
 
         msg = data.get(
             "message"
         )
 
         if not msg:
-
-            logger.info(
-                f"[{req_id}] ℹ️ Update has no message"
-            )
 
             return {
                 "ok": True
@@ -1522,19 +1399,12 @@ def handle_webhook() -> Tuple[
 
         if chat_id is None:
 
-            logger.error(
-                f"[{req_id}] ❌ chat_id not found"
-            )
-
             return {
                 "ok": True
             }, 200
 
         # =================================================
-        # DIAGNOSTIC
-        # =================================================
-        #
-        # هیچ تغییری در Message ایجاد نمی‌کند.
+        # DIAGNOSTIC + FORWARD SOURCE
         # =================================================
 
         log_message_diagnostics(
@@ -1542,8 +1412,14 @@ def handle_webhook() -> Tuple[
             msg
         )
 
+        forward_source = (
+            extract_forward_source_metadata(
+                msg
+            )
+        )
+
         # =================================================
-        # INPUT DATA
+        # INPUT
         # =================================================
 
         text = (
@@ -1566,15 +1442,6 @@ def handle_webhook() -> Tuple[
                 []
             )
             or []
-        )
-
-        logger.info(
-            f"[{req_id}] 📩 Message received | "
-            f"chat={chat_id} | "
-            f"text={bool(msg.get('text'))} | "
-            f"caption={bool(msg.get('caption'))} | "
-            f"entities={len(entities)} | "
-            f"caption_entities={len(caption_entities)}"
         )
 
         # =================================================
@@ -1614,7 +1481,7 @@ def handle_webhook() -> Tuple[
             }, 200
 
         # =================================================
-        # TENANT VALIDATION
+        # TENANT
         # =================================================
 
         try:
@@ -1623,10 +1490,8 @@ def handle_webhook() -> Tuple[
                 get_tenant
             )
 
-            tenant = (
-                get_tenant(
-                    chat_id
-                )
+            tenant = get_tenant(
+                chat_id
             )
 
         except Exception as e:
@@ -1703,21 +1568,32 @@ def handle_webhook() -> Tuple[
             )
         ):
 
-            logger.info(
-                f"[{req_id}] 🖼️ Media Group | "
-                f"group={msg.get('media_group_id')} | "
-                f"type={media_type}"
-            )
-
             try:
 
                 from core.media_handler import (
                     handle_media_group_message
                 )
 
+                # -----------------------------------------
+                # اطلاعات منبع را داخل خود Message نگه می‌داریم.
+                # امضای تابع media_handler تغییر نمی‌کند.
+                # -----------------------------------------
+
+                message_for_media = dict(
+                    msg
+                )
+
+                if forward_source.get(
+                    "is_forwarded"
+                ):
+
+                    message_for_media[
+                        "_forward_source"
+                    ] = forward_source
+
                 accepted = (
                     handle_media_group_message(
-                        message=msg,
+                        message=message_for_media,
                         file_id=file_id,
                         media_type=media_type,
                         caption=caption,
@@ -1770,20 +1646,29 @@ def handle_webhook() -> Tuple[
             and file_id
         ):
 
-            logger.info(
-                f"[{req_id}] 🎞️ Single Media | "
-                f"type={media_type}"
-            )
+            kwargs = {
+                "chat_id": chat_id,
+                "file_id": file_id,
+                "media_type": media_type,
+                "caption": caption,
+                "caption_entities": (
+                    caption_entities
+                )
+            }
+
+            # برای حفظ Backward Compatibility،
+            # فقط اگر واقعاً Forward باشد این آرگومان اضافه می‌شود.
+            if forward_source.get(
+                "is_forwarded"
+            ):
+
+                kwargs[
+                    "forward_source"
+                ] = forward_source
 
             success = (
                 process_single_photo_video(
-                    chat_id=chat_id,
-                    file_id=file_id,
-                    media_type=media_type,
-                    caption=caption,
-                    caption_entities=(
-                        caption_entities
-                    )
+                    **kwargs
                 )
             )
 
@@ -1820,17 +1705,24 @@ def handle_webhook() -> Tuple[
             and file_id
         ):
 
-            logger.info(
-                f"[{req_id}] 📎 Legacy Single Media | "
-                f"type={media_type}"
-            )
+            kwargs = {
+                "chat_id": chat_id,
+                "file_id": file_id,
+                "media_type": media_type,
+                "caption": caption
+            }
+
+            if forward_source.get(
+                "is_forwarded"
+            ):
+
+                kwargs[
+                    "forward_source"
+                ] = forward_source
 
             success = (
                 process_legacy_single_media(
-                    chat_id=chat_id,
-                    file_id=file_id,
-                    media_type=media_type,
-                    caption=caption
+                    **kwargs
                 )
             )
 
@@ -1866,15 +1758,23 @@ def handle_webhook() -> Tuple[
 
         if pure_text.strip():
 
-            logger.info(
-                f"[{req_id}] 📝 Text Message"
-            )
+            kwargs = {
+                "chat_id": chat_id,
+                "text": pure_text,
+                "entities": entities
+            }
+
+            if forward_source.get(
+                "is_forwarded"
+            ):
+
+                kwargs[
+                    "forward_source"
+                ] = forward_source
 
             success = (
                 process_text_message(
-                    chat_id=chat_id,
-                    text=pure_text,
-                    entities=entities
+                    **kwargs
                 )
             )
 
@@ -1897,14 +1797,6 @@ def handle_webhook() -> Tuple[
                 "ok": True
             }, 200
 
-        # =================================================
-        # EMPTY / UNSUPPORTED
-        # =================================================
-
-        logger.warning(
-            f"[{req_id}] ⚠️ Empty or unsupported message"
-        )
-
         send_message(
             chat_id,
             "❌ پیام قابل پردازش نیست."
@@ -1917,7 +1809,7 @@ def handle_webhook() -> Tuple[
     except Exception as e:
 
         logger.exception(
-            f"[{req_id}] ❌ Webhook Handler fatal error | "
+            f"[{req_id}] ❌ Webhook fatal error | "
             f"{e}"
         )
 
