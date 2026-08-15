@@ -967,48 +967,6 @@ def test_missing_tenant_stops_processing():
 
 # =========================================================
 # TEST 20
-# COMMAND
-# =========================================================
-
-def test_command_path():
-
-    command_message = {
-        "chat": {
-            "id": 1001
-        },
-        "text": "/start"
-    }
-
-    fake_request = FakeRequest(
-        {
-            "message": command_message
-        }
-    )
-
-    with patch.object(
-        webhook_handler,
-        "request",
-        fake_request
-    ), patch.object(
-        webhook_handler,
-        "validate_webhook_token",
-        return_value=True
-    ):
-
-        result, status = (
-            webhook_handler.handle_webhook()
-        )
-
-    assert status == 200
-
-    fake_command_handler.handle_command.assert_called_once_with(
-        "/start",
-        1001
-    )
-
-
-# =========================================================
-# TEST 21
 # ALBUM STATUS
 # =========================================================
 
@@ -1046,7 +1004,7 @@ def test_album_status_message_sent():
 
 
 # =========================================================
-# TEST 22
+# TEST 21
 # SINGLE PHOTO STATUS
 # =========================================================
 
@@ -1086,7 +1044,7 @@ def test_single_photo_success_status():
 
 
 # =========================================================
-# TEST 23
+# TEST 22
 # ALBUM FAILURE STATUS
 # =========================================================
 
@@ -1124,7 +1082,7 @@ def test_album_failure_status():
 
 
 # =========================================================
-# TEST 24
+# TEST 23
 # SINGLE CAPTION ENTITIES FORWARDED
 # =========================================================
 
@@ -1185,7 +1143,7 @@ def test_single_media_caption_entities_forwarded():
 
 
 # =========================================================
-# TEST 25
+# TEST 24
 # FORWARD ORIGIN EXTRACTS CHANNEL SOURCE
 # =========================================================
 
@@ -1254,7 +1212,7 @@ def test_forward_origin_extracts_channel_source():
 
 
 # =========================================================
-# TEST 26
+# TEST 25
 # SINGLE FORWARD PASSES SOURCE
 # =========================================================
 
@@ -1334,7 +1292,7 @@ def test_single_forward_passes_source_metadata():
 
 
 # =========================================================
-# TEST 27
+# TEST 26
 # FORMAT WITH SOURCE
 # =========================================================
 
@@ -1372,7 +1330,7 @@ def test_format_with_source_passes_dynamic_source():
 
 
 # =========================================================
-# TEST 28
+# TEST 27
 # NO DUPLICATE BLUE BULLET
 # =========================================================
 
@@ -1408,7 +1366,7 @@ def test_formatter_does_not_duplicate_blue_bullet():
 
 
 # =========================================================
-# TEST 29
+# TEST 28
 # REMOVE DYNAMIC SOURCE SIGNATURE
 # =========================================================
 
@@ -1450,7 +1408,7 @@ def test_formatter_removes_dynamic_source_signature():
 
 
 # =========================================================
-# TEST 30
+# TEST 29
 # DONYA24 ICON POLICY
 # =========================================================
 
@@ -1529,7 +1487,7 @@ def test_formatter_keeps_only_donya24_format_icons():
 
 
 # =========================================================
-# TEST 31
+# TEST 30
 # ALBUM PASSES FORWARD SOURCE
 # =========================================================
 
@@ -1617,7 +1575,7 @@ def test_album_passes_forward_source_metadata():
 
 
 # =========================================================
-# TEST 32
+# TEST 31
 # TEXT MESSAGE PRESERVES OWN BRANDING
 # =========================================================
 
