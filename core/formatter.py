@@ -43,9 +43,6 @@ def initialize(
     channel_tag: str,
     hashtag: str
 ) -> None:
-    """
-    مقداردهی Formatter.
-    """
 
     global CHANNEL_TAG, HASHTAG
 
@@ -66,16 +63,6 @@ def initialize(
 def normalize_username(
     username: Optional[str]
 ) -> str:
-    """
-    username را برای مقایسه استاندارد می‌کند.
-
-    example:
-        sepah_cyberi_iran
-        @sepah_cyberi_iran
-
-    هر دو به:
-        @sepah_cyberi_iran
-    """
 
     if not username:
         return ""
@@ -98,24 +85,12 @@ def normalize_username(
 def strip_leading_decoration(
     text: str
 ) -> str:
-    """
-    Bullet و تزئینات ابتدای خط را برای مقایسه حذف می‌کند.
-
-    مثال:
-
-        🔹 سپاه سایبری پاسداران
-        🔷 کانال سپاه سایبری پاسداران
-        🇮🇷 @sepah_cyberi_iran
-
-    خروجی برای مقایسه تمیزتر می‌شود.
-    """
 
     if not text:
         return ""
 
     value = text.strip()
 
-    # حذف Bulletهای شناخته‌شده
     changed = True
 
     while changed:
@@ -131,10 +106,8 @@ def strip_leading_decoration(
                 ].strip()
 
                 changed = True
-
                 break
 
-    # حذف چند علامت متداول معرفی منبع
     value = re.sub(
         r"^(?:🆔|📡|📢|🔗|🌐|🇮🇷)\s*",
         "",
@@ -142,6 +115,153 @@ def strip_leading_decoration(
     ).strip()
 
     return value
+
+
+# =========================================================
+# ORPHAN DECORATION DETECTION
+# =========================================================
+
+def is_orphan_decoration_line(
+    line: str
+) -> bool:
+    """
+    تشخیص خطوط باقی‌مانده از امضای منبع.
+
+    نمونه‌هایی که باید حذف شوند:
+
+        🔷 |
+        🔹 |
+        |
+        🔷
+        🆔
+        🔷 🆔 |
+        🔹 🔷 |
+
+    این تابع فقط خطوطی را حذف می‌کند که عملاً
+    هیچ محتوای خبری واقعی ندارند.
+    """
+
+    if not line:
+        return True
+
+    value = line.strip()
+
+    if not value:
+        return True
+
+    # حذف تزئینات شناخته‌شده
+    previous = None
+
+    while (
+        value
+        and value != previous
+    ):
+
+        previous = value
+
+        for token in (
+            "🔹",
+            "🔷",
+            "▪️",
+            "▫️",
+            "◾",
+            "◽",
+            "•",
+            "▪",
+            "▫",
+            "🆔",
+            "📡",
+            "📢",
+            "🔗",
+            "🌐",
+            "🇮🇷",
+        ):
+
+            value = value.replace(
+                token,
+                ""
+            )
+
+        value = value.strip()
+
+    # جداکننده‌هایی که بعد از حذف Source
+    # ممکن است تنها بمانند.
+    value = re.sub(
+        r"[\s|｜¦:：\-–—_/\\]+",
+        "",
+        value
+    )
+
+    return not bool(
+        value.strip()
+    )
+
+
+# =========================================================
+# REMOVE ORPHAN DECORATIONS
+# =========================================================
+
+def remove_orphan_decorations(
+    text: str
+) -> str:
+    """
+    خطوط تزئینی بدون محتوای واقعی را حذف می‌کند.
+
+    این مرحله عمداً بعد از Source Cleanup نیز
+    قابل اجراست تا چیزی مثل:
+
+        🔷 |
+
+    وارد Formatter نهایی نشود.
+    """
+
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+
+    result: List[str] = []
+
+    removed = 0
+
+    for line in lines:
+
+        stripped = line.strip()
+
+        if (
+            stripped
+            and is_orphan_decoration_line(
+                stripped
+            )
+        ):
+
+            removed += 1
+            continue
+
+        result.append(
+            line
+        )
+
+    # حذف خطوط خالی انتهایی
+    while (
+        result
+        and not result[-1].strip()
+    ):
+
+        result.pop()
+
+    cleaned = "\n".join(
+        result
+    )
+
+    if removed:
+
+        logger.info(
+            f"🧹 Orphan decoration removed | "
+            f"count={removed}"
+        )
+
+    return cleaned
 
 
 # =========================================================
@@ -153,12 +273,6 @@ def is_source_line(
     source_title: Optional[str] = None,
     source_username: Optional[str] = None
 ) -> bool:
-    """
-    بررسی می‌کند آیا خط مربوط به امضای کانال مبدأ است.
-
-    فقط مقایسه محافظه‌کارانه انجام می‌شود تا
-    متن واقعی خبر اشتباهی حذف نشود.
-    """
 
     if not line:
         return False
@@ -178,31 +292,31 @@ def is_source_line(
         normalized_line.lower()
     )
 
-    # =====================================================
-    # SOURCE USERNAME
-    # =====================================================
-
     normalized_source_username = (
         normalize_username(
             source_username
         )
     )
 
+    # =====================================================
+    # SOURCE USERNAME
+    # =====================================================
+
     if normalized_source_username:
 
-        # اگر خط دقیقاً username باشد
         if (
             normalized_line_lower
             == normalized_source_username
         ):
             return True
 
-        # یا username همراه یک تزئین ساده
         if (
             normalized_source_username
             in normalized_line_lower
-            and len(normalized_line_lower) <= (
-                len(normalized_source_username) + 20
+            and len(normalized_line_lower)
+            <= (
+                len(normalized_source_username)
+                + 20
             )
         ):
             return True
@@ -224,21 +338,18 @@ def is_source_line(
 
         if source_title_lower:
 
-            # عنوان دقیق کانال
             if (
                 normalized_line_lower
                 == source_title_lower
             ):
                 return True
 
-            # کانال + عنوان کانال
             if (
                 normalized_line_lower
                 == f"کانال {source_title_lower}"
             ):
                 return True
 
-            # عنوان + کانال
             if (
                 normalized_line_lower
                 == f"{source_title_lower} کانال"
@@ -257,15 +368,6 @@ def remove_source_signature(
     source_title: Optional[str] = None,
     source_username: Optional[str] = None
 ) -> str:
-    """
-    اطلاعات کانال مبدأ را فقط از انتهای خبر حذف می‌کند.
-
-    نکته:
-    در متن اصلی خبر جستجوی کور انجام نمی‌دهیم.
-
-    فقط بخش انتهایی بررسی می‌شود تا مثلاً اگر وسط خبر
-    نام همان کانال آمده، اشتباهی حذف نشود.
-    """
 
     if not text:
         return ""
@@ -275,13 +377,16 @@ def remove_source_signature(
     if not lines:
         return text
 
-    # حداکثر 6 خط انتهایی را بررسی می‌کنیم.
     start_index = max(
         0,
-        len(lines) - 6
+        len(lines) - 8
     )
 
     removable_indexes = set()
+
+    # =====================================================
+    # FIND SOURCE LINES
+    # =====================================================
 
     for index in range(
         start_index,
@@ -300,67 +405,80 @@ def remove_source_signature(
                 index
             )
 
-    # -----------------------------------------------------
-    # اگر خط username یا title حذف شد،
-    # خطوط تزئینی خالی/ایموجی-only مجاور آن هم حذف شوند.
-    # -----------------------------------------------------
+    # =====================================================
+    # REMOVE ADJACENT DECORATION
+    # =====================================================
 
     if removable_indexes:
 
-        for index in list(
-            removable_indexes
-        ):
+        changed = True
 
-            for neighbor in (
-                index - 1,
-                index + 1
-            ):
+        while changed:
 
-                if (
-                    neighbor < start_index
-                    or neighbor >= len(lines)
+            changed = False
+
+            current_indexes = list(
+                removable_indexes
+            )
+
+            for index in current_indexes:
+
+                for neighbor in (
+                    index - 1,
+                    index + 1
                 ):
-                    continue
 
-                candidate = (
-                    lines[
+                    if (
+                        neighbor < start_index
+                        or neighbor >= len(lines)
+                    ):
+                        continue
+
+                    if (
                         neighbor
-                    ].strip()
-                )
+                        in removable_indexes
+                    ):
+                        continue
 
-                if not candidate:
-
-                    removable_indexes.add(
-                        neighbor
+                    candidate = (
+                        lines[
+                            neighbor
+                        ].strip()
                     )
 
-                    continue
+                    if (
+                        not candidate
+                        or is_orphan_decoration_line(
+                            candidate
+                        )
+                    ):
 
-                # فقط Emoji/Decoration
-                decoration_only = re.fullmatch(
-                    r"[\s🔹🔷▪▫◾◽•🆔📡📢🔗🌐🇮🇷]+",
-                    candidate
-                )
+                        removable_indexes.add(
+                            neighbor
+                        )
 
-                if decoration_only:
+                        changed = True
 
-                    removable_indexes.add(
-                        neighbor
-                    )
+    # =====================================================
+    # REBUILD
+    # =====================================================
 
-    if not removable_indexes:
+    if removable_indexes:
 
-        return text
+        cleaned_lines = [
+            line
+            for index, line
+            in enumerate(lines)
+            if index
+            not in removable_indexes
+        ]
 
-    cleaned_lines = [
-        line
-        for index, line
-        in enumerate(lines)
-        if index
-        not in removable_indexes
-    ]
+    else:
 
-    # حذف خطوط خالی انتهای متن
+        cleaned_lines = list(
+            lines
+        )
+
     while (
         cleaned_lines
         and not cleaned_lines[-1].strip()
@@ -372,11 +490,23 @@ def remove_source_signature(
         cleaned_lines
     )
 
-    logger.info(
-        f"🧹 Source signature removed | "
-        f"title={source_title or '-'} | "
-        f"username={source_username or '-'}"
+    # =====================================================
+    # FINAL ORPHAN CLEANUP
+    # =====================================================
+
+    cleaned_text = (
+        remove_orphan_decorations(
+            cleaned_text
+        )
     )
+
+    if removable_indexes:
+
+        logger.info(
+            f"🧹 Source signature removed | "
+            f"title={source_title or '-'} | "
+            f"username={source_username or '-'}"
+        )
 
     return cleaned_text
 
@@ -388,9 +518,6 @@ def remove_source_signature(
 def split_lines(
     text: str
 ) -> List[str]:
-    """
-    تقسیم متن به خطوط با حفظ خطوط خالی.
-    """
 
     if not text:
         return []
@@ -405,9 +532,6 @@ def split_lines(
 def has_known_bullet(
     text: str
 ) -> bool:
-    """
-    آیا خط از قبل Bullet دارد؟
-    """
 
     if not text:
         return False
@@ -430,23 +554,6 @@ def normalize_body_line(
     line: str,
     bullet: str = BODY_BULLET
 ) -> str:
-    """
-    هر خط خبری دقیقاً یک Bullet خواهد داشت.
-
-    اگر خودش Bullet داشته باشد:
-        همان یک Bullet حفظ می‌شود.
-
-    اگر نداشته باشد:
-        Bullet استاندارد اضافه می‌شود.
-
-    بنابراین:
-
-        🔹 متن
-
-    دیگر تبدیل نمی‌شود به:
-
-        🔹 🔹 متن
-    """
 
     if not line:
         return ""
@@ -456,16 +563,23 @@ def normalize_body_line(
     if not stripped:
         return ""
 
-    # -----------------------------------------------------
-    # اگر از قبل Bullet دارد
-    # -----------------------------------------------------
+    # =====================================================
+    # SAFETY:
+    # ORPHAN DECORATION MUST NEVER BECOME BODY CONTENT
+    # =====================================================
+
+    if is_orphan_decoration_line(
+        stripped
+    ):
+        return ""
+
+    # =====================================================
+    # EXISTING BULLET
+    # =====================================================
 
     if has_known_bullet(
         stripped
     ):
-
-        # همه Bulletهای متوالی ابتدای خط را حذف می‌کنیم
-        # و فقط Bullet استاندارد خودمان را قرار می‌دهیم.
 
         cleaned = stripped
 
@@ -488,19 +602,27 @@ def normalize_body_line(
                     ].strip()
 
                     changed = True
-
                     break
 
-        if not cleaned:
+        # ---------------------------------------------
+        # بعد از حذف Bullet ممکن است فقط "|" بماند.
+        # ---------------------------------------------
+
+        if (
+            not cleaned
+            or is_orphan_decoration_line(
+                cleaned
+            )
+        ):
             return ""
 
         return (
             f"{bullet} {cleaned}"
         )
 
-    # -----------------------------------------------------
-    # خط بدون Bullet
-    # -----------------------------------------------------
+    # =====================================================
+    # NO BULLET
+    # =====================================================
 
     return (
         f"{bullet} {stripped}"
@@ -515,11 +637,6 @@ def format_paragraph(
     lines: List[str],
     bullet: str = BODY_BULLET
 ) -> str:
-    """
-    قالب‌بندی یک پاراگراف خبری.
-
-    هر خط دقیقاً یک Bullet خواهد داشت.
-    """
 
     if not lines:
         return ""
@@ -553,17 +670,6 @@ def format_paragraph(
 def normalize_title(
     title: str
 ) -> str:
-    """
-    جلوگیری از تکرار آیکون تیتر.
-
-    مثال:
-
-        ❇️ تیتر
-
-    دوباره تبدیل نمی‌شود به:
-
-        ❇️ ❇️ تیتر
-    """
 
     if not title:
         return ""
@@ -592,17 +698,6 @@ def format_news(
     source_title: Optional[str] = None,
     source_username: Optional[str] = None
 ) -> str:
-    """
-    تبدیل متن خبر به قالب استاندارد دنیا ۲۴.
-
-    قابلیت‌های این نسخه:
-
-    1. Cleaner
-    2. حذف امضای کانال مبدأ
-    3. جلوگیری از Bullet تکراری
-    4. جلوگیری از تکرار Icon تیتر
-    5. حفظ مرز پاراگراف‌ها
-    """
 
     if not raw_text:
         return ""
@@ -651,13 +746,32 @@ def format_news(
 
         return ""
 
+    # =====================================================
+    # STEP 3
+    # FINAL ORPHAN CLEANUP BEFORE FORMATTING
+    # =====================================================
+
+    cleaned = (
+        remove_orphan_decorations(
+            cleaned
+        )
+    )
+
+    if not cleaned:
+
+        logger.warning(
+            "⚠️ Text empty after orphan cleanup"
+        )
+
+        return ""
+
     logger.debug(
         f"After cleanup | "
         f"length={len(cleaned)}"
     )
 
     # =====================================================
-    # STEP 3
+    # STEP 4
     # SPLIT LINES
     # =====================================================
 
@@ -674,7 +788,7 @@ def format_news(
         return ""
 
     # =====================================================
-    # STEP 4
+    # STEP 5
     # FIND TITLE
     # =====================================================
 
@@ -689,7 +803,12 @@ def format_news(
             line.strip()
         )
 
-        if stripped:
+        if (
+            stripped
+            and not is_orphan_decoration_line(
+                stripped
+            )
+        ):
 
             title = (
                 normalize_title(
@@ -715,7 +834,7 @@ def format_news(
         return ""
 
     # =====================================================
-    # STEP 5
+    # STEP 6
     # BODY
     # =====================================================
 
@@ -724,7 +843,7 @@ def format_news(
     ]
 
     # =====================================================
-    # STEP 6
+    # STEP 7
     # BUILD RESULT
     # =====================================================
 
@@ -742,9 +861,9 @@ def format_news(
                 line.strip()
             )
 
-            # -------------------------------------------------
-            # خط خالی = مرز پاراگراف
-            # -------------------------------------------------
+            # ---------------------------------------------
+            # EMPTY LINE
+            # ---------------------------------------------
 
             if not stripped:
 
@@ -767,17 +886,27 @@ def format_news(
 
                 continue
 
-            # -------------------------------------------------
-            # خط معمولی
-            # -------------------------------------------------
+            # ---------------------------------------------
+            # ORPHAN DECORATION
+            # ---------------------------------------------
+
+            if is_orphan_decoration_line(
+                stripped
+            ):
+
+                continue
+
+            # ---------------------------------------------
+            # NORMAL LINE
+            # ---------------------------------------------
 
             current_paragraph.append(
                 stripped
             )
 
-        # -----------------------------------------------------
-        # پاراگراف آخر
-        # -----------------------------------------------------
+        # =================================================
+        # LAST PARAGRAPH
+        # =================================================
 
         if current_paragraph:
 
@@ -793,6 +922,41 @@ def format_news(
                     "\n\n"
                     + formatted_paragraph
                 )
+
+    # =====================================================
+    # STEP 8
+    # ABSOLUTE FINAL SAFETY
+    # =====================================================
+
+    final_lines = []
+
+    for line in result.splitlines():
+
+        stripped = line.strip()
+
+        if (
+            stripped
+            and is_orphan_decoration_line(
+                stripped
+            )
+        ):
+
+            continue
+
+        final_lines.append(
+            line
+        )
+
+    while (
+        final_lines
+        and not final_lines[-1].strip()
+    ):
+
+        final_lines.pop()
+
+    result = "\n".join(
+        final_lines
+    )
 
     logger.debug(
         f"✅ Formatted news | "
@@ -811,9 +975,6 @@ def add_branding(
     include_hashtag: bool = True,
     include_channel: bool = True
 ) -> str:
-    """
-    افزودن Branding استاندارد.
-    """
 
     if not formatted_text:
         return ""
@@ -876,9 +1037,6 @@ def process_news(
     source_title: Optional[str] = None,
     source_username: Optional[str] = None
 ) -> str:
-    """
-    پردازش کامل خبر.
-    """
 
     if not raw_text:
         return ""
