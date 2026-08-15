@@ -70,9 +70,6 @@ def make_text(
 def assert_telegram_limits(
     plan: PublicationPlan
 ) -> None:
-    """
-    بررسی تمام Limitهای Telegram Media.
-    """
 
     telegram = plan.telegram
 
@@ -107,9 +104,6 @@ def assert_telegram_limits(
 def assert_bale_limits(
     plan: PublicationPlan
 ) -> None:
-    """
-    بررسی تمام Limitهای Bale Media.
-    """
 
     bale = plan.bale
 
@@ -144,9 +138,6 @@ def assert_bale_limits(
 def assert_telegram_text_limits(
     plan: PublicationPlan
 ) -> None:
-    """
-    بررسی Limitهای Telegram Text Plan.
-    """
 
     telegram_text = (
         plan.text[
@@ -176,9 +167,6 @@ def assert_telegram_text_limits(
 def assert_bale_text_limits(
     plan: PublicationPlan
 ) -> None:
-    """
-    بررسی Limitهای Bale Text Plan.
-    """
 
     bale_text = (
         plan.text[
@@ -1526,4 +1514,165 @@ def test_bale_text_plan_respects_limits():
 
     assert_bale_text_limits(
         plan
+    )
+
+
+# =========================================================
+# TEST 27
+# TELEGRAM TEXT MUST NOT SPLIT BELOW OFFICIAL LIMIT
+# =========================================================
+
+def test_telegram_text_does_not_split_when_final_message_fits_4096():
+
+    # متن عمداً بیشتر از Safe Limit فعلی 4000 است،
+    # اما همراه Branding هنوز باید زیر سقف رسمی
+    # Telegram یعنی 4096 باقی بماند.
+
+    available_for_main_text = (
+        TELEGRAM_MESSAGE_LIMIT
+        - len(DEFAULT_BRANDING)
+        - 2
+    )
+
+    main_text = (
+        "الف"
+        * (
+            available_for_main_text
+            - 5
+        )
+    )
+
+    assert (
+        len(main_text)
+        > TELEGRAM_MESSAGE_SAFE_LIMIT
+    )
+
+    assert (
+        len(
+            append_branding(
+                main_text,
+                DEFAULT_BRANDING
+            )
+        )
+        <= TELEGRAM_MESSAGE_LIMIT
+    )
+
+    plan = analyze_content(
+        main_text=main_text,
+        branding=DEFAULT_BRANDING
+    )
+
+    messages = (
+        plan.text[
+            "telegram"
+        ][
+            "messages"
+        ]
+    )
+
+    # انتظار مطلوب:
+    # چون متن + Branding زیر 4096 است،
+    # نباید به دو پیام تقسیم شود.
+
+    assert (
+        len(messages)
+        == 1
+    )
+
+    assert (
+        DEFAULT_BRANDING
+        in messages[0]
+    )
+
+    assert (
+        len(messages[0])
+        <= TELEGRAM_MESSAGE_LIMIT
+    )
+
+
+# =========================================================
+# TEST 28
+# FORMATTER REMOVES SOURCE ICONS AND FOOTER
+# =========================================================
+
+def test_formatter_removes_source_icons_and_promotional_footer():
+
+    from core.formatter import (
+        format_news
+    )
+
+    raw_text = (
+        "کارشناس صداوسیما در برنامه به وقت ایران "
+        "می‌گوید به رهبر شهید درباره نفت آمریکا "
+        "گزارش غلط داده بودند.\n\n"
+        "🔷 رهبر شهید گفته بودند نفت آمریکا "
+        "۱۰ سال دیگر تمام می‌شود.\n\n"
+        "🔷 🆔 @AbdiMediaNet | #عبدی_مدیا\n"
+        "🔷 سایت | واتس‌اپ | یوتیوب | کست باکس"
+    )
+
+    result = format_news(
+        raw_text,
+        source_title="عبدی مدیا",
+        source_username="AbdiMediaNet"
+    )
+
+    # متن واقعی خبر باید باقی بماند
+    assert (
+        "کارشناس صداوسیما"
+        in result
+    )
+
+    assert (
+        "رهبر شهید گفته بودند"
+        in result
+    )
+
+    # آیکون منبع نباید باقی بماند
+    assert (
+        "🔷"
+        not in result
+    )
+
+    assert (
+        "🆔"
+        not in result
+    )
+
+    # شناسه و هشتگ منبع نباید باقی بمانند
+    assert (
+        "@AbdiMediaNet"
+        not in result
+    )
+
+    assert (
+        "#عبدی_مدیا"
+        not in result
+    )
+
+    # Footer تبلیغاتی منبع نباید باقی بماند
+    assert (
+        "واتس‌اپ"
+        not in result
+    )
+
+    assert (
+        "یوتیوب"
+        not in result
+    )
+
+    assert (
+        "کست باکس"
+        not in result
+    )
+
+    # Formatter دنیا ۲۴ باید همچنان فعال باشد
+    assert (
+        "❇️"
+        in result
+    )
+
+    assert (
+        "🔹"
+        in result
     )
