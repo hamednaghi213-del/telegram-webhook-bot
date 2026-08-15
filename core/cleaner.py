@@ -17,13 +17,6 @@ HASHTAG = None
 # =========================================================
 
 def initialize(channel_tag, hashtag):
-    """
-    مقداردهی Cleaner.
-
-    Args:
-        channel_tag: منشن اصلی کانال
-        hashtag: هشتگ اصلی رسانه
-    """
 
     global CHANNEL_TAG, HASHTAG
 
@@ -55,17 +48,6 @@ HASH_PATTERN = re.compile(
 
 # =========================================================
 # INVITE PATTERNS
-# =========================================================
-#
-# نکته مهم:
-#
-# Pattern عمومی "عضویت" عمداً وجود ندارد.
-#
-# چون ممکن است در متن واقعی خبر عباراتی مانند:
-#
-# "عضویت ایران در بریکس"
-#
-# وجود داشته باشد.
 # =========================================================
 
 INVITE_PATTERNS = [
@@ -115,16 +97,6 @@ INVITE_PATTERNS = [
 # =========================================================
 # EMOJI PATTERN
 # =========================================================
-#
-# بازه کامل:
-#
-# \uFE00-\uFEFF
-#
-# عمداً استفاده نشده است.
-#
-# فقط Variation Selectorهای واقعی FE0E و FE0F
-# در بخش مربوط به خودشان مدیریت می‌شوند.
-# =========================================================
 
 EMOJI_PATTERN = re.compile(
     "["
@@ -149,15 +121,45 @@ EMOJI_PATTERN = re.compile(
 
 
 # =========================================================
+# SENTENCE END CONFIG
+# =========================================================
+
+SENTENCE_ENDINGS = (
+    ".",
+    "؟",
+    "?",
+    "!",
+    "…"
+)
+
+FOOTER_HINT_PATTERN = re.compile(
+    (
+        r'('
+        r'کانال|'
+        r'تلگرام|'
+        r'خبرگزاری|'
+        r'رسانه|'
+        r'منبع|'
+        r'اخبار|'
+        r'عضویت|'
+        r'لینک|'
+        r'بیشتر|'
+        r'ادامه|'
+        r'channel|'
+        r'telegram|'
+        r'news|'
+        r'media'
+        r')'
+    ),
+    re.IGNORECASE
+)
+
+
+# =========================================================
 # NORMALIZE SPACES
 # =========================================================
 
 def normalize_spaces(text: str) -> str:
-    """
-    فاصله و Tab اضافی داخل هر خط را اصلاح می‌کند.
-
-    Line breakها و ساختار پاراگرافی حفظ می‌شوند.
-    """
 
     if not text:
         return ""
@@ -191,19 +193,6 @@ def normalize_blank_lines(
     text: str,
     max_blank_lines: int = 1
 ) -> str:
-    """
-    ساختار پاراگراف‌ها را حفظ می‌کند،
-    اما تعداد زیاد خطوط خالی متوالی را محدود می‌کند.
-
-    max_blank_lines=1 یعنی:
-
-    پاراگراف اول
-
-    پاراگراف دوم
-
-    حفظ می‌شود؛ ولی ۳ یا ۴ خط خالی متوالی
-    به یک خط خالی کاهش پیدا می‌کند.
-    """
 
     if not text:
         return ""
@@ -211,7 +200,6 @@ def normalize_blank_lines(
     lines = text.splitlines()
 
     result = []
-
     blank_count = 0
 
     for line in lines:
@@ -220,7 +208,11 @@ def normalize_blank_lines(
 
             blank_count += 1
 
-            if blank_count <= max_blank_lines:
+            if (
+                blank_count
+                <= max_blank_lines
+            ):
+
                 result.append("")
 
             continue
@@ -242,24 +234,16 @@ def normalize_blank_lines(
 
 def remove_all_emojis(text: str) -> str:
     """
-    حذف Emojiها از متن.
+    حذف Emojiهای منبع.
 
-    دو علامت قالب‌بندی دنیا ۲۴ حفظ می‌شوند:
+    دو علامت قالب دنیا ۲۴ حفظ می‌شوند:
 
     ❇️
     🔹
-
-    هشدار معماری:
-    این تابع باید بعد از Telegram Entity Parsing
-    روی main_text اجرا شود.
     """
 
     if not text:
         return ""
-
-    # -----------------------------------------------------
-    # حفظ علامت‌های قالب دنیا ۲۴
-    # -----------------------------------------------------
 
     title_placeholder = (
         "[[DONYA24_TITLE_MARK]]"
@@ -279,18 +263,10 @@ def remove_all_emojis(text: str) -> str:
         bullet_placeholder
     )
 
-    # -----------------------------------------------------
-    # حذف Emoji
-    # -----------------------------------------------------
-
     text = EMOJI_PATTERN.sub(
         "",
         text
     )
-
-    # -----------------------------------------------------
-    # حذف فقط Variation Selectorها
-    # -----------------------------------------------------
 
     text = text.replace(
         "\uFE0F",
@@ -301,10 +277,6 @@ def remove_all_emojis(text: str) -> str:
         "\uFE0E",
         ""
     )
-
-    # -----------------------------------------------------
-    # بازگرداندن علامت‌های قالب
-    # -----------------------------------------------------
 
     text = text.replace(
         title_placeholder,
@@ -328,21 +300,9 @@ def remove_all_emojis(text: str) -> str:
 def clean_foreign_mentions_and_hashtags(
     text: str
 ) -> str:
-    """
-    حذف منشن و هشتگ‌های خارجی.
-
-    CHANNEL_TAG و HASHTAG خود سیستم
-    در صورت وجود حفظ می‌شوند.
-
-    URL و عبارت‌های دعوت تبلیغاتی نیز حذف می‌شوند.
-    """
 
     if not text:
         return ""
-
-    # -----------------------------------------------------
-    # Mention
-    # -----------------------------------------------------
 
     def replace_at(match):
 
@@ -353,6 +313,7 @@ def clean_foreign_mentions_and_hashtags(
             and full.lower()
             == str(CHANNEL_TAG).lower()
         ):
+
             return full
 
         return ""
@@ -362,10 +323,6 @@ def clean_foreign_mentions_and_hashtags(
         text
     )
 
-    # -----------------------------------------------------
-    # Hashtag
-    # -----------------------------------------------------
-
     def replace_hash(match):
 
         full = match.group(0)
@@ -374,6 +331,7 @@ def clean_foreign_mentions_and_hashtags(
             HASHTAG
             and full == HASHTAG
         ):
+
             return full
 
         return ""
@@ -383,18 +341,10 @@ def clean_foreign_mentions_and_hashtags(
         text
     )
 
-    # -----------------------------------------------------
-    # URLs
-    # -----------------------------------------------------
-
     text = URL_PATTERN.sub(
         "",
         text
     )
-
-    # -----------------------------------------------------
-    # Invite phrases
-    # -----------------------------------------------------
 
     for pattern in INVITE_PATTERNS:
 
@@ -415,9 +365,6 @@ def clean_foreign_mentions_and_hashtags(
 def clean_trailing_emojis(
     text: str
 ) -> str:
-    """
-    حذف Emojiهای باقی‌مانده از انتهای متن.
-    """
 
     if not text:
         return ""
@@ -428,29 +375,19 @@ def clean_trailing_emojis(
 
         last_char = text[-1]
 
-        # -------------------------------------------------
-        # Space / newline
-        # -------------------------------------------------
-
         if last_char.isspace():
 
             text = text[:-1]
-            continue
 
-        # -------------------------------------------------
-        # Emoji
-        # -------------------------------------------------
+            continue
 
         if EMOJI_PATTERN.fullmatch(
             last_char
         ):
 
             text = text[:-1]
-            continue
 
-        # -------------------------------------------------
-        # Variation Selector
-        # -------------------------------------------------
+            continue
 
         if last_char in (
             "\uFE0F",
@@ -458,15 +395,13 @@ def clean_trailing_emojis(
         ):
 
             text = text[:-1]
-            continue
 
-        # -------------------------------------------------
-        # Zero Width Joiner
-        # -------------------------------------------------
+            continue
 
         if last_char == "\u200D":
 
             text = text[:-1]
+
             continue
 
         break
@@ -475,26 +410,242 @@ def clean_trailing_emojis(
 
 
 # =========================================================
-# CLEAN AFTER LAST PERIOD
+# DECIMAL SAFE PERIOD CHECK
 # =========================================================
 
-def clean_after_last_period(
+def is_decimal_period(
+    text: str,
+    index: int
+) -> bool:
+    """
+    تشخیص نقطه اعشاری.
+
+    مثال:
+        2.5
+        ۲.۵
+    """
+
+    if (
+        index <= 0
+        or index >= len(text) - 1
+    ):
+
+        return False
+
+    before = text[
+        index - 1
+    ]
+
+    after = text[
+        index + 1
+    ]
+
+    return (
+        before.isdigit()
+        and after.isdigit()
+    )
+
+
+# =========================================================
+# FIND LAST REAL SENTENCE END
+# =========================================================
+
+def find_last_sentence_end(
+    text: str
+) -> int:
+    """
+    آخرین پایان واقعی جمله را پیدا می‌کند.
+
+    نقطه اعشاری به‌عنوان پایان جمله
+    در نظر گرفته نمی‌شود.
+    """
+
+    if not text:
+        return -1
+
+    for index in range(
+        len(text) - 1,
+        -1,
+        -1
+    ):
+
+        char = text[
+            index
+        ]
+
+        if (
+            char
+            not in SENTENCE_ENDINGS
+        ):
+
+            continue
+
+        if (
+            char == "."
+            and is_decimal_period(
+                text,
+                index
+            )
+        ):
+
+            continue
+
+        return index
+
+    return -1
+
+
+# =========================================================
+# FOOTER LIKELIHOOD
+# =========================================================
+
+def looks_like_footer(
+    text: str
+) -> bool:
+    """
+    بررسی محافظه‌کارانه اینکه بخش انتهایی
+    شبیه Footer رسانه‌ای است یا نه.
+    """
+
+    if not text:
+        return False
+
+    value = (
+        text.strip()
+    )
+
+    if not value:
+        return False
+
+    lines = [
+        line.strip()
+        for line in value.splitlines()
+        if line.strip()
+    ]
+
+    if not lines:
+        return False
+
+    # Footer باید کوچک باشد.
+    if len(lines) > 4:
+
+        return False
+
+    if len(value) > 220:
+
+        return False
+
+    # Mention
+    if AT_PATTERN.search(
+        value
+    ):
+
+        return True
+
+    # URL
+    if URL_PATTERN.search(
+        value
+    ):
+
+        return True
+
+    # عبارت‌های شناخته‌شده
+    if FOOTER_HINT_PATTERN.search(
+        value
+    ):
+
+        return True
+
+    # -----------------------------------------------------
+    # حالت بسیار رایج:
+    #
+    # متن تمام شده و فقط یک نام کوتاه رسانه مانده.
+    #
+    # مثال:
+    #
+    # سپاه سایبری پاسداران
+    #
+    # یا:
+    #
+    # رسانه اقتصاد ایران
+    #
+    # -----------------------------------------------------
+
+    if (
+        len(lines) == 1
+        and len(value) <= 60
+        and not any(
+            ending in value
+            for ending
+            in SENTENCE_ENDINGS
+        )
+    ):
+
+        return True
+
+    return False
+
+
+# =========================================================
+# SAFE CLEAN AFTER LAST SENTENCE
+# =========================================================
+
+def clean_after_last_sentence(
     text: str
 ) -> str:
     """
-    عمداً غیرفعال است.
+    نسخه امن منطق قدیمی.
 
-    علت:
+    اگر بعد از آخرین پایان جمله
+    فقط Footer کوتاه رسانه‌ای وجود داشته باشد،
+    آن Footer حذف می‌شود.
 
-    اعداد اعشاری مانند:
-
-    ۱.۵۷
-    2.5
-
-    نباید اشتباهاً باعث حذف ادامه متن شوند.
+    اگر Tail شبیه متن واقعی خبر باشد،
+    هیچ چیزی حذف نمی‌شود.
     """
 
-    return text or ""
+    if not text:
+        return ""
+
+    sentence_end = (
+        find_last_sentence_end(
+            text
+        )
+    )
+
+    if sentence_end < 0:
+
+        return text
+
+    main_text = (
+        text[
+            :sentence_end + 1
+        ].rstrip()
+    )
+
+    trailing = (
+        text[
+            sentence_end + 1:
+        ].strip()
+    )
+
+    if not trailing:
+
+        return text
+
+    if looks_like_footer(
+        trailing
+    ):
+
+        logger.info(
+            f"🧹 Trailing footer removed | "
+            f"length={len(trailing)} | "
+            f"preview={trailing[:100]!r}"
+        )
+
+        return main_text
+
+    return text
 
 
 # =========================================================
@@ -504,17 +655,9 @@ def clean_after_last_period(
 def clean_media_footer(
     text: str
 ) -> str:
-    """
-    حذف Footerهای ساده رسانه‌ای و تبلیغاتی
-    از انتهای متن.
-    """
 
     if not text:
         return ""
-
-    # -----------------------------------------------------
-    # / MediaName English
-    # -----------------------------------------------------
 
     text = re.sub(
         r'/\s*[^\s/]+\s+[A-Za-z]+\.?\s*$',
@@ -522,29 +665,17 @@ def clean_media_footer(
         text
     )
 
-    # -----------------------------------------------------
-    # / MediaName
-    # -----------------------------------------------------
-
     text = re.sub(
         r'/\s*[^\s/]+\.?\s*$',
         '',
         text
     )
 
-    # -----------------------------------------------------
-    # Domain-like footer
-    # -----------------------------------------------------
-
     text = re.sub(
         r'[A-Za-z]+\.[A-Za-z]*\s*$',
         '',
         text
     )
-
-    # -----------------------------------------------------
-    # @channel - Link
-    # -----------------------------------------------------
 
     text = re.sub(
         (
@@ -567,21 +698,9 @@ def clean_media_footer(
 def clean_all_trailing_content(
     text: str
 ) -> str:
-    """
-    حذف Footer، لینک، منبع و محتوای تبلیغاتی.
-
-    ساختار پاراگراف‌ها حفظ می‌شود.
-
-    CHANNEL_TAG اصلی سیستم نیز
-    در صورت وجود عمداً حذف نمی‌شود.
-    """
 
     if not text:
         return ""
-
-    # -----------------------------------------------------
-    # محتوای بعد از |
-    # -----------------------------------------------------
 
     text = re.sub(
         r'\|.*$',
@@ -589,10 +708,6 @@ def clean_all_trailing_content(
         text,
         flags=re.MULTILINE
     )
-
-    # -----------------------------------------------------
-    # عبارت‌های انتهایی channel / telegram
-    # -----------------------------------------------------
 
     text = re.sub(
         (
@@ -603,11 +718,6 @@ def clean_all_trailing_content(
         text,
         flags=re.IGNORECASE
     )
-
-    # -----------------------------------------------------
-    # حذف Mention خارجی
-    # CHANNEL_TAG خودمان حفظ می‌شود
-    # -----------------------------------------------------
 
     def replace_trailing_mention(
         match
@@ -620,6 +730,7 @@ def clean_all_trailing_content(
             and full.lower()
             == str(CHANNEL_TAG).lower()
         ):
+
             return full
 
         return ""
@@ -629,20 +740,12 @@ def clean_all_trailing_content(
         text
     )
 
-    # -----------------------------------------------------
-    # حذف کلمات تبلیغاتی مستقل
-    # -----------------------------------------------------
-
     text = re.sub(
         r'\b(کانال|تلگرام|channel|telegram)\b',
         '',
         text,
         flags=re.IGNORECASE
     )
-
-    # -----------------------------------------------------
-    # Link / More footer
-    # -----------------------------------------------------
 
     text = re.sub(
         (
@@ -654,11 +757,6 @@ def clean_all_trailing_content(
         text,
         flags=re.IGNORECASE
     )
-
-    # -----------------------------------------------------
-    # نام رسانه‌های رایج
-    # فقط در انتهای متن
-    # -----------------------------------------------------
 
     media_names = [
 
@@ -706,10 +804,6 @@ def clean_all_trailing_content(
             flags=re.IGNORECASE
         )
 
-    # -----------------------------------------------------
-    # Footerهای عمومی باقی‌مانده
-    # -----------------------------------------------------
-
     text = re.sub(
         r'/\s*[^\s/]+\s*\.?\s*$',
         '',
@@ -722,10 +816,6 @@ def clean_all_trailing_content(
         text
     )
 
-    # -----------------------------------------------------
-    # پردازش خط به خط
-    # -----------------------------------------------------
-
     lines = text.splitlines()
 
     cleaned_lines = []
@@ -734,13 +824,6 @@ def clean_all_trailing_content(
 
         stripped = line.strip()
 
-        # -------------------------------------------------
-        # اصلاح مهم:
-        # خطوط خالی را حذف نمی‌کنیم.
-        #
-        # با این کار پاراگراف‌های خبر حفظ می‌شوند.
-        # -------------------------------------------------
-
         if not stripped:
 
             cleaned_lines.append(
@@ -748,10 +831,6 @@ def clean_all_trailing_content(
             )
 
             continue
-
-        # -------------------------------------------------
-        # خط فقط شامل Mention / Link
-        # -------------------------------------------------
 
         if re.match(
             (
@@ -763,10 +842,6 @@ def clean_all_trailing_content(
         ):
 
             continue
-
-        # -------------------------------------------------
-        # Mention خارجی + Link
-        # -------------------------------------------------
 
         match = re.search(
             (
@@ -780,12 +855,16 @@ def clean_all_trailing_content(
 
         if match:
 
-            mention = match.group(1)
+            mention = (
+                match.group(1)
+            )
 
             if not (
                 CHANNEL_TAG
                 and mention.lower()
-                == str(CHANNEL_TAG).lower()
+                == str(
+                    CHANNEL_TAG
+                ).lower()
             ):
 
                 continue
@@ -798,28 +877,14 @@ def clean_all_trailing_content(
         cleaned_lines
     )
 
-    # -----------------------------------------------------
-    # فاصله‌های داخل خطوط
-    # -----------------------------------------------------
-
     text = normalize_spaces(
         text
     )
-
-    # -----------------------------------------------------
-    # اصلاح مهم:
-    # حفظ پاراگراف‌ها ولی جلوگیری از
-    # چندین خط خالی متوالی
-    # -----------------------------------------------------
 
     text = normalize_blank_lines(
         text,
         max_blank_lines=1
     )
-
-    # -----------------------------------------------------
-    # حذف Emoji انتهایی
-    # -----------------------------------------------------
 
     text = clean_trailing_emojis(
         text
@@ -838,46 +903,21 @@ def clean_text(
     """
     پاکسازی کامل متن خبری.
 
-    ترتیب پردازش:
+    ترتیب:
 
-    1. حذف Emojiهای غیرضروری
-    2. حذف Mention / Hashtag خارجی
-    3. حذف URLs و Invite
-    4. حذف trailing content
-    5. حذف Media Footer
-    6. حفظ و Normalization ساختار پاراگراف‌ها
-
-    =======================================================
-    قانون معماری بسیار مهم
-    =======================================================
-
-    این تابع نباید مستقیماً روی متن خام Telegram
-    قبل از Entity Parsing اجرا شود.
-
-    ترتیب صحیح:
-
-        Telegram raw text
-                +
-        Telegram entities
-                ↓
-        parse_telegram_entities()
-                ↓
-            main_text
-                ↓
-            clean_text()
-                ↓
-            format_news()
-
-    علت:
-
-    Telegram offset و length را بر اساس UTF-16
-    و متن خام محاسبه می‌کند.
-
-    Cleaner طول و ساختار متن را تغییر می‌دهد.
-
-    بنابراین اگر Cleaner قبل از Entity Parser اجرا شود،
-    offsetهای Entity دیگر معتبر نخواهند بود.
-    =======================================================
+    Entity Parsing
+        ↓
+    Emoji Cleanup
+        ↓
+    Mention / URL Cleanup
+        ↓
+    Trailing Cleanup
+        ↓
+    Safe Last Sentence Cleanup
+        ↓
+    Media Footer Cleanup
+        ↓
+    Final Normalization
     """
 
     if not text:
@@ -891,72 +931,56 @@ def clean_text(
 
     # =====================================================
     # STEP 1
-    # Emoji
+    # EMOJI
     # =====================================================
 
     text = remove_all_emojis(
         text
     )
 
-    logger.debug(
-        f"After emojis | "
-        f"length={len(text)} | "
-        f"preview={text[:80]!r}"
-    )
-
     # =====================================================
     # STEP 2
-    # Mentions / Hashtags / URLs / Invite
+    # MENTIONS / HASHTAGS / URLS
     # =====================================================
 
-    text = clean_foreign_mentions_and_hashtags(
-        text
-    )
-
-    logger.debug(
-        f"After mentions | "
-        f"length={len(text)} | "
-        f"preview={text[:80]!r}"
+    text = (
+        clean_foreign_mentions_and_hashtags(
+            text
+        )
     )
 
     # =====================================================
     # STEP 3
-    # Trailing Content
+    # GENERAL TRAILING CLEANUP
     # =====================================================
 
-    text = clean_all_trailing_content(
-        text
-    )
-
-    logger.debug(
-        f"After trailing | "
-        f"length={len(text)} | "
-        f"preview={text[:80]!r}"
+    text = (
+        clean_all_trailing_content(
+            text
+        )
     )
 
     # =====================================================
     # STEP 4
-    # Media Footer
+    # SAFE OLD BEHAVIOR
     # =====================================================
 
-    text = clean_media_footer(
-        text
-    )
-
-    logger.debug(
-        f"After footer | "
-        f"length={len(text)} | "
-        f"preview={text[:80]!r}"
+    text = (
+        clean_after_last_sentence(
+            text
+        )
     )
 
     # =====================================================
-    # clean_after_last_period
-    # عمداً غیرفعال
+    # STEP 5
+    # MEDIA FOOTER
     # =====================================================
 
-    # text = clean_after_last_period(
-    #     text
-    # )
+    text = (
+        clean_media_footer(
+            text
+        )
+    )
 
     # =====================================================
     # FINAL NORMALIZATION
