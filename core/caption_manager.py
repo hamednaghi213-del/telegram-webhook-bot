@@ -391,32 +391,22 @@ def find_split_position(
 
 
 # =========================================================
-# NEW:
-# FIND SPLIT CLOSE TO MEDIA CAPTION LIMIT
+# MEDIA SPLIT
 # =========================================================
 
 def find_media_split_position(
     text: str,
     limit: int,
-    minimum_fill_ratio: float = 0.60
+    minimum_fill_ratio: float = 0.70
 ) -> int:
     """
-    مخصوص Caption رسانه.
+    برای Caption رسانه.
 
-    مشکل قبلی:
-    اگر تنها \\n\\n موجود، فاصله بعد از تیتر بود،
-    همان نقطه انتخاب می‌شد و تقریباً کل بدنه به Reply می‌رفت.
+    نکته مهم:
+    شکست بعد از تیتر نباید باعث شود تقریباً تمام متن
+    به Reply منتقل شود.
 
-    سیاست جدید:
-    فقط شکست‌هایی پذیرفته می‌شوند که به اندازه کافی
-    نزدیک سقف Caption باشند.
-
-    اولویت:
-    1. Paragraph نزدیک انتهای ظرفیت
-    2. Line نزدیک انتهای ظرفیت
-    3. Sentence نزدیک انتهای ظرفیت
-    4. Word نزدیک انتهای ظرفیت
-    5. Hard cut
+    نزدیک‌ترین نقطه منطقی به انتهای ظرفیت انتخاب می‌شود.
     """
 
     if not text:
@@ -440,8 +430,10 @@ def find_media_split_position(
         )
     )
 
+    candidates: List[int] = []
+
     # =====================================================
-    # 1. PARAGRAPH
+    # PARAGRAPH
     # =====================================================
 
     position = (
@@ -452,10 +444,12 @@ def find_media_split_position(
 
     if position >= minimum_position:
 
-        return position
+        candidates.append(
+            position
+        )
 
     # =====================================================
-    # 2. LINE
+    # LINE
     # =====================================================
 
     position = (
@@ -466,52 +460,37 @@ def find_media_split_position(
 
     if position >= minimum_position:
 
-        return position
+        candidates.append(
+            position
+        )
 
     # =====================================================
-    # 3. SENTENCE
+    # SENTENCE
     # =====================================================
 
-    sentence_marks = (
+    for mark in (
         "؟",
         "!",
         ".",
         "?",
         "۔",
         "…"
-    )
+    ):
 
-    best_sentence_position = -1
-
-    for mark in sentence_marks:
-
-        current = (
+        position = (
             search_text.rfind(
                 mark
             )
         )
 
-        if (
-            current
-            > best_sentence_position
-        ):
+        if position >= minimum_position:
 
-            best_sentence_position = (
-                current
+            candidates.append(
+                position + 1
             )
 
-    if (
-        best_sentence_position
-        >= minimum_position
-    ):
-
-        return (
-            best_sentence_position
-            + 1
-        )
-
     # =====================================================
-    # 4. WORD
+    # WORD
     # =====================================================
 
     position = (
@@ -522,24 +501,22 @@ def find_media_split_position(
 
     if position >= minimum_position:
 
-        return position
-
-    # =====================================================
-    # 5. LAST LINE FALLBACK
-    # =====================================================
-
-    position = (
-        search_text.rfind(
-            "\n"
+        candidates.append(
+            position
         )
-    )
-
-    if position > 0:
-
-        return position
 
     # =====================================================
-    # 6. LAST WORD FALLBACK
+    # BEST NEAR-LIMIT POSITION
+    # =====================================================
+
+    if candidates:
+
+        return max(
+            candidates
+        )
+
+    # =====================================================
+    # WORD FALLBACK
     # =====================================================
 
     position = (
@@ -553,7 +530,7 @@ def find_media_split_position(
         return position
 
     # =====================================================
-    # 7. HARD CUT
+    # HARD CUT
     # =====================================================
 
     return limit
@@ -629,7 +606,10 @@ def split_text(
         )
 
         if split_position <= 0:
-            split_position = limit
+
+            split_position = (
+                limit
+            )
 
         part = (
             remaining[
@@ -727,7 +707,10 @@ def split_for_media(
     )
 
     if split_position <= 0:
-        split_position = caption_limit
+
+        split_position = (
+            caption_limit
+        )
 
     result[
         "media_caption"
@@ -793,28 +776,53 @@ def place_branding(
 
     if messages:
 
-        combined = (
+        # Branding در Caption اول هم باید بماند.
+        combined_caption = (
             append_branding(
-                messages[-1],
+                media_caption,
                 branding
             )
         )
 
-        if len(combined) <= message_limit:
+        if (
+            len(combined_caption)
+            <= caption_limit
+        ):
 
-            messages[-1] = (
-                combined
+            media_caption = (
+                combined_caption
             )
 
-        else:
+        # هر Follow-up نیز Branding خودش را دارد.
+        branded_messages: List[str] = []
 
-            messages.append(
-                branding
+        for message in messages:
+
+            combined = (
+                append_branding(
+                    message,
+                    branding
+                )
             )
+
+            if (
+                len(combined)
+                <= message_limit
+            ):
+
+                branded_messages.append(
+                    combined
+                )
+
+            else:
+
+                branded_messages.append(
+                    message
+                )
 
         return {
             "media_caption": media_caption,
-            "followup_messages": messages
+            "followup_messages": branded_messages
         }
 
     combined = (
@@ -824,7 +832,10 @@ def place_branding(
         )
     )
 
-    if len(combined) <= caption_limit:
+    if (
+        len(combined)
+        <= caption_limit
+    ):
 
         media_caption = (
             combined
@@ -866,26 +877,37 @@ def place_branding_in_text_messages(
             branding
         ]
 
-    combined = (
-        append_branding(
-            result[-1],
-            branding
-        )
-    )
+    # =====================================================
+    # هر پیام Branding خودش را دارد
+    # =====================================================
 
-    if len(combined) <= message_limit:
+    branded_result: List[str] = []
 
-        result[-1] = (
-            combined
-        )
+    for message in result:
 
-    else:
-
-        result.append(
-            branding
+        combined = (
+            append_branding(
+                message,
+                branding
+            )
         )
 
-    return result
+        if (
+            len(combined)
+            <= message_limit
+        ):
+
+            branded_result.append(
+                combined
+            )
+
+        else:
+
+            branded_result.append(
+                message
+            )
+
+    return branded_result
 
 
 def brand_followup_messages(
@@ -927,7 +949,10 @@ def brand_followup_messages(
             )
         )
 
-        if len(combined) <= message_limit:
+        if (
+            len(combined)
+            <= message_limit
+        ):
 
             result.append(
                 combined
@@ -1049,7 +1074,7 @@ def create_telegram_blockquote_messages(
 
         for part in parts:
 
-            html_message = (
+            result.append(
                 build_blockquote_html(
                     part,
                     expandable=bool(
@@ -1059,10 +1084,6 @@ def create_telegram_blockquote_messages(
                         )
                     )
                 )
-            )
-
-            result.append(
-                html_message
             )
 
     return result
@@ -1198,7 +1219,11 @@ def build_smart_expandable_media_caption(
         )
     )
 
-    if len(final_plain) > caption_limit:
+    if (
+        len(final_plain)
+        > caption_limit
+    ):
+
         return None
 
     if len(main_text) < 350:
@@ -1226,7 +1251,10 @@ def build_smart_expandable_media_caption(
     )
 
     if position <= 0:
-        position = target
+
+        position = (
+            target
+        )
 
     normal_part = (
         main_text[
@@ -1282,7 +1310,11 @@ def build_smart_expandable_media_caption(
 
         return None
 
-    if len(html_caption) > caption_limit:
+    if (
+        len(html_caption)
+        > caption_limit
+    ):
+
         return None
 
     return html_caption
@@ -1457,13 +1489,14 @@ def create_telegram_plan(
     )
 
     # =====================================================
-    # SOURCE BLOCKQUOTE EXISTS
+    # SOURCE BLOCKQUOTE
     # =====================================================
 
     if has_source_blockquotes:
 
         # =================================================
-        # 1. FULL VERSION
+        # ATTEMPT 1
+        # FULL ORIGINAL
         # =================================================
 
         full_caption = (
@@ -1475,11 +1508,21 @@ def create_telegram_plan(
             )
         )
 
-        if (
-            full_caption
-            and telegram_html_visible_length(
+        full_visible = (
+            telegram_html_visible_length(
                 full_caption
             )
+        )
+
+        logger.info(
+            f"🧪 Telegram full caption check | "
+            f"visible={full_visible} | "
+            f"limit={TELEGRAM_CAPTION_LIMIT}"
+        )
+
+        if (
+            full_caption
+            and full_visible
             <= TELEGRAM_CAPTION_LIMIT
         ):
 
@@ -1491,10 +1534,16 @@ def create_telegram_plan(
                 "media_parse_mode"
             ] = "HTML"
 
+            logger.info(
+                "✅ Telegram one-post mode | "
+                "original content fits"
+            )
+
             return plan
 
         # =================================================
-        # 2. COMPACT MAIN
+        # ATTEMPT 2
+        # COMPACT MAIN + BLOCKQUOTE + BRANDING
         # =================================================
 
         compact_main = (
@@ -1513,11 +1562,21 @@ def create_telegram_plan(
             )
         )
 
-        if (
-            compact_caption
-            and telegram_html_visible_length(
+        compact_visible = (
+            telegram_html_visible_length(
                 compact_caption
             )
+        )
+
+        logger.info(
+            f"🧪 Telegram compact caption check | "
+            f"visible={compact_visible} | "
+            f"limit={TELEGRAM_CAPTION_LIMIT}"
+        )
+
+        if (
+            compact_caption
+            and compact_visible
             <= TELEGRAM_CAPTION_LIMIT
         ):
 
@@ -1529,14 +1588,15 @@ def create_telegram_plan(
                 "media_parse_mode"
             ] = "HTML"
 
+            logger.info(
+                "✅ Telegram one-post mode | "
+                "compact content fits"
+            )
+
             return plan
 
         # =================================================
-        # 3. REAL OVERFLOW
-        #
-        # IMPORTANT:
-        # بیشترین مقدار متن اصلی باید قبل از Blockquote
-        # داخل Caption قرار بگیرد.
+        # REAL OVERFLOW
         # =================================================
 
         inline_blocks = (
@@ -1546,80 +1606,223 @@ def create_telegram_plan(
             )
         )
 
-        suffix_parts: List[str] = []
+        blockquote_visible = (
+            telegram_html_visible_length(
+                inline_blocks
+            )
+        )
+
+        # Branding پست اول همیشه رزرو می‌شود.
+        branding_visible = (
+            len(
+                branding
+            )
+            if branding
+            else 0
+        )
+
+        separator_cost = 0
+
+        if inline_blocks:
+            separator_cost += 2
+
+        if branding:
+            separator_cost += 2
+
+        reserved_visible = (
+            blockquote_visible
+            + branding_visible
+            + separator_cost
+        )
+
+        available_for_main = (
+            TELEGRAM_CAPTION_LIMIT
+            - reserved_visible
+        )
+
+        logger.info(
+            f"🧮 Telegram media capacity | "
+            f"main_total={len(compact_main)} | "
+            f"blockquote={blockquote_visible} | "
+            f"branding={branding_visible} | "
+            f"available_main={available_for_main}"
+        )
+
+        # =================================================
+        # BLOCKQUOTE + BRANDING THEMSELVES TOO BIG
+        # =================================================
+
+        if available_for_main <= 0:
+
+            logger.error(
+                "❌ Telegram blockquote + branding "
+                "exceed media caption capacity"
+            )
+
+            plan[
+                "document_fallback"
+            ] = True
+
+            return plan
+
+        # =================================================
+        # FILL FIRST POST AS MUCH AS POSSIBLE
+        # =================================================
+
+        split_position = (
+            find_media_split_position(
+                compact_main,
+                available_for_main,
+                minimum_fill_ratio=0.70
+            )
+        )
+
+        if split_position <= 0:
+
+            split_position = (
+                available_for_main
+            )
+
+        main_for_caption = (
+            compact_main[
+                :split_position
+            ]
+            .strip()
+        )
+
+        remaining_main = (
+            compact_main[
+                split_position:
+            ]
+            .strip()
+        )
+
+        # =================================================
+        # BUILD FIRST POST
+        #
+        # MAIN
+        # BLOCKQUOTE
+        # BRANDING
+        # =================================================
+
+        caption_parts: List[str] = []
+
+        if main_for_caption:
+
+            caption_parts.append(
+                escape(
+                    main_for_caption
+                )
+            )
 
         if inline_blocks:
 
-            suffix_parts.append(
+            caption_parts.append(
                 inline_blocks
             )
 
         if branding:
 
-            suffix_parts.append(
+            caption_parts.append(
                 escape(
                     branding
                 )
             )
 
-        suffix = (
+        candidate = (
             "\n\n".join(
-                suffix_parts
+                caption_parts
             )
         )
 
-        suffix_visible = (
+        candidate_visible = (
             telegram_html_visible_length(
-                suffix
+                candidate
             )
         )
 
-        available_for_main = (
-            TELEGRAM_CAPTION_LIMIT
-            - suffix_visible
-            - (
-                2
-                if suffix
-                else 0
+        # =================================================
+        # SAFETY LOOP
+        #
+        # اگر به خاطر فاصله‌ها یا Entityها چند کاراکتر
+        # بیشتر شد، Main کمی کوچک می‌شود.
+        # =================================================
+
+        safety_counter = 0
+
+        while (
+            candidate_visible
+            > TELEGRAM_CAPTION_LIMIT
+            and main_for_caption
+        ):
+
+            safety_counter += 1
+
+            if safety_counter > 20:
+
+                break
+
+            overflow = (
+                candidate_visible
+                - TELEGRAM_CAPTION_LIMIT
             )
-        )
 
-        if available_for_main > 0:
+            new_limit = max(
+                1,
+                len(main_for_caption)
+                - overflow
+                - 5
+            )
 
-            # =============================================
-            # FIX:
-            # دیگر فاصله بعد از تیتر Split را نمی‌رباید.
-            # =============================================
-
-            split_position = (
+            new_position = (
                 find_media_split_position(
-                    compact_main,
-                    available_for_main,
-                    minimum_fill_ratio=0.60
+                    main_for_caption,
+                    new_limit,
+                    minimum_fill_ratio=0.70
                 )
             )
 
-            if split_position <= 0:
+            if (
+                new_position <= 0
+                or new_position
+                >= len(main_for_caption)
+            ):
 
-                split_position = (
-                    available_for_main
+                new_position = (
+                    new_limit
                 )
+
+            moved_back = (
+                main_for_caption[
+                    new_position:
+                ]
+                .strip()
+            )
 
             main_for_caption = (
-                compact_main[
-                    :split_position
+                main_for_caption[
+                    :new_position
                 ]
                 .strip()
             )
 
-            remaining_main = (
-                compact_main[
-                    split_position:
-                ]
-                .strip()
-            )
+            if moved_back:
 
-            caption_parts: List[str] = []
+                if remaining_main:
+
+                    remaining_main = (
+                        moved_back
+                        + "\n"
+                        + remaining_main
+                    )
+
+                else:
+
+                    remaining_main = (
+                        moved_back
+                    )
+
+            caption_parts = []
 
             if main_for_caption:
 
@@ -1649,134 +1852,93 @@ def create_telegram_plan(
                 )
             )
 
-            if (
-                candidate
-                and telegram_html_visible_length(
+            candidate_visible = (
+                telegram_html_visible_length(
                     candidate
                 )
-                <= TELEGRAM_CAPTION_LIMIT
-            ):
-
-                plan[
-                    "media_caption"
-                ] = candidate
-
-                plan[
-                    "media_parse_mode"
-                ] = "HTML"
-
-                if remaining_main:
-
-                    replies = (
-                        split_text(
-                            remaining_main,
-                            TELEGRAM_MESSAGE_SAFE_LIMIT
-                        )
-                    )
-
-                    plan[
-                        "followup_messages"
-                    ] = (
-                        brand_followup_messages(
-                            replies,
-                            branding,
-                            TELEGRAM_MESSAGE_LIMIT
-                        )
-                    )
-
-                logger.info(
-                    f"🧩 Telegram balanced media plan | "
-                    f"main_in_caption="
-                    f"{len(main_for_caption)} | "
-                    f"remaining="
-                    f"{len(remaining_main)} | "
-                    f"blockquote_visible="
-                    f"{telegram_html_visible_length(inline_blocks)} | "
-                    f"caption_visible="
-                    f"{telegram_html_visible_length(candidate)}"
-                )
-
-                return plan
+            )
 
         # =================================================
-        # EXTREME CASE
+        # FINAL FIRST POST
         # =================================================
 
-        branding_cost = (
-            len(branding)
-            + (
-                2
-                if branding
-                else 0
-            )
-        )
+        if (
+            candidate
+            and candidate_visible
+            <= TELEGRAM_CAPTION_LIMIT
+        ):
 
-        available = max(
-            100,
-            TELEGRAM_CAPTION_SAFE_LIMIT
-            - branding_cost
-        )
+            plan[
+                "media_caption"
+            ] = candidate
 
-        position = (
-            find_media_split_position(
-                compact_main,
-                available
-            )
-        )
+            plan[
+                "media_parse_mode"
+            ] = "HTML"
 
-        if position <= 0:
-            position = available
+            # =================================================
+            # REPLIES ONLY IF REAL CONTENT REMAINS
+            # =================================================
 
-        first_part = (
-            compact_main[
-                :position
-            ]
-            .strip()
-        )
+            if remaining_main:
 
-        remaining = (
-            compact_main[
-                position:
-            ]
-            .strip()
-        )
-
-        plan[
-            "media_caption"
-        ] = (
-            append_branding(
-                first_part,
-                branding
-            )
-        )
-
-        replies: List[str] = []
-
-        if remaining:
-
-            replies.extend(
-                split_text(
-                    remaining,
+                # Branding برای تک تک Replyها رزرو می‌شود.
+                reply_content_limit = (
                     TELEGRAM_MESSAGE_SAFE_LIMIT
                 )
+
+                if branding:
+
+                    reply_content_limit -= (
+                        len(branding)
+                        + 2
+                    )
+
+                reply_content_limit = max(
+                    500,
+                    reply_content_limit
+                )
+
+                replies = (
+                    split_text(
+                        remaining_main,
+                        reply_content_limit
+                    )
+                )
+
+                plan[
+                    "followup_messages"
+                ] = (
+                    brand_followup_messages(
+                        replies,
+                        branding,
+                        TELEGRAM_MESSAGE_LIMIT
+                    )
+                )
+
+            logger.info(
+                f"✅ Telegram final media plan | "
+                f"caption_visible={candidate_visible} | "
+                f"main_first={len(main_for_caption)} | "
+                f"remaining={len(remaining_main)} | "
+                f"followups="
+                f"{len(plan['followup_messages'])}"
             )
 
-        replies.extend(
-            create_telegram_blockquote_messages(
-                blockquote_blocks,
-                expandable_blocks
-            )
+            return plan
+
+        # =================================================
+        # UNEXPECTED FAILURE
+        # =================================================
+
+        logger.error(
+            "❌ Could not build safe Telegram "
+            "media caption"
         )
 
         plan[
-            "followup_messages"
-        ] = (
-            brand_followup_messages(
-                replies,
-                branding,
-                TELEGRAM_MESSAGE_LIMIT
-            )
-        )
+            "document_fallback"
+        ] = True
 
         return plan
 
@@ -1882,12 +2044,16 @@ def create_telegram_plan(
     position = (
         find_media_split_position(
             compact_main,
-            available
+            available,
+            minimum_fill_ratio=0.70
         )
     )
 
     if position <= 0:
-        position = available
+
+        position = (
+            available
+        )
 
     main_for_caption = (
         compact_main[
@@ -1903,6 +2069,7 @@ def create_telegram_plan(
         .strip()
     )
 
+    # Branding پست اصلی
     plan[
         "media_caption"
     ] = (
@@ -1914,13 +2081,28 @@ def create_telegram_plan(
 
     if remaining:
 
+        reply_limit = (
+            TELEGRAM_MESSAGE_SAFE_LIMIT
+        )
+
+        if branding:
+
+            reply_limit -= (
+                len(branding)
+                + 2
+            )
+
         replies = (
             split_text(
                 remaining,
-                TELEGRAM_MESSAGE_SAFE_LIMIT
+                max(
+                    500,
+                    reply_limit
+                )
             )
         )
 
+        # Branding هر Reply
         plan[
             "followup_messages"
         ] = (
@@ -2107,7 +2289,10 @@ def create_bale_plan(
         )
 
         if position <= 0:
-            position = available_for_main
+
+            position = (
+                available_for_main
+            )
 
         main_for_caption = (
             compact_main[
@@ -2161,13 +2346,28 @@ def create_bale_plan(
 
             if remaining_main:
 
+                followup_limit = (
+                    BALE_MESSAGE_SAFE_LIMIT
+                )
+
+                if branding:
+
+                    followup_limit -= (
+                        len(branding)
+                        + 2
+                    )
+
                 followups = (
                     split_text(
                         remaining_main,
-                        BALE_MESSAGE_SAFE_LIMIT
+                        max(
+                            500,
+                            followup_limit
+                        )
                     )
                 )
 
+                # هر پیام بله نیز Branding دارد
                 plan[
                     "followup_messages"
                 ] = (
@@ -2201,6 +2401,27 @@ def create_bale_plan(
         ]
     )
 
+    # Branding پست اصلی بله
+    if branding:
+
+        branded_caption = (
+            append_branding(
+                plan[
+                    "media_caption"
+                ],
+                branding
+            )
+        )
+
+        if (
+            len(branded_caption)
+            <= BALE_CAPTION_LIMIT
+        ):
+
+            plan[
+                "media_caption"
+            ] = branded_caption
+
     continuation_parts: List[str] = []
 
     continuation_parts.extend(
@@ -2223,10 +2444,24 @@ def create_bale_plan(
             )
         )
 
+        followup_limit = (
+            BALE_MESSAGE_SAFE_LIMIT
+        )
+
+        if branding:
+
+            followup_limit -= (
+                len(branding)
+                + 2
+            )
+
         followups = (
             split_text(
                 combined_continuation,
-                BALE_MESSAGE_SAFE_LIMIT
+                max(
+                    500,
+                    followup_limit
+                )
             )
         )
 
@@ -2239,26 +2474,6 @@ def create_bale_plan(
                 BALE_MESSAGE_SAFE_LIMIT
             )
         )
-
-    else:
-
-        branded_caption = (
-            append_branding(
-                plan[
-                    "media_caption"
-                ],
-                branding
-            )
-        )
-
-        if (
-            len(branded_caption)
-            <= BALE_CAPTION_LIMIT
-        ):
-
-            plan[
-                "media_caption"
-            ] = branded_caption
 
     plan[
         "blockquote_messages"
@@ -2343,10 +2558,24 @@ def create_telegram_text_plan(
 
             if source_for_split:
 
+                message_limit = (
+                    TELEGRAM_MESSAGE_LIMIT
+                )
+
+                if branding:
+
+                    message_limit -= (
+                        len(branding)
+                        + 2
+                    )
+
                 messages = (
                     split_text(
                         source_for_split,
-                        TELEGRAM_MESSAGE_LIMIT
+                        max(
+                            500,
+                            message_limit
+                        )
                     )
                 )
 
@@ -2491,10 +2720,24 @@ def create_bale_text_plan(
         or normal_content
     )
 
+    message_limit = (
+        BALE_MESSAGE_SAFE_LIMIT
+    )
+
+    if branding:
+
+        message_limit -= (
+            len(branding)
+            + 2
+        )
+
     messages = (
         split_text(
             source_for_split,
-            BALE_MESSAGE_SAFE_LIMIT
+            max(
+                500,
+                message_limit
+            )
         )
     )
 
