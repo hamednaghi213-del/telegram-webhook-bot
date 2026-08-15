@@ -8,26 +8,15 @@ from unittest.mock import (
 
 
 # =========================================================
-# FAKE MODULES BEFORE IMPORTING WEBHOOK HANDLER
+# FAKE DATABASE
 # =========================================================
 #
-# دلیل:
+# database.py در زمان import به SUPABASE_URL و
+# SUPABASE_KEY نیاز دارد.
 #
-# core.database هنگام import شدن انتظار دارد:
-#
-# SUPABASE_URL
-# SUPABASE_KEY
-#
-# در GitHub Actions این متغیرها وجود ندارند.
-#
-# ما برای تست webhook_handler نیازی به اتصال واقعی
+# در Unit/Integration Test نیازی به اتصال واقعی
 # به Supabase نداریم.
-#
-# بنابراین قبل از import webhook_handler،
-# نسخه‌های Fake از database و command_handler
-# داخل sys.modules قرار می‌دهیم.
 # =========================================================
-
 
 fake_database = types.ModuleType(
     "core.database"
@@ -40,12 +29,22 @@ fake_database.get_tenant = MagicMock(
 )
 
 
+# =========================================================
+# FAKE COMMAND HANDLER
+# =========================================================
+
 fake_command_handler = types.ModuleType(
     "core.command_handler"
 )
 
-fake_command_handler.handle_command = MagicMock()
+fake_command_handler.handle_command = (
+    MagicMock()
+)
 
+
+# =========================================================
+# REGISTER FAKE MODULES
+# =========================================================
 
 sys.modules[
     "core.database"
@@ -57,10 +56,51 @@ sys.modules[
 
 
 # =========================================================
-# IMPORT AFTER FAKE MODULE REGISTRATION
+# IMPORT WEBHOOK HANDLER
 # =========================================================
 
 from core import webhook_handler
+
+
+# =========================================================
+# FAKE FLASK REQUEST
+# =========================================================
+#
+# نکته مهم:
+#
+# flask.request یک LocalProxy است.
+#
+# Patch کردن:
+#
+# webhook_handler.request.get_json
+#
+# بدون Flask Request Context باعث خطای:
+#
+# Working outside of request context
+#
+# می‌شود.
+#
+# بنابراین خود request را با این Object ساده
+# جایگزین می‌کنیم.
+# =========================================================
+
+class FakeRequest:
+
+    def __init__(
+        self,
+        payload=None
+    ):
+
+        self.payload = payload
+
+        self.headers = {}
+
+    def get_json(
+        self,
+        silent=True
+    ):
+
+        return self.payload
 
 
 # =========================================================
@@ -68,10 +108,13 @@ from core import webhook_handler
 # =========================================================
 
 PHOTO_MESSAGE = {
+
     "message_id": 1,
+
     "chat": {
         "id": 1001
     },
+
     "photo": [
         {
             "file_id": "small"
@@ -80,42 +123,63 @@ PHOTO_MESSAGE = {
             "file_id": "large"
         }
     ],
+
     "caption": "خبر تصویری",
+
     "caption_entities": []
 }
 
 
 VIDEO_MESSAGE = {
+
     "message_id": 2,
+
     "chat": {
         "id": 1001
     },
+
     "video": {
         "file_id": "video_1"
     },
+
     "caption": "خبر ویدیویی",
+
     "caption_entities": []
 }
 
 
 ALBUM_MESSAGE = {
+
     "message_id": 3,
+
     "chat": {
         "id": 1001
     },
-    "media_group_id": "album_1",
+
+    "media_group_id": (
+        "album_1"
+    ),
+
     "photo": [
         {
-            "file_id": "photo_small"
+            "file_id": (
+                "photo_small"
+            )
         },
         {
-            "file_id": "photo_large"
+            "file_id": (
+                "photo_large"
+            )
         }
     ],
+
     "caption": "کپشن آلبوم",
+
     "caption_entities": [
         {
-            "type": "expandable_blockquote",
+            "type": (
+                "expandable_blockquote"
+            ),
             "offset": 0,
             "length": 5
         }
@@ -124,22 +188,26 @@ ALBUM_MESSAGE = {
 
 
 TEXT_MESSAGE = {
+
     "message_id": 4,
+
     "chat": {
         "id": 1001
     },
+
     "text": "خبر متنی",
+
     "entities": []
 }
 
 
 # =========================================================
-# RESET FAKE MODULES BEFORE EACH TEST
+# TEST SETUP
 # =========================================================
 
 def setup_function():
     """
-    Reset mock state before each test.
+    Reset fake modules before every test.
     """
 
     fake_database.get_tenant.reset_mock()
@@ -153,46 +221,58 @@ def setup_function():
 
 # =========================================================
 # TEST 01
-# GET MESSAGE TEXT FROM CAPTION
+# MESSAGE TEXT PREFERS CAPTION
 # =========================================================
 
 def test_get_message_text_prefers_caption():
 
-    msg = {
+    message = {
+
         "caption": "CAPTION",
+
         "text": "TEXT"
     }
 
-    assert (
-        webhook_handler.get_message_text(
-            msg
+    result = (
+        webhook_handler
+        .get_message_text(
+            message
         )
+    )
+
+    assert (
+        result
         == "CAPTION"
     )
 
 
 # =========================================================
 # TEST 02
-# GET MESSAGE TEXT FROM TEXT
+# MESSAGE TEXT
 # =========================================================
 
 def test_get_message_text_uses_text():
 
-    msg = {
+    message = {
         "text": "TEXT"
     }
 
-    assert (
-        webhook_handler.get_message_text(
-            msg
+    result = (
+        webhook_handler
+        .get_message_text(
+            message
         )
+    )
+
+    assert (
+        result
         == "TEXT"
     )
 
 
 # =========================================================
 # TEST 03
-# CAPTION ENTITIES SELECTED
+# CAPTION ENTITIES
 # =========================================================
 
 def test_get_message_entities_for_caption():
@@ -203,22 +283,31 @@ def test_get_message_entities_for_caption():
         }
     ]
 
-    msg = {
+    message = {
+
         "caption": "CAPTION",
-        "caption_entities": entities
+
+        "caption_entities": (
+            entities
+        )
     }
 
-    assert (
-        webhook_handler.get_message_entities(
-            msg
+    result = (
+        webhook_handler
+        .get_message_entities(
+            message
         )
+    )
+
+    assert (
+        result
         == entities
     )
 
 
 # =========================================================
 # TEST 04
-# TEXT ENTITIES SELECTED
+# TEXT ENTITIES
 # =========================================================
 
 def test_get_message_entities_for_text():
@@ -229,15 +318,22 @@ def test_get_message_entities_for_text():
         }
     ]
 
-    msg = {
+    message = {
+
         "text": "TEXT",
+
         "entities": entities
     }
 
-    assert (
-        webhook_handler.get_message_entities(
-            msg
+    result = (
+        webhook_handler
+        .get_message_entities(
+            message
         )
+    )
+
+    assert (
+        result
         == entities
     )
 
@@ -250,7 +346,8 @@ def test_get_message_entities_for_text():
 def test_get_media_from_photo_uses_last_file_id():
 
     media = (
-        webhook_handler.get_media_from_message(
+        webhook_handler
+        .get_media_from_message(
             PHOTO_MESSAGE
         )
     )
@@ -285,7 +382,8 @@ def test_get_media_from_photo_uses_last_file_id():
 def test_get_media_from_video():
 
     media = (
-        webhook_handler.get_media_from_message(
+        webhook_handler
+        .get_media_from_message(
             VIDEO_MESSAGE
         )
     )
@@ -307,15 +405,19 @@ def test_get_media_from_video():
 
 # =========================================================
 # TEST 07
-# SINGLE PHOTO USES ENTITY PIPELINE
+# SINGLE PHOTO ENTITY PIPELINE
 # =========================================================
 
 def test_single_photo_uses_entity_pipeline():
 
     parsed = {
+
         "main_text": "MAIN",
+
         "blockquote_blocks": [],
+
         "expandable_blocks": [],
+
         "other_entities": []
     }
 
@@ -329,6 +431,7 @@ def test_single_photo_uses_entity_pipeline():
                 "blockquote_messages": [],
                 "document_fallback": False
             },
+
             "bale": {
                 "media_caption": "BALE",
                 "followup_messages": [],
@@ -339,19 +442,23 @@ def test_single_photo_uses_entity_pipeline():
     )()
 
     with patch(
-        "core.content_entities.parse_telegram_entities",
+        "core.content_entities."
+        "parse_telegram_entities",
         return_value=parsed
     ) as mock_parse, patch(
         "core.formatter.format_news",
         return_value="FORMATTED"
     ) as mock_format, patch(
-        "core.caption_manager.analyze_content",
+        "core.caption_manager."
+        "analyze_content",
         return_value=plan
     ) as mock_analyze, patch(
-        "core.media_handler.execute_telegram_plan",
+        "core.media_handler."
+        "execute_telegram_plan",
         return_value=True
-    ) as mock_tg, patch(
-        "core.media_handler.execute_bale_plan",
+    ) as mock_telegram, patch(
+        "core.media_handler."
+        "execute_bale_plan",
         return_value=True
     ) as mock_bale, patch.object(
         webhook_handler,
@@ -360,14 +467,17 @@ def test_single_photo_uses_entity_pipeline():
     ):
 
         success = (
-            webhook_handler.process_single_photo_video(
+            webhook_handler
+            .process_single_photo_video(
                 chat_id=1001,
                 file_id="photo_1",
                 media_type="photo",
                 caption="RAW",
                 caption_entities=[
                     {
-                        "type": "blockquote",
+                        "type": (
+                            "blockquote"
+                        ),
                         "offset": 0,
                         "length": 3
                     }
@@ -385,22 +495,28 @@ def test_single_photo_uses_entity_pipeline():
 
     mock_analyze.assert_called_once()
 
-    mock_tg.assert_called_once()
+    mock_telegram.assert_called_once()
 
     mock_bale.assert_called_once()
 
 
 # =========================================================
 # TEST 08
-# SINGLE VIDEO USES ENTITY PIPELINE
+# SINGLE VIDEO ENTITY PIPELINE
 # =========================================================
 
 def test_single_video_uses_entity_pipeline():
 
     parsed = {
-        "main_text": "VIDEO MAIN",
+
+        "main_text": (
+            "VIDEO MAIN"
+        ),
+
         "blockquote_blocks": [],
+
         "expandable_blocks": [],
+
         "other_entities": []
     }
 
@@ -414,6 +530,7 @@ def test_single_video_uses_entity_pipeline():
                 "blockquote_messages": [],
                 "document_fallback": False
             },
+
             "bale": {
                 "media_caption": "BALE",
                 "followup_messages": [],
@@ -424,19 +541,25 @@ def test_single_video_uses_entity_pipeline():
     )()
 
     with patch(
-        "core.content_entities.parse_telegram_entities",
+        "core.content_entities."
+        "parse_telegram_entities",
         return_value=parsed
     ), patch(
         "core.formatter.format_news",
-        return_value="FORMATTED VIDEO"
+        return_value=(
+            "FORMATTED VIDEO"
+        )
     ), patch(
-        "core.caption_manager.analyze_content",
+        "core.caption_manager."
+        "analyze_content",
         return_value=plan
     ), patch(
-        "core.media_handler.execute_telegram_plan",
+        "core.media_handler."
+        "execute_telegram_plan",
         return_value=True
-    ) as mock_tg, patch(
-        "core.media_handler.execute_bale_plan",
+    ) as mock_telegram, patch(
+        "core.media_handler."
+        "execute_bale_plan",
         return_value=True
     ), patch.object(
         webhook_handler,
@@ -445,7 +568,8 @@ def test_single_video_uses_entity_pipeline():
     ):
 
         success = (
-            webhook_handler.process_single_photo_video(
+            webhook_handler
+            .process_single_photo_video(
                 chat_id=1001,
                 file_id="video_1",
                 media_type="video",
@@ -457,7 +581,7 @@ def test_single_video_uses_entity_pipeline():
     assert success is True
 
     files = (
-        mock_tg
+        mock_telegram
         .call_args
         .args[0]
     )
@@ -472,15 +596,19 @@ def test_single_video_uses_entity_pipeline():
 
 # =========================================================
 # TEST 09
-# SINGLE TELEGRAM FAILURE STOPS BALE
+# TELEGRAM FAILURE PREVENTS BALE
 # =========================================================
 
 def test_single_media_telegram_failure_prevents_bale():
 
     parsed = {
+
         "main_text": "MAIN",
+
         "blockquote_blocks": [],
+
         "expandable_blocks": [],
+
         "other_entities": []
     }
 
@@ -494,19 +622,23 @@ def test_single_media_telegram_failure_prevents_bale():
     )()
 
     with patch(
-        "core.content_entities.parse_telegram_entities",
+        "core.content_entities."
+        "parse_telegram_entities",
         return_value=parsed
     ), patch(
         "core.formatter.format_news",
         return_value="FORMATTED"
     ), patch(
-        "core.caption_manager.analyze_content",
+        "core.caption_manager."
+        "analyze_content",
         return_value=plan
     ), patch(
-        "core.media_handler.execute_telegram_plan",
+        "core.media_handler."
+        "execute_telegram_plan",
         return_value=False
     ), patch(
-        "core.media_handler.execute_bale_plan",
+        "core.media_handler."
+        "execute_bale_plan",
         return_value=True
     ) as mock_bale, patch.object(
         webhook_handler,
@@ -515,7 +647,8 @@ def test_single_media_telegram_failure_prevents_bale():
     ):
 
         success = (
-            webhook_handler.process_single_photo_video(
+            webhook_handler
+            .process_single_photo_video(
                 chat_id=1001,
                 file_id="photo_1",
                 media_type="photo",
@@ -531,15 +664,19 @@ def test_single_media_telegram_failure_prevents_bale():
 
 # =========================================================
 # TEST 10
-# SINGLE BALE FAILURE DOES NOT FAIL TELEGRAM
+# BALE FAILURE DOES NOT FAIL TELEGRAM
 # =========================================================
 
 def test_single_media_bale_failure_does_not_fail_operation():
 
     parsed = {
+
         "main_text": "MAIN",
+
         "blockquote_blocks": [],
+
         "expandable_blocks": [],
+
         "other_entities": []
     }
 
@@ -553,19 +690,23 @@ def test_single_media_bale_failure_does_not_fail_operation():
     )()
 
     with patch(
-        "core.content_entities.parse_telegram_entities",
+        "core.content_entities."
+        "parse_telegram_entities",
         return_value=parsed
     ), patch(
         "core.formatter.format_news",
         return_value="FORMATTED"
     ), patch(
-        "core.caption_manager.analyze_content",
+        "core.caption_manager."
+        "analyze_content",
         return_value=plan
     ), patch(
-        "core.media_handler.execute_telegram_plan",
+        "core.media_handler."
+        "execute_telegram_plan",
         return_value=True
     ), patch(
-        "core.media_handler.execute_bale_plan",
+        "core.media_handler."
+        "execute_bale_plan",
         return_value=False
     ), patch.object(
         webhook_handler,
@@ -574,7 +715,8 @@ def test_single_media_bale_failure_does_not_fail_operation():
     ):
 
         success = (
-            webhook_handler.process_single_photo_video(
+            webhook_handler
+            .process_single_photo_video(
                 chat_id=1001,
                 file_id="photo_1",
                 media_type="photo",
@@ -588,12 +730,22 @@ def test_single_media_bale_failure_does_not_fail_operation():
 
 # =========================================================
 # TEST 11
-# MEDIA GROUP PASSES CAPTION ENTITIES
+# ALBUM CAPTION ENTITIES
 # =========================================================
 
 def test_media_group_passes_caption_entities():
 
+    fake_request = FakeRequest(
+        {
+            "message": ALBUM_MESSAGE
+        }
+    )
+
     with patch.object(
+        webhook_handler,
+        "request",
+        fake_request
+    ), patch.object(
         webhook_handler,
         "validate_webhook_token",
         return_value=True
@@ -602,18 +754,14 @@ def test_media_group_passes_caption_entities():
         "send_message",
         return_value=True
     ), patch(
-        "core.media_handler.handle_media_group_message",
+        "core.media_handler."
+        "handle_media_group_message",
         return_value=True
-    ) as mock_group, patch.object(
-        webhook_handler.request,
-        "get_json",
-        return_value={
-            "message": ALBUM_MESSAGE
-        }
-    ):
+    ) as mock_group:
 
         result, status = (
-            webhook_handler.handle_webhook()
+            webhook_handler
+            .handle_webhook()
         )
 
     assert status == 200
@@ -642,12 +790,22 @@ def test_media_group_passes_caption_entities():
 
 # =========================================================
 # TEST 12
-# MEDIA GROUP KEEPS GROUP ID
+# ALBUM GROUP ID
 # =========================================================
 
 def test_media_group_keeps_media_group_id():
 
+    fake_request = FakeRequest(
+        {
+            "message": ALBUM_MESSAGE
+        }
+    )
+
     with patch.object(
+        webhook_handler,
+        "request",
+        fake_request
+    ), patch.object(
         webhook_handler,
         "validate_webhook_token",
         return_value=True
@@ -656,15 +814,10 @@ def test_media_group_keeps_media_group_id():
         "send_message",
         return_value=True
     ), patch(
-        "core.media_handler.handle_media_group_message",
+        "core.media_handler."
+        "handle_media_group_message",
         return_value=True
-    ) as mock_group, patch.object(
-        webhook_handler.request,
-        "get_json",
-        return_value={
-            "message": ALBUM_MESSAGE
-        }
-    ):
+    ) as mock_group:
 
         webhook_handler.handle_webhook()
 
@@ -686,12 +839,22 @@ def test_media_group_keeps_media_group_id():
 
 # =========================================================
 # TEST 13
-# ALBUM DOES NOT USE SINGLE PROCESSOR
+# ALBUM NEVER USES SINGLE PROCESSOR
 # =========================================================
 
 def test_album_does_not_use_single_media_processor():
 
+    fake_request = FakeRequest(
+        {
+            "message": ALBUM_MESSAGE
+        }
+    )
+
     with patch.object(
+        webhook_handler,
+        "request",
+        fake_request
+    ), patch.object(
         webhook_handler,
         "validate_webhook_token",
         return_value=True
@@ -700,19 +863,14 @@ def test_album_does_not_use_single_media_processor():
         "send_message",
         return_value=True
     ), patch(
-        "core.media_handler.handle_media_group_message",
+        "core.media_handler."
+        "handle_media_group_message",
         return_value=True
     ), patch.object(
         webhook_handler,
         "process_single_photo_video",
         return_value=True
-    ) as mock_single, patch.object(
-        webhook_handler.request,
-        "get_json",
-        return_value={
-            "message": ALBUM_MESSAGE
-        }
-    ):
+    ) as mock_single:
 
         webhook_handler.handle_webhook()
 
@@ -721,12 +879,22 @@ def test_album_does_not_use_single_media_processor():
 
 # =========================================================
 # TEST 14
-# SINGLE PHOTO WEBHOOK PATH
+# SINGLE PHOTO WEBHOOK
 # =========================================================
 
 def test_single_photo_webhook_path():
 
+    fake_request = FakeRequest(
+        {
+            "message": PHOTO_MESSAGE
+        }
+    )
+
     with patch.object(
+        webhook_handler,
+        "request",
+        fake_request
+    ), patch.object(
         webhook_handler,
         "validate_webhook_token",
         return_value=True
@@ -738,16 +906,11 @@ def test_single_photo_webhook_path():
         webhook_handler,
         "process_single_photo_video",
         return_value=True
-    ) as mock_single, patch.object(
-        webhook_handler.request,
-        "get_json",
-        return_value={
-            "message": PHOTO_MESSAGE
-        }
-    ):
+    ) as mock_single:
 
         result, status = (
-            webhook_handler.handle_webhook()
+            webhook_handler
+            .handle_webhook()
         )
 
     assert status == 200
@@ -777,12 +940,22 @@ def test_single_photo_webhook_path():
 
 # =========================================================
 # TEST 15
-# SINGLE VIDEO WEBHOOK PATH
+# SINGLE VIDEO WEBHOOK
 # =========================================================
 
 def test_single_video_webhook_path():
 
+    fake_request = FakeRequest(
+        {
+            "message": VIDEO_MESSAGE
+        }
+    )
+
     with patch.object(
+        webhook_handler,
+        "request",
+        fake_request
+    ), patch.object(
         webhook_handler,
         "validate_webhook_token",
         return_value=True
@@ -794,13 +967,7 @@ def test_single_video_webhook_path():
         webhook_handler,
         "process_single_photo_video",
         return_value=True
-    ) as mock_single, patch.object(
-        webhook_handler.request,
-        "get_json",
-        return_value={
-            "message": VIDEO_MESSAGE
-        }
-    ):
+    ) as mock_single:
 
         webhook_handler.handle_webhook()
 
@@ -820,22 +987,35 @@ def test_single_video_webhook_path():
 
 # =========================================================
 # TEST 16
-# DOCUMENT USES LEGACY PATH
+# DOCUMENT LEGACY PATH
 # =========================================================
 
 def test_document_uses_legacy_path():
 
     message = {
+
         "chat": {
             "id": 1001
         },
+
         "document": {
             "file_id": "doc_1"
         },
+
         "caption": "DOC"
     }
 
+    fake_request = FakeRequest(
+        {
+            "message": message
+        }
+    )
+
     with patch.object(
+        webhook_handler,
+        "request",
+        fake_request
+    ), patch.object(
         webhook_handler,
         "validate_webhook_token",
         return_value=True
@@ -847,13 +1027,7 @@ def test_document_uses_legacy_path():
         webhook_handler,
         "process_legacy_single_media",
         return_value=True
-    ) as mock_legacy, patch.object(
-        webhook_handler.request,
-        "get_json",
-        return_value={
-            "message": message
-        }
-    ):
+    ) as mock_legacy:
 
         webhook_handler.handle_webhook()
 
@@ -862,12 +1036,22 @@ def test_document_uses_legacy_path():
 
 # =========================================================
 # TEST 17
-# TEXT WEBHOOK PATH
+# TEXT WEBHOOK
 # =========================================================
 
 def test_text_webhook_path():
 
+    fake_request = FakeRequest(
+        {
+            "message": TEXT_MESSAGE
+        }
+    )
+
     with patch.object(
+        webhook_handler,
+        "request",
+        fake_request
+    ), patch.object(
         webhook_handler,
         "validate_webhook_token",
         return_value=True
@@ -879,13 +1063,7 @@ def test_text_webhook_path():
         webhook_handler,
         "process_text_message",
         return_value=True
-    ) as mock_text, patch.object(
-        webhook_handler.request,
-        "get_json",
-        return_value={
-            "message": TEXT_MESSAGE
-        }
-    ):
+    ) as mock_text:
 
         webhook_handler.handle_webhook()
 
@@ -898,7 +1076,7 @@ def test_text_webhook_path():
 
 # =========================================================
 # TEST 18
-# INVALID SECRET TOKEN
+# INVALID TOKEN
 # =========================================================
 
 def test_invalid_secret_token_rejected():
@@ -910,7 +1088,8 @@ def test_invalid_secret_token_rejected():
     ):
 
         result, status = (
-            webhook_handler.handle_webhook()
+            webhook_handler
+            .handle_webhook()
         )
 
     assert status == 403
@@ -931,7 +1110,17 @@ def test_missing_tenant_stops_processing():
         None
     )
 
+    fake_request = FakeRequest(
+        {
+            "message": PHOTO_MESSAGE
+        }
+    )
+
     with patch.object(
+        webhook_handler,
+        "request",
+        fake_request
+    ), patch.object(
         webhook_handler,
         "validate_webhook_token",
         return_value=True
@@ -939,16 +1128,11 @@ def test_missing_tenant_stops_processing():
         webhook_handler,
         "send_message",
         return_value=True
-    ) as mock_status, patch.object(
-        webhook_handler.request,
-        "get_json",
-        return_value={
-            "message": PHOTO_MESSAGE
-        }
-    ):
+    ) as mock_status:
 
         result, status = (
-            webhook_handler.handle_webhook()
+            webhook_handler
+            .handle_webhook()
         )
 
     assert status == 200
@@ -958,32 +1142,41 @@ def test_missing_tenant_stops_processing():
 
 # =========================================================
 # TEST 20
-# COMMAND PATH
+# COMMAND
 # =========================================================
 
 def test_command_path():
 
     command_message = {
+
         "chat": {
             "id": 1001
         },
+
         "text": "/start"
     }
 
+    fake_request = FakeRequest(
+        {
+            "message": (
+                command_message
+            )
+        }
+    )
+
     with patch.object(
+        webhook_handler,
+        "request",
+        fake_request
+    ), patch.object(
         webhook_handler,
         "validate_webhook_token",
         return_value=True
-    ), patch.object(
-        webhook_handler.request,
-        "get_json",
-        return_value={
-            "message": command_message
-        }
     ):
 
         result, status = (
-            webhook_handler.handle_webhook()
+            webhook_handler
+            .handle_webhook()
         )
 
     assert status == 200
@@ -996,29 +1189,34 @@ def test_command_path():
 
 # =========================================================
 # TEST 21
-# ALBUM STATUS MESSAGE
+# ALBUM STATUS
 # =========================================================
 
 def test_album_status_message_sent():
 
+    fake_request = FakeRequest(
+        {
+            "message": ALBUM_MESSAGE
+        }
+    )
+
     with patch.object(
+        webhook_handler,
+        "request",
+        fake_request
+    ), patch.object(
         webhook_handler,
         "validate_webhook_token",
         return_value=True
     ), patch(
-        "core.media_handler.handle_media_group_message",
+        "core.media_handler."
+        "handle_media_group_message",
         return_value=True
     ), patch.object(
         webhook_handler,
         "send_message",
         return_value=True
-    ) as mock_status, patch.object(
-        webhook_handler.request,
-        "get_json",
-        return_value={
-            "message": ALBUM_MESSAGE
-        }
-    ):
+    ) as mock_status:
 
         webhook_handler.handle_webhook()
 
@@ -1030,12 +1228,22 @@ def test_album_status_message_sent():
 
 # =========================================================
 # TEST 22
-# SINGLE PHOTO SUCCESS STATUS
+# SINGLE PHOTO STATUS
 # =========================================================
 
 def test_single_photo_success_status():
 
+    fake_request = FakeRequest(
+        {
+            "message": PHOTO_MESSAGE
+        }
+    )
+
     with patch.object(
+        webhook_handler,
+        "request",
+        fake_request
+    ), patch.object(
         webhook_handler,
         "validate_webhook_token",
         return_value=True
@@ -1047,13 +1255,7 @@ def test_single_photo_success_status():
         webhook_handler,
         "send_message",
         return_value=True
-    ) as mock_status, patch.object(
-        webhook_handler.request,
-        "get_json",
-        return_value={
-            "message": PHOTO_MESSAGE
-        }
-    ):
+    ) as mock_status:
 
         webhook_handler.handle_webhook()
 
@@ -1071,24 +1273,29 @@ def test_single_photo_success_status():
 
 def test_album_failure_status():
 
+    fake_request = FakeRequest(
+        {
+            "message": ALBUM_MESSAGE
+        }
+    )
+
     with patch.object(
+        webhook_handler,
+        "request",
+        fake_request
+    ), patch.object(
         webhook_handler,
         "validate_webhook_token",
         return_value=True
     ), patch(
-        "core.media_handler.handle_media_group_message",
+        "core.media_handler."
+        "handle_media_group_message",
         return_value=False
     ), patch.object(
         webhook_handler,
         "send_message",
         return_value=True
-    ) as mock_status, patch.object(
-        webhook_handler.request,
-        "get_json",
-        return_value={
-            "message": ALBUM_MESSAGE
-        }
-    ):
+    ) as mock_status:
 
         webhook_handler.handle_webhook()
 
@@ -1100,7 +1307,7 @@ def test_album_failure_status():
 
 # =========================================================
 # TEST 24
-# SINGLE MEDIA CAPTION ENTITIES FORWARDED
+# SINGLE CAPTION ENTITIES FORWARDED
 # =========================================================
 
 def test_single_media_caption_entities_forwarded():
@@ -1121,7 +1328,17 @@ def test_single_media_caption_entities_forwarded():
         }
     ]
 
+    fake_request = FakeRequest(
+        {
+            "message": message
+        }
+    )
+
     with patch.object(
+        webhook_handler,
+        "request",
+        fake_request
+    ), patch.object(
         webhook_handler,
         "validate_webhook_token",
         return_value=True
@@ -1133,13 +1350,7 @@ def test_single_media_caption_entities_forwarded():
         webhook_handler,
         "process_single_photo_video",
         return_value=True
-    ) as mock_single, patch.object(
-        webhook_handler.request,
-        "get_json",
-        return_value={
-            "message": message
-        }
-    ):
+    ) as mock_single:
 
         webhook_handler.handle_webhook()
 
