@@ -98,7 +98,7 @@ def test_expandable_blockquote_removes_foreign_emoji():
 
     expandable_text = (
         "🔷 بخش اول تحلیل\n"
-        "🆔 بخش دوم تحلیل\n"
+        "🆔 بخش دوم تحلی��\n"
         "📡 بخش سوم تحلیل"
     )
 
@@ -217,18 +217,24 @@ def test_expandable_blockquote_removes_foreign_emoji():
     )
 
     # =====================================================
-    # BRANDING MUST REMAIN OUTSIDE ENTITY
+    # BRANDING MUST BE IN FOLLOWUP MESSAGES
+    # (ENTITY-BASED OVERFLOW PATH)
     # =====================================================
 
-    assert (
-        DEFAULT_BRANDING
-        in caption
+    followup_messages = (
+        telegram[
+            "followup_messages"
+        ]
     )
 
     assert (
-        caption.endswith(
-            DEFAULT_BRANDING
-        )
+        len(followup_messages)
+        >= 1
+    )
+
+    assert (
+        DEFAULT_BRANDING
+        == followup_messages[0]
     )
 
 
