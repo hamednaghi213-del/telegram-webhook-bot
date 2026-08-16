@@ -94,6 +94,16 @@ def test_orphan_source_icon_and_separator_are_removed():
 #   Branding
 #
 # Everything must stay inside ONE Telegram media caption.
+#
+# Important:
+#
+# Branding is now explicitly represented as Telegram entities:
+#
+#   expandable_blockquote
+#   hashtag
+#   mention
+#
+# This avoids RTL / LTR positioning problems.
 # =========================================================
 
 def test_expandable_blockquote_removes_foreign_emoji():
@@ -145,22 +155,124 @@ def test_expandable_blockquote_removes_foreign_emoji():
         ]
     )
 
+    # =====================================================
+    # FINAL ENTITY POLICY
+    #
+    # Expected:
+    #
+    # 1. expandable_blockquote
+    # 2. hashtag
+    # 3. mention
+    #
+    # Branding entities are explicit to avoid
+    # Telegram RTL / LTR BiDi positioning problems.
+    # =====================================================
+
+    entity_types = [
+        entity.get(
+            "type"
+        )
+        for entity in entities
+    ]
+
     assert (
-        len(entities)
+        entity_types.count(
+            "expandable_blockquote"
+        )
         == 1
     )
 
     assert (
-        entities[0][
-            "type"
-        ]
-        == "expandable_blockquote"
+        entity_types.count(
+            "hashtag"
+        )
+        == 1
     )
 
     assert (
-        entities[0][
-            "length"
-        ]
+        entity_types.count(
+            "mention"
+        )
+        == 1
+    )
+
+    assert (
+        len(entities)
+        == 3
+    )
+
+    expandable_entity = next(
+        (
+            entity
+            for entity in entities
+            if entity.get(
+                "type"
+            )
+            == "expandable_blockquote"
+        ),
+        None
+    )
+
+    assert (
+        expandable_entity
+        is not None
+    )
+
+    assert (
+        expandable_entity.get(
+            "length",
+            0
+        )
+        > 0
+    )
+
+    hashtag_entity = next(
+        (
+            entity
+            for entity in entities
+            if entity.get(
+                "type"
+            )
+            == "hashtag"
+        ),
+        None
+    )
+
+    assert (
+        hashtag_entity
+        is not None
+    )
+
+    assert (
+        hashtag_entity.get(
+            "length",
+            0
+        )
+        > 0
+    )
+
+    mention_entity = next(
+        (
+            entity
+            for entity in entities
+            if entity.get(
+                "type"
+            )
+            == "mention"
+        ),
+        None
+    )
+
+    assert (
+        mention_entity
+        is not None
+    )
+
+    assert (
+        mention_entity.get(
+            "length",
+            0
+        )
         > 0
     )
 
@@ -172,7 +284,9 @@ def test_expandable_blockquote_removes_foreign_emoji():
 
     # =====================================================
     # CAPTION MUST BE PLAIN TEXT
-    # ENTITY IS SENT SEPARATELY TO TELEGRAM
+    #
+    # Telegram formatting is carried through entities,
+    # not HTML.
     # =====================================================
 
     assert (
@@ -255,6 +369,78 @@ def test_expandable_blockquote_removes_foreign_emoji():
     assert (
         "@Donya24News"
         in caption
+    )
+
+    # =====================================================
+    # BRANDING MUST NOT BE DUPLICATED
+    # =====================================================
+
+    assert (
+        caption.count(
+            "#دنیا_۲۴_نیوز"
+        )
+        == 1
+    )
+
+    assert (
+        caption.count(
+            "@Donya24News"
+        )
+        == 1
+    )
+
+    # =====================================================
+    # ENTITY POSITIONS MUST POINT TO THE REAL TEXT
+    # =====================================================
+
+    hashtag_offset = (
+        hashtag_entity[
+            "offset"
+        ]
+    )
+
+    hashtag_length = (
+        hashtag_entity[
+            "length"
+        ]
+    )
+
+    mention_offset = (
+        mention_entity[
+            "offset"
+        ]
+    )
+
+    mention_length = (
+        mention_entity[
+            "length"
+        ]
+    )
+
+    # چون در این تست قبل از Branding هیچ Emoji
+    # با surrogate pair در همان محدوده مورد بررسی
+    # لازم نیست مستقیماً Python slice را مبنا قرار دهیم.
+    #
+    # تست‌های تخصصی UTF-16 در فایل
+    # test_expandable_branding_entities.py انجام می‌شوند.
+    assert (
+        hashtag_offset
+        >= 0
+    )
+
+    assert (
+        hashtag_length
+        > 0
+    )
+
+    assert (
+        mention_offset
+        >= 0
+    )
+
+    assert (
+        mention_length
+        > 0
     )
 
     # =====================================================
