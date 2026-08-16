@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 #
 # این ماژول به‌تنهایی هیچ Network Call انجام نمی‌دهد.
 #
-# مدل هوش مصنوعی در مرحله بعد به‌صورت یک Callable
+# مدل هوش مصنوعی بعداً به‌صورت یک Callable
 # به این ماژول متصل خواهد شد.
 # =========================================================
 
@@ -112,6 +112,12 @@ class SummaryResult:
 
 # =========================================================
 # NORMALIZATION
+#
+# فقط برای تحلیل داخلی استفاده می‌شود.
+#
+# IMPORTANT:
+# هنگام fallback نباید نسخه normalize شده جای متن اصلی
+# برگردد. متن خام اولیه باید دقیقاً حفظ شود.
 # =========================================================
 
 def normalize_text(
@@ -127,6 +133,24 @@ def normalize_text(
 
 
 # =========================================================
+# RAW TEXT
+#
+# متن اصلی را بدون strip نگه می‌دارد.
+# =========================================================
+
+def preserve_original_text(
+    text: Optional[str]
+) -> str:
+
+    if text is None:
+        return ""
+
+    return str(
+        text
+    )
+
+
+# =========================================================
 # BASIC LENGTH
 # =========================================================
 
@@ -135,7 +159,7 @@ def text_length(
 ) -> int:
 
     return len(
-        normalize_text(
+        preserve_original_text(
             text
         )
     )
@@ -150,18 +174,18 @@ def needs_summarization(
     target_length: int
 ) -> bool:
 
-    text = normalize_text(
+    raw_text = preserve_original_text(
         text
     )
 
-    if not text:
+    if not raw_text:
         return False
 
     if target_length <= 0:
         return False
 
     return (
-        len(text)
+        len(raw_text)
         > target_length
     )
 
@@ -368,9 +392,6 @@ def extract_protected_facts(
 
 # =========================================================
 # DETECT NEW NUMBERS
-#
-# اگر خلاصه عددی داشته باشد که در اصل خبر وجود نداشته،
-# احتمال Hallucination یا تغییر محتوا وجود دارد.
 # =========================================================
 
 def detect_new_numbers(
@@ -545,8 +566,8 @@ def validate_summary(
     # =====================================================
     # CERTAINTY / ATTRIBUTION MARKERS
     #
-    # حذف همه نشانگرهای احتیاط از یک خبر حساس
-    # می‌تواند معنای خبر را قطعی‌تر از متن اصلی کند.
+    # اگر اصل خبر دارای نشانگرهای احتیاط یا نسبت‌دهی باشد،
+    # خلاصه نباید تمام آن‌ها را حذف کند.
     # =====================================================
 
     original_markers = (
@@ -608,8 +629,6 @@ def validate_summary(
 
 # =========================================================
 # SYSTEM INSTRUCTION
-#
-# این متن در مرحله اتصال مدل استفاده می‌شود.
 # =========================================================
 
 def build_summarization_instruction(
@@ -631,6 +650,7 @@ def build_summarization_instruction(
         "در صورت نیاز ابتدا تکرارها، توضیحات زائد، "
         "جزئیات فرعی و عبارت‌های قابل فشرده‌سازی را کوتاه کنید. "
         "معنای اصلی هر گزاره باید حفظ شود. "
+        "هیچ دیدگاه یا برداشت شخصی به متن اضافه نکنید. "
         "اگر کوتاه‌کردن بدون تحریف ممکن نیست، "
         "متن را تا حد امکان نزدیک به اصل نگه دارید. "
         f"خروجی نهایی نباید بیشتر از {target_length} "
@@ -651,8 +671,6 @@ def build_summarization_instruction(
 #   target_length
 #
 # and returning summarized text.
-#
-# No external provider is hard-coded here.
 # =========================================================
 
 def summarize_text_safely(
@@ -669,39 +687,56 @@ def summarize_text_safely(
     )
 ) -> SummaryResult:
 
-    original_text = normalize_text(
-        original_text
+    # =====================================================
+    # PRESERVE RAW ORIGINAL
+    #
+    # مهم‌ترین اصل:
+    # اگر خلاصه‌سازی انجام نشد یا شکست خورد،
+    # دقیقاً همین رشته اولیه باید برگردد.
+    # =====================================================
+
+    raw_original_text = (
+        preserve_original_text(
+            original_text
+        )
+    )
+
+    normalized_original_text = (
+        normalize_text(
+            raw_original_text
+        )
     )
 
     original_length = len(
-        original_text
+        raw_original_text
     )
 
     # =====================================================
     # EMPTY
     # =====================================================
 
-    if not original_text:
+    if not normalized_original_text:
 
         return SummaryResult(
             success=True,
-            original_text="",
-            summary_text="",
+            original_text=raw_original_text,
+            summary_text=raw_original_text,
             target_length=target_length,
-            original_length=0,
-            summary_length=0,
+            original_length=original_length,
+            summary_length=original_length,
             reduction_ratio=0.0,
             validation_passed=True,
             reason="empty_text",
-            metadata={}
+            metadata={
+                "summarizer_called": False
+            }
         )
 
     # =====================================================
     # ALREADY FITS
     #
-    # مهم:
-    # اگر متن داخل سقف باشد هیچ مدل هوش مصنوعی
-    # اجازه تغییر آن را ندارد.
+    # اگر متن داخل سقف باشد مدل نباید صدا زده شود.
+    # متن خام دقیقاً بدون تغییر برمی‌گردد.
     # =====================================================
 
     if (
@@ -712,8 +747,8 @@ def summarize_text_safely(
 
         return SummaryResult(
             success=True,
-            original_text=original_text,
-            summary_text=original_text,
+            original_text=raw_original_text,
+            summary_text=raw_original_text,
             target_length=target_length,
             original_length=original_length,
             summary_length=original_length,
@@ -733,15 +768,17 @@ def summarize_text_safely(
 
         return SummaryResult(
             success=False,
-            original_text=original_text,
-            summary_text=original_text,
+            original_text=raw_original_text,
+            summary_text=raw_original_text,
             target_length=target_length,
             original_length=original_length,
             summary_length=original_length,
             reduction_ratio=0.0,
             validation_passed=False,
             reason="invalid_target_length",
-            metadata={}
+            metadata={
+                "summarizer_called": False
+            }
         )
 
     # =====================================================
@@ -757,8 +794,8 @@ def summarize_text_safely(
 
         return SummaryResult(
             success=False,
-            original_text=original_text,
-            summary_text=original_text,
+            original_text=raw_original_text,
+            summary_text=raw_original_text,
             target_length=target_length,
             original_length=original_length,
             summary_length=original_length,
@@ -773,8 +810,8 @@ def summarize_text_safely(
     # =====================================================
     # MAXIMUM SAFE REDUCTION CHECK
     #
-    # اگر برای رسیدن به Target مجبور باشیم بیشتر از حد
-    # مجاز حذف کنیم، اصلاً مدل را صدا نمی‌زنیم.
+    # اگر فقط برای رسیدن به Target مجبور باشیم بیش از
+    # مقدار مجاز حذف کنیم، Provider اصلاً فراخوانی نمی‌شود.
     # =====================================================
 
     required_reduction_ratio = (
@@ -800,8 +837,8 @@ def summarize_text_safely(
 
         return SummaryResult(
             success=False,
-            original_text=original_text,
-            summary_text=original_text,
+            original_text=raw_original_text,
+            summary_text=raw_original_text,
             target_length=target_length,
             original_length=original_length,
             summary_length=original_length,
@@ -833,7 +870,7 @@ def summarize_text_safely(
     try:
 
         generated = summarizer(
-            original_text,
+            raw_original_text,
             instruction,
             target_length
         )
@@ -847,8 +884,8 @@ def summarize_text_safely(
 
         return SummaryResult(
             success=False,
-            original_text=original_text,
-            summary_text=original_text,
+            original_text=raw_original_text,
+            summary_text=raw_original_text,
             target_length=target_length,
             original_length=original_length,
             summary_length=original_length,
@@ -873,7 +910,7 @@ def summarize_text_safely(
 
     validation = (
         validate_summary(
-            original_text=original_text,
+            original_text=raw_original_text,
             summary_text=generated,
             target_length=target_length,
             max_reduction_ratio=(
@@ -892,15 +929,17 @@ def summarize_text_safely(
             f"{validation['errors']}"
         )
 
-        # IMPORTANT
+        # =================================================
+        # FAIL CLOSED
         #
-        # در صورت شکست Validation متن اصلی برمی‌گردد.
         # خلاصه ناسالم هرگز منتشر نمی‌شود.
+        # متن خام اصلی دقیقاً برمی‌گردد.
+        # =================================================
 
         return SummaryResult(
             success=False,
-            original_text=original_text,
-            summary_text=original_text,
+            original_text=raw_original_text,
+            summary_text=raw_original_text,
             target_length=target_length,
             original_length=original_length,
             summary_length=original_length,
@@ -918,7 +957,7 @@ def summarize_text_safely(
 
     reduction_ratio = (
         calculate_reduction_ratio(
-            original_text,
+            raw_original_text,
             generated
         )
     )
@@ -934,7 +973,7 @@ def summarize_text_safely(
 
     return SummaryResult(
         success=True,
-        original_text=original_text,
+        original_text=raw_original_text,
         summary_text=generated,
         target_length=target_length,
         original_length=original_length,
