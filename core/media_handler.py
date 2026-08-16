@@ -122,8 +122,18 @@ TELEGRAM_MEDIA_GROUP_MAX_ITEMS = 10
 TELEGRAM_CONNECT_TIMEOUT = 10
 TELEGRAM_READ_TIMEOUT = 60
 
+# فاصله‌ای که باید از آخرین عضو آلبوم گذشته باشد
+# تا مطمئن شویم Media Group کامل شده است.
 MEDIA_GROUP_DELAY = 2.5
+
+# حداقل فاصله محافظتی.
+# در نسخه جدید تصمیم نهایی بر اساس MEDIA_GROUP_DELAY
+# گرفته می‌شود و این مقدار فقط برای Retryهای کوتاه است.
 MEDIA_GROUP_MIN_WAIT = 1.5
+
+# اگر در زمان اجرای Timer هنوز فقط یک عضو موجود باشد،
+# به جای حذف گروه کمی دیگر صبر می‌کنیم.
+MEDIA_GROUP_INCOMPLETE_RETRY_DELAY = 1.0
 
 
 # =========================================================
@@ -354,19 +364,52 @@ def add_to_pending_group(
             pending_groups[
                 group_key
             ] = {
-                "chat_id": chat_id,
-                "media_group_id": media_group_id,
-                "files": [],
-                "raw_caption": "",
-                "caption_entities": [],
-                "main_text": "",
-                "expandable_blocks": [],
-                "blockquote_blocks": [],
-                "other_entities": [],
-                "forward_source": {},
-                "caption_received": False,
-                "last_update": time.time(),
-                "is_processing": False
+                "chat_id":
+                    chat_id,
+
+                "media_group_id":
+                    media_group_id,
+
+                "files":
+                    [],
+
+                "raw_caption":
+                    "",
+
+                "caption_entities":
+                    [],
+
+                "main_text":
+                    "",
+
+                "expandable_blocks":
+                    [],
+
+                "blockquote_blocks":
+                    [],
+
+                "other_entities":
+                    [],
+
+                "forward_source":
+                    {},
+
+                "caption_received":
+                    False,
+
+                "last_update":
+                    time.time(),
+
+                "is_processing":
+                    False,
+
+                # هر بار Timer جدید ساخته می‌شود
+                # این نسل افزایش پیدا می‌کند.
+                #
+                # Timer قدیمی فقط وقتی اجازه پردازش دارد
+                # که generation آن هنوز نسل فعلی باشد.
+                "timer_generation":
+                    0
             }
 
             logger.info(
@@ -415,8 +458,11 @@ def add_to_pending_group(
         if not already_exists:
 
             group["files"].append({
-                "type": media_type,
-                "file_id": file_id
+                "type":
+                    media_type,
+
+                "file_id":
+                    file_id
             })
 
             logger.info(
@@ -433,6 +479,11 @@ def add_to_pending_group(
                 f"group={media_group_id}"
             )
 
+        # مهم:
+        # زمان آخرین تغییر فقط زمانی تازه می‌شود
+        # که همین Webhook وارد گروه شده است.
+        #
+        # Timer بعدی از این نقطه محاسبه می‌شود.
         group[
             "last_update"
         ] = time.time()
@@ -484,6 +535,7 @@ def add_to_pending_group(
                         "expandable_blocks",
                         []
                     )
+                    or []
                 )
 
                 group[
@@ -493,6 +545,7 @@ def add_to_pending_group(
                         "blockquote_blocks",
                         []
                     )
+                    or []
                 )
 
                 group[
@@ -502,6 +555,7 @@ def add_to_pending_group(
                         "other_entities",
                         []
                     )
+                    or []
                 )
 
                 logger.info(
@@ -1029,8 +1083,11 @@ def send_text_to_channel(
         return False
 
     payload: Dict[str, Any] = {
-        "chat_id": CHANNEL_ID,
-        "text": text
+        "chat_id":
+            CHANNEL_ID,
+
+        "text":
+            text
     }
 
     if parse_mode:
@@ -1053,9 +1110,8 @@ def send_text_to_channel(
         payload[
             "reply_parameters"
         ] = {
-            "message_id": (
+            "message_id":
                 reply_to_message_id
-            )
         }
 
         logger.info(
@@ -1133,8 +1189,11 @@ def send_single_media_to_channel(
         endpoint = "sendPhoto"
 
         payload: Dict[str, Any] = {
-            "chat_id": CHANNEL_ID,
-            "photo": file_id
+            "chat_id":
+                CHANNEL_ID,
+
+            "photo":
+                file_id
         }
 
     elif media_type == "video":
@@ -1142,8 +1201,11 @@ def send_single_media_to_channel(
         endpoint = "sendVideo"
 
         payload = {
-            "chat_id": CHANNEL_ID,
-            "video": file_id
+            "chat_id":
+                CHANNEL_ID,
+
+            "video":
+                file_id
         }
 
     else:
@@ -1274,8 +1336,9 @@ def send_media_group_to_channel(
     ):
 
         logger.error(
-            "❌ Media Group requires "
-            "at least 2 items"
+            f"❌ Media Group requires at least "
+            f"{TELEGRAM_MEDIA_GROUP_MIN_ITEMS} items | "
+            f"received={file_count}"
         )
 
         return False
@@ -1330,8 +1393,11 @@ def send_media_group_to_channel(
             return False
 
         media_item: Dict[str, Any] = {
-            "type": media_type,
-            "media": file_id
+            "type":
+                media_type,
+
+            "media":
+                file_id
         }
 
         if (
@@ -1360,8 +1426,11 @@ def send_media_group_to_channel(
         )
 
     payload = {
-        "chat_id": CHANNEL_ID,
-        "media": media_group
+        "chat_id":
+            CHANNEL_ID,
+
+        "media":
+            media_group
     }
 
     response = telegram_post(
@@ -1628,10 +1697,6 @@ def send_text_to_bale(
 # 1. MEDIA
 # 2. BLOCKQUOTE / EXPANDABLE REPLY
 # 3. FOLLOWUP / BRANDING REPLY
-#
-# IMPORTANT:
-# Blockquotes are no longer sent through the old standalone
-# path when a media anchor exists.
 # =========================================================
 
 def execute_telegram_plan(
@@ -1696,6 +1761,14 @@ def execute_telegram_plan(
 
         logger.error(
             "🚫 Unsafe Telegram media send aborted"
+        )
+
+        return False
+
+    if not files:
+
+        logger.error(
+            "❌ Telegram plan has no media files"
         )
 
         return False
@@ -1814,8 +1887,10 @@ def execute_telegram_plan(
     logger.info(
         f"🔗 Telegram media anchor | "
         f"message_id={media_message_id or '-'} | "
-        f"blockquote_replies={len(blockquote_messages)} | "
-        f"followups={len(followup_messages)}"
+        f"blockquote_replies="
+        f"{len(blockquote_messages)} | "
+        f"followups="
+        f"{len(followup_messages)}"
     )
 
     # =====================================================
@@ -1917,8 +1992,10 @@ def execute_telegram_plan(
     logger.info(
         f"✅ Telegram reply chain completed | "
         f"media={media_message_id or '-'} | "
-        f"blockquote_replies={len(blockquote_messages)} | "
-        f"followup_replies={len(followup_messages)}"
+        f"blockquote_replies="
+        f"{len(blockquote_messages)} | "
+        f"followup_replies="
+        f"{len(followup_messages)}"
     )
 
     return True
@@ -2055,8 +2132,8 @@ def process_media_group(
 
         if not group:
 
-            logger.error(
-                f"❌ Media Group not found | "
+            logger.warning(
+                f"⚠️ Media Group not found | "
                 f"group={media_group_id}"
             )
 
@@ -2074,16 +2151,45 @@ def process_media_group(
 
             return False
 
-        group[
-            "is_processing"
-        ] = True
-
         files = list(
             group.get(
                 "files",
                 []
             )
+            or []
         )
+
+        # =================================================
+        # CRITICAL PROTECTION
+        #
+        # Media Group واقعی نباید با یک فایل پردازش شود.
+        #
+        # در نسخه قبلی اگر Timer زود اجرا می‌شد،
+        # گروه با یک فایل وارد sendMediaGroup می‌شد،
+        # Telegram آن را رد می‌کرد و finally گروه را پاک
+        # می‌کرد.
+        #
+        # حالا در این وضعیت گروه را حفظ می‌کنیم.
+        # =================================================
+
+        if (
+            len(files)
+            < TELEGRAM_MEDIA_GROUP_MIN_ITEMS
+        ):
+
+            logger.warning(
+                f"⏳ Media Group incomplete | "
+                f"group={media_group_id} | "
+                f"files={len(files)} | "
+                f"minimum="
+                f"{TELEGRAM_MEDIA_GROUP_MIN_ITEMS}"
+            )
+
+            return False
+
+        group[
+            "is_processing"
+        ] = True
 
         raw_main_text = (
             group.get(
@@ -2098,6 +2204,7 @@ def process_media_group(
                 "blockquote_blocks",
                 []
             )
+            or []
         )
 
         expandable_blocks = list(
@@ -2105,6 +2212,7 @@ def process_media_group(
                 "expandable_blocks",
                 []
             )
+            or []
         )
 
         other_entities = list(
@@ -2112,6 +2220,7 @@ def process_media_group(
                 "other_entities",
                 []
             )
+            or []
         )
 
         forward_source = dict(
@@ -2132,19 +2241,6 @@ def process_media_group(
         f"forwarded="
         f"{bool(forward_source.get('is_forwarded'))}"
     )
-
-    if not files:
-
-        logger.error(
-            "❌ Media Group contains no files"
-        )
-
-        remove_pending_group(
-            media_group_id,
-            chat_id
-        )
-
-        return False
 
     try:
 
@@ -2184,7 +2280,8 @@ def process_media_group(
                         f"🧹 Media Group source cleanup | "
                         f"group={media_group_id} | "
                         f"title={source_title or '-'} | "
-                        f"username={source_username or '-'}"
+                        f"username="
+                        f"{source_username or '-'}"
                     )
 
                     formatted_main_text = (
@@ -2327,6 +2424,12 @@ def process_media_group(
 
     finally:
 
+        # این finally فقط زمانی اجرا می‌شود که گروه
+        # واقعاً وارد مرحله processing شده باشد.
+        #
+        # گروه‌های ناقص قبل از این نقطه return می‌شوند
+        # و بنابراین دیگر حذف نمی‌شوند.
+
         remove_pending_group(
             media_group_id,
             chat_id
@@ -2355,6 +2458,31 @@ def schedule_processing(
 
     with group_lock:
 
+        group = pending_groups.get(
+            group_key
+        )
+
+        if not group:
+
+            logger.warning(
+                f"⚠️ Cannot schedule missing Media Group | "
+                f"group={media_group_id}"
+            )
+
+            return
+
+        if group.get(
+            "is_processing",
+            False
+        ):
+
+            logger.debug(
+                f"ℹ️ Media Group already processing | "
+                f"group={media_group_id}"
+            )
+
+            return
+
         old_timer = group_timers.get(
             group_key
         )
@@ -2366,12 +2494,28 @@ def schedule_processing(
             except Exception:
                 pass
 
+        current_generation = (
+            int(
+                group.get(
+                    "timer_generation",
+                    0
+                )
+                or 0
+            )
+            + 1
+        )
+
+        group[
+            "timer_generation"
+        ] = current_generation
+
         timer = threading.Timer(
             delay,
             _scheduled_process,
             args=(
                 media_group_id,
-                chat_id
+                chat_id,
+                current_generation
             )
         )
 
@@ -2386,7 +2530,9 @@ def schedule_processing(
         logger.info(
             f"⏱️ Media Group scheduled | "
             f"group={media_group_id} | "
-            f"delay={delay}s"
+            f"delay={delay:.2f}s | "
+            f"generation={current_generation} | "
+            f"files={len(group.get('files', []))}"
         )
 
 
@@ -2396,7 +2542,8 @@ def schedule_processing(
 
 def _scheduled_process(
     media_group_id: str,
-    chat_id: int
+    chat_id: int,
+    timer_generation: Optional[int] = None
 ) -> None:
 
     group_key = (
@@ -2423,11 +2570,53 @@ def _scheduled_process(
             "is_processing",
             False
         ):
+
+            logger.debug(
+                f"ℹ️ Media Group already processing "
+                f"at timer | "
+                f"group={media_group_id}"
+            )
+
             return
 
-        last_update = group.get(
-            "last_update",
-            0
+        current_generation = int(
+            group.get(
+                "timer_generation",
+                0
+            )
+            or 0
+        )
+
+        # =================================================
+        # STALE TIMER PROTECTION
+        #
+        # Timer قدیمی که قبل از ورود عضو جدید ساخته شده،
+        # دیگر اجازه پردازش گروه را ندارد.
+        # =================================================
+
+        if (
+            timer_generation is not None
+            and timer_generation
+            != current_generation
+        ):
+
+            logger.info(
+                f"🛑 Stale Media Group timer ignored | "
+                f"group={media_group_id} | "
+                f"timer_generation="
+                f"{timer_generation} | "
+                f"current_generation="
+                f"{current_generation}"
+            )
+
+            return
+
+        last_update = float(
+            group.get(
+                "last_update",
+                0
+            )
+            or 0
         )
 
         elapsed = (
@@ -2435,26 +2624,94 @@ def _scheduled_process(
             - last_update
         )
 
+        file_count = len(
+            group.get(
+                "files",
+                []
+            )
+            or []
+        )
+
+    # =====================================================
+    # SETTLE PROTECTION
+    #
+    # باید MEDIA_GROUP_DELAY کامل از آخرین عضو گذشته باشد.
+    #
+    # در نسخه قبلی فقط MEDIA_GROUP_MIN_WAIT بررسی می‌شد
+    # و Timer قدیمی می‌توانست زودتر گروه را Process کند.
+    # =====================================================
+
     if (
         elapsed
-        < MEDIA_GROUP_MIN_WAIT
+        < MEDIA_GROUP_DELAY
     ):
 
         remaining = (
-            MEDIA_GROUP_MIN_WAIT
+            MEDIA_GROUP_DELAY
             - elapsed
+        )
+
+        next_delay = max(
+            remaining,
+            0.5
+        )
+
+        logger.info(
+            f"⏳ Media Group still receiving | "
+            f"group={media_group_id} | "
+            f"elapsed={elapsed:.2f}s | "
+            f"wait_more={next_delay:.2f}s | "
+            f"files={file_count}"
         )
 
         schedule_processing(
             media_group_id,
             chat_id,
-            max(
-                remaining,
-                0.5
+            delay=next_delay
+        )
+
+        return
+
+    # =====================================================
+    # MINIMUM ITEM PROTECTION
+    #
+    # اگر هنوز فقط یک عضو دریافت شده، گروه را پاک نمی‌کنیم.
+    # Telegram Media Group حداقل دو عضو دارد.
+    # =====================================================
+
+    if (
+        file_count
+        < TELEGRAM_MEDIA_GROUP_MIN_ITEMS
+    ):
+
+        logger.warning(
+            f"⏳ Media Group waiting for more items | "
+            f"group={media_group_id} | "
+            f"files={file_count} | "
+            f"minimum="
+            f"{TELEGRAM_MEDIA_GROUP_MIN_ITEMS}"
+        )
+
+        schedule_processing(
+            media_group_id,
+            chat_id,
+            delay=(
+                MEDIA_GROUP_INCOMPLETE_RETRY_DELAY
             )
         )
 
         return
+
+    # =====================================================
+    # READY
+    # =====================================================
+
+    logger.info(
+        f"✅ Media Group settled | "
+        f"group={media_group_id} | "
+        f"files={file_count} | "
+        f"elapsed={elapsed:.2f}s"
+    )
 
     process_media_group(
         media_group_id,
@@ -2507,6 +2764,28 @@ def handle_media_group_message(
 
         return False
 
+    if not file_id:
+
+        logger.error(
+            f"❌ Media Group file_id missing | "
+            f"group={media_group_id}"
+        )
+
+        return False
+
+    if media_type not in (
+        "photo",
+        "video"
+    ):
+
+        logger.error(
+            f"❌ Unsupported Media Group type | "
+            f"group={media_group_id} | "
+            f"type={media_type}"
+        )
+
+        return False
+
     if caption_entities is None:
 
         caption_entities = (
@@ -2548,7 +2827,9 @@ def handle_media_group_message(
             media_type,
             caption,
             caption_entities,
-            forward_source=forward_source
+            forward_source=(
+                forward_source
+            )
         )
 
     else:
@@ -2562,6 +2843,8 @@ def handle_media_group_message(
             caption_entities
         )
 
+    # هر عضو جدید Timer قبلی را باطل می‌کند
+    # و زمان انتظار از آخرین عضو دوباره آغاز می‌شود.
     schedule_processing(
         media_group_id,
         chat_id,
