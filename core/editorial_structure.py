@@ -57,6 +57,34 @@ EDITORIAL_AUTHOR_ICON = "✍️"
 
 
 # =========================================================
+# SOURCE / DECORATIVE ICONS
+#
+# این آیکون‌ها ممکن است توسط Formatter یا منبع خبر
+# در ابتدای تیتر / نویسنده قرار گرفته باشند.
+#
+# در مسیر Editorial حذف می‌شوند.
+#
+# خبرهای عادی تحت تأثیر این ماژول قرار نمی‌گیرند.
+# =========================================================
+
+EDITORIAL_REMOVABLE_TITLE_ICONS = (
+    "✳️",
+    "❇️",
+    "✅",
+    "🟢",
+    "🟩",
+)
+
+EDITORIAL_AUTHOR_PREFIX_ICONS = (
+    "🔹",
+    "🔸",
+    "▪️",
+    "▫️",
+    "•",
+)
+
+
+# =========================================================
 # AUTHOR SOURCES
 # =========================================================
 
@@ -172,6 +200,88 @@ def normalize_spaces(
 
 
 # =========================================================
+# TITLE CLEANUP
+#
+# فقط تزئینات Editorial / Formatter را از ابتدای تیتر
+# حذف می‌کند.
+#
+# مثال:
+#
+# ✳️ تعهد در عصر بی تعهدی
+#
+# becomes:
+#
+# تعهد در عصر بی تعهدی
+#
+# همچنین اگر 📝 از قبل وجود داشته باشد حذف می‌شود،
+# چون Display Layer خودش دقیقاً یک بار آن را اضافه می‌کند.
+# =========================================================
+
+def clean_editorial_title(
+    value: str
+) -> str:
+
+    value = normalize_spaces(
+        value
+    )
+
+    if not value:
+        return ""
+
+    changed = True
+
+    while changed:
+
+        changed = False
+
+        # ---------------------------------------------
+        # Our own display icon
+        # ---------------------------------------------
+
+        if value.startswith(
+            EDITORIAL_TITLE_ICON
+        ):
+
+            value = (
+                value[
+                    len(
+                        EDITORIAL_TITLE_ICON
+                    ):
+                ]
+                .lstrip()
+            )
+
+            changed = True
+
+        # ---------------------------------------------
+        # Green / source icons
+        # ---------------------------------------------
+
+        for icon in (
+            EDITORIAL_REMOVABLE_TITLE_ICONS
+        ):
+
+            if value.startswith(
+                icon
+            ):
+
+                value = (
+                    value[
+                        len(icon):
+                    ]
+                    .lstrip()
+                )
+
+                changed = True
+
+                break
+
+    return normalize_spaces(
+        value
+    )
+
+
+# =========================================================
 # AUTHOR NAME CLEANUP
 # =========================================================
 
@@ -185,6 +295,52 @@ def clean_author_name(
 
     if not value:
         return ""
+
+    # ---------------------------------------------
+    # Remove our own display icon
+    # ---------------------------------------------
+
+    if value.startswith(
+        EDITORIAL_AUTHOR_ICON
+    ):
+
+        value = (
+            value[
+                len(
+                    EDITORIAL_AUTHOR_ICON
+                ):
+            ]
+            .lstrip()
+        )
+
+    # ---------------------------------------------
+    # Remove source bullet icons
+    # ---------------------------------------------
+
+    changed = True
+
+    while changed:
+
+        changed = False
+
+        for icon in (
+            EDITORIAL_AUTHOR_PREFIX_ICONS
+        ):
+
+            if value.startswith(
+                icon
+            ):
+
+                value = (
+                    value[
+                        len(icon):
+                    ]
+                    .lstrip()
+                )
+
+                changed = True
+
+                break
 
     value = re.sub(
         r"^[\s:：\-–—|]+",
@@ -222,12 +378,31 @@ def looks_like_person_name(
     if not value:
         return False
 
-    if len(value) > 80:
+    if len(value) > 120:
+        return False
+
+    # =====================================================
+    # Parenthetical role is allowed:
+    #
+    # حامد نقی لو (کارشناس سیاست خارجی)
+    #
+    # For person-name validation we inspect the name part
+    # separately.
+    # =====================================================
+
+    person_part = re.sub(
+        r"\s*\([^)]{1,80}\)\s*$",
+        "",
+        value
+    ).strip()
+
+    if not person_part:
+
         return False
 
     words = [
         part
-        for part in value.split()
+        for part in person_part.split()
         if part
     ]
 
@@ -239,14 +414,14 @@ def looks_like_person_name(
 
     if re.search(
         r"[0-9۰-۹٠-٩]",
-        value
+        person_part
     ):
 
         return False
 
     if re.search(
         r"https?://|@[A-Za-z0-9_]+|#[^\s#]+",
-        value,
+        person_part,
         flags=re.IGNORECASE
     ):
 
@@ -268,10 +443,17 @@ def looks_like_person_name(
         "اما",
         "زیرا",
         "که",
+        "گفت",
+        "اعلام",
+        "معتقد",
+        "تأکید",
+        "تاکید",
     }
 
     lowered_words = {
-        word.strip()
+        word.strip(
+            "،,؛;:.؟?!()"
+        )
         for word in words
     }
 
@@ -338,6 +520,184 @@ def detect_author_header(
         )
 
     return None
+
+
+# =========================================================
+# DECORATED AUTHOR LINE
+#
+# Examples:
+#
+# 🔹 حامد نقی لو
+#
+# 🔹 حامد نقی لو (کارشناس سیاست خارجی)
+#
+# 🔸 محمدرضا احمدی (پژوهشگر روابط بین‌الملل)
+#
+# این تشخیص فقط در جایگاه Header و پس از Title
+# استفاده می‌شود؛ بنابراین روی Bulletهای عادی داخل Body
+# اعمال نمی‌شود.
+# =========================================================
+
+def detect_decorated_author_line(
+    line: str
+) -> Optional[
+    Tuple[str, str]
+]:
+
+    original_line = normalize_spaces(
+        line
+    )
+
+    if not original_line:
+        return None
+
+    matched_prefix = False
+
+    candidate = original_line
+
+    for icon in (
+        EDITORIAL_AUTHOR_PREFIX_ICONS
+    ):
+
+        if candidate.startswith(
+            icon
+        ):
+
+            candidate = (
+                candidate[
+                    len(icon):
+                ]
+                .lstrip()
+            )
+
+            matched_prefix = True
+
+            break
+
+    if not matched_prefix:
+        return None
+
+    candidate = clean_author_name(
+        candidate
+    )
+
+    if not candidate:
+        return None
+
+    # =====================================================
+    # Sentence-like content should never become author.
+    # =====================================================
+
+    if candidate.endswith(
+        (
+            ".",
+            "؟",
+            "?",
+            "!",
+            "؛",
+            "،",
+            ",",
+            ":",
+            "：",
+        )
+    ):
+
+        return None
+
+    # =====================================================
+    # If a role exists in parentheses, preserve it.
+    #
+    # Example:
+    #
+    # حامد نقی لو (کارشناس سیاست خارجی)
+    # =====================================================
+
+    role_match = re.match(
+        r"^(.{2,80}?)\s*\((.{2,80})\)\s*$",
+        candidate
+    )
+
+    if role_match:
+
+        person_name = clean_author_name(
+            role_match.group(1)
+        )
+
+        role = normalize_spaces(
+            role_match.group(2)
+        )
+
+        if not looks_like_person_name(
+            person_name
+        ):
+
+            return None
+
+        # ---------------------------------------------
+        # Role markers make confidence high.
+        # ---------------------------------------------
+
+        role_markers = (
+            "کارشناس",
+            "پژوهشگر",
+            "نویسنده",
+            "روزنامه‌نگار",
+            "روزنامه نگار",
+            "تحلیلگر",
+            "استاد",
+            "دیپلمات",
+            "سفیر",
+            "فعال",
+            "عضو",
+            "مدیر",
+            "دبیر",
+            "متخصص",
+        )
+
+        role_is_plausible = any(
+            marker
+            in role
+            for marker
+            in role_markers
+        )
+
+        if not role_is_plausible:
+
+            return None
+
+        return (
+            candidate,
+            AUTHOR_CONFIDENCE_HIGH
+        )
+
+    # =====================================================
+    # Without role:
+    #
+    # Conservative 2–4 word name.
+    # =====================================================
+
+    if not looks_like_person_name(
+        candidate
+    ):
+
+        return None
+
+    person_words = (
+        candidate.split()
+    )
+
+    if not (
+        2
+        <= len(person_words)
+        <= 4
+    ):
+
+        return None
+
+    return (
+        candidate,
+        AUTHOR_CONFIDENCE_MEDIUM
+    )
 
 
 # =========================================================
@@ -419,7 +779,7 @@ def looks_like_title(
     line: str
 ) -> bool:
 
-    line = normalize_spaces(
+    line = clean_editorial_title(
         line
     )
 
@@ -611,7 +971,12 @@ def detect_footer_author(
         return None
 
     words = (
-        candidate_without_title
+        re.sub(
+            r"\s*\([^)]{1,80}\)\s*$",
+            "",
+            candidate_without_title
+        )
+        .strip()
         .split()
     )
 
@@ -650,7 +1015,8 @@ def extract_title_from_lines(
 
     metadata: Dict[str, Any] = {
         "title_detected": False,
-        "title_source": "none"
+        "title_source": "none",
+        "title_source_icons_removed": False
     }
 
     if not working:
@@ -665,8 +1031,14 @@ def extract_title_from_lines(
         working[0]
     )
 
+    cleaned_first_line = (
+        clean_editorial_title(
+            first_line
+        )
+    )
+
     if not looks_like_title(
-        first_line
+        cleaned_first_line
     ):
 
         return (
@@ -684,8 +1056,19 @@ def extract_title_from_lines(
         )
 
     title = (
-        first_line
+        cleaned_first_line
     )
+
+    if (
+        title
+        != normalize_spaces(
+            first_line
+        )
+    ):
+
+        metadata[
+            "title_source_icons_removed"
+        ] = True
 
     working = (
         working[1:]
@@ -769,6 +1152,88 @@ def extract_author_from_header(
     metadata[
         "header_author_detected"
     ] = True
+
+    return (
+        author,
+        AUTHOR_SOURCE_HEADER,
+        confidence,
+        working,
+        metadata
+    )
+
+
+# =========================================================
+# DECORATED AUTHOR EXTRACTION
+#
+# فقط خط اول پس از Title بررسی می‌شود.
+#
+# این محدودیت عمدی است تا Bulletهای داخل Body
+# اشتباهاً نویسنده تشخیص داده نشوند.
+# =========================================================
+
+def extract_author_from_decorated_header(
+    lines: List[str]
+) -> Tuple[
+    str,
+    str,
+    str,
+    List[str],
+    Dict[str, Any]
+]:
+
+    working = list(
+        lines
+    )
+
+    metadata: Dict[str, Any] = {
+        "decorated_author_detected": False
+    }
+
+    if not working:
+
+        return (
+            "",
+            AUTHOR_SOURCE_NONE,
+            AUTHOR_CONFIDENCE_NONE,
+            working,
+            metadata
+        )
+
+    first_line = (
+        working[0]
+    )
+
+    result = (
+        detect_decorated_author_line(
+            first_line
+        )
+    )
+
+    if result is None:
+
+        return (
+            "",
+            AUTHOR_SOURCE_NONE,
+            AUTHOR_CONFIDENCE_NONE,
+            working,
+            metadata
+        )
+
+    author, confidence = (
+        result
+    )
+
+    working = (
+        working[1:]
+    )
+
+    metadata[
+        "decorated_author_detected"
+    ] = True
+
+    metadata[
+        "decorated_author_original"
+    ] = first_line
 
     return (
         author,
@@ -1047,6 +1512,10 @@ def extract_editorial_structure(
         )
     }
 
+    # =====================================================
+    # TITLE
+    # =====================================================
+
     (
         title,
         working_lines,
@@ -1061,6 +1530,17 @@ def extract_editorial_structure(
         title_metadata
     )
 
+    # =====================================================
+    # AUTHOR
+    #
+    # Priority:
+    #
+    # 1. Explicit header
+    # 2. Decorated header: 🔹 Name (Role)
+    # 3. Opening phrase: Name می‌نویسد
+    # 4. Footer signature
+    # =====================================================
+
     author = ""
 
     author_source = (
@@ -1070,6 +1550,10 @@ def extract_editorial_structure(
     author_confidence = (
         AUTHOR_CONFIDENCE_NONE
     )
+
+    # -----------------------------------------------------
+    # EXPLICIT HEADER
+    # -----------------------------------------------------
 
     (
         header_author,
@@ -1104,6 +1588,50 @@ def extract_editorial_structure(
         working_lines = (
             header_lines
         )
+
+    # -----------------------------------------------------
+    # DECORATED AUTHOR
+    # -----------------------------------------------------
+
+    if not author:
+
+        (
+            decorated_author,
+            decorated_source,
+            decorated_confidence,
+            decorated_lines,
+            decorated_metadata
+        ) = (
+            extract_author_from_decorated_header(
+                working_lines
+            )
+        )
+
+        metadata.update(
+            decorated_metadata
+        )
+
+        if decorated_author:
+
+            author = (
+                decorated_author
+            )
+
+            author_source = (
+                decorated_source
+            )
+
+            author_confidence = (
+                decorated_confidence
+            )
+
+            working_lines = (
+                decorated_lines
+            )
+
+    # -----------------------------------------------------
+    # OPENING PHRASE
+    # -----------------------------------------------------
 
     if not author:
 
@@ -1141,6 +1669,10 @@ def extract_editorial_structure(
                 opening_lines
             )
 
+    # -----------------------------------------------------
+    # FOOTER
+    # -----------------------------------------------------
+
     if not author:
 
         (
@@ -1176,6 +1708,10 @@ def extract_editorial_structure(
             working_lines = (
                 footer_lines
             )
+
+    # =====================================================
+    # BODY
+    # =====================================================
 
     body = (
         build_body_from_lines(
@@ -1216,6 +1752,7 @@ def extract_editorial_structure(
     logger.info(
         f"🧩 Editorial structure extracted | "
         f"title={bool(title)} | "
+        f"title_value={title or '-'} | "
         f"title_length={len(title)} | "
         f"author={author or '-'} | "
         f"author_source={author_source} | "
@@ -1275,10 +1812,9 @@ def editorial_structure_to_dict(
 # =========================================================
 # RAW REBUILD
 #
-# این تابع برای سازگاری با کدها و تست‌های قبلی
-# بدون آیکون باقی می‌ماند.
+# بدون Display Icon.
 #
-# از این تابع برای AI / Validator نیز می‌توان استفاده کرد.
+# برای سازگاری با تست‌ها و کدهای قبلی.
 # =========================================================
 
 def rebuild_editorial_text(
@@ -1289,11 +1825,11 @@ def rebuild_editorial_text(
 
     parts: List[str] = []
 
-    title = normalize_text(
+    title = clean_editorial_title(
         title
     )
 
-    author = normalize_text(
+    author = clean_author_name(
         author
     )
 
@@ -1332,19 +1868,18 @@ def build_editorial_display_title(
     title: str
 ) -> str:
 
-    title = normalize_text(
+    # =====================================================
+    # مهم:
+    #
+    # قبل از اضافه کردن 📝، آیکون سبز / قدیمی حذف می‌شود.
+    # =====================================================
+
+    title = clean_editorial_title(
         title
     )
 
     if not title:
         return ""
-
-    # جلوگیری از دوباره اضافه شدن آیکون
-    if title.startswith(
-        EDITORIAL_TITLE_ICON
-    ):
-
-        return title
 
     return (
         f"{EDITORIAL_TITLE_ICON} "
@@ -1360,19 +1895,12 @@ def build_editorial_display_author(
     author: str
 ) -> str:
 
-    author = normalize_text(
+    author = clean_author_name(
         author
     )
 
     if not author:
         return ""
-
-    # جلوگیری از دوباره اضافه شدن آیکون
-    if author.startswith(
-        EDITORIAL_AUTHOR_ICON
-    ):
-
-        return author
 
     return (
         f"{EDITORIAL_AUTHOR_ICON} "
@@ -1383,26 +1911,15 @@ def build_editorial_display_author(
 # =========================================================
 # FINAL EDITORIAL DISPLAY TEXT
 #
-# قالب:
+# خروجی هدف:
 #
-# 📝 عنوان یادداشت
-# ✍️ نام نویسنده
+# 📝 تعهد در عصر بی تعهدی
+# ✍️ حامد نقی لو (کارشناس سیاست خارجی)
 #
-# متن
+# متن خلاصه...
 #
-# اگر نویسنده نباشد:
-#
-# 📝 عنوان یادداشت
-#
-# متن
-#
-# اگر عنوان نباشد:
-#
-# ✍️ نام نویسنده
-#
-# متن
-#
-# آیکون‌ها فقط در Display Layer اضافه می‌شوند.
+# آیکون سبز تیتر و 🔹 نویسنده در خروجی
+# Editorial نمایش داده نمی‌شوند.
 # =========================================================
 
 def rebuild_editorial_display_text(
@@ -1413,11 +1930,11 @@ def rebuild_editorial_display_text(
 
     parts: List[str] = []
 
-    title = normalize_text(
+    title = clean_editorial_title(
         title
     )
 
-    author = normalize_text(
+    author = clean_author_name(
         author
     )
 
@@ -1437,7 +1954,6 @@ def rebuild_editorial_display_text(
         )
     )
 
-    # عنوان و نویسنده به هم نزدیک باشند.
     header_lines: List[str] = []
 
     if display_title:
