@@ -40,7 +40,20 @@ logger = logging.getLogger(__name__)
 #
 # Body باید تا حد ممکن کامل حفظ شود.
 # هیچ پاراگراف محتوایی نباید صرفاً بر اساس حدس حذف شود.
+#
+# علاوه بر آن یک لایه Display مستقل دارد که می‌تواند
+# عنوان و نویسنده را برای خروجی نهایی رسانه‌ای تزئین کند.
+#
+# آیکون‌ها هرگز وارد متن اصلی AI یا Validator نمی‌شوند.
 # =========================================================
+
+
+# =========================================================
+# DISPLAY ICONS
+# =========================================================
+
+EDITORIAL_TITLE_ICON = "📝"
+EDITORIAL_AUTHOR_ICON = "✍️"
 
 
 # =========================================================
@@ -274,14 +287,6 @@ def looks_like_person_name(
 
 # =========================================================
 # AUTHOR IN HEADER
-#
-# Examples:
-#
-# نویسنده: حامد محمدی
-# نویسنده حامد محمدی
-# به قلم حامد محمدی
-# قلم: حامد محمدی
-# یادداشت از حامد محمدی
 # =========================================================
 
 def detect_author_header(
@@ -337,13 +342,6 @@ def detect_author_header(
 
 # =========================================================
 # AUTHOR IN OPENING PHRASE
-#
-# Examples:
-#
-# حامد می‌نویسد
-# حامد محمدی می نویسد
-# حامد محمدی نوشت
-# حامد محمدی در یادداشتی می‌نویسد
 # =========================================================
 
 def detect_opening_author_phrase(
@@ -476,30 +474,6 @@ def looks_like_title(
 
 # =========================================================
 # FOOTER SIGNATURE
-#
-# این بخش عمداً محافظه‌کارانه است.
-#
-# فقط خط پایانی‌ای را نویسنده فرض می‌کنیم که:
-#
-# - کوتاه باشد
-# - شبیه نام شخص باشد
-# - جمله نباشد
-# - برندینگ / هشتگ / یوزرنیم نباشد
-# - واژه‌های عمومی محتوایی نداشته باشد
-#
-# Examples:
-#
-# حامد محمدی
-# دکتر حامد محمدی
-# محمدرضا احمدی
-#
-# اما:
-#
-# پاراگراف ششم
-# نتیجه نهایی
-# تحلیل سیاسی
-#
-# نباید نویسنده تشخیص داده شوند.
 # =========================================================
 
 def detect_footer_author(
@@ -532,10 +506,6 @@ def detect_footer_author(
 
         return None
 
-    # =====================================================
-    # EXPLICIT AUTHOR LABEL
-    # =====================================================
-
     header_result = (
         detect_author_header(
             line
@@ -555,10 +525,6 @@ def detect_footer_author(
 
     candidate = line
 
-    # =====================================================
-    # SENTENCE-LIKE FOOTER
-    # =====================================================
-
     if candidate.endswith(
         (
             ".",
@@ -574,13 +540,6 @@ def detect_footer_author(
     ):
 
         return None
-
-    # =====================================================
-    # CONTENT MARKERS
-    #
-    # این واژه‌ها معمولاً نشان می‌دهند خط پایانی
-    # بخشی از محتوای متن است نه نام نویسنده.
-    # =====================================================
 
     content_markers = {
         "پاراگراف",
@@ -633,10 +592,6 @@ def detect_footer_author(
 
         return None
 
-    # =====================================================
-    # HONORIFIC
-    # =====================================================
-
     candidate_without_title = re.sub(
         r"^(?:"
         r"دکتر"
@@ -660,20 +615,12 @@ def detect_footer_author(
         .split()
     )
 
-    # =====================================================
-    # ONE-WORD FOOTER
-    # =====================================================
-
     if len(words) == 1:
 
         return (
             candidate,
             AUTHOR_CONFIDENCE_LOW
         )
-
-    # =====================================================
-    # 2–5 WORD PERSON-LIKE SIGNATURE
-    # =====================================================
 
     if 2 <= len(words) <= 5:
 
@@ -975,7 +922,6 @@ def extract_author_from_footer(
         result
     )
 
-    # یک‌کلمه‌ای هنوز بیش از حد مبهم است.
     if (
         confidence
         == AUTHOR_CONFIDENCE_LOW
@@ -1101,10 +1047,6 @@ def extract_editorial_structure(
         )
     }
 
-    # =====================================================
-    # TITLE
-    # =====================================================
-
     (
         title,
         working_lines,
@@ -1119,16 +1061,6 @@ def extract_editorial_structure(
         title_metadata
     )
 
-    # =====================================================
-    # AUTHOR
-    #
-    # اولویت:
-    #
-    # 1. Header صریح
-    # 2. Opening phrase
-    # 3. Footer signature
-    # =====================================================
-
     author = ""
 
     author_source = (
@@ -1138,10 +1070,6 @@ def extract_editorial_structure(
     author_confidence = (
         AUTHOR_CONFIDENCE_NONE
     )
-
-    # -----------------------------------------------------
-    # HEADER
-    # -----------------------------------------------------
 
     (
         header_author,
@@ -1176,10 +1104,6 @@ def extract_editorial_structure(
         working_lines = (
             header_lines
         )
-
-    # -----------------------------------------------------
-    # OPENING PHRASE
-    # -----------------------------------------------------
 
     if not author:
 
@@ -1217,10 +1141,6 @@ def extract_editorial_structure(
                 opening_lines
             )
 
-    # -----------------------------------------------------
-    # FOOTER
-    # -----------------------------------------------------
-
     if not author:
 
         (
@@ -1256,10 +1176,6 @@ def extract_editorial_structure(
             working_lines = (
                 footer_lines
             )
-
-    # =====================================================
-    # BODY
-    # =====================================================
 
     body = (
         build_body_from_lines(
@@ -1357,7 +1273,12 @@ def editorial_structure_to_dict(
 
 
 # =========================================================
-# REBUILD DISPLAY TEXT
+# RAW REBUILD
+#
+# این تابع برای سازگاری با کدها و تست‌های قبلی
+# بدون آیکون باقی می‌ماند.
+#
+# از این تابع برای AI / Validator نیز می‌توان استفاده کرد.
 # =========================================================
 
 def rebuild_editorial_text(
@@ -1400,6 +1321,190 @@ def rebuild_editorial_text(
 
     return "\n\n".join(
         parts
+    )
+
+
+# =========================================================
+# EDITORIAL DISPLAY TITLE
+# =========================================================
+
+def build_editorial_display_title(
+    title: str
+) -> str:
+
+    title = normalize_text(
+        title
+    )
+
+    if not title:
+        return ""
+
+    # جلوگیری از دوباره اضافه شدن آیکون
+    if title.startswith(
+        EDITORIAL_TITLE_ICON
+    ):
+
+        return title
+
+    return (
+        f"{EDITORIAL_TITLE_ICON} "
+        f"{title}"
+    )
+
+
+# =========================================================
+# EDITORIAL DISPLAY AUTHOR
+# =========================================================
+
+def build_editorial_display_author(
+    author: str
+) -> str:
+
+    author = normalize_text(
+        author
+    )
+
+    if not author:
+        return ""
+
+    # جلوگیری از دوباره اضافه شدن آیکون
+    if author.startswith(
+        EDITORIAL_AUTHOR_ICON
+    ):
+
+        return author
+
+    return (
+        f"{EDITORIAL_AUTHOR_ICON} "
+        f"{author}"
+    )
+
+
+# =========================================================
+# FINAL EDITORIAL DISPLAY TEXT
+#
+# قالب:
+#
+# 📝 عنوان یادداشت
+# ✍️ نام نویسنده
+#
+# متن
+#
+# اگر نویسنده نباشد:
+#
+# 📝 عنوان یادداشت
+#
+# متن
+#
+# اگر عنوان نباشد:
+#
+# ✍️ نام نویسنده
+#
+# متن
+#
+# آیکون‌ها فقط در Display Layer اضافه می‌شوند.
+# =========================================================
+
+def rebuild_editorial_display_text(
+    title: str = "",
+    author: str = "",
+    body: str = ""
+) -> str:
+
+    parts: List[str] = []
+
+    title = normalize_text(
+        title
+    )
+
+    author = normalize_text(
+        author
+    )
+
+    body = normalize_text(
+        body
+    )
+
+    display_title = (
+        build_editorial_display_title(
+            title
+        )
+    )
+
+    display_author = (
+        build_editorial_display_author(
+            author
+        )
+    )
+
+    # عنوان و نویسنده به هم نزدیک باشند.
+    header_lines: List[str] = []
+
+    if display_title:
+
+        header_lines.append(
+            display_title
+        )
+
+    if display_author:
+
+        header_lines.append(
+            display_author
+        )
+
+    if header_lines:
+
+        parts.append(
+            "\n".join(
+                header_lines
+            )
+        )
+
+    if body:
+
+        parts.append(
+            body
+        )
+
+    result = "\n\n".join(
+        parts
+    )
+
+    logger.info(
+        f"📝 Editorial display built | "
+        f"title={bool(display_title)} | "
+        f"author={bool(display_author)} | "
+        f"body={len(body)} | "
+        f"total={len(result)}"
+    )
+
+    return result
+
+
+# =========================================================
+# STRUCTURE DISPLAY HELPER
+# =========================================================
+
+def rebuild_editorial_structure_display(
+    structure: EditorialStructure,
+    body: Optional[str] = None
+) -> str:
+
+    if structure is None:
+        return ""
+
+    display_body = (
+        structure.body
+        if body is None
+        else body
+    )
+
+    return (
+        rebuild_editorial_display_text(
+            title=structure.title,
+            author=structure.author,
+            body=display_body
+        )
     )
 
 
