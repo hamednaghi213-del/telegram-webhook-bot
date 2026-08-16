@@ -85,8 +85,16 @@ def test_orphan_source_icon_and_separator_are_removed():
 # =========================================================
 # TEST 02
 # EXPANDABLE BLOCKQUOTE
-# FOREIGN EMOJI MUST BE REMOVED
-# ENTITY-BASED CAPTION
+# NEW MEDIA POLICY
+#
+# Media Caption:
+#   Main text only
+#
+# Blockquote Messages:
+#   Complete expandable content
+#
+# Followup Messages:
+#   Branding
 # =========================================================
 
 def test_expandable_blockquote_removes_foreign_emoji():
@@ -122,9 +130,9 @@ def test_expandable_blockquote_removes_foreign_emoji():
     )
 
     # =====================================================
-    # NEW ENTITY-BASED POLICY
+    # MEDIA CAPTION POLICY
     #
-    # دیگر کل Caption با HTML ارسال نمی‌شود.
+    # Expandable content no longer lives in media caption.
     # =====================================================
 
     assert (
@@ -138,24 +146,7 @@ def test_expandable_blockquote_removes_foreign_emoji():
         telegram[
             "media_caption_entities"
         ]
-    )
-
-    entities = (
-        telegram[
-            "media_caption_entities"
-        ]
-    )
-
-    assert (
-        len(entities)
-        >= 1
-    )
-
-    assert (
-        entities[0][
-            "type"
-        ]
-        == "expandable_blockquote"
+        == []
     )
 
     caption = (
@@ -164,8 +155,13 @@ def test_expandable_blockquote_removes_foreign_emoji():
         ]
     )
 
+    assert (
+        caption
+        == main_text
+    )
+
     # =====================================================
-    # PLAIN TEXT
+    # MEDIA CAPTION MUST NOT CONTAIN BLOCKQUOTE HTML
     # =====================================================
 
     assert (
@@ -179,22 +175,73 @@ def test_expandable_blockquote_removes_foreign_emoji():
     )
 
     # =====================================================
+    # EXPANDABLE CONTENT MUST NOT BE INSIDE MEDIA CAPTION
+    # =====================================================
+
+    assert (
+        "بخش اول تحلیل"
+        not in caption
+    )
+
+    assert (
+        "بخش دوم تحلیل"
+        not in caption
+    )
+
+    assert (
+        "بخش سوم تحلیل"
+        not in caption
+    )
+
+    # =====================================================
+    # COMPLETE EXPANDABLE CONTENT
+    # MUST BE IN BLOCKQUOTE MESSAGE
+    # =====================================================
+
+    blockquote_messages = (
+        telegram[
+            "blockquote_messages"
+        ]
+    )
+
+    assert (
+        len(blockquote_messages)
+        == 1
+    )
+
+    quote_message = (
+        blockquote_messages[0]
+    )
+
+    assert (
+        quote_message.startswith(
+            "<blockquote expandable>"
+        )
+    )
+
+    assert (
+        quote_message.endswith(
+            "</blockquote>"
+        )
+    )
+
+    # =====================================================
     # FOREIGN DECORATION MUST BE CLEANED
     # =====================================================
 
     assert (
         "🔷"
-        not in caption
+        not in quote_message
     )
 
     assert (
         "🆔"
-        not in caption
+        not in quote_message
     )
 
     assert (
         "📡"
-        not in caption
+        not in quote_message
     )
 
     # =====================================================
@@ -203,22 +250,39 @@ def test_expandable_blockquote_removes_foreign_emoji():
 
     assert (
         "بخش اول تحلیل"
-        in caption
+        in quote_message
     )
 
     assert (
         "بخش دوم تحلیل"
-        in caption
+        in quote_message
     )
 
     assert (
         "بخش سوم تحلیل"
-        in caption
+        in quote_message
     )
 
     # =====================================================
-    # BRANDING MUST BE IN FOLLOWUP MESSAGES
-    # (ENTITY-BASED OVERFLOW PATH)
+    # SHORT EXPANDABLE MUST NOT BE SPLIT
+    # =====================================================
+
+    assert (
+        len(
+            blockquote_messages
+        )
+        == 1
+    )
+
+    assert (
+        telegram_html_visible_length(
+            quote_message
+        )
+        <= TELEGRAM_MESSAGE_LIMIT
+    )
+
+    # =====================================================
+    # BRANDING MUST BE SEPARATE FOLLOWUP
     # =====================================================
 
     followup_messages = (
@@ -228,13 +292,24 @@ def test_expandable_blockquote_removes_foreign_emoji():
     )
 
     assert (
-        len(followup_messages)
+        len(
+            followup_messages
+        )
         >= 1
     )
 
     assert (
+        followup_messages[-1]
+        == DEFAULT_BRANDING
+    )
+
+    # =====================================================
+    # BRANDING MUST NOT BE IN MEDIA CAPTION
+    # =====================================================
+
+    assert (
         DEFAULT_BRANDING
-        == followup_messages[0]
+        not in caption
     )
 
 
