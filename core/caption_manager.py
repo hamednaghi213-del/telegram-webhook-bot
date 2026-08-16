@@ -55,6 +55,11 @@ SMART_SUMMARIZER_ENV = (
     "ENABLE_SMART_SUMMARIZER"
 )
 
+# اگر Main Text خبر کوتاه باشد، آن را خلاصه نمی‌کنیم.
+# این کار باعث می‌شود تیتر و مقدمه اصلی خبر حفظ شود
+# و کاهش طول از بخش‌های بلند Blockquote انجام شود.
+SMART_MAIN_PRESERVE_LIMIT = 320
+
 
 def smart_summarizer_enabled() -> bool:
 
@@ -858,22 +863,18 @@ def _combined_blockquotes(
 # =========================================================
 # SMART TELEGRAM MEDIA SUMMARY
 #
-# IMPORTANT:
+# سیاست:
 #
-# Caption Manager دیگر درباره مجاز بودن درصد کاهش
-# تصمیم نمی‌گیرد.
+# 1. اگر Main کوتاه باشد و Blockquote وجود داشته باشد،
+#    Main بدون هیچ تغییری حفظ می‌شود.
 #
-# تمام سیاست‌ها به smart_summarizer سپرده شده‌اند:
+# 2. ظرفیت باقی‌مانده به Blockquote داده می‌شود.
 #
-# normal_news
-# sensitive_content
-# uncertain
+# 3. فقط بخش‌هایی که واقعاً نیاز به کاهش دارند
+#    برای Gemini ارسال می‌شوند.
 #
-# اگر AI یا Validator رد کنند:
-#
-# None
-#
-# برمی‌گردد و Overflow پایدار قبلی اجرا می‌شود.
+# 4. اگر AI یا Validator رد کنند، None برمی‌گردد
+#    و مسیر Overflow پایدار قبلی اجرا می‌شود.
 # =========================================================
 
 def try_smart_telegram_media_summary(
@@ -888,10 +889,6 @@ def try_smart_telegram_media_summary(
     caption_limit: int
 ) -> Optional[Dict[str, Any]]:
 
-    # =====================================================
-    # FEATURE FLAG
-    # =====================================================
-
     if not smart_summarizer_enabled():
 
         logger.info(
@@ -900,10 +897,6 @@ def try_smart_telegram_media_summary(
         )
 
         return None
-
-    # =====================================================
-    # PROVIDER
-    # =====================================================
 
     if not gemini_provider_configured():
 
@@ -930,16 +923,16 @@ def try_smart_telegram_media_summary(
         )
     )
 
-    # =====================================================
-    # BUILD SOURCE PARTS
-    #
-    # Main و Blockquote جدا نگه داشته می‌شوند تا بعد از
-    # خلاصه‌سازی بتوان Entityهای Telegram را دوباره ساخت.
-    # =====================================================
-
     source_parts: List[
         Dict[str, Any]
     ] = []
+
+    preserve_short_main = bool(
+        main_text
+        and combined_blocks
+        and len(main_text)
+        <= SMART_MAIN_PRESERVE_LIMIT
+    )
 
     if main_text:
 
@@ -947,7 +940,8 @@ def try_smart_telegram_media_summary(
             "kind": "main",
             "text": main_text,
             "offset": 0,
-            "expandable": False
+            "expandable": False,
+            "preserve": preserve_short_main
         })
 
     for block in combined_blocks:
@@ -976,16 +970,13 @@ def try_smart_telegram_media_summary(
                     "expandable",
                     False
                 )
-            )
+            ),
+            "preserve": False
         })
 
     if not source_parts:
 
         return None
-
-    # =====================================================
-    # BRANDING CAPACITY
-    # =====================================================
 
     branding_cost = (
         len(branding)
@@ -1008,10 +999,6 @@ def try_smart_telegram_media_summary(
 
         return None
 
-    # =====================================================
-    # SEPARATORS
-    # =====================================================
-
     separator_cost = (
         2
         * max(
@@ -1032,12 +1019,9 @@ def try_smart_telegram_media_summary(
 
     total_source_text_length = sum(
         len(
-            item[
-                "text"
-            ]
+            item["text"]
         )
-        for item
-        in source_parts
+        for item in source_parts
     )
 
     if total_source_text_length <= 0:
@@ -1071,16 +1055,65 @@ def try_smart_telegram_media_summary(
         f"capacity={available_content} | "
         f"required_reduction="
         f"{required_reduction_ratio:.3f} | "
+        f"preserve_short_main={preserve_short_main} | "
         f"policy=AI_ADAPTIVE"
     )
 
     # =====================================================
-    # PROPORTIONAL TARGET BUDGET
-    #
-    # Caption Manager فقط بودجه کاراکتری را محاسبه می‌کند.
-    #
-    # اینکه این میزان کاهش مجاز هست یا نه، فقط و فقط
-    # توسط smart_summarizer تعیین می‌شود.
+    # PRESERVED CONTENT COST
+    # =====================================================
+
+    preserved_length = sum(
+        len(item["text"])
+        for item in source_parts
+        if item.get("preserve")
+    )
+
+    summarizable_parts = [
+        item
+        for item in source_parts
+        if not item.get("preserve")
+    ]
+
+    summarizable_source_length = sum(
+        len(item["text"])
+        for item in summarizable_parts
+    )
+
+    summarizable_budget = (
+        available_text_capacity
+        - preserved_length
+    )
+
+    if summarizable_budget <= 0:
+
+        logger.warning(
+            f"⚠️ Smart summary unavailable | "
+            f"preserved={preserved_length} | "
+            f"available={available_text_capacity}"
+        )
+
+        return None
+
+    if (
+        summarizable_source_length
+        <= summarizable_budget
+    ):
+
+        return None
+
+    logger.info(
+        f"🛡️ Smart preserved content | "
+        f"main_preserved={preserve_short_main} | "
+        f"preserved_length={preserved_length} | "
+        f"summarizable_source="
+        f"{summarizable_source_length} | "
+        f"summarizable_budget="
+        f"{summarizable_budget}"
+    )
+
+    # =====================================================
+    # BUILD SUMMARIZED PARTS
     # =====================================================
 
     summarized_parts: List[
@@ -1088,31 +1121,56 @@ def try_smart_telegram_media_summary(
     ] = []
 
     remaining_budget = (
-        available_text_capacity
+        summarizable_budget
     )
 
     remaining_source_length = (
-        total_source_text_length
+        summarizable_source_length
     )
 
-    for index, item in enumerate(
-        source_parts
-    ):
+    summarizable_index = 0
+
+    for item in source_parts:
 
         source_text = (
-            item[
-                "text"
-            ]
+            item["text"]
         )
 
         source_length = len(
             source_text
         )
 
+        # -------------------------------------------------
+        # PRESERVE
+        # -------------------------------------------------
+
+        if item.get("preserve"):
+
+            summarized_parts.append({
+                "kind": item["kind"],
+                "text": source_text,
+                "offset": item["offset"],
+                "expandable": item[
+                    "expandable"
+                ],
+                "content_type": (
+                    "preserved"
+                )
+            })
+
+            logger.info(
+                f"🛡️ Smart summary part preserved | "
+                f"kind={item['kind']} | "
+                f"length={source_length}"
+            )
+
+            continue
+
+        summarizable_index += 1
+
         is_last = (
-            index
-            == len(source_parts)
-            - 1
+            summarizable_index
+            == len(summarizable_parts)
         )
 
         if is_last:
@@ -1125,7 +1183,6 @@ def try_smart_telegram_media_summary(
         else:
 
             if remaining_source_length <= 0:
-
                 return None
 
             proportional_target = int(
@@ -1144,27 +1201,41 @@ def try_smart_telegram_media_summary(
                 )
             )
 
+        # اگر این بخش خودش در بودجه جا می‌شود
+        # نیازی به تماس با AI نیست.
+
+        if source_length <= target_length:
+
+            summarized_parts.append({
+                "kind": item["kind"],
+                "text": source_text,
+                "offset": item["offset"],
+                "expandable": item[
+                    "expandable"
+                ],
+                "content_type": (
+                    "unchanged"
+                )
+            })
+
+            remaining_budget -= (
+                source_length
+            )
+
+            remaining_source_length -= (
+                source_length
+            )
+
+            continue
+
         logger.info(
             f"🧠 Smart summary part prepared | "
-            f"part={index + 1}/{len(source_parts)} | "
+            f"part={summarizable_index}/"
+            f"{len(summarizable_parts)} | "
             f"kind={item['kind']} | "
             f"source={source_length} | "
             f"target={target_length}"
         )
-
-        # =================================================
-        # IMPORTANT
-        #
-        # هیچ max_reduction_ratio اختصاصی اینجا Pass
-        # نمی‌کنیم.
-        #
-        # smart_summarizer خودش:
-        #
-        # - نیاز به Classification را تشخیص می‌دهد
-        # - نوع محتوا را تشخیص می‌دهد
-        # - سقف کاهش را تعیین می‌کند
-        # - Validator را اجرا می‌کند
-        # =================================================
 
         result = (
             summarize_text_safely(
@@ -1178,7 +1249,7 @@ def try_smart_telegram_media_summary(
 
             logger.warning(
                 f"⚠️ Smart media summary rejected | "
-                f"part={index + 1} | "
+                f"part={summarizable_index} | "
                 f"kind={item['kind']} | "
                 f"reason={result.reason} | "
                 f"content_type="
@@ -1202,19 +1273,31 @@ def try_smart_telegram_media_summary(
             logger.warning(
                 f"⚠️ Smart summary produced "
                 f"empty part | "
-                f"index={index + 1}"
+                f"index={summarizable_index}"
+            )
+
+            return None
+
+        # سخت‌گیری نهایی:
+        # خروجی AI نباید از بودجه تخصیص یافته
+        # برای این بخش عبور کند.
+
+        if len(summarized_text) > target_length:
+
+            logger.warning(
+                f"⚠️ Smart summary part exceeds "
+                f"target after provider | "
+                f"part={summarizable_index} | "
+                f"summary={len(summarized_text)} | "
+                f"target={target_length}"
             )
 
             return None
 
         summarized_parts.append({
-            "kind": item[
-                "kind"
-            ],
+            "kind": item["kind"],
             "text": summarized_text,
-            "offset": item[
-                "offset"
-            ],
+            "offset": item["offset"],
             "expandable": item[
                 "expandable"
             ],
@@ -1264,9 +1347,7 @@ def try_smart_telegram_media_summary(
         ] == "main":
 
             summarized_main = (
-                item[
-                    "text"
-                ]
+                item["text"]
             )
 
             continue
@@ -1306,9 +1387,6 @@ def try_smart_telegram_media_summary(
 
     # =====================================================
     # REBUILD TELEGRAM ENTITIES
-    #
-    # Entity Offsetها از صفر و بر اساس متن جدید
-    # دوباره ساخته می‌شوند.
     # =====================================================
 
     try:
@@ -1385,6 +1463,7 @@ def try_smart_telegram_media_summary(
         f"caption={len(final_caption)} | "
         f"entities={len(caption_entities)} | "
         f"parts={len(summarized_parts)} | "
+        f"main_preserved={preserve_short_main} | "
         f"followups=0 | "
         f"required_reduction="
         f"{required_reduction_ratio:.3f}"
@@ -1935,10 +2014,6 @@ def create_telegram_plan(
         expandable_blocks
     )
 
-    # =====================================================
-    # SOURCE BLOCKQUOTE EXISTS
-    # =====================================================
-
     if has_blockquotes:
 
         # =================================================
@@ -2327,10 +2402,6 @@ def create_telegram_plan(
             "media_caption_entities"
         ] = []
 
-        # =================================================
-        # MAIN OVERFLOW
-        # =================================================
-
         if remaining_main:
 
             replies = split_text(
@@ -2341,12 +2412,6 @@ def create_telegram_plan(
             plan[
                 "followup_messages"
             ] = replies
-
-        # =================================================
-        # BLOCKQUOTE OVERFLOW
-        #
-        # هر پیام ادامه باید Branding خودش را داشته باشد.
-        # =================================================
 
         if remaining_blocks:
 
