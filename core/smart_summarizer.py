@@ -1,4 +1,5 @@
 import logging
+import math
 import re
 
 from dataclasses import dataclass
@@ -37,7 +38,10 @@ logger = logging.getLogger(__name__)
 # 6. خروجی در تمام حالت‌ها
 #    → Validator ضدتحریف
 #
-# 7. شکست AI / Validation
+# 7. اگر تنها مشکل چند کاراکتر اضافه از Target باشد
+#    → یک Retry کنترل‌شده
+#
+# 8. شکست AI / Validation
 #    → متن اصلی دقیقاً حفظ می‌شود.
 # =========================================================
 
@@ -65,6 +69,21 @@ SENSITIVE_CONTENT_MAX_REDUCTION_RATIO = 0.30
 UNCERTAIN_CONTENT_MAX_REDUCTION_RATIO = 0.40
 
 ABSOLUTE_MAX_REDUCTION_RATIO = 0.60
+
+
+# =========================================================
+# CONTROLLED RETRY POLICY
+# =========================================================
+
+SUMMARY_RETRY_ENABLED = True
+
+SUMMARY_RETRY_MARGIN_RATIO = 0.08
+
+SUMMARY_RETRY_MIN_MARGIN = 12
+
+SUMMARY_RETRY_OVERSHOOT_PADDING = 8
+
+SUMMARY_RETRY_MIN_TARGET = 80
 
 
 # =========================================================
@@ -936,6 +955,107 @@ def build_summarization_instruction(
 
 
 # =========================================================
+# CONTROLLED RETRY HELPERS
+# =========================================================
+
+def should_retry_summary(
+    validation: Dict[str, Any],
+    generated: str,
+    target_length: int
+) -> bool:
+
+    if not SUMMARY_RETRY_ENABLED:
+        return False
+
+    if not generated:
+        return False
+
+    errors = list(
+        validation.get(
+            "errors",
+            []
+        )
+        or []
+    )
+
+    if set(errors) != {
+        "summary_exceeds_target"
+    }:
+
+        return False
+
+    if len(generated) <= target_length:
+        return False
+
+    return True
+
+
+def calculate_retry_target(
+    original_length: int,
+    current_target: int,
+    generated_length: int,
+    effective_max_reduction_ratio: float
+) -> Optional[int]:
+
+    if original_length <= 0:
+        return None
+
+    if current_target <= 0:
+        return None
+
+    overshoot = max(
+        0,
+        generated_length
+        - current_target
+    )
+
+    retry_margin = max(
+        SUMMARY_RETRY_MIN_MARGIN,
+        overshoot
+        + SUMMARY_RETRY_OVERSHOOT_PADDING,
+        int(
+            current_target
+            * SUMMARY_RETRY_MARGIN_RATIO
+        )
+    )
+
+    candidate_target = (
+        current_target
+        - retry_margin
+    )
+
+    # =====================================================
+    # POLICY FLOOR
+    #
+    # Retry نباید ما را مجبور کند از سقف کاهش مجاز
+    # برای نوع محتوای فعلی عبور کنیم.
+    # =====================================================
+
+    policy_min_target = math.ceil(
+        original_length
+        * (
+            1.0
+            - effective_max_reduction_ratio
+        )
+    )
+
+    retry_target = max(
+        SUMMARY_RETRY_MIN_TARGET,
+        policy_min_target,
+        candidate_target
+    )
+
+    if (
+        retry_target
+        >= current_target
+    ):
+
+        return None
+
+    return retry_target
+
+
+# =========================================================
 # SMART SUMMARIZE
 # =========================================================
 
@@ -992,6 +1112,7 @@ def summarize_text_safely(
             metadata={
                 "summarizer_called": False,
                 "classifier_called": False,
+                "retry_called": False,
                 "content_type": (
                     CONTENT_TYPE_UNCERTAIN
                 )
@@ -1021,6 +1142,7 @@ def summarize_text_safely(
             metadata={
                 "summarizer_called": False,
                 "classifier_called": False,
+                "retry_called": False,
                 "content_type": (
                     CONTENT_TYPE_UNCERTAIN
                 )
@@ -1046,6 +1168,7 @@ def summarize_text_safely(
             metadata={
                 "summarizer_called": False,
                 "classifier_called": False,
+                "retry_called": False,
                 "content_type": (
                     CONTENT_TYPE_UNCERTAIN
                 )
@@ -1076,6 +1199,7 @@ def summarize_text_safely(
             metadata={
                 "summarizer_called": False,
                 "classifier_called": False,
+                "retry_called": False,
                 "content_type": (
                     CONTENT_TYPE_UNCERTAIN
                 )
@@ -1129,6 +1253,7 @@ def summarize_text_safely(
                 ),
                 "summarizer_called": False,
                 "classifier_called": False,
+                "retry_called": False,
                 "content_type": (
                     CONTENT_TYPE_UNCERTAIN
                 )
@@ -1214,6 +1339,7 @@ def summarize_text_safely(
                     ),
                     "summarizer_called": False,
                     "classifier_called": True,
+                    "retry_called": False,
                     "content_type": (
                         content_type
                     )
@@ -1232,7 +1358,7 @@ def summarize_text_safely(
     )
 
     # =====================================================
-    # CALL PROVIDER
+    # FIRST PROVIDER CALL
     # =====================================================
 
     try:
@@ -1268,6 +1394,7 @@ def summarize_text_safely(
                 "classifier_called": (
                     classifier_called
                 ),
+                "retry_called": False,
                 "content_type": (
                     content_type
                 ),
@@ -1282,7 +1409,7 @@ def summarize_text_safely(
     )
 
     # =====================================================
-    # VALIDATION
+    # FIRST VALIDATION
     # =====================================================
 
     validation = (
@@ -1296,6 +1423,217 @@ def summarize_text_safely(
             content_type=content_type
         )
     )
+
+    retry_called = False
+    retry_target = None
+    first_candidate = generated
+
+    # =====================================================
+    # CONTROLLED RETRY
+    #
+    # فقط وقتی تنها خطا:
+    #
+    # summary_exceeds_target
+    #
+    # باشد.
+    #
+    # خطاهای محتوایی هرگز Retry نمی‌شوند.
+    # =====================================================
+
+    if (
+        not validation[
+            "valid"
+        ]
+        and should_retry_summary(
+            validation=validation,
+            generated=generated,
+            target_length=target_length
+        )
+    ):
+
+        retry_target = (
+            calculate_retry_target(
+                original_length=original_length,
+                current_target=target_length,
+                generated_length=len(
+                    generated
+                ),
+                effective_max_reduction_ratio=(
+                    effective_max_reduction_ratio
+                )
+            )
+        )
+
+        if retry_target is not None:
+
+            retry_called = True
+
+            overshoot = (
+                len(generated)
+                - target_length
+            )
+
+            logger.info(
+                f"🔁 Smart summary controlled retry | "
+                f"content_type={content_type} | "
+                f"first_target={target_length} | "
+                f"first_output={len(generated)} | "
+                f"overshoot={overshoot} | "
+                f"retry_target={retry_target}"
+            )
+
+            retry_instruction = (
+                build_summarization_instruction(
+                    retry_target,
+                    content_type=content_type
+                )
+            )
+
+            try:
+
+                retry_generated = summarizer(
+                    raw_original_text,
+                    retry_instruction,
+                    retry_target
+                )
+
+            except Exception as e:
+
+                logger.exception(
+                    f"❌ Smart summarizer retry "
+                    f"provider failed | {e}"
+                )
+
+                return SummaryResult(
+                    success=False,
+                    original_text=raw_original_text,
+                    summary_text=raw_original_text,
+                    target_length=target_length,
+                    original_length=original_length,
+                    summary_length=original_length,
+                    reduction_ratio=0.0,
+                    validation_passed=False,
+                    reason="provider_error",
+                    metadata={
+                        "error": str(
+                            e
+                        ),
+                        "summarizer_called": True,
+                        "classifier_called": (
+                            classifier_called
+                        ),
+                        "retry_called": True,
+                        "retry_target": (
+                            retry_target
+                        ),
+                        "first_candidate_summary": (
+                            first_candidate
+                        ),
+                        "content_type": (
+                            content_type
+                        ),
+                        "effective_max_reduction_ratio": (
+                            effective_max_reduction_ratio
+                        )
+                    }
+                )
+
+            retry_generated = (
+                normalize_text(
+                    retry_generated
+                )
+            )
+
+            retry_validation = (
+                validate_summary(
+                    original_text=raw_original_text,
+                    summary_text=retry_generated,
+                    target_length=retry_target,
+                    max_reduction_ratio=(
+                        effective_max_reduction_ratio
+                    ),
+                    content_type=content_type
+                )
+            )
+
+            if retry_validation[
+                "valid"
+            ]:
+
+                generated = (
+                    retry_generated
+                )
+
+                validation = (
+                    retry_validation
+                )
+
+                logger.info(
+                    f"✅ Smart summary retry accepted | "
+                    f"content_type={content_type} | "
+                    f"first_target={target_length} | "
+                    f"retry_target={retry_target} | "
+                    f"output={len(generated)}"
+                )
+
+            else:
+
+                logger.warning(
+                    f"⚠️ Smart summary retry rejected | "
+                    f"content_type={content_type} | "
+                    f"errors="
+                    f"{retry_validation['errors']} | "
+                    f"retry_target={retry_target} | "
+                    f"output="
+                    f"{len(retry_generated)}"
+                )
+
+                return SummaryResult(
+                    success=False,
+                    original_text=raw_original_text,
+                    summary_text=raw_original_text,
+                    target_length=target_length,
+                    original_length=original_length,
+                    summary_length=original_length,
+                    reduction_ratio=0.0,
+                    validation_passed=False,
+                    reason="validation_failed",
+                    metadata={
+                        "validation": (
+                            retry_validation
+                        ),
+                        "candidate_summary": (
+                            retry_generated
+                        ),
+                        "first_validation": (
+                            validation
+                        ),
+                        "first_candidate_summary": (
+                            first_candidate
+                        ),
+                        "summarizer_called": True,
+                        "classifier_called": (
+                            classifier_called
+                        ),
+                        "retry_called": True,
+                        "retry_target": (
+                            retry_target
+                        ),
+                        "content_type": (
+                            content_type
+                        ),
+                        "effective_max_reduction_ratio": (
+                            effective_max_reduction_ratio
+                        ),
+                        "required_reduction_ratio": (
+                            required_reduction_ratio
+                        )
+                    }
+                )
+
+    # =====================================================
+    # FINAL VALIDATION FAILURE
+    # =====================================================
 
     if not validation[
         "valid"
@@ -1327,6 +1665,12 @@ def summarize_text_safely(
                 "classifier_called": (
                     classifier_called
                 ),
+                "retry_called": (
+                    retry_called
+                ),
+                "retry_target": (
+                    retry_target
+                ),
                 "content_type": (
                     content_type
                 ),
@@ -1335,6 +1679,10 @@ def summarize_text_safely(
                 )
             }
         )
+
+    # =====================================================
+    # SUCCESS
+    # =====================================================
 
     reduction_ratio = (
         calculate_reduction_ratio(
@@ -1352,7 +1700,8 @@ def summarize_text_safely(
         f"reduction="
         f"{reduction_ratio:.3f} | "
         f"max_allowed="
-        f"{effective_max_reduction_ratio:.3f}"
+        f"{effective_max_reduction_ratio:.3f} | "
+        f"retry={retry_called}"
     )
 
     return SummaryResult(
@@ -1374,6 +1723,12 @@ def summarize_text_safely(
             "summarizer_called": True,
             "classifier_called": (
                 classifier_called
+            ),
+            "retry_called": (
+                retry_called
+            ),
+            "retry_target": (
+                retry_target
             ),
             "content_type": (
                 content_type
