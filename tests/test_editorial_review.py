@@ -7,7 +7,7 @@ from core.editorial_review import (
     MAX_REGENERATION_COUNT,
     can_regenerate_editorial_summary,
     parse_editorial_classification,
-    review_editorial_content,
+    analyze_editorial_content,
     regenerate_editorial_summary,
 )
 
@@ -195,7 +195,7 @@ def test_normal_news_does_not_require_approval():
         "سیاسی و منطقه‌ای است."
     )
 
-    result = review_editorial_content(
+    result = analyze_editorial_content(
         original_text=original_text,
         classifier=fake_classifier_normal
     )
@@ -228,7 +228,7 @@ def test_sensitive_content_is_not_auto_summarized():
         "شروط و تعهدات طرفین است."
     )
 
-    result = review_editorial_content(
+    result = analyze_editorial_content(
         original_text=original_text,
         classifier=fake_classifier_sensitive
     )
@@ -261,7 +261,7 @@ def test_uncertain_content_requires_approval():
         "قابل تشخیص نیست."
     )
 
-    result = review_editorial_content(
+    result = analyze_editorial_content(
         original_text=original_text,
         classifier=fake_classifier_uncertain
     )
@@ -290,7 +290,7 @@ def test_opinion_note_requires_approval():
         "بازیگران بین‌المللی می‌پردازد."
     )
 
-    result = review_editorial_content(
+    result = analyze_editorial_content(
         original_text=original_text,
         classifier=fake_classifier_opinion
     )
@@ -319,7 +319,7 @@ def test_news_analysis_requires_approval():
         "بررسی می‌کند."
     )
 
-    result = review_editorial_content(
+    result = analyze_editorial_content(
         original_text=original_text,
         classifier=fake_classifier_analysis
     )
@@ -346,7 +346,7 @@ def test_short_opinion_still_requires_approval():
         "این یک یادداشت کوتاه تحلیلی است."
     )
 
-    result = review_editorial_content(
+    result = analyze_editorial_content(
         original_text=original_text,
         classifier=fake_classifier_opinion
     )
@@ -369,7 +369,7 @@ def test_short_opinion_still_requires_approval():
 
 def test_empty_text_is_safe():
 
-    result = review_editorial_content(
+    result = analyze_editorial_content(
         original_text="",
         classifier=fake_classifier_normal
     )
@@ -397,7 +397,7 @@ def test_original_text_is_preserved():
         "در سیستم نگهداری شود."
     )
 
-    result = review_editorial_content(
+    result = analyze_editorial_content(
         original_text=original_text,
         classifier=fake_classifier_opinion
     )
