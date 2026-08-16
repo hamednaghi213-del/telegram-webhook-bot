@@ -94,10 +94,6 @@ def fake_regenerator_success(
     instruction,
     target_length
 ):
-    # خروجی از خود متن اصلی ساخته می‌شود.
-    # در نتیجه Validator با اطلاعات ساختگی مواجه نمی‌شود
-    # و نسبت کاهش نیز واقعی باقی می‌ماند.
-
     return trim_at_word_boundary(
         text,
         target_length
@@ -109,10 +105,6 @@ def fake_regenerator_same(
     instruction,
     target_length
 ):
-    # برای تست SAME SUMMARY نیز دقیقاً همان الگویی
-    # را تولید می‌کنیم که previous_summary بر اساس آن
-    # ساخته شده است.
-
     return trim_at_word_boundary(
         text,
         target_length
@@ -431,6 +423,119 @@ def test_news_analysis_requires_approval():
 
 
 # =========================================================
+# ADAPTIVE TARGET
+#
+# Live regression:
+#
+# Original body ≈ 3918
+# Requested target = 950
+# NEWS_ANALYSIS max reduction = 75%
+#
+# Minimum safe output:
+#
+# 3918 * 0.25 = 979.5
+#
+# بنابراین Target مؤثر نباید روی 950 باقی بماند.
+# سیستم باید Target را به حداقل امن افزایش دهد.
+# =========================================================
+
+
+def test_news_analysis_adaptive_target_avoids_impossible_reduction():
+
+    original_text = (
+        "ایران در شرایطی مذاکرات را ادامه می‌دهد که "
+        "اعتماد میان طرفین کاهش یافته است اما حفظ "
+        "چارچوب مذاکره همچنان ابزاری برای مدیریت "
+        "صحنه سیاسی و جلوگیری از تشدید بحران تلقی "
+        "می‌شود. تهران بر این باور است که ادامه "
+        "گفت‌وگو الزاماً به معنای اعتماد به نتیجه "
+        "نیست و می‌تواند بخشی از راهبرد کنترل هزینه‌ها "
+        "و انتقال مسئولیت شکست احتمالی باشد. "
+    ) * 15
+
+    # طول متن را به محدوده سناریوی Live نزدیک می‌کنیم.
+    while len(original_text) < 3918:
+
+        original_text += (
+            "در این ارزیابی، تداوم مسیر مذاکره می‌تواند "
+            "برای مدیریت فشارها و حفظ امکان تصمیم‌گیری "
+            "در مراحل بعدی اهمیت داشته باشد. "
+        )
+
+    original_text = (
+        original_text[:3918]
+    )
+
+    received_targets = []
+
+    def adaptive_fake_summarizer(
+        text,
+        instruction,
+        target_length
+    ):
+
+        received_targets.append(
+            target_length
+        )
+
+        # خروجی را دقیقاً بر اساس Target واقعی
+        # درخواست‌شده از Provider تولید می‌کنیم.
+        return text[
+            :target_length
+        ].strip()
+
+    result = analyze_editorial_content(
+        original_text=original_text,
+        target_length=950,
+        classifier=fake_classifier_analysis,
+        summarizer=(
+            adaptive_fake_summarizer
+        )
+    )
+
+    assert (
+        len(original_text)
+        == 3918
+    )
+
+    assert (
+        received_targets
+    )
+
+    # برای NEWS_ANALYSIS با reduction ratio برابر 0.75
+    # حداقل خروجی امن برای 3918 کاراکتر تقریباً 980 است.
+    #
+    # بنابراین Provider نباید با Target غیرممکن 950
+    # فراخوانی شود.
+    assert (
+        received_targets[-1]
+        >= 980
+    )
+
+    assert (
+        result.content_type
+        == CONTENT_TYPE_NEWS_ANALYSIS
+    )
+
+    assert (
+        result.needs_approval
+        is True
+    )
+
+    assert (
+        result.summary_success
+        is True
+    )
+
+    assert (
+        len(
+            result.suggested_text
+        )
+        >= 980
+    )
+
+
+# =========================================================
 # SHORT OPINION NOTE
 # =========================================================
 
@@ -725,11 +830,6 @@ def test_regeneration_same_as_previous_is_rejected():
         "کشورها در هر حوزه بر اساس منافع متفاوت "
         "تصمیم می‌گیرند. "
     ) * 12
-
-    # regenerate_editorial_summary برای target=950
-    # در این نسخه target داخلی 910 می‌سازد.
-    # previous_summary را دقیقاً مطابق خروجی Fake AI
-    # می‌سازیم تا مسیر SAME SUMMARY واقعاً تست شود.
 
     previous_summary = (
         trim_at_word_boundary(
