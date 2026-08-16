@@ -994,18 +994,82 @@ def format_with_source(
 
 
 # =========================================================
+# EDITORIAL DISPLAY HELPER
+# =========================================================
+
+def build_editorial_display(
+    title: str = "",
+    author: str = "",
+    body: str = ""
+) -> str:
+
+    try:
+
+        from core.editorial_structure import (
+            rebuild_editorial_display_text
+        )
+
+        return (
+            rebuild_editorial_display_text(
+                title=title,
+                author=author,
+                body=body
+            )
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Editorial display build failed | "
+            f"{e}"
+        )
+
+        parts: List[str] = []
+
+        title = str(
+            title
+            or ""
+        ).strip()
+
+        author = str(
+            author
+            or ""
+        ).strip()
+
+        body = str(
+            body
+            or ""
+        ).strip()
+
+        if title:
+            parts.append(
+                f"📝 {title}"
+            )
+
+        if author:
+            parts.append(
+                f"✍️ {author}"
+            )
+
+        if body:
+
+            if parts:
+
+                return (
+                    "\n".join(parts)
+                    + "\n\n"
+                    + body
+                )
+
+            return body
+
+        return "\n".join(
+            parts
+        )
+
+
+# =========================================================
 # PUBLISH PREPARED TEXT
-#
-# این تابع متن از قبل آماده‌شده را بدون اجرای دوباره
-# Formatter منتشر می‌کند.
-#
-# از همین تابع برای:
-#
-# - مسیر عادی Text
-# - انتشار خلاصه تاییدشده
-# - انتشار متن اصلی تاییدشده
-#
-# استفاده می‌شود.
 # =========================================================
 
 def publish_prepared_text(
@@ -1898,7 +1962,9 @@ def build_editorial_preview(
     summary_text: str,
     original_length: int,
     regeneration_count: int = 0,
-    summary_success: bool = True
+    summary_success: bool = True,
+    title: str = "",
+    author: str = ""
 ) -> str:
 
     label = (
@@ -1915,13 +1981,20 @@ def build_editorial_preview(
         .strip()
     )
 
-    # پیش‌نمایش Bot API باید زیر 4096 باقی بماند.
+    display_summary = (
+        build_editorial_display(
+            title=title,
+            author=author,
+            body=summary_text
+        )
+    )
+
     preview_limit = 3000
 
-    if len(summary_text) > preview_limit:
+    if len(display_summary) > preview_limit:
 
         preview_text = (
-            summary_text[
+            display_summary[
                 :preview_limit
             ]
             .rstrip()
@@ -1931,7 +2004,7 @@ def build_editorial_preview(
     else:
 
         preview_text = (
-            summary_text
+            display_summary
         )
 
     if summary_success:
@@ -1990,6 +2063,10 @@ def try_queue_editorial_text_review(
             create_pending_review
         )
 
+        from core.editorial_structure import (
+            extract_editorial_structure
+        )
+
         prepared = (
             prepare_text_content(
                 text=text,
@@ -2008,16 +2085,66 @@ def try_queue_editorial_text_review(
 
             return False
 
+        # =================================================
+        # STRUCTURE EXTRACTION
+        #
+        # title / author از متن جدا می‌شوند.
+        #
+        # فقط body برای خلاصه‌سازی AI ارسال می‌شود.
+        # =================================================
+
+        structure = (
+            extract_editorial_structure(
+                editorial_source
+            )
+        )
+
+        editorial_title = (
+            structure.title
+            or ""
+        )
+
+        editorial_author = (
+            structure.author
+            or ""
+        )
+
+        editorial_body = (
+            structure.body
+            or editorial_source
+        )
+
+        logger.info(
+            f"🧩 Editorial structure ready | "
+            f"user={chat_id} | "
+            f"title={bool(editorial_title)} | "
+            f"author={editorial_author or '-'} | "
+            f"source={len(editorial_source)} | "
+            f"body={len(editorial_body)}"
+        )
+
         logger.info(
             f"🧠 Editorial review candidate | "
             f"user={chat_id} | "
-            f"length={len(editorial_source)}"
+            f"length={len(editorial_body)}"
         )
+
+        # =================================================
+        # IMPORTANT
+        #
+        # AI فقط BODY را می‌بیند.
+        #
+        # عنوان و نویسنده:
+        #
+        # - خلاصه نمی‌شوند
+        # - تغییر نمی‌کنند
+        # - وارد Validator نمی‌شوند
+        # =================================================
 
         review_result = (
             analyze_editorial_content(
                 original_text=(
-                    editorial_source
+                    editorial_body
                 )
             )
         )
@@ -2033,8 +2160,6 @@ def try_queue_editorial_text_review(
             f"{review_result.summary_success}"
         )
 
-        # در این مرحله فقط یادداشت و تحلیل
-        # وارد Pending Review می‌شوند.
         if (
             review_result.content_type
             not in (
@@ -2055,45 +2180,78 @@ def try_queue_editorial_text_review(
                 content_type=(
                     review_result.content_type
                 ),
+
+                # برای سازگاری با مسیر انتشار متن اصلی،
+                # Original کامل محفوظ می‌ماند.
                 original_text=(
                     editorial_source
                 ),
+
+                # Summary فقط body خلاصه‌شده است.
                 current_summary=(
                     review_result.suggested_text
                 ),
+
                 regeneration_count=(
                     review_result.metadata.get(
                         "regeneration_count",
                         0
                     )
                 ),
+
                 metadata={
                     "kind": "text",
+
                     "main_text":
                         prepared[
                             "main_text"
                         ],
+
                     "blockquote_blocks":
                         prepared[
                             "blockquote_blocks"
                         ],
+
                     "expandable_blocks":
                         prepared[
                             "expandable_blocks"
                         ],
+
                     "other_entities":
                         prepared[
                             "other_entities"
                         ],
+
                     "forward_source":
                         dict(
                             forward_source
                             or {}
                         ),
+
                     "summary_success":
                         review_result.summary_success,
+
                     "review_reason":
-                        review_result.reason
+                        review_result.reason,
+
+                    # =====================================
+                    # EDITORIAL STRUCTURE
+                    # =====================================
+
+                    "editorial_title":
+                        editorial_title,
+
+                    "editorial_author":
+                        editorial_author,
+
+                    "editorial_body":
+                        editorial_body,
+
+                    "editorial_author_source":
+                        structure.author_source,
+
+                    "editorial_author_confidence":
+                        structure.author_confidence
                 }
             )
         )
@@ -2122,17 +2280,29 @@ def try_queue_editorial_text_review(
                 content_type=(
                     pending.content_type
                 ),
+
                 summary_text=(
                     pending.current_summary
                 ),
+
                 original_length=len(
-                    pending.original_text
+                    editorial_body
                 ),
+
                 regeneration_count=(
                     pending.regeneration_count
                 ),
+
                 summary_success=(
                     review_result.summary_success
+                ),
+
+                title=(
+                    editorial_title
+                ),
+
+                author=(
+                    editorial_author
                 )
             )
         )
@@ -2156,7 +2326,9 @@ def try_queue_editorial_text_review(
             f"✅ Editorial review queued | "
             f"review_id={pending.review_id} | "
             f"user={chat_id} | "
-            f"type={pending.content_type}"
+            f"type={pending.content_type} | "
+            f"title={bool(editorial_title)} | "
+            f"author={bool(editorial_author)}"
         )
 
         return True
@@ -2168,9 +2340,6 @@ def try_queue_editorial_text_review(
             f"{e}"
         )
 
-        # Fail open:
-        # اگر ماژول Editorial دچار خطا شد،
-        # خبر عادی از مسیر قبلی منتشر می‌شود.
         return False
 
 
@@ -2287,6 +2456,35 @@ def handle_editorial_callback(
 
             return True
 
+        metadata = (
+            review.metadata
+            or {}
+        )
+
+        editorial_title = (
+            metadata.get(
+                "editorial_title",
+                ""
+            )
+            or ""
+        )
+
+        editorial_author = (
+            metadata.get(
+                "editorial_author",
+                ""
+            )
+            or ""
+        )
+
+        editorial_body = (
+            metadata.get(
+                "editorial_body",
+                ""
+            )
+            or ""
+        )
+
         # =================================================
         # CANCEL
         # =================================================
@@ -2317,14 +2515,11 @@ def handle_editorial_callback(
 
         # =================================================
         # PUBLISH ORIGINAL
+        #
+        # مسیر اصلی قبلی حفظ شده است.
         # =================================================
 
         if action == "original":
-
-            metadata = (
-                review.metadata
-                or {}
-            )
 
             success = (
                 publish_prepared_text(
@@ -2407,7 +2602,7 @@ def handle_editorial_callback(
                 return True
 
             if (
-                review.metadata.get(
+                metadata.get(
                     "summary_success"
                 )
                 is False
@@ -2420,11 +2615,39 @@ def handle_editorial_callback(
 
                 return True
 
+            # =================================================
+            # FINAL EDITORIAL DISPLAY
+            #
+            # 📝 title
+            # ✍️ author
+            #
+            # summary body
+            # =================================================
+
+            final_summary = (
+                build_editorial_display(
+                    title=editorial_title,
+                    author=editorial_author,
+                    body=(
+                        review.current_summary
+                    )
+                )
+            )
+
+            logger.info(
+                f"[{req_id}] 📝 Editorial summary display | "
+                f"review_id={review_id} | "
+                f"title={bool(editorial_title)} | "
+                f"author={bool(editorial_author)} | "
+                f"body={len(review.current_summary or '')} | "
+                f"final={len(final_summary)}"
+            )
+
             success = (
                 publish_prepared_text(
                     chat_id=user_id,
                     main_text=(
-                        review.current_summary
+                        final_summary
                     ),
                     blockquote_blocks=[],
                     expandable_blocks=[],
@@ -2486,10 +2709,22 @@ def handle_editorial_callback(
                 "در حال ساخت نسخه جدید..."
             )
 
+            # =================================================
+            # REGENERATION SOURCE
+            #
+            # AI فقط body اصلی را دوباره بررسی می‌کند.
+            # title / author هرگز وارد AI نمی‌شوند.
+            # =================================================
+
+            regeneration_source = (
+                editorial_body
+                or review.original_text
+            )
+
             regeneration_result = (
                 regenerate_editorial_summary(
                     original_text=(
-                        review.original_text
+                        regeneration_source
                     ),
                     previous_summary=(
                         review.current_summary
@@ -2510,8 +2745,18 @@ def handle_editorial_callback(
                 )
             )
 
-            # حتی در شکست، Count جدید ذخیره می‌شود
-            # تا سقف سه بار واقعاً enforce شود.
+            updated_metadata = dict(
+                review.metadata
+                or {}
+            )
+
+            updated_metadata.update({
+                "summary_success":
+                    regeneration_result.summary_success,
+                "regeneration_reason":
+                    regeneration_result.reason
+            })
+
             updated = (
                 update_pending_summary(
                     review_id=review_id,
@@ -2523,12 +2768,9 @@ def handle_editorial_callback(
                     regeneration_count=(
                         next_count
                     ),
-                    metadata={
-                        "summary_success":
-                            regeneration_result.summary_success,
-                        "regeneration_reason":
-                            regeneration_result.reason
-                    }
+                    metadata=(
+                        updated_metadata
+                    )
                 )
             )
 
@@ -2587,21 +2829,50 @@ def handle_editorial_callback(
                 )
             )
 
+            updated_metadata = (
+                updated.metadata
+                or {}
+            )
+
             preview = (
                 build_editorial_preview(
                     content_type=(
                         updated.content_type
                     ),
+
                     summary_text=(
                         updated.current_summary
                     ),
+
                     original_length=len(
-                        updated.original_text
+                        updated_metadata.get(
+                            "editorial_body",
+                            updated.original_text
+                        )
+                        or updated.original_text
                     ),
+
                     regeneration_count=(
                         updated.regeneration_count
                     ),
-                    summary_success=True
+
+                    summary_success=True,
+
+                    title=(
+                        updated_metadata.get(
+                            "editorial_title",
+                            ""
+                        )
+                        or ""
+                    ),
+
+                    author=(
+                        updated_metadata.get(
+                            "editorial_author",
+                            ""
+                        )
+                        or ""
+                    )
                 )
             )
 
@@ -2688,9 +2959,6 @@ def handle_webhook() -> Tuple[
 
         # =================================================
         # CALLBACK QUERY
-        #
-        # باید قبل از message بررسی شود، چون Callback
-        # دارای message ورودی معمولی نیست.
         # =================================================
 
         callback_query = data.get(
@@ -2970,9 +3238,6 @@ def handle_webhook() -> Tuple[
 
         # =================================================
         # SINGLE PHOTO / VIDEO
-        #
-        # Editorial Review در این مرحله هنوز روی Media
-        # فعال نشده تا مسیر پایدار فعلی تغییر نکند.
         # =================================================
 
         if (
@@ -3094,16 +3359,6 @@ def handle_webhook() -> Tuple[
 
         if pure_text.strip():
 
-            # =============================================
-            # EDITORIAL REVIEW GATE
-            #
-            # اگر AI تشخیص دهد متن یادداشت یا تحلیل است،
-            # محتوا منتشر نمی‌شود و وارد Pending می‌شود.
-            #
-            # اگر خبر عادی باشد یا Feature خاموش باشد،
-            # دقیقاً مسیر پایدار قبلی ادامه پیدا می‌کند.
-            # =============================================
-
             queued_for_review = (
                 try_queue_editorial_text_review(
                     chat_id=chat_id,
@@ -3130,10 +3385,6 @@ def handle_webhook() -> Tuple[
                     "ok": True,
                     "editorial_review": True
                 }, 200
-
-            # =============================================
-            # STABLE DIRECT PUBLICATION
-            # =============================================
 
             kwargs = {
                 "chat_id": chat_id,
