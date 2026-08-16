@@ -24,6 +24,19 @@ STATUS_EXPIRED = "expired"
 
 
 # =========================================================
+# ADMIN INSTRUCTION STATE
+#
+# این State جدا از Status اصلی Review است.
+#
+# Review همچنان STATUS_PENDING باقی می‌ماند،
+# اما می‌تواند منتظر دریافت دستور متنی ادمین باشد.
+# =========================================================
+
+ADMIN_INSTRUCTION_IDLE = "idle"
+ADMIN_INSTRUCTION_WAITING = "waiting"
+
+
+# =========================================================
 # REVIEW OBJECT
 # =========================================================
 
@@ -98,6 +111,63 @@ def _is_expired(
 
 
 # =========================================================
+# ADMIN INSTRUCTION METADATA HELPERS
+# =========================================================
+
+def _get_admin_instruction_state(
+    review: PendingEditorialReview
+) -> str:
+
+    if review is None:
+        return ADMIN_INSTRUCTION_IDLE
+
+    value = (
+        review.metadata.get(
+            "admin_instruction_state",
+            ADMIN_INSTRUCTION_IDLE
+        )
+        or ADMIN_INSTRUCTION_IDLE
+    )
+
+    value = str(
+        value
+    ).strip()
+
+    if value not in (
+        ADMIN_INSTRUCTION_IDLE,
+        ADMIN_INSTRUCTION_WAITING,
+    ):
+
+        return ADMIN_INSTRUCTION_IDLE
+
+    return value
+
+
+def is_waiting_for_admin_instruction(
+    review: Optional[
+        PendingEditorialReview
+    ]
+) -> bool:
+
+    if review is None:
+        return False
+
+    if (
+        review.status
+        != STATUS_PENDING
+    ):
+
+        return False
+
+    return (
+        _get_admin_instruction_state(
+            review
+        )
+        == ADMIN_INSTRUCTION_WAITING
+    )
+
+
+# =========================================================
 # CREATE REVIEW
 # =========================================================
 
@@ -117,6 +187,26 @@ def create_pending_review(
     )
 
     now = _now()
+
+    review_metadata = dict(
+        metadata
+        or {}
+    )
+
+    review_metadata.setdefault(
+        "admin_instruction_state",
+        ADMIN_INSTRUCTION_IDLE
+    )
+
+    review_metadata.setdefault(
+        "last_admin_instruction",
+        ""
+    )
+
+    review_metadata.setdefault(
+        "admin_instruction_count",
+        0
+    )
 
     review = (
         PendingEditorialReview(
@@ -142,10 +232,7 @@ def create_pending_review(
             created_at=now,
             updated_at=now,
             status=STATUS_PENDING,
-            metadata=dict(
-                metadata
-                or {}
-            )
+            metadata=review_metadata
         )
     )
 
@@ -160,7 +247,9 @@ def create_pending_review(
         f"review_id={review_id} | "
         f"user={user_id} | "
         f"type={content_type} | "
-        f"regeneration_count={regeneration_count}"
+        f"regeneration_count={regeneration_count} | "
+        f"admin_instruction_state="
+        f"{ADMIN_INSTRUCTION_IDLE}"
     )
 
     return review
@@ -231,6 +320,12 @@ def get_pending_review(
                 STATUS_EXPIRED
             )
 
+            review.metadata[
+                "admin_instruction_state"
+            ] = (
+                ADMIN_INSTRUCTION_IDLE
+            )
+
             review.updated_at = (
                 _now()
             )
@@ -241,6 +336,313 @@ def get_pending_review(
             )
 
         return review
+
+
+# =========================================================
+# FIND ACTIVE REVIEW FOR USER
+#
+# برای زمانی استفاده می‌شود که ادمین پیام بعدی
+# را به عنوان دستور ویرایش ارسال می‌کند.
+#
+# اگر چند Review باز وجود داشته باشد، جدیدترین Review
+# که منتظر دستور است انتخاب می‌شود.
+# =========================================================
+
+def get_waiting_admin_instruction_review(
+    user_id: int,
+    ttl_seconds: int = (
+        DEFAULT_PENDING_TTL_SECONDS
+    )
+) -> Optional[
+    PendingEditorialReview
+]:
+
+    user_id = int(
+        user_id
+    )
+
+    selected: Optional[
+        PendingEditorialReview
+    ] = None
+
+    with _store_lock:
+
+        for review in (
+            _pending_reviews.values()
+        ):
+
+            if (
+                review.user_id
+                != user_id
+            ):
+
+                continue
+
+            if (
+                review.status
+                != STATUS_PENDING
+            ):
+
+                continue
+
+            if _is_expired(
+                review,
+                ttl_seconds
+            ):
+
+                review.status = (
+                    STATUS_EXPIRED
+                )
+
+                review.metadata[
+                    "admin_instruction_state"
+                ] = (
+                    ADMIN_INSTRUCTION_IDLE
+                )
+
+                review.updated_at = (
+                    _now()
+                )
+
+                continue
+
+            if not is_waiting_for_admin_instruction(
+                review
+            ):
+
+                continue
+
+            if (
+                selected is None
+                or review.updated_at
+                > selected.updated_at
+            ):
+
+                selected = review
+
+    return selected
+
+
+# =========================================================
+# START ADMIN INSTRUCTION MODE
+# =========================================================
+
+def start_admin_instruction_wait(
+    review_id: str,
+    user_id: int
+) -> Optional[
+    PendingEditorialReview
+]:
+
+    review = get_pending_review(
+        review_id=review_id,
+        user_id=user_id
+    )
+
+    if review is None:
+
+        return None
+
+    if (
+        review.status
+        != STATUS_PENDING
+    ):
+
+        logger.warning(
+            f"⚠️ Admin instruction wait rejected | "
+            f"review_id={review_id} | "
+            f"status={review.status}"
+        )
+
+        return None
+
+    with _store_lock:
+
+        review.metadata[
+            "admin_instruction_state"
+        ] = (
+            ADMIN_INSTRUCTION_WAITING
+        )
+
+        review.metadata[
+            "admin_instruction_wait_started_at"
+        ] = (
+            _now()
+        )
+
+        review.updated_at = (
+            _now()
+        )
+
+    logger.info(
+        f"✏️ Admin instruction wait started | "
+        f"review_id={review_id} | "
+        f"user={user_id}"
+    )
+
+    return review
+
+
+# =========================================================
+# CANCEL ADMIN INSTRUCTION MODE
+# =========================================================
+
+def cancel_admin_instruction_wait(
+    review_id: str,
+    user_id: int
+) -> Optional[
+    PendingEditorialReview
+]:
+
+    review = get_pending_review(
+        review_id=review_id,
+        user_id=user_id
+    )
+
+    if review is None:
+
+        return None
+
+    if (
+        review.status
+        != STATUS_PENDING
+    ):
+
+        return None
+
+    with _store_lock:
+
+        review.metadata[
+            "admin_instruction_state"
+        ] = (
+            ADMIN_INSTRUCTION_IDLE
+        )
+
+        review.metadata.pop(
+            "admin_instruction_wait_started_at",
+            None
+        )
+
+        review.updated_at = (
+            _now()
+        )
+
+    logger.info(
+        f"↩️ Admin instruction wait cancelled | "
+        f"review_id={review_id} | "
+        f"user={user_id}"
+    )
+
+    return review
+
+
+# =========================================================
+# CONSUME ADMIN INSTRUCTION
+#
+# پیام ادمین را ثبت می‌کند و Review را از حالت
+# WAITING خارج می‌کند.
+#
+# در این مرحله هیچ AI Call انجام نمی‌شود.
+# =========================================================
+
+def consume_admin_instruction(
+    review_id: str,
+    user_id: int,
+    instruction: str
+) -> Optional[
+    PendingEditorialReview
+]:
+
+    review = get_pending_review(
+        review_id=review_id,
+        user_id=user_id
+    )
+
+    if review is None:
+
+        return None
+
+    if (
+        review.status
+        != STATUS_PENDING
+    ):
+
+        return None
+
+    if not is_waiting_for_admin_instruction(
+        review
+    ):
+
+        logger.warning(
+            f"⚠️ Admin instruction consume rejected | "
+            f"review_id={review_id} | "
+            f"state="
+            f"{_get_admin_instruction_state(review)}"
+        )
+
+        return None
+
+    instruction = str(
+        instruction
+        or ""
+    ).strip()
+
+    if not instruction:
+
+        return None
+
+    with _store_lock:
+
+        current_count = int(
+            review.metadata.get(
+                "admin_instruction_count",
+                0
+            )
+            or 0
+        )
+
+        review.metadata[
+            "last_admin_instruction"
+        ] = instruction
+
+        review.metadata[
+            "admin_instruction_count"
+        ] = (
+            current_count
+            + 1
+        )
+
+        review.metadata[
+            "admin_instruction_state"
+        ] = (
+            ADMIN_INSTRUCTION_IDLE
+        )
+
+        review.metadata[
+            "last_admin_instruction_at"
+        ] = (
+            _now()
+        )
+
+        review.metadata.pop(
+            "admin_instruction_wait_started_at",
+            None
+        )
+
+        review.updated_at = (
+            _now()
+        )
+
+    logger.info(
+        f"✏️ Admin instruction consumed | "
+        f"review_id={review_id} | "
+        f"user={user_id} | "
+        f"length={len(instruction)} | "
+        f"count="
+        f"{review.metadata.get('admin_instruction_count', 0)}"
+    )
+
+    return review
 
 
 # =========================================================
@@ -412,6 +814,17 @@ def _mark_status(
     with _store_lock:
 
         review.status = status
+
+        review.metadata[
+            "admin_instruction_state"
+        ] = (
+            ADMIN_INSTRUCTION_IDLE
+        )
+
+        review.metadata.pop(
+            "admin_instruction_wait_started_at",
+            None
+        )
 
         review.updated_at = (
             _now()
