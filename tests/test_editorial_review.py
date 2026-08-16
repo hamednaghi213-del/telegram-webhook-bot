@@ -1,23 +1,19 @@
 from core.editorial_review import (
-    ACTION_NEEDS_APPROVAL,
-    ACTION_PUBLISH_DIRECT,
-    ACTION_PUBLISH_ORIGINAL,
-    ACTION_UNCERTAIN,
-    CONTENT_TYPE_NEWS_ANALYSIS,
     CONTENT_TYPE_NORMAL_NEWS,
+    CONTENT_TYPE_NEWS_ANALYSIS,
     CONTENT_TYPE_OPINION_NOTE,
     CONTENT_TYPE_SENSITIVE,
     CONTENT_TYPE_UNCERTAIN,
-    analyze_editorial_content,
+    MAX_REGENERATION_COUNT,
+    can_regenerate_editorial_summary,
     parse_editorial_classification,
+    review_editorial_content,
+    regenerate_editorial_summary,
 )
 
 
 # =========================================================
-# FAKE AI PROVIDERS
-#
-# این تست‌ها عمداً Gemini واقعی را صدا نمی‌زنند.
-# هدف فقط تست منطق editorial_review است.
+# TEST HELPERS
 # =========================================================
 
 
@@ -61,42 +57,54 @@ def fake_classifier_uncertain(
     return "UNCERTAIN"
 
 
-def fake_summarizer(
+def fake_regenerator_success(
     text,
     instruction,
     target_length
 ):
-    # برای تست Validator باید خروجی:
-    #
-    # 1. از target_length بیشتر نباشد
-    # 2. بیش از حد مجاز کوتاه نشود
-    # 3. اطلاعات جدید تولید نکند
-    #
-    # بنابراین بخشی از خود متن اصلی را
-    # در مرز کلمه برمی‌گردانیم.
+    candidate = (
+        "نسخه جدید خلاصه تحلیلی است که "
+        "تز اصلی، استدلال کلیدی و نتیجه متن "
+        "را بدون افزودن اطلاعات تازه حفظ می‌کند."
+    )
 
-    if len(text) <= target_length:
-        return text
+    if len(candidate) <= target_length:
+        return candidate
 
-    candidate = text[:target_length]
+    return candidate[:target_length]
 
-    position = candidate.rfind(" ")
 
-    if position > 0:
-        candidate = candidate[:position]
+def fake_regenerator_same(
+    text,
+    instruction,
+    target_length
+):
+    return (
+        "خلاصه قبلی بدون هیچ تغییر"
+    )
 
-    return candidate.strip()
+
+def fake_regenerator_error(
+    text,
+    instruction,
+    target_length
+):
+    raise RuntimeError(
+        "provider failed"
+    )
 
 
 # =========================================================
-# PARSER TESTS
+# CLASSIFICATION PARSER
 # =========================================================
 
 
 def test_parse_normal_news():
 
-    result = parse_editorial_classification(
-        "NORMAL_NEWS"
+    result = (
+        parse_editorial_classification(
+            "NORMAL_NEWS"
+        )
     )
 
     assert (
@@ -107,8 +115,10 @@ def test_parse_normal_news():
 
 def test_parse_news_analysis():
 
-    result = parse_editorial_classification(
-        "NEWS_ANALYSIS"
+    result = (
+        parse_editorial_classification(
+            "NEWS_ANALYSIS"
+        )
     )
 
     assert (
@@ -119,8 +129,10 @@ def test_parse_news_analysis():
 
 def test_parse_opinion_note():
 
-    result = parse_editorial_classification(
-        "OPINION_NOTE"
+    result = (
+        parse_editorial_classification(
+            "OPINION_NOTE"
+        )
     )
 
     assert (
@@ -131,8 +143,10 @@ def test_parse_opinion_note():
 
 def test_parse_sensitive_content():
 
-    result = parse_editorial_classification(
-        "SENSITIVE_CONTENT"
+    result = (
+        parse_editorial_classification(
+            "SENSITIVE_CONTENT"
+        )
     )
 
     assert (
@@ -143,8 +157,10 @@ def test_parse_sensitive_content():
 
 def test_parse_uncertain():
 
-    result = parse_editorial_classification(
-        "UNCERTAIN"
+    result = (
+        parse_editorial_classification(
+            "UNCERTAIN"
+        )
     )
 
     assert (
@@ -155,8 +171,10 @@ def test_parse_uncertain():
 
 def test_parse_unknown_value_is_uncertain():
 
-    result = parse_editorial_classification(
-        "SOMETHING_UNKNOWN"
+    result = (
+        parse_editorial_classification(
+            "UNKNOWN_VALUE"
+        )
     )
 
     assert (
@@ -172,25 +190,19 @@ def test_parse_unknown_value_is_uncertain():
 
 def test_normal_news_does_not_require_approval():
 
-    text = (
-        "وزارت خارجه اعلام کرد مذاکرات "
-        "امروز در پایتخت برگزار شد."
+    original_text = (
+        "این یک خبر عادی درباره تحولات "
+        "سیاسی و منطقه‌ای است."
     )
 
-    result = analyze_editorial_content(
-        original_text=text,
-        classifier=fake_classifier_normal,
-        summarizer=fake_summarizer
+    result = review_editorial_content(
+        original_text=original_text,
+        classifier=fake_classifier_normal
     )
 
     assert (
         result.content_type
         == CONTENT_TYPE_NORMAL_NEWS
-    )
-
-    assert (
-        result.action
-        == ACTION_PUBLISH_DIRECT
     )
 
     assert (
@@ -200,17 +212,7 @@ def test_normal_news_does_not_require_approval():
 
     assert (
         result.original_text
-        == text
-    )
-
-    assert (
-        result.suggested_text
-        == text
-    )
-
-    assert (
-        result.summary_success
-        is True
+        == original_text
     )
 
 
@@ -221,16 +223,14 @@ def test_normal_news_does_not_require_approval():
 
 def test_sensitive_content_is_not_auto_summarized():
 
-    text = (
-        "در بند نخست توافق اعلام شده است "
-        "که اجرای تعهدات از تاریخ مشخص "
-        "و مطابق شروط رسمی آغاز خواهد شد."
+    original_text = (
+        "این متن شامل مفاد رسمی توافق، "
+        "شروط و تعهدات طرفین است."
     )
 
-    result = analyze_editorial_content(
-        original_text=text,
-        classifier=fake_classifier_sensitive,
-        summarizer=fake_summarizer
+    result = review_editorial_content(
+        original_text=original_text,
+        classifier=fake_classifier_sensitive
     )
 
     assert (
@@ -239,23 +239,13 @@ def test_sensitive_content_is_not_auto_summarized():
     )
 
     assert (
-        result.action
-        == ACTION_PUBLISH_ORIGINAL
-    )
-
-    assert (
         result.needs_approval
         is True
     )
 
     assert (
-        result.suggested_text
-        == text
-    )
-
-    assert (
-        result.summary_success
-        is False
+        result.original_text
+        == original_text
     )
 
 
@@ -266,16 +256,14 @@ def test_sensitive_content_is_not_auto_summarized():
 
 def test_uncertain_content_requires_approval():
 
-    text = (
-        "این متن ساختار مشخصی ندارد "
-        "و نوع رسانه‌ای آن با اطمینان "
+    original_text = (
+        "ماهیت این متن به صورت قطعی "
         "قابل تشخیص نیست."
     )
 
-    result = analyze_editorial_content(
-        original_text=text,
-        classifier=fake_classifier_uncertain,
-        summarizer=fake_summarizer
+    result = review_editorial_content(
+        original_text=original_text,
+        classifier=fake_classifier_uncertain
     )
 
     assert (
@@ -284,18 +272,8 @@ def test_uncertain_content_requires_approval():
     )
 
     assert (
-        result.action
-        == ACTION_UNCERTAIN
-    )
-
-    assert (
         result.needs_approval
         is True
-    )
-
-    assert (
-        result.suggested_text
-        == text
     )
 
 
@@ -306,17 +284,15 @@ def test_uncertain_content_requires_approval():
 
 def test_opinion_note_requires_approval():
 
-    text = (
-        "کشورها دیگر دوست ندارند. "
-        "جهان امروز بر پایه منفعت موضوعی "
-        "و روابط چندلایه حرکت می‌کند. "
-    ) * 40
+    original_text = (
+        "این یادداشت به بررسی روندهای "
+        "سیاست خارجی و تغییر رفتار "
+        "بازیگران بین‌المللی می‌پردازد."
+    )
 
-    result = analyze_editorial_content(
-        original_text=text,
-        target_length=950,
-        classifier=fake_classifier_opinion,
-        summarizer=fake_summarizer
+    result = review_editorial_content(
+        original_text=original_text,
+        classifier=fake_classifier_opinion
     )
 
     assert (
@@ -325,18 +301,8 @@ def test_opinion_note_requires_approval():
     )
 
     assert (
-        result.action
-        == ACTION_NEEDS_APPROVAL
-    )
-
-    assert (
         result.needs_approval
         is True
-    )
-
-    assert (
-        result.original_text
-        == text.strip()
     )
 
 
@@ -347,28 +313,20 @@ def test_opinion_note_requires_approval():
 
 def test_news_analysis_requires_approval():
 
-    text = (
-        "تحولات اخیر نشان می‌دهد رقابت "
-        "بازیگران منطقه‌ای وارد مرحله تازه‌ای "
-        "شده است و پیامدهای آن می‌تواند بر "
-        "معادلات سیاسی اثر بگذارد. "
-    ) * 30
+    original_text = (
+        "این تحلیل پیامدهای سیاسی و "
+        "امنیتی یک تحول منطقه‌ای را "
+        "بررسی می‌کند."
+    )
 
-    result = analyze_editorial_content(
-        original_text=text,
-        target_length=950,
-        classifier=fake_classifier_analysis,
-        summarizer=fake_summarizer
+    result = review_editorial_content(
+        original_text=original_text,
+        classifier=fake_classifier_analysis
     )
 
     assert (
         result.content_type
         == CONTENT_TYPE_NEWS_ANALYSIS
-    )
-
-    assert (
-        result.action
-        == ACTION_NEEDS_APPROVAL
     )
 
     assert (
@@ -378,26 +336,103 @@ def test_news_analysis_requires_approval():
 
 
 # =========================================================
-# SHORT OPINION NOTE
-#
-# حتی اگر متن از target کوتاه‌تر باشد،
-# چون یادداشت است باید approval داشته باشد.
+# SHORT OPINION
 # =========================================================
 
 
 def test_short_opinion_still_requires_approval():
 
-    text = (
-        "سیاست خارجی در جهان جدید "
-        "بیش از گذشته بر منفعت موضوعی "
-        "استوار شده است."
+    original_text = (
+        "این یک یادداشت کوتاه تحلیلی است."
     )
 
-    result = analyze_editorial_content(
-        original_text=text,
+    result = review_editorial_content(
+        original_text=original_text,
+        classifier=fake_classifier_opinion
+    )
+
+    assert (
+        result.content_type
+        == CONTENT_TYPE_OPINION_NOTE
+    )
+
+    assert (
+        result.needs_approval
+        is True
+    )
+
+
+# =========================================================
+# EMPTY TEXT
+# =========================================================
+
+
+def test_empty_text_is_safe():
+
+    result = review_editorial_content(
+        original_text="",
+        classifier=fake_classifier_normal
+    )
+
+    assert (
+        result.original_text
+        == ""
+    )
+
+    assert (
+        result.needs_approval
+        is False
+    )
+
+
+# =========================================================
+# ORIGINAL TEXT PRESERVATION
+# =========================================================
+
+
+def test_original_text_is_preserved():
+
+    original_text = (
+        "متن اصلی باید بدون تغییر "
+        "در سیستم نگهداری شود."
+    )
+
+    result = review_editorial_content(
+        original_text=original_text,
+        classifier=fake_classifier_opinion
+    )
+
+    assert (
+        result.original_text
+        == original_text
+    )
+
+
+# =========================================================
+# REGENERATION
+# =========================================================
+
+
+def test_opinion_note_regeneration_success():
+
+    original_text = (
+        "کشورها دیگر دوست ندارند و سیاست خارجی "
+        "در جهان جدید بیش از گذشته بر منفعت موضوعی "
+        "و روابط چندلایه استوار شده است. "
+    ) * 30
+
+    previous_summary = (
+        "خلاصه قبلی درباره تغییر ماهیت "
+        "روابط کشورها بود."
+    )
+
+    result = regenerate_editorial_summary(
+        original_text=original_text,
+        previous_summary=previous_summary,
+        content_type=CONTENT_TYPE_OPINION_NOTE,
         target_length=950,
-        classifier=fake_classifier_opinion,
-        summarizer=fake_summarizer
+        regeneration_count=0,
+        summarizer=fake_regenerator_success
     )
 
     assert (
@@ -411,76 +446,380 @@ def test_short_opinion_still_requires_approval():
     )
 
     assert (
-        result.action
-        == ACTION_NEEDS_APPROVAL
+        result.summary_success
+        is True
+    )
+
+    assert (
+        result.reason
+        == "editorial_regeneration_ready"
     )
 
     assert (
         result.suggested_text
-        == text
-    )
-
-
-# =========================================================
-# EMPTY TEXT
-# =========================================================
-
-
-def test_empty_text_is_safe():
-
-    result = analyze_editorial_content(
-        original_text="",
-        classifier=fake_classifier_normal,
-        summarizer=fake_summarizer
+        != previous_summary
     )
 
     assert (
-        result.needs_approval
-        is False
+        result.metadata[
+            "regeneration_count"
+        ]
+        == 1
     )
 
     assert (
-        result.action
-        == ACTION_PUBLISH_DIRECT
-    )
-
-    assert (
-        result.original_text
-        == ""
-    )
-
-    assert (
-        result.suggested_text
-        == ""
+        result.metadata[
+            "can_regenerate"
+        ]
+        is True
     )
 
 
-# =========================================================
-# ORIGINAL TEXT PRESERVATION
-# =========================================================
+def test_news_analysis_regeneration_success():
 
+    original_text = (
+        "تحولات منطقه‌ای نشان می‌دهد رقابت میان "
+        "بازیگران اصلی وارد مرحله تازه‌ای شده و "
+        "پیامدهای سیاسی و امنیتی آن قابل توجه است. "
+    ) * 25
 
-def test_original_text_is_preserved():
+    previous_summary = (
+        "خلاصه قبلی تحلیل تحولات منطقه‌ای."
+    )
 
-    text = (
-        "پایان کشور دوست\n\n"
-        "کشورها دیگر دوست ندارند. "
-        "این گزاره توصیف جهان امروز است. "
-    ) * 20
-
-    result = analyze_editorial_content(
-        original_text=text,
+    result = regenerate_editorial_summary(
+        original_text=original_text,
+        previous_summary=previous_summary,
+        content_type=CONTENT_TYPE_NEWS_ANALYSIS,
         target_length=950,
-        classifier=fake_classifier_opinion,
-        summarizer=fake_summarizer
+        regeneration_count=1,
+        summarizer=fake_regenerator_success
     )
 
     assert (
-        result.original_text
-        == text.strip()
+        result.content_type
+        == CONTENT_TYPE_NEWS_ANALYSIS
     )
 
     assert (
         result.needs_approval
         is True
+    )
+
+    assert (
+        result.summary_success
+        is True
+    )
+
+    assert (
+        result.reason
+        == "editorial_regeneration_ready"
+    )
+
+    assert (
+        result.metadata[
+            "regeneration_count"
+        ]
+        == 2
+    )
+
+
+# =========================================================
+# REGENERATION LIMIT
+# =========================================================
+
+
+def test_regeneration_limit_reached():
+
+    original_text = (
+        "این یک متن تحلیلی بلند برای آزمون "
+        "سقف بازتولید خلاصه است. "
+    ) * 30
+
+    previous_summary = (
+        "خلاصه موجود"
+    )
+
+    result = regenerate_editorial_summary(
+        original_text=original_text,
+        previous_summary=previous_summary,
+        content_type=CONTENT_TYPE_OPINION_NOTE,
+        target_length=950,
+        regeneration_count=(
+            MAX_REGENERATION_COUNT
+        ),
+        summarizer=fake_regenerator_success
+    )
+
+    assert (
+        result.summary_success
+        is False
+    )
+
+    assert (
+        result.reason
+        == "regeneration_limit_reached"
+    )
+
+    assert (
+        result.suggested_text
+        == previous_summary
+    )
+
+    assert (
+        result.metadata[
+            "can_regenerate"
+        ]
+        is False
+    )
+
+
+# =========================================================
+# SAME SUMMARY PROTECTION
+# =========================================================
+
+
+def test_regeneration_same_as_previous_is_rejected():
+
+    original_text = (
+        "این متن برای بررسی جلوگیری از بازگشت "
+        "همان خلاصه قبلی استفاده می‌شود. "
+    ) * 30
+
+    previous_summary = (
+        "خلاصه قبلی بدون هیچ تغییر"
+    )
+
+    result = regenerate_editorial_summary(
+        original_text=original_text,
+        previous_summary=previous_summary,
+        content_type=CONTENT_TYPE_OPINION_NOTE,
+        target_length=950,
+        regeneration_count=0,
+        summarizer=fake_regenerator_same
+    )
+
+    assert (
+        result.summary_success
+        is False
+    )
+
+    assert (
+        result.reason
+        == "regeneration_same_as_previous"
+    )
+
+    assert (
+        result.suggested_text
+        == previous_summary
+    )
+
+    assert (
+        result.metadata[
+            "regeneration_count"
+        ]
+        == 1
+    )
+
+
+# =========================================================
+# PROVIDER FAILURE
+# =========================================================
+
+
+def test_regeneration_provider_failure_keeps_previous_summary():
+
+    original_text = (
+        "این متن برای آزمون خطای سرویس "
+        "خلاصه‌سازی ساخته شده است. "
+    ) * 30
+
+    previous_summary = (
+        "خلاصه قبلی باید حفظ شود."
+    )
+
+    result = regenerate_editorial_summary(
+        original_text=original_text,
+        previous_summary=previous_summary,
+        content_type=CONTENT_TYPE_OPINION_NOTE,
+        target_length=950,
+        regeneration_count=0,
+        summarizer=fake_regenerator_error
+    )
+
+    assert (
+        result.summary_success
+        is False
+    )
+
+    assert (
+        result.reason
+        == "regeneration_failed"
+    )
+
+    assert (
+        result.suggested_text
+        == previous_summary
+    )
+
+    assert (
+        result.metadata[
+            "regeneration_count"
+        ]
+        == 1
+    )
+
+
+# =========================================================
+# BLOCK SENSITIVE CONTENT
+# =========================================================
+
+
+def test_sensitive_content_cannot_regenerate():
+
+    original_text = (
+        "این متن شامل مفاد رسمی و شروط "
+        "یک توافق حساس است."
+    )
+
+    previous_summary = (
+        "خلاصه قبلی"
+    )
+
+    result = regenerate_editorial_summary(
+        original_text=original_text,
+        previous_summary=previous_summary,
+        content_type=CONTENT_TYPE_SENSITIVE,
+        target_length=950,
+        regeneration_count=0,
+        summarizer=fake_regenerator_success
+    )
+
+    assert (
+        result.summary_success
+        is False
+    )
+
+    assert (
+        result.reason
+        == (
+            "regeneration_not_allowed_for_content_type"
+        )
+    )
+
+    assert (
+        result.suggested_text
+        == previous_summary
+    )
+
+
+# =========================================================
+# BLOCK NORMAL NEWS
+# =========================================================
+
+
+def test_normal_news_cannot_regenerate():
+
+    original_text = (
+        "این یک خبر عادی است."
+    )
+
+    previous_summary = (
+        "خلاصه قبلی"
+    )
+
+    result = regenerate_editorial_summary(
+        original_text=original_text,
+        previous_summary=previous_summary,
+        content_type=CONTENT_TYPE_NORMAL_NEWS,
+        target_length=950,
+        regeneration_count=0,
+        summarizer=fake_regenerator_success
+    )
+
+    assert (
+        result.summary_success
+        is False
+    )
+
+    assert (
+        result.reason
+        == (
+            "regeneration_not_allowed_for_content_type"
+        )
+    )
+
+    assert (
+        result.suggested_text
+        == previous_summary
+    )
+
+
+# =========================================================
+# CAN REGENERATE
+# =========================================================
+
+
+def test_can_regenerate_before_limit():
+
+    assert (
+        can_regenerate_editorial_summary(
+            0
+        )
+        is True
+    )
+
+    assert (
+        can_regenerate_editorial_summary(
+            1
+        )
+        is True
+    )
+
+    assert (
+        can_regenerate_editorial_summary(
+            2
+        )
+        is True
+    )
+
+
+def test_cannot_regenerate_at_limit():
+
+    assert (
+        can_regenerate_editorial_summary(
+            MAX_REGENERATION_COUNT
+        )
+        is False
+    )
+
+
+# =========================================================
+# ORIGINAL TEXT DURING REGENERATION
+# =========================================================
+
+
+def test_regeneration_preserves_original_text():
+
+    original_text = (
+        "متن اصلی باید در تمام مراحل بازتولید "
+        "بدون تغییر نگهداری شود. "
+    ) * 30
+
+    previous_summary = (
+        "نسخه قبلی"
+    )
+
+    result = regenerate_editorial_summary(
+        original_text=original_text,
+        previous_summary=previous_summary,
+        content_type=CONTENT_TYPE_OPINION_NOTE,
+        target_length=950,
+        regeneration_count=0,
+        summarizer=fake_regenerator_success
+    )
+
+    assert (
+        result.original_text
+        == original_text.strip()
     )
