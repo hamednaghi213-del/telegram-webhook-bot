@@ -18,21 +18,39 @@ logger = logging.getLogger(__name__)
 # =========================================================
 # SMART SUMMARIZER
 #
-# هدف:
-# خلاصه‌سازی وفادار به متن بدون تفسیر، تحلیل،
-# قضاوت یا افزودن اطلاعات جدید.
+# معماری:
+#
+# 1. متن کوتاه → بدون AI
+#
+# 2. کاهش معمولی تا 40٪
+#    → مستقیم وارد خلاصه‌سازی امن می‌شود.
+#
+# 3. کاهش بیشتر از 40٪
+#    → AI ابتدا نوع و حساسیت محتوا را تشخیص می‌دهد.
+#
+# 4. خبر عادی
+#    → امکان فشرده‌سازی عمیق‌تر
+#
+# 5. متن حساس
+#    → سیاست محافظه‌کارانه
+#
+# 6. خروجی در تمام حالت‌ها
+#    → Validator ضدتحریف
+#
+# 7. شکست AI / Validation
+#    → متن اصلی دقیقاً حفظ می‌شود.
+# =========================================================
+
+
+# =========================================================
+# BASE POLICY
 #
 # IMPORTANT:
 #
-# این ماژول به‌تنهایی هیچ Network Call انجام نمی‌دهد.
+# مقدار 0.40 برای سازگاری با معماری و تست‌های قبلی
+# حفظ شده است.
 #
-# مدل هوش مصنوعی بعداً به‌صورت یک Callable
-# به این ماژول متصل خواهد شد.
-# =========================================================
-
-
-# =========================================================
-# DEFAULT POLICY
+# این مقدار دیگر سقف مطلق تمام خبرها نیست.
 # =========================================================
 
 DEFAULT_MAX_REDUCTION_RATIO = 0.40
@@ -44,10 +62,37 @@ MINIMUM_SUMMARY_LENGTH = 80
 
 
 # =========================================================
-# CRITICAL LANGUAGE MARKERS
+# ADAPTIVE AI POLICY
+# =========================================================
+
+# خبر عادی در صورت تأیید AI می‌تواند عمیق‌تر خلاصه شود.
+NORMAL_NEWS_MAX_REDUCTION_RATIO = 0.60
+
+# متن حساس باید بسیار محافظه‌کارانه‌تر باقی بماند.
+SENSITIVE_CONTENT_MAX_REDUCTION_RATIO = 0.30
+
+# اگر AI نتواند نوع محتوا را با قطعیت تشخیص دهد.
+UNCERTAIN_CONTENT_MAX_REDUCTION_RATIO = 0.40
+
+# در یا بالاتر از این مقدار، حتی برای خبر عادی
+# خلاصه‌سازی خودکار انجام نمی‌شود.
 #
-# حذف یا تغییر این واژه‌ها می‌تواند معنای خبر را
-# کاملاً تغییر دهد.
+# این مرز مانع تبدیل خبر بسیار بلند به خلاصه بیش از حد
+# فشرده و بالقوه تحریف‌شده می‌شود.
+ABSOLUTE_MAX_REDUCTION_RATIO = 0.60
+
+
+# =========================================================
+# CONTENT CLASSIFICATION
+# =========================================================
+
+CONTENT_TYPE_NORMAL = "normal_news"
+CONTENT_TYPE_SENSITIVE = "sensitive_content"
+CONTENT_TYPE_UNCERTAIN = "uncertain"
+
+
+# =========================================================
+# CRITICAL LANGUAGE MARKERS
 # =========================================================
 
 CERTAINTY_MARKERS = {
@@ -112,12 +157,6 @@ class SummaryResult:
 
 # =========================================================
 # NORMALIZATION
-#
-# فقط برای تحلیل داخلی استفاده می‌شود.
-#
-# IMPORTANT:
-# هنگام fallback نباید نسخه normalize شده جای متن اصلی
-# برگردد. متن خام اولیه باید دقیقاً حفظ شود.
 # =========================================================
 
 def normalize_text(
@@ -134,8 +173,6 @@ def normalize_text(
 
 # =========================================================
 # RAW TEXT
-#
-# متن اصلی را بدون strip نگه می‌دارد.
 # =========================================================
 
 def preserve_original_text(
@@ -225,10 +262,34 @@ def calculate_reduction_ratio(
 
 
 # =========================================================
+# REQUIRED REDUCTION
+# =========================================================
+
+def calculate_required_reduction_ratio(
+    original_length: int,
+    target_length: int
+) -> float:
+
+    if original_length <= 0:
+        return 0.0
+
+    if target_length >= original_length:
+        return 0.0
+
+    if target_length <= 0:
+        return 1.0
+
+    return (
+        (
+            original_length
+            - target_length
+        )
+        / original_length
+    )
+
+
+# =========================================================
 # EXTRACT NUMBERS
-#
-# اعداد در خبر جزو داده‌های حساس هستند.
-# مدل نباید عدد جدید بسازد یا عدد موجود را تغییر دهد.
 # =========================================================
 
 def extract_numbers(
@@ -418,6 +479,163 @@ def detect_new_numbers(
 
 
 # =========================================================
+# CONTENT CLASSIFICATION INSTRUCTION
+#
+# AI فقط باید نوع محتوا را تعیین کند.
+#
+# هیچ خلاصه‌ای در این مرحله ساخته نمی‌شود.
+# =========================================================
+
+def build_content_classification_instruction() -> str:
+
+    return (
+        "وظیفه شما فقط تشخیص میزان حساسیت این متن "
+        "برای خلاصه‌سازی خبری است. "
+        "متن را خلاصه نکن و درباره محتوای آن توضیح نده. "
+
+        "اگر متن یک خبر عادی، گزارش رسانه‌ای، روایت رویداد، "
+        "گزارش سیاسی، توضیح زمینه‌ای یا متن خبری قابل "
+        "فشرده‌سازی است، فقط این عبارت را برگردان:\n"
+        "NORMAL_NEWS\n\n"
+
+        "اگر متن شامل بیانیه رسمی، اعلامیه رسمی، "
+        "مفاد توافق، تفاهم‌نامه، قرارداد، قطعنامه، "
+        "شروط رسمی، بندهای حقوقی، فهرست تعهدات، "
+        "متن قانونی، دستورالعمل رسمی یا متنی است که "
+        "حذف جزئیات آن ممکن است معنای حقوقی یا رسمی "
+        "را تغییر دهد، فقط این عبارت را برگردان:\n"
+        "SENSITIVE_CONTENT\n\n"
+
+        "اگر با اطمینان قابل تشخیص نیست، فقط این عبارت "
+        "را برگردان:\n"
+        "UNCERTAIN\n\n"
+
+        "هیچ عبارت دیگری ننویس."
+    )
+
+
+# =========================================================
+# PARSE AI CLASSIFICATION
+# =========================================================
+
+def parse_content_classification(
+    value: Optional[str]
+) -> str:
+
+    value = (
+        normalize_text(
+            value
+        )
+        .upper()
+    )
+
+    if not value:
+
+        return CONTENT_TYPE_UNCERTAIN
+
+    if (
+        "SENSITIVE_CONTENT"
+        in value
+    ):
+
+        return CONTENT_TYPE_SENSITIVE
+
+    if (
+        "NORMAL_NEWS"
+        in value
+    ):
+
+        return CONTENT_TYPE_NORMAL
+
+    if (
+        "UNCERTAIN"
+        in value
+    ):
+
+        return CONTENT_TYPE_UNCERTAIN
+
+    return CONTENT_TYPE_UNCERTAIN
+
+
+# =========================================================
+# AI CONTENT CLASSIFICATION
+# =========================================================
+
+def classify_content_with_ai(
+    original_text: str,
+    summarizer: Callable[
+        [str, str, int],
+        str
+    ]
+) -> str:
+
+    instruction = (
+        build_content_classification_instruction()
+    )
+
+    try:
+
+        response = summarizer(
+            original_text,
+            instruction,
+            64
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ AI content classification failed | "
+            f"{e}"
+        )
+
+        return CONTENT_TYPE_UNCERTAIN
+
+    classification = (
+        parse_content_classification(
+            response
+        )
+    )
+
+    logger.info(
+        f"🧠 AI content classification | "
+        f"type={classification}"
+    )
+
+    return classification
+
+
+# =========================================================
+# POLICY FOR CONTENT TYPE
+# =========================================================
+
+def get_max_reduction_for_content_type(
+    content_type: str
+) -> float:
+
+    if (
+        content_type
+        == CONTENT_TYPE_NORMAL
+    ):
+
+        return (
+            NORMAL_NEWS_MAX_REDUCTION_RATIO
+        )
+
+    if (
+        content_type
+        == CONTENT_TYPE_SENSITIVE
+    ):
+
+        return (
+            SENSITIVE_CONTENT_MAX_REDUCTION_RATIO
+        )
+
+    return (
+        UNCERTAIN_CONTENT_MAX_REDUCTION_RATIO
+    )
+
+
+# =========================================================
 # VALIDATE SUMMARY
 # =========================================================
 
@@ -427,6 +645,9 @@ def validate_summary(
     target_length: int,
     max_reduction_ratio: float = (
         DEFAULT_MAX_REDUCTION_RATIO
+    ),
+    content_type: str = (
+        CONTENT_TYPE_UNCERTAIN
     )
 ) -> Dict[str, Any]:
 
@@ -493,20 +714,46 @@ def validate_summary(
         )
 
     # =====================================================
-    # NEW NUMBERS ARE NOT ALLOWED
+    # NUMBERS
     # =====================================================
 
-    new_numbers = (
-        detect_new_numbers(
-            original_text,
+    original_numbers = (
+        extract_numbers(
+            original_text
+        )
+    )
+
+    summary_numbers = (
+        extract_numbers(
             summary_text
         )
+    )
+
+    new_numbers = (
+        summary_numbers
+        - original_numbers
+    )
+
+    missing_numbers = (
+        original_numbers
+        - summary_numbers
     )
 
     if new_numbers:
 
         errors.append(
             "new_numbers_detected"
+        )
+
+    # در متن حساس حذف عدد هم خطرناک محسوب می‌شود.
+    if (
+        content_type
+        == CONTENT_TYPE_SENSITIVE
+        and missing_numbers
+    ):
+
+        errors.append(
+            "sensitive_numbers_lost"
         )
 
     # =====================================================
@@ -564,10 +811,7 @@ def validate_summary(
         )
 
     # =====================================================
-    # CERTAINTY / ATTRIBUTION MARKERS
-    #
-    # اگر اصل خبر دارای نشانگرهای احتیاط یا نسبت‌دهی باشد،
-    # خلاصه نباید تمام آن‌ها را حذف کند.
+    # CERTAINTY / ATTRIBUTION
     # =====================================================
 
     original_markers = (
@@ -596,29 +840,42 @@ def validate_summary(
             len(errors)
             == 0
         ),
+
         "errors": errors,
+
         "warnings": warnings,
-        "reduction_ratio": (
-            reduction_ratio
-        ),
+
+        "content_type":
+            content_type,
+
+        "max_reduction_ratio":
+            max_reduction_ratio,
+
+        "reduction_ratio":
+            reduction_ratio,
+
         "new_numbers": sorted(
             new_numbers
         ),
+
+        "missing_numbers": sorted(
+            missing_numbers
+        ),
+
         "original_numbers": sorted(
-            extract_numbers(
-                original_text
-            )
+            original_numbers
         ),
+
         "summary_numbers": sorted(
-            extract_numbers(
-                summary_text
-            )
+            summary_numbers
         ),
+
         "original_certainty_markers": (
             sorted(
                 original_markers
             )
         ),
+
         "summary_certainty_markers": (
             sorted(
                 summary_markers
@@ -628,49 +885,81 @@ def validate_summary(
 
 
 # =========================================================
-# SYSTEM INSTRUCTION
+# SMART SUMMARIZATION INSTRUCTION
+#
+# مهم:
+#
+# AI خودش باید تشخیص دهد چه چیزهایی برای معنای خبر
+# اصلی هستند و چه چیزهایی قابل حذف‌اند.
 # =========================================================
 
 def build_summarization_instruction(
-    target_length: int
+    target_length: int,
+    content_type: str = CONTENT_TYPE_NORMAL
 ) -> str:
 
+    sensitive_instruction = ""
+
+    if (
+        content_type
+        == CONTENT_TYPE_SENSITIVE
+    ):
+
+        sensitive_instruction = (
+            "این متن از نوع حساس تشخیص داده شده است. "
+            "در حذف جزئیات بسیار محافظه‌کار باش. "
+            "مفاد، بندها، شروط، تعهدات، اعداد، تاریخ‌ها، "
+            "استثناها و روابط میان بندها را حذف یا ادغام نکن. "
+        )
+
     return (
-        "متن زیر یک خبر است. "
-        "وظیفه شما فقط کوتاه‌کردن وفادارانه متن است. "
+        "متن زیر یک محتوای خبری است. "
+
+        "وظیفه شما فشرده‌سازی معنایی و وفادارانه متن است. "
+
+        "خودت تشخیص بده کدام بخش‌ها هسته اصلی خبر، "
+        "اطلاعات حیاتی، علت رویداد، نتیجه اصلی، "
+        "موضع بازیگران، داده‌های ضروری و اطلاعاتی هستند "
+        "که حذف آنها معنای خبر را تغییر می‌دهد. "
+
+        "در مقابل می‌توانی تکرارها، توضیحات زائد، "
+        "عبارات کش‌دار، جزئیات کم‌اهمیت، توصیف‌های تکراری، "
+        "زمینه‌های غیرضروری و بخش‌هایی را که بدون آسیب "
+        "به معنای اصلی خبر قابل حذف‌اند فشرده یا حذف کنی. "
+
+        + sensitive_instruction +
+
         "حق تحلیل، تفسیر، نتیجه‌گیری، قضاوت، "
-        "اصلاح محتوایی یا افزودن اطلاعات جدید را ندارید. "
-        "هیچ واقعیت جدیدی تولید نکنید. "
-        "نام افراد، نهادها، سمت‌ها، اعداد، تاریخ‌ها، "
-        "مکان‌ها و نسبت دادن سخنان به گویندگان را تغییر ندهید. "
-        "میزان قطعیت خبر را تغییر ندهید. "
-        "عباراتی مانند احتمال، ادعا، به گفته، "
-        "تکذیب، تأیید، گزارش شده و هنوز تأیید نشده "
-        "در صورت وجود باید از نظر معنایی حفظ شوند. "
-        "در صورت نیاز ابتدا تکرارها، توضیحات زائد، "
-        "جزئیات فرعی و عبارت‌های قابل فشرده‌سازی را کوتاه کنید. "
-        "معنای اصلی هر گزاره باید حفظ شود. "
-        "هیچ دیدگاه یا برداشت شخصی به متن اضافه نکنید. "
-        "اگر کوتاه‌کردن بدون تحریف ممکن نیست، "
-        "متن را تا حد امکان نزدیک به اصل نگه دارید. "
+        "اصلاح محتوایی یا افزودن اطلاعات جدید را نداری. "
+
+        "هیچ واقعیت جدیدی تولید نکن. "
+
+        "هیچ عدد، تاریخ، نام، سمت، مکان، نهاد یا "
+        "نسبت دادن سخنی را تغییر نده. "
+
+        "اگر اطلاعاتی را حذف می‌کنی باید مطمئن باشی "
+        "حذف آن معنای اصلی خبر را تغییر نمی‌دهد. "
+
+        "میزان قطعیت را دقیقاً حفظ کن. "
+
+        "احتمال را به قطعیت تبدیل نکن. "
+        "ادعا را به واقعیت قطعی تبدیل نکن. "
+
+        "اگر یک ادعا به شخص، رسانه یا مقام خاصی "
+        "نسبت داده شده است این نسبت را حفظ کن. "
+
+        "در صورت تعارض میان کوتاه‌شدن و وفاداری، "
+        "وفاداری به خبر اولویت مطلق دارد. "
+
         f"خروجی نهایی نباید بیشتر از {target_length} "
         "کاراکتر باشد. "
-        "فقط متن خلاصه‌شده را برگردانید."
+
+        "فقط متن نهایی خلاصه‌شده را برگردان."
     )
 
 
 # =========================================================
 # SMART SUMMARIZE
-#
-# summarizer:
-#
-# Callable receiving:
-#
-#   original_text
-#   instruction
-#   target_length
-#
-# and returning summarized text.
 # =========================================================
 
 def summarize_text_safely(
@@ -688,11 +977,7 @@ def summarize_text_safely(
 ) -> SummaryResult:
 
     # =====================================================
-    # PRESERVE RAW ORIGINAL
-    #
-    # مهم‌ترین اصل:
-    # اگر خلاصه‌سازی انجام نشد یا شکست خورد،
-    # دقیقاً همین رشته اولیه باید برگردد.
+    # PRESERVE ORIGINAL
     # =====================================================
 
     raw_original_text = (
@@ -728,15 +1013,16 @@ def summarize_text_safely(
             validation_passed=True,
             reason="empty_text",
             metadata={
-                "summarizer_called": False
+                "summarizer_called": False,
+                "classifier_called": False,
+                "content_type": (
+                    CONTENT_TYPE_UNCERTAIN
+                )
             }
         )
 
     # =====================================================
     # ALREADY FITS
-    #
-    # اگر متن داخل سقف باشد مدل نباید صدا زده شود.
-    # متن خام دقیقاً بدون تغییر برمی‌گردد.
     # =====================================================
 
     if (
@@ -756,7 +1042,11 @@ def summarize_text_safely(
             validation_passed=True,
             reason="already_fits",
             metadata={
-                "summarizer_called": False
+                "summarizer_called": False,
+                "classifier_called": False,
+                "content_type": (
+                    CONTENT_TYPE_UNCERTAIN
+                )
             }
         )
 
@@ -777,12 +1067,16 @@ def summarize_text_safely(
             validation_passed=False,
             reason="invalid_target_length",
             metadata={
-                "summarizer_called": False
+                "summarizer_called": False,
+                "classifier_called": False,
+                "content_type": (
+                    CONTENT_TYPE_UNCERTAIN
+                )
             }
         )
 
     # =====================================================
-    # NO SUMMARIZER CONNECTED
+    # NO PROVIDER
     # =====================================================
 
     if summarizer is None:
@@ -803,36 +1097,45 @@ def summarize_text_safely(
             validation_passed=False,
             reason="summarizer_not_configured",
             metadata={
-                "summarizer_called": False
+                "summarizer_called": False,
+                "classifier_called": False,
+                "content_type": (
+                    CONTENT_TYPE_UNCERTAIN
+                )
             }
         )
 
     # =====================================================
-    # MAXIMUM SAFE REDUCTION CHECK
-    #
-    # اگر فقط برای رسیدن به Target مجبور باشیم بیش از
-    # مقدار مجاز حذف کنیم، Provider اصلاً فراخوانی نمی‌شود.
+    # REQUIRED REDUCTION
     # =====================================================
 
     required_reduction_ratio = (
-        (
-            original_length
-            - target_length
+        calculate_required_reduction_ratio(
+            original_length,
+            target_length
         )
-        / original_length
     )
+
+    # =====================================================
+    # ABSOLUTE HARD LIMIT
+    #
+    # اگر نیاز به حذف 60٪ یا بیشتر باشد،
+    # Provider حتی برای تشخیص هم فراخوانی نمی‌شود.
+    #
+    # این رفتار همچنین با تست محافظتی قبلی سازگار می‌ماند.
+    # =====================================================
 
     if (
         required_reduction_ratio
-        > max_reduction_ratio
+        >= ABSOLUTE_MAX_REDUCTION_RATIO
     ):
 
         logger.warning(
             f"⚠️ Smart summarization skipped | "
             f"required_reduction="
             f"{required_reduction_ratio:.3f} | "
-            f"max_allowed="
-            f"{max_reduction_ratio:.3f}"
+            f"absolute_max="
+            f"{ABSOLUTE_MAX_REDUCTION_RATIO:.3f}"
         )
 
         return SummaryResult(
@@ -849,17 +1152,116 @@ def summarize_text_safely(
                 "required_reduction_ratio": (
                     required_reduction_ratio
                 ),
-                "summarizer_called": False
+                "effective_max_reduction_ratio": (
+                    ABSOLUTE_MAX_REDUCTION_RATIO
+                ),
+                "summarizer_called": False,
+                "classifier_called": False,
+                "content_type": (
+                    CONTENT_TYPE_UNCERTAIN
+                )
             }
         )
 
     # =====================================================
-    # BUILD INSTRUCTION
+    # ADAPTIVE POLICY
+    #
+    # تا سقف قدیمی 40٪:
+    # همان رفتار قبلی و بدون Classification.
+    #
+    # بیش از 40٪:
+    # AI خودش حساسیت متن را تشخیص می‌دهد.
+    # =====================================================
+
+    content_type = (
+        CONTENT_TYPE_NORMAL
+    )
+
+    classifier_called = False
+
+    effective_max_reduction_ratio = (
+        max_reduction_ratio
+    )
+
+    if (
+        required_reduction_ratio
+        > max_reduction_ratio
+    ):
+
+        classifier_called = True
+
+        content_type = (
+            classify_content_with_ai(
+                raw_original_text,
+                summarizer
+            )
+        )
+
+        effective_max_reduction_ratio = (
+            get_max_reduction_for_content_type(
+                content_type
+            )
+        )
+
+        logger.info(
+            f"🧠 Adaptive summarization policy | "
+            f"content_type={content_type} | "
+            f"required="
+            f"{required_reduction_ratio:.3f} | "
+            f"allowed="
+            f"{effective_max_reduction_ratio:.3f}"
+        )
+
+        if (
+            required_reduction_ratio
+            > effective_max_reduction_ratio
+        ):
+
+            logger.warning(
+                f"⚠️ Adaptive summary rejected "
+                f"before generation | "
+                f"content_type={content_type} | "
+                f"required="
+                f"{required_reduction_ratio:.3f} | "
+                f"allowed="
+                f"{effective_max_reduction_ratio:.3f}"
+            )
+
+            return SummaryResult(
+                success=False,
+                original_text=raw_original_text,
+                summary_text=raw_original_text,
+                target_length=target_length,
+                original_length=original_length,
+                summary_length=original_length,
+                reduction_ratio=0.0,
+                validation_passed=False,
+                reason=(
+                    "content_policy_reduction_limit"
+                ),
+                metadata={
+                    "required_reduction_ratio": (
+                        required_reduction_ratio
+                    ),
+                    "effective_max_reduction_ratio": (
+                        effective_max_reduction_ratio
+                    ),
+                    "summarizer_called": False,
+                    "classifier_called": True,
+                    "content_type": (
+                        content_type
+                    )
+                }
+            )
+
+    # =====================================================
+    # BUILD SMART INSTRUCTION
     # =====================================================
 
     instruction = (
         build_summarization_instruction(
-            target_length
+            target_length,
+            content_type=content_type
         )
     )
 
@@ -896,7 +1298,16 @@ def summarize_text_safely(
                 "error": str(
                     e
                 ),
-                "summarizer_called": True
+                "summarizer_called": True,
+                "classifier_called": (
+                    classifier_called
+                ),
+                "content_type": (
+                    content_type
+                ),
+                "effective_max_reduction_ratio": (
+                    effective_max_reduction_ratio
+                )
             }
         )
 
@@ -914,8 +1325,9 @@ def summarize_text_safely(
             summary_text=generated,
             target_length=target_length,
             max_reduction_ratio=(
-                max_reduction_ratio
-            )
+                effective_max_reduction_ratio
+            ),
+            content_type=content_type
         )
     )
 
@@ -925,16 +1337,10 @@ def summarize_text_safely(
 
         logger.warning(
             f"⚠️ Smart summary rejected | "
+            f"content_type={content_type} | "
             f"errors="
             f"{validation['errors']}"
         )
-
-        # =================================================
-        # FAIL CLOSED
-        #
-        # خلاصه ناسالم هرگز منتشر نمی‌شود.
-        # متن خام اصلی دقیقاً برمی‌گردد.
-        # =================================================
 
         return SummaryResult(
             success=False,
@@ -951,7 +1357,16 @@ def summarize_text_safely(
                 "candidate_summary": (
                     generated
                 ),
-                "summarizer_called": True
+                "summarizer_called": True,
+                "classifier_called": (
+                    classifier_called
+                ),
+                "content_type": (
+                    content_type
+                ),
+                "effective_max_reduction_ratio": (
+                    effective_max_reduction_ratio
+                )
             }
         )
 
@@ -964,11 +1379,14 @@ def summarize_text_safely(
 
     logger.info(
         f"✅ Smart summary accepted | "
+        f"content_type={content_type} | "
         f"before={original_length} | "
         f"after={len(generated)} | "
         f"target={target_length} | "
         f"reduction="
-        f"{reduction_ratio:.3f}"
+        f"{reduction_ratio:.3f} | "
+        f"max_allowed="
+        f"{effective_max_reduction_ratio:.3f}"
     )
 
     return SummaryResult(
@@ -987,6 +1405,18 @@ def summarize_text_safely(
         reason="summary_accepted",
         metadata={
             "validation": validation,
-            "summarizer_called": True
+            "summarizer_called": True,
+            "classifier_called": (
+                classifier_called
+            ),
+            "content_type": (
+                content_type
+            ),
+            "effective_max_reduction_ratio": (
+                effective_max_reduction_ratio
+            ),
+            "required_reduction_ratio": (
+                required_reduction_ratio
+            )
         }
     )
