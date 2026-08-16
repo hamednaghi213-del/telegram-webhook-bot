@@ -1799,6 +1799,21 @@ def build_editorial_source_text(
 
 # =========================================================
 # EDITORIAL BUTTONS
+#
+# FINAL POLICY
+#
+# منوی تحریریه همیشه پنج ردیف دارد.
+#
+# اگر خلاصه معتبر باشد:
+#
+# ✅ انتشار خلاصه
+# 📄 انتشار متن اصلی
+# 🔄 خلاصه‌سازی دوباره
+# ✏️ اصلاح با دستور ادمین
+# ❌ لغو
+#
+# اگر خلاصه معتبر نباشد، گزینه‌های مربوط به
+# Summary حذف نمی‌شوند و فقط حالت اطلاع‌رسانی دارند.
 # =========================================================
 
 def build_editorial_keyboard(
@@ -1811,6 +1826,10 @@ def build_editorial_keyboard(
         List[Dict[str, str]]
     ] = []
 
+    # =====================================================
+    # 1. SUMMARY
+    # =====================================================
+
     if has_summary:
 
         rows.append([
@@ -1822,14 +1841,20 @@ def build_editorial_keyboard(
             }
         ])
 
+    else:
+
         rows.append([
             {
                 "text":
-                    "✏️ اصلاح با دستور ادمین",
+                    "⚠️ خلاصه آماده نیست",
                 "callback_data":
-                    f"ed:instruction:{review_id}"
+                    f"ed:summary_unavailable:{review_id}"
             }
         ])
+
+    # =====================================================
+    # 2. ORIGINAL
+    # =====================================================
 
     rows.append([
         {
@@ -1839,6 +1864,10 @@ def build_editorial_keyboard(
                 f"ed:original:{review_id}"
         }
     ])
+
+    # =====================================================
+    # 3. REGENERATE
+    # =====================================================
 
     if can_regenerate:
 
@@ -1850,6 +1879,47 @@ def build_editorial_keyboard(
                     f"ed:regen:{review_id}"
             }
         ])
+
+    else:
+
+        rows.append([
+            {
+                "text":
+                    "⛔️ بازنویسی به پایان رسید",
+                "callback_data":
+                    f"ed:regen_unavailable:{review_id}"
+            }
+        ])
+
+    # =====================================================
+    # 4. ADMIN INSTRUCTION
+    # =====================================================
+
+    if has_summary:
+
+        rows.append([
+            {
+                "text":
+                    "✏️ اصلاح با دستور ادمین",
+                "callback_data":
+                    f"ed:instruction:{review_id}"
+            }
+        ])
+
+    else:
+
+        rows.append([
+            {
+                "text":
+                    "✏️ اصلاح پس از ساخت خلاصه",
+                "callback_data":
+                    f"ed:instruction_unavailable:{review_id}"
+            }
+        ])
+
+    # =====================================================
+    # 5. CANCEL
+    # =====================================================
 
     rows.append([
         {
@@ -2207,27 +2277,6 @@ def try_queue_editorial_text_review(
 
 # =========================================================
 # PROCESS ADMIN INSTRUCTION MESSAGE
-#
-# این مهم‌ترین Gate جدید است.
-#
-# وقتی Review منتظر دستور ادمین وجود دارد:
-#
-# - پیام جدید هرگز خبر عادی محسوب نمی‌شود.
-# - وارد try_queue_editorial_text_review نمی‌شود.
-# - وارد process_text_message نمی‌شود.
-# - مستقیم به AI Admin Edit می‌رود.
-#
-# در شکست:
-# - Summary قبلی دست‌نخورده می‌ماند.
-# - Review همچنان Pending می‌ماند.
-# - Waiting نیز باقی می‌ماند تا ادمین بتواند
-#   دستور اصلاح‌شده دیگری ارسال کند.
-#
-# در موفقیت:
-# - Summary جدید ذخیره می‌شود.
-# - Waiting خاموش می‌شود.
-# - Review همچنان Pending است.
-# - Preview جدید نمایش داده می‌شود.
 # =========================================================
 
 def process_admin_instruction_message(
@@ -2314,10 +2363,6 @@ def process_admin_instruction_message(
             f"body_length={len(original_body)}"
         )
 
-        # =================================================
-        # APPLY ADMIN INSTRUCTION
-        # =================================================
-
         result = (
             apply_admin_instruction_to_editorial_summary(
                 original_text=(
@@ -2334,19 +2379,6 @@ def process_admin_instruction_message(
                 )
             )
         )
-
-        # =================================================
-        # FAILED
-        #
-        # بسیار مهم:
-        #
-        # update_pending_summary اجرا نمی‌شود.
-        #
-        # بنابراین نسخه قبلی دقیقاً محفوظ می‌ماند.
-        #
-        # record_admin_instruction_applied نیز اجرا نمی‌شود
-        # تا Waiting روشن بماند.
-        # =================================================
 
         if not result.summary_success:
 
@@ -2367,10 +2399,6 @@ def process_admin_instruction_message(
             )
 
             return True
-
-        # =================================================
-        # SUCCESS
-        # =================================================
 
         new_summary = (
             str(
@@ -2427,12 +2455,9 @@ def process_admin_instruction_message(
                 new_summary=(
                     new_summary
                 ),
-
-                # Admin edit جزو Regeneration Count نیست.
                 regeneration_count=(
                     review.regeneration_count
                 ),
-
                 metadata=(
                     updated_metadata
                 )
@@ -2458,12 +2483,6 @@ def process_admin_instruction_message(
 
             return True
 
-        # =================================================
-        # RECORD SUCCESS
-        #
-        # Waiting اینجا خاموش می‌شود.
-        # =================================================
-
         recorded = (
             record_admin_instruction_applied(
                 review_id=(
@@ -2479,10 +2498,6 @@ def process_admin_instruction_message(
         if recorded is not None:
 
             updated = recorded
-
-        # =================================================
-        # REVIEW MUST REMAIN PENDING
-        # =================================================
 
         from core.editorial_pending import (
             STATUS_PENDING
@@ -2590,8 +2605,6 @@ def process_admin_instruction_message(
             )
         )
 
-        # پیام Admin Instruction مصرف شده است.
-        # نباید پس از Exception وارد مسیر خبر عادی شود.
         return True
 
 
@@ -2737,6 +2750,65 @@ def handle_editorial_callback(
             )
             or ""
         )
+
+        # =================================================
+        # INFORMATIONAL / UNAVAILABLE ACTIONS
+        # =================================================
+
+        if action == "summary_unavailable":
+
+            answer_callback_query(
+                callback_id,
+                "خلاصه معتبر هنوز آماده نشده است."
+            )
+
+            send_message(
+                user_id,
+                (
+                    "⚠️ نسخه خلاصه هنوز مورد تأیید "
+                    "سیستم ضدتحریف قرار نگرفته است.\n\n"
+                    "می‌توانید «خلاصه‌سازی دوباره» را انتخاب کنید "
+                    "یا متن اصلی را منتشر کنید."
+                )
+            )
+
+            return True
+
+        if action == "instruction_unavailable":
+
+            answer_callback_query(
+                callback_id,
+                "ابتدا باید یک خلاصه معتبر ساخته شود."
+            )
+
+            send_message(
+                user_id,
+                (
+                    "✏️ اصلاح با دستور ادمین زمانی فعال می‌شود "
+                    "که ابتدا یک نسخه خلاصه معتبر آماده باشد.\n\n"
+                    "ابتدا «خلاصه‌سازی دوباره» را انتخاب کنید."
+                )
+            )
+
+            return True
+
+        if action == "regen_unavailable":
+
+            answer_callback_query(
+                callback_id,
+                "حداکثر تعداد بازنویسی انجام شده است."
+            )
+
+            send_message(
+                user_id,
+                (
+                    "⛔️ سقف مجاز خلاصه‌سازی دوباره "
+                    "برای این محتوا به پایان رسیده است.\n\n"
+                    "می‌توانید نسخه موجود یا متن اصلی را منتشر کنید."
+                )
+            )
+
+            return True
 
         # =================================================
         # ADMIN INSTRUCTION MODE
@@ -3096,9 +3168,7 @@ def handle_editorial_callback(
                 keyboard = (
                     build_editorial_keyboard(
                         review_id=review_id,
-                        has_summary=bool(
-                            updated.current_summary
-                        ),
+                        has_summary=False,
                         can_regenerate=(
                             updated.regeneration_count
                             < MAX_REGENERATION_COUNT
@@ -3336,10 +3406,6 @@ def handle_webhook() -> Tuple[
 
         # =================================================
         # COMMAND
-        #
-        # Command قبل از Admin Instruction Gate می‌ماند.
-        # بنابراین /start یا سایر فرمان‌ها تصادفاً
-        # دستور ویرایشی محسوب نمی‌شوند.
         # =================================================
 
         command_text = (
@@ -3425,17 +3491,6 @@ def handle_webhook() -> Tuple[
 
         # =================================================
         # ADMIN INSTRUCTION TEXT GATE
-        #
-        # این Gate باید قبل از:
-        #
-        # - Editorial Queue
-        # - Normal Text Publish
-        #
-        # اجرا شود.
-        #
-        # اگر Review منتظر دستور وجود داشته باشد،
-        # همین پیام مصرف می‌شود و مسیر در همینجا
-        # خاتمه پیدا می‌کند.
         # =================================================
 
         pure_text = (
@@ -3485,13 +3540,6 @@ def handle_webhook() -> Tuple[
                     ),
                     req_id=req_id
                 )
-
-                # =========================================
-                # CRITICAL
-                #
-                # هر نتیجه‌ای که پردازش Admin Instruction
-                # داشته باشد، پیام نباید پایین‌تر برود.
-                # =========================================
 
                 return {
                     "ok": True,
@@ -3728,9 +3776,6 @@ def handle_webhook() -> Tuple[
 
         # =================================================
         # NORMAL TEXT
-        #
-        # اگر Admin Instruction بود، هرگز به این قسمت
-        # نمی‌رسد.
         # =================================================
 
         if pure_text.strip():
