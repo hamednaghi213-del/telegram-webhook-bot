@@ -1,12 +1,13 @@
-import os
-
-import pytest
-
 from core.editorial_pending import (
+    ADMIN_INSTRUCTION_COUNT_KEY,
+    ADMIN_INSTRUCTION_LAST_TEXT_KEY,
+    ADMIN_INSTRUCTION_WAITING_KEY,
+    STATUS_PENDING,
     clear_pending_reviews,
     create_pending_review,
-    get_pending_review,
+    get_admin_instruction_count,
     get_waiting_admin_instruction_review,
+    is_waiting_for_admin_instruction,
     record_admin_instruction_applied,
     set_admin_instruction_waiting,
     update_pending_summary,
@@ -14,154 +15,162 @@ from core.editorial_pending import (
 
 from core.editorial_review import (
     CONTENT_TYPE_OPINION_NOTE,
+    MAX_ADMIN_INSTRUCTION_LENGTH,
     apply_admin_instruction_to_editorial_summary,
 )
-
-
-# =========================================================
-# FIXTURES
-# =========================================================
-
-@pytest.fixture(autouse=True)
-def clear_store_before_and_after():
-
-    clear_pending_reviews()
-
-    yield
-
-    clear_pending_reviews()
 
 
 # =========================================================
 # TEST DATA
 # =========================================================
 
+USER_ID = 101647751
+
+OTHER_USER_ID = 999999999
+
+
 ORIGINAL_BODY = (
-    "ایران در شرایطی مذاکرات را ادامه می‌دهد که "
-    "اعتماد میان طرفین کاهش یافته است. "
-    "با این حال تهران حفظ چارچوب مذاکره را "
-    "راهی برای کنترل هزینه‌های سیاسی و جلوگیری "
-    "از ورود به یک بحران غیرقابل کنترل می‌داند. "
-    "در این ارزیابی، ادامه گفت‌وگو لزوماً به معنای "
-    "اعتماد به نتیجه مذاکرات نیست بلکه ابزاری برای "
-    "مدیریت صحنه و انتقال هزینه شکست احتمالی به طرف مقابل است."
+    "ایران در شرایطی مذاکرات را ادامه می‌دهد که اعتماد میان "
+    "طرفین کاهش یافته است. با این حال تهران حفظ چارچوب مذاکره "
+    "را راهی برای کنترل هزینه‌های سیاسی و جلوگیری از ورود به "
+    "یک بحران غیرقابل کنترل می‌داند. در این ارزیابی، ادامه "
+    "گفت‌وگو لزوماً به معنای اعتماد به نتیجه مذاکرات نیست بلکه "
+    "ابزاری برای مدیریت صحنه و انتقال هزینه شکست احتمالی به "
+    "طرف مقابل است."
 )
 
+
 CURRENT_SUMMARY = (
-    "ایران با وجود کاهش اعتماد، ادامه مذاکرات را "
-    "ابزاری برای کنترل صحنه و جلوگیری از تشدید بحران می‌داند."
+    "ایران با وجود کاهش اعتماد، ادامه مذاکرات را ابزاری "
+    "برای کنترل صحنه و جلوگیری از تشدید بحران می‌داند."
 )
 
 
 # =========================================================
+# TEST SETUP
+# =========================================================
+
+def setup_function():
+
+    clear_pending_reviews()
+
+
+def teardown_function():
+
+    clear_pending_reviews()
+
+
+# =========================================================
 # TEST 01
-# CREATE REVIEW DEFAULT ADMIN STATE
+# DEFAULT ADMIN INSTRUCTION STATE
 # =========================================================
 
 def test_pending_review_admin_instruction_default_state():
 
     review = create_pending_review(
-        user_id=1001,
+        user_id=USER_ID,
         content_type=CONTENT_TYPE_OPINION_NOTE,
         original_text=ORIGINAL_BODY,
         current_summary=CURRENT_SUMMARY,
-        metadata={
-            "editorial_body":
-                ORIGINAL_BODY,
-            "summary_success":
-                True
-        }
     )
 
-    assert review is not None
+    assert (
+        review.status
+        == STATUS_PENDING
+    )
 
     assert (
         review.metadata.get(
-            "awaiting_admin_instruction"
+            ADMIN_INSTRUCTION_WAITING_KEY
         )
         is False
     )
 
     assert (
         review.metadata.get(
-            "admin_instruction_count"
+            ADMIN_INSTRUCTION_COUNT_KEY
         )
         == 0
+    )
+
+    assert (
+        is_waiting_for_admin_instruction(
+            review
+        )
+        is False
     )
 
 
 # =========================================================
 # TEST 02
-# ACTIVATE ADMIN WAITING MODE
+# SET ADMIN INSTRUCTION WAITING
 # =========================================================
 
 def test_set_admin_instruction_waiting():
 
     review = create_pending_review(
-        user_id=1001,
+        user_id=USER_ID,
         content_type=CONTENT_TYPE_OPINION_NOTE,
         original_text=ORIGINAL_BODY,
         current_summary=CURRENT_SUMMARY,
-        metadata={
-            "editorial_body":
-                ORIGINAL_BODY,
-            "summary_success":
-                True
-        }
     )
 
     updated = (
         set_admin_instruction_waiting(
             review_id=review.review_id,
-            user_id=1001
+            user_id=USER_ID
         )
     )
 
     assert updated is not None
 
     assert (
+        updated.review_id
+        == review.review_id
+    )
+
+    assert (
+        updated.status
+        == STATUS_PENDING
+    )
+
+    assert (
         updated.metadata.get(
-            "awaiting_admin_instruction"
+            ADMIN_INSTRUCTION_WAITING_KEY
         )
         is True
     )
 
     assert (
-        updated.metadata.get(
-            "admin_instruction_requested_at"
+        is_waiting_for_admin_instruction(
+            updated
         )
-        is not None
+        is True
     )
 
 
 # =========================================================
 # TEST 03
-# FIND WAITING REVIEW
+# GET WAITING REVIEW
 # =========================================================
 
 def test_get_waiting_admin_instruction_review():
 
     review = create_pending_review(
-        user_id=1001,
+        user_id=USER_ID,
         content_type=CONTENT_TYPE_OPINION_NOTE,
         original_text=ORIGINAL_BODY,
         current_summary=CURRENT_SUMMARY,
-        metadata={
-            "editorial_body":
-                ORIGINAL_BODY,
-            "summary_success":
-                True
-        }
     )
 
     set_admin_instruction_waiting(
         review_id=review.review_id,
-        user_id=1001
+        user_id=USER_ID
     )
 
     waiting = (
         get_waiting_admin_instruction_review(
-            user_id=1001
+            USER_ID
         )
     )
 
@@ -172,6 +181,18 @@ def test_get_waiting_admin_instruction_review():
         == review.review_id
     )
 
+    assert (
+        waiting.user_id
+        == USER_ID
+    )
+
+    assert (
+        is_waiting_for_admin_instruction(
+            waiting
+        )
+        is True
+    )
+
 
 # =========================================================
 # TEST 04
@@ -180,60 +201,70 @@ def test_get_waiting_admin_instruction_review():
 
 def test_only_one_waiting_admin_review_per_user():
 
-    first = create_pending_review(
-        user_id=1001,
-        content_type=CONTENT_TYPE_OPINION_NOTE,
-        original_text=ORIGINAL_BODY,
-        current_summary=CURRENT_SUMMARY,
-        metadata={
-            "summary_success":
-                True
-        }
+    first_review = (
+        create_pending_review(
+            user_id=USER_ID,
+            content_type=(
+                CONTENT_TYPE_OPINION_NOTE
+            ),
+            original_text=ORIGINAL_BODY,
+            current_summary=CURRENT_SUMMARY,
+        )
     )
 
-    second = create_pending_review(
-        user_id=1001,
-        content_type=CONTENT_TYPE_OPINION_NOTE,
-        original_text=ORIGINAL_BODY,
-        current_summary=CURRENT_SUMMARY,
-        metadata={
-            "summary_success":
-                True
-        }
-    )
-
-    set_admin_instruction_waiting(
-        review_id=first.review_id,
-        user_id=1001
+    second_review = (
+        create_pending_review(
+            user_id=USER_ID,
+            content_type=(
+                CONTENT_TYPE_OPINION_NOTE
+            ),
+            original_text=ORIGINAL_BODY,
+            current_summary=CURRENT_SUMMARY,
+        )
     )
 
     set_admin_instruction_waiting(
-        review_id=second.review_id,
-        user_id=1001
-    )
-
-    first_after = get_pending_review(
-        review_id=first.review_id,
-        user_id=1001
-    )
-
-    second_after = get_pending_review(
-        review_id=second.review_id,
-        user_id=1001
+        review_id=first_review.review_id,
+        user_id=USER_ID
     )
 
     assert (
-        first_after.metadata.get(
-            "awaiting_admin_instruction"
+        is_waiting_for_admin_instruction(
+            first_review
+        )
+        is True
+    )
+
+    set_admin_instruction_waiting(
+        review_id=second_review.review_id,
+        user_id=USER_ID
+    )
+
+    assert (
+        is_waiting_for_admin_instruction(
+            first_review
         )
         is False
     )
 
     assert (
-        second_after.metadata.get(
-            "awaiting_admin_instruction"
+        is_waiting_for_admin_instruction(
+            second_review
         )
         is True
+    )
+
+    waiting = (
+        get_waiting_admin_instruction_review(
+            USER_ID
+        )
+    )
+
+    assert waiting is not None
+
+    assert (
+        waiting.review_id
+        == second_review.review_id
     )
 
 
@@ -245,20 +276,27 @@ def test_only_one_waiting_admin_review_per_user():
 def test_wrong_user_cannot_activate_admin_waiting():
 
     review = create_pending_review(
-        user_id=1001,
+        user_id=USER_ID,
         content_type=CONTENT_TYPE_OPINION_NOTE,
         original_text=ORIGINAL_BODY,
-        current_summary=CURRENT_SUMMARY
+        current_summary=CURRENT_SUMMARY,
     )
 
     result = (
         set_admin_instruction_waiting(
             review_id=review.review_id,
-            user_id=9999
+            user_id=OTHER_USER_ID
         )
     )
 
     assert result is None
+
+    assert (
+        is_waiting_for_admin_instruction(
+            review
+        )
+        is False
+    )
 
 
 # =========================================================
@@ -269,24 +307,26 @@ def test_wrong_user_cannot_activate_admin_waiting():
 def test_record_admin_instruction_applied():
 
     review = create_pending_review(
-        user_id=1001,
+        user_id=USER_ID,
         content_type=CONTENT_TYPE_OPINION_NOTE,
         original_text=ORIGINAL_BODY,
-        current_summary=CURRENT_SUMMARY
+        current_summary=CURRENT_SUMMARY,
     )
 
     set_admin_instruction_waiting(
         review_id=review.review_id,
-        user_id=1001
+        user_id=USER_ID
+    )
+
+    instruction = (
+        "تأکید بیشتری روی کنترل صحنه داشته باشد."
     )
 
     updated = (
         record_admin_instruction_applied(
             review_id=review.review_id,
-            user_id=1001,
-            instruction=(
-                "تأکید بیشتری روی کنترل صحنه داشته باشد."
-            )
+            user_id=USER_ID,
+            instruction=instruction
         )
     )
 
@@ -294,37 +334,57 @@ def test_record_admin_instruction_applied():
 
     assert (
         updated.metadata.get(
-            "awaiting_admin_instruction"
+            ADMIN_INSTRUCTION_WAITING_KEY
         )
         is False
     )
 
     assert (
         updated.metadata.get(
-            "admin_instruction_count"
+            ADMIN_INSTRUCTION_LAST_TEXT_KEY
+        )
+        == instruction
+    )
+
+    assert (
+        updated.metadata.get(
+            ADMIN_INSTRUCTION_COUNT_KEY
         )
         == 1
     )
 
     assert (
-        updated.metadata.get(
-            "last_admin_instruction"
+        get_admin_instruction_count(
+            updated
         )
-        ==
-        "تأکید بیشتری روی کنترل صحنه داشته باشد."
+        == 1
     )
 
     assert (
-        updated.metadata.get(
-            "last_admin_instruction_applied_at"
+        is_waiting_for_admin_instruction(
+            updated
         )
-        is not None
+        is False
     )
 
 
 # =========================================================
 # TEST 07
-# ADMIN EDIT SUCCESS
+# APPLY ADMIN INSTRUCTION SUCCESS
+#
+# نکته مهم:
+#
+# خروجی Fake AI نیز باید قواعد Validator را رعایت کند.
+#
+# متن اصلی دارای نشانه‌های قطعیت/انتساب مانند:
+#
+# در این ارزیابی
+# لزوماً
+# احتمالی
+#
+# است.
+#
+# بنابراین Fake Summary نیز آنها را حفظ می‌کند.
 # =========================================================
 
 def test_apply_admin_instruction_success():
@@ -350,10 +410,17 @@ def test_apply_admin_instruction_success():
             in instruction
         )
 
+        assert (
+            target_length
+            > 0
+        )
+
         return (
-            "ایران با وجود کاهش اعتماد، مذاکرات را "
-            "ابزاری برای کنترل صحنه و جلوگیری از "
-            "تشدید بحران می‌داند."
+            "در این ارزیابی، ایران با وجود کاهش اعتماد، "
+            "ادامه مذاکرات را لزوماً نشانه اعتماد به نتیجه "
+            "نمی‌داند، بلکه آن را ابزاری برای کنترل صحنه، "
+            "جلوگیری از ورود به بحران غیرقابل کنترل و انتقال "
+            "هزینه شکست احتمالی به طرف مقابل می‌داند."
         )
 
     result = (
@@ -379,8 +446,38 @@ def test_apply_admin_instruction_success():
     )
 
     assert (
+        result.original_text
+        == ORIGINAL_BODY
+    )
+
+    assert (
         result.suggested_text
-        != ""
+        != CURRENT_SUMMARY
+    )
+
+    assert (
+        "کنترل صحنه"
+        in result.suggested_text
+    )
+
+    assert (
+        "در این ارزیابی"
+        in result.suggested_text
+    )
+
+    assert (
+        "لزوماً"
+        in result.suggested_text
+    )
+
+    assert (
+        "احتمالی"
+        in result.suggested_text
+    )
+
+    assert (
+        result.needs_approval
+        is True
     )
 
     assert (
@@ -390,20 +487,46 @@ def test_apply_admin_instruction_success():
         is True
     )
 
+    assert (
+        result.metadata.get(
+            "admin_instruction"
+        )
+        == (
+            "تأکید بیشتری روی کنترل صحنه داشته باشد."
+        )
+    )
+
 
 # =========================================================
 # TEST 08
-# ADMIN EDIT EMPTY INSTRUCTION
+# EMPTY ADMIN INSTRUCTION
 # =========================================================
 
 def test_apply_admin_instruction_empty_instruction():
+
+    provider_called = {
+        "value": False
+    }
+
+    def fake_summarizer(
+        original_text,
+        instruction,
+        target_length
+    ):
+
+        provider_called[
+            "value"
+        ] = True
+
+        return CURRENT_SUMMARY
 
     result = (
         apply_admin_instruction_to_editorial_summary(
             original_text=ORIGINAL_BODY,
             previous_summary=CURRENT_SUMMARY,
             admin_instruction="",
-            content_type=CONTENT_TYPE_OPINION_NOTE
+            content_type=CONTENT_TYPE_OPINION_NOTE,
+            summarizer=fake_summarizer
         )
     )
 
@@ -422,17 +545,43 @@ def test_apply_admin_instruction_empty_instruction():
         == CURRENT_SUMMARY
     )
 
+    assert (
+        provider_called[
+            "value"
+        ]
+        is False
+    )
+
 
 # =========================================================
 # TEST 09
-# ADMIN EDIT TOO LONG
+# ADMIN INSTRUCTION TOO LONG
 # =========================================================
 
 def test_apply_admin_instruction_too_long():
 
-    very_long_instruction = (
-        "الف"
-        * 1600
+    provider_called = {
+        "value": False
+    }
+
+    def fake_summarizer(
+        original_text,
+        instruction,
+        target_length
+    ):
+
+        provider_called[
+            "value"
+        ] = True
+
+        return CURRENT_SUMMARY
+
+    long_instruction = (
+        "ا"
+        * (
+            MAX_ADMIN_INSTRUCTION_LENGTH
+            + 1
+        )
     )
 
     result = (
@@ -440,9 +589,10 @@ def test_apply_admin_instruction_too_long():
             original_text=ORIGINAL_BODY,
             previous_summary=CURRENT_SUMMARY,
             admin_instruction=(
-                very_long_instruction
+                long_instruction
             ),
-            content_type=CONTENT_TYPE_OPINION_NOTE
+            content_type=CONTENT_TYPE_OPINION_NOTE,
+            summarizer=fake_summarizer
         )
     )
 
@@ -461,10 +611,17 @@ def test_apply_admin_instruction_too_long():
         == CURRENT_SUMMARY
     )
 
+    assert (
+        provider_called[
+            "value"
+        ]
+        is False
+    )
+
 
 # =========================================================
 # TEST 10
-# PROVIDER FAILURE KEEPS OLD SUMMARY
+# PROVIDER FAILURE KEEPS PREVIOUS SUMMARY
 # =========================================================
 
 def test_admin_instruction_provider_failure_keeps_previous_summary():
@@ -476,7 +633,7 @@ def test_admin_instruction_provider_failure_keeps_previous_summary():
     ):
 
         raise RuntimeError(
-            "provider failed"
+            "provider unavailable"
         )
 
     result = (
@@ -484,7 +641,7 @@ def test_admin_instruction_provider_failure_keeps_previous_summary():
             original_text=ORIGINAL_BODY,
             previous_summary=CURRENT_SUMMARY,
             admin_instruction=(
-                "متن را کوتاه‌تر کن."
+                "روی کنترل صحنه تأکید بیشتری داشته باشد."
             ),
             content_type=CONTENT_TYPE_OPINION_NOTE,
             summarizer=failing_summarizer
@@ -497,50 +654,60 @@ def test_admin_instruction_provider_failure_keeps_previous_summary():
     )
 
     assert (
+        result.reason
+        == "admin_instruction_failed"
+    )
+
+    assert (
         result.suggested_text
         == CURRENT_SUMMARY
     )
 
     assert (
-        result.reason
-        == "admin_instruction_failed"
+        result.original_text
+        == ORIGINAL_BODY
+    )
+
+    assert (
+        result.metadata.get(
+            "generation_reason"
+        )
+        == "provider_error"
     )
 
 
 # =========================================================
 # TEST 11
-# UPDATE SUMMARY AFTER ADMIN EDIT
+# UPDATED SUMMARY CAN BE SAVED
 # =========================================================
 
 def test_admin_instruction_updated_summary_can_be_saved():
 
     review = create_pending_review(
-        user_id=1001,
+        user_id=USER_ID,
         content_type=CONTENT_TYPE_OPINION_NOTE,
         original_text=ORIGINAL_BODY,
         current_summary=CURRENT_SUMMARY,
-        metadata={
-            "summary_success":
-                True
-        }
     )
 
     new_summary = (
-        "ایران مذاکرات را ابزاری برای "
-        "کنترل صحنه و مهار هزینه بحران می‌داند."
+        "در این ارزیابی، ایران با وجود کاهش اعتماد، "
+        "ادامه مذاکرات را لزوماً نشانه اعتماد نمی‌داند "
+        "و آن را ابزاری برای مدیریت صحنه و انتقال هزینه "
+        "شکست احتمالی به طرف مقابل می‌داند."
     )
 
     updated = (
         update_pending_summary(
             review_id=review.review_id,
-            user_id=1001,
+            user_id=USER_ID,
             new_summary=new_summary,
             regeneration_count=(
                 review.regeneration_count
             ),
             metadata={
-                "summary_success":
-                    True
+                "summary_success": True,
+                "admin_instruction_applied": True
             }
         )
     )
@@ -553,8 +720,20 @@ def test_admin_instruction_updated_summary_can_be_saved():
     )
 
     assert (
+        updated.original_text
+        == ORIGINAL_BODY
+    )
+
+    assert (
         updated.metadata.get(
             "summary_success"
+        )
+        is True
+    )
+
+    assert (
+        updated.metadata.get(
+            "admin_instruction_applied"
         )
         is True
     )
@@ -562,39 +741,51 @@ def test_admin_instruction_updated_summary_can_be_saved():
 
 # =========================================================
 # TEST 12
-# ADMIN INSTRUCTION MUST NOT MODIFY ORIGINAL
+# ORIGINAL TEXT MUST ALWAYS BE PRESERVED
 # =========================================================
 
 def test_admin_instruction_preserves_original_text():
 
-    review = create_pending_review(
-        user_id=1001,
-        content_type=CONTENT_TYPE_OPINION_NOTE,
-        original_text=ORIGINAL_BODY,
-        current_summary=CURRENT_SUMMARY
-    )
+    def fake_summarizer(
+        original_text,
+        instruction,
+        target_length
+    ):
 
-    original_before = (
-        review.original_text
-    )
+        return (
+            "در این ارزیابی، ایران ادامه گفت‌وگو را "
+            "لزوماً نشانه اعتماد نمی‌داند و آن را برای "
+            "مدیریت صحنه و انتقال هزینه شکست احتمالی "
+            "به طرف مقابل حفظ می‌کند."
+        )
 
-    update_pending_summary(
-        review_id=review.review_id,
-        user_id=1001,
-        new_summary=(
-            "نسخه جدید خلاصه"
-        ),
-        regeneration_count=0
+    result = (
+        apply_admin_instruction_to_editorial_summary(
+            original_text=ORIGINAL_BODY,
+            previous_summary=CURRENT_SUMMARY,
+            admin_instruction=(
+                "نسخه را منسجم‌تر کن."
+            ),
+            content_type=CONTENT_TYPE_OPINION_NOTE,
+            summarizer=fake_summarizer
+        )
     )
-
-    updated = get_pending_review(
-        review_id=review.review_id,
-        user_id=1001
-    )
-
-    assert updated is not None
 
     assert (
-        updated.original_text
-        == original_before
+        result.original_text
+        == ORIGINAL_BODY
+    )
+
+    assert (
+        ORIGINAL_BODY
+        != result.suggested_text
+    )
+
+    assert (
+        len(
+            result.original_text
+        )
+        == len(
+            ORIGINAL_BODY
+        )
     )
