@@ -1,9 +1,12 @@
+import sys
+import types
+
 import pytest
 
 from flask import Flask
 
+import core
 import core.webhook_handler as webhook_handler
-import core.database as database_module
 
 from core.editorial_pending import (
     ADMIN_INSTRUCTION_COUNT_KEY,
@@ -150,6 +153,57 @@ def create_test_review():
 
 
 # =========================================================
+# FAKE DATABASE MODULE
+#
+# مهم:
+#
+# core.database واقعی نباید در این تست Import شود،
+# چون در زمان Import به SUPABASE_URL نیاز دارد.
+#
+# بنابراین برای تست E2E یک Module جعلی داخل
+# sys.modules قرار می‌دهیم.
+# =========================================================
+
+def install_fake_database(
+    monkeypatch
+):
+
+    fake_database = (
+        types.ModuleType(
+            "core.database"
+        )
+    )
+
+    def fake_get_tenant(
+        user_id
+    ):
+
+        return {
+            "telegram_channel":
+                "@Donya24News"
+        }
+
+    fake_database.get_tenant = (
+        fake_get_tenant
+    )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "core.database",
+        fake_database
+    )
+
+    monkeypatch.setattr(
+        core,
+        "database",
+        fake_database,
+        raising=False
+    )
+
+    return fake_database
+
+
+# =========================================================
 # COMMON WEBHOOK MOCKS
 # =========================================================
 
@@ -202,16 +256,13 @@ def install_common_webhook_mocks(
     )
 
     # =====================================================
-    # TENANT
+    # DATABASE
+    #
+    # Supabase واقعی در Unit/E2E Test فراخوانی نمی‌شود.
     # =====================================================
 
-    monkeypatch.setattr(
-        database_module,
-        "get_tenant",
-        lambda user_id: {
-            "telegram_channel":
-                "@Donya24News"
-        }
+    install_fake_database(
+        monkeypatch
     )
 
 
@@ -838,20 +889,17 @@ def test_failed_admin_instruction_keeps_previous_summary(
         is not None
     )
 
-    # نسخه قبلی نباید از بین برود.
+    # نسخه قبلی باید محفوظ بماند.
     assert (
         updated.current_summary
         == CURRENT_SUMMARY
     )
 
-    # Review همچنان Pending می‌ماند.
     assert (
         updated.status
         == STATUS_PENDING
     )
 
-    # در شکست، Waiting Mode نیز نباید باعث
-    # انتشار مستقیم پیام شود.
     assert (
         any(
             (
@@ -1121,8 +1169,6 @@ def test_successful_admin_edit_keeps_review_pending(
         is False
     )
 
-    # هنوز هیچ Publication Final انجام نشده.
-    # باید فقط Preview جدید به ادمین نمایش داده شود.
     assert (
         any(
             (
