@@ -130,6 +130,17 @@ def append_branding(
 
 # =========================================================
 # TELEGRAM MEDIA FINAL BRANDING
+#
+# IMPORTANT
+#
+# Branding is plain caption text.
+#
+# No hashtag entity.
+# No mention entity.
+# No RTL marker.
+#
+# Existing blockquote entity offsets stay valid because
+# branding is appended after all blockquote entities.
 # =========================================================
 
 def append_final_telegram_media_branding(
@@ -153,9 +164,7 @@ def append_final_telegram_media_branding(
         return branding
 
     separator = (
-        "\n\n\n"
-        if has_expandable
-        else "\n\n"
+        "\n\n"
     )
 
     result = (
@@ -165,11 +174,12 @@ def append_final_telegram_media_branding(
     )
 
     logger.info(
-        f"🏷️ Telegram final branding appended ONCE | "
+        f"🏷️ Telegram final branding appended | "
         f"expandable={has_expandable} | "
         f"caption_before={len(caption)} | "
         f"branding={len(branding)} | "
-        f"caption_after={len(result)}"
+        f"caption_after={len(result)} | "
+        f"branding_entities=False"
     )
 
     return result
@@ -869,74 +879,6 @@ def create_telegram_blockquote_messages(
     return result
 
 
-# =========================================================
-# EXPANDABLE MEDIA REPLY BUILDER
-#
-# IMPORTANT:
-# For media posts with expandable content:
-#
-# - Expandable content NEVER enters media caption.
-# - Complete quote is kept as a reply message.
-# - No manual split while visible text <= 4096.
-# - Only content above Telegram's message limit is split.
-# =========================================================
-
-def create_telegram_media_quote_replies(
-    blockquote_blocks: List[
-        Dict[str, Any]
-    ],
-    expandable_blocks: List[
-        Dict[str, Any]
-    ]
-) -> List[str]:
-
-    result: List[str] = []
-
-    blocks = _combined_blockquotes(
-        blockquote_blocks,
-        expandable_blocks
-    )
-
-    for block in blocks:
-
-        text = clean_blockquote_text(
-            block.get(
-                "text",
-                ""
-            )
-        )
-
-        if not text:
-            continue
-
-        if len(text) <= TELEGRAM_MESSAGE_LIMIT:
-
-            parts = [text]
-
-        else:
-
-            parts = split_text(
-                text,
-                TELEGRAM_MESSAGE_LIMIT
-            )
-
-        for part in parts:
-
-            result.append(
-                build_blockquote_html(
-                    part,
-                    expandable=bool(
-                        block.get(
-                            "expandable",
-                            False
-                        )
-                    )
-                )
-            )
-
-    return result
-
-
 def build_inline_telegram_blockquotes(
     blockquote_blocks: List[
         Dict[str, Any]
@@ -1018,6 +960,14 @@ def build_telegram_html_caption(
             blocks
         )
 
+    if branding:
+
+        parts.append(
+            escape(
+                branding
+            )
+        )
+
     return "\n\n".join(
         parts
     )
@@ -1025,9 +975,6 @@ def build_telegram_html_caption(
 
 # =========================================================
 # FIT BLOCKQUOTE INTO TELEGRAM CAPTION
-#
-# Used only by non-expandable legacy-compatible path.
-# Expandable media posts no longer use this function.
 # =========================================================
 
 def fit_blockquotes_into_caption(
@@ -1373,6 +1320,23 @@ def create_bale_blockquote_messages(
 
 # =========================================================
 # TELEGRAM MEDIA PLAN
+#
+# TARGET:
+#
+# When FULL content fits:
+#
+#   ONE MEDIA MESSAGE
+#
+#   Caption:
+#       Main
+#       Expandable
+#       Branding
+#
+#   Entities:
+#       Blockquote / Expandable only
+#
+#   No followup.
+#   No standalone blockquote.
 # =========================================================
 
 def create_telegram_plan(
@@ -1413,154 +1377,20 @@ def create_telegram_plan(
     )
 
     # =====================================================
-    # NEW FINAL EXPANDABLE POLICY
-    #
-    # Media:
-    #   Main text only
-    #
-    # Quote reply:
-    #   Complete blockquote / expandable content
-    #
-    # Branding:
-    #   Separate followup
-    #
-    # Expandable content is NEVER placed inside media caption.
-    # =====================================================
-
-    if has_expandable:
-
-        logger.info(
-            "🧩 Telegram expandable media policy | "
-            "caption=MAIN_ONLY | "
-            "quote=SEPARATE_REPLY | "
-            "branding=SEPARATE_REPLY"
-        )
-
-        # =================================================
-        # MAIN TEXT -> MEDIA CAPTION
-        # =================================================
-
-        if (
-            main_text
-            and len(main_text)
-            <= TELEGRAM_CAPTION_LIMIT
-        ):
-
-            plan[
-                "media_caption"
-            ] = main_text
-
-        else:
-
-            compact_main = (
-                compact_long_text(
-                    main_text
-                )
-                or main_text
-            )
-
-            if (
-                compact_main
-                and len(compact_main)
-                <= TELEGRAM_CAPTION_LIMIT
-            ):
-
-                plan[
-                    "media_caption"
-                ] = compact_main
-
-            else:
-
-                split_result = split_for_media(
-                    compact_main,
-                    TELEGRAM_CAPTION_SAFE_LIMIT,
-                    TELEGRAM_MESSAGE_SAFE_LIMIT
-                )
-
-                plan[
-                    "media_caption"
-                ] = split_result[
-                    "media_caption"
-                ]
-
-                if split_result[
-                    "followup_messages"
-                ]:
-
-                    plan[
-                        "followup_messages"
-                    ].extend(
-                        split_result[
-                            "followup_messages"
-                        ]
-                    )
-
-        # =================================================
-        # MEDIA CAPTION HAS NO QUOTE ENTITY
-        # =================================================
-
-        plan[
-            "media_parse_mode"
-        ] = None
-
-        plan[
-            "media_caption_entities"
-        ] = []
-
-        # =================================================
-        # COMPLETE QUOTE -> SEPARATE MESSAGE(S)
-        #
-        # No split while each block <= 4096.
-        # =================================================
-
-        plan[
-            "blockquote_messages"
-        ] = (
-            create_telegram_media_quote_replies(
-                blockquote_blocks,
-                expandable_blocks
-            )
-        )
-
-        # =================================================
-        # BRANDING -> SEPARATE FOLLOWUP
-        #
-        # If main text itself overflowed, branding is kept
-        # after those normal main-text followups.
-        # media_handler will later control final send order.
-        # =================================================
-
-        if branding:
-
-            plan[
-                "followup_messages"
-            ].append(
-                branding
-            )
-
-        logger.info(
-            f"✅ Telegram expandable media plan | "
-            f"caption={len(plan['media_caption'])} | "
-            f"caption_entities=0 | "
-            f"main_followups="
-            f"{max(0, len(plan['followup_messages']) - (1 if branding else 0))} | "
-            f"quote_replies="
-            f"{len(plan['blockquote_messages'])} | "
-            f"branding_followup={bool(branding)}"
-        )
-
-        return plan
-
-    # =====================================================
-    # NORMAL BLOCKQUOTE
-    #
-    # Existing behavior remains unchanged.
+    # SOURCE BLOCKQUOTE EXISTS
     # =====================================================
 
     if has_blockquotes:
 
         # =================================================
         # 1. FULL ENTITY CAPTION
+        #
+        # Builder gets NO branding.
+        #
+        # It creates only:
+        # Main + Blockquote entities
+        #
+        # Branding is appended afterwards as plain text.
         # =================================================
 
         try:
@@ -1570,21 +1400,30 @@ def create_telegram_plan(
                     main_text=main_text,
                     blockquote_blocks=blockquote_blocks,
                     expandable_blocks=expandable_blocks,
-                    branding=branding,
-                    include_branding_entities=True
+                    branding="",
+                    include_branding_entities=False
                 )
             )
 
-            entity_caption = (
+            base_caption = (
                 entity_result[
                     "caption"
                 ]
             )
 
-            entity_caption_entities = (
+            entity_caption_entities = list(
                 entity_result[
                     "caption_entities"
                 ]
+                or []
+            )
+
+            entity_caption = (
+                append_final_telegram_media_branding(
+                    base_caption,
+                    branding,
+                    has_expandable=has_expandable
+                )
             )
 
             if (
@@ -1607,12 +1446,25 @@ def create_telegram_plan(
                     entity_caption_entities
                 )
 
+                plan[
+                    "followup_messages"
+                ] = []
+
+                plan[
+                    "blockquote_messages"
+                ] = []
+
                 logger.info(
-                    f"✅ Telegram normal blockquote caption | "
+                    f"✅ Telegram ONE-MESSAGE entity caption | "
                     f"mode=FULL | "
                     f"caption={len(entity_caption)} | "
                     f"entities="
-                    f"{len(entity_caption_entities)}"
+                    f"{len(entity_caption_entities)} | "
+                    f"expandable={has_expandable} | "
+                    f"branding_inside=True | "
+                    f"branding_entities=False | "
+                    f"followups=0 | "
+                    f"blockquotes=0"
                 )
 
                 return plan
@@ -1642,21 +1494,30 @@ def create_telegram_plan(
                     main_text=compact_main,
                     blockquote_blocks=blockquote_blocks,
                     expandable_blocks=expandable_blocks,
-                    branding=branding,
-                    include_branding_entities=True
+                    branding="",
+                    include_branding_entities=False
                 )
             )
 
-            compact_entity_caption = (
+            compact_base_caption = (
                 compact_entity_result[
                     "caption"
                 ]
             )
 
-            compact_entity_entities = (
+            compact_entity_entities = list(
                 compact_entity_result[
                     "caption_entities"
                 ]
+                or []
+            )
+
+            compact_entity_caption = (
+                append_final_telegram_media_branding(
+                    compact_base_caption,
+                    branding,
+                    has_expandable=has_expandable
+                )
             )
 
             if (
@@ -1683,13 +1544,26 @@ def create_telegram_plan(
                     compact_entity_entities
                 )
 
+                plan[
+                    "followup_messages"
+                ] = []
+
+                plan[
+                    "blockquote_messages"
+                ] = []
+
                 logger.info(
-                    f"✅ Telegram normal blockquote caption | "
+                    f"✅ Telegram ONE-MESSAGE entity caption | "
                     f"mode=COMPACT | "
                     f"caption="
                     f"{len(compact_entity_caption)} | "
                     f"entities="
-                    f"{len(compact_entity_entities)}"
+                    f"{len(compact_entity_entities)} | "
+                    f"expandable={has_expandable} | "
+                    f"branding_inside=True | "
+                    f"branding_entities=False | "
+                    f"followups=0 | "
+                    f"blockquotes=0"
                 )
 
                 return plan
@@ -1702,23 +1576,26 @@ def create_telegram_plan(
             )
 
         # =================================================
-        # 3. NORMAL BLOCKQUOTE OVERFLOW
+        # 3. REAL OVERFLOW
+        #
+        # Telegram caption physically cannot exceed 1024.
+        #
+        # Only here are extra messages allowed.
         # =================================================
 
         logger.info(
-            "ℹ️ Telegram normal blockquote caption "
-            "exceeds media limit | "
-            "using stable overflow path"
-        )
-
-        branding_separator_cost = (
-            2
-            if branding
-            else 0
+            "ℹ️ Telegram ONE-MESSAGE caption exceeds "
+            "official 1024 limit | using overflow path"
         )
 
         branding_cost = (
             len(branding)
+            if branding
+            else 0
+        )
+
+        branding_separator_cost = (
+            2
             if branding
             else 0
         )
@@ -1805,7 +1682,7 @@ def create_telegram_plan(
             ) = (
                 fit_blockquotes_into_caption(
                     blockquote_blocks,
-                    [],
+                    expandable_blocks,
                     block_capacity
                 )
             )
@@ -1815,7 +1692,7 @@ def create_telegram_plan(
             remaining_blocks = (
                 _combined_blockquotes(
                     blockquote_blocks,
-                    []
+                    expandable_blocks
                 )
             )
 
@@ -1845,7 +1722,7 @@ def create_telegram_plan(
             append_final_telegram_media_branding(
                 candidate_without_branding,
                 branding,
-                has_expandable=False
+                has_expandable=has_expandable
             )
         )
 
@@ -1857,8 +1734,8 @@ def create_telegram_plan(
         ):
 
             logger.error(
-                "❌ Telegram caption still exceeds "
-                "official visible limit"
+                "❌ Telegram overflow caption still "
+                "exceeds official visible limit"
             )
 
             plan[
@@ -1879,18 +1756,14 @@ def create_telegram_plan(
             "media_caption_entities"
         ] = []
 
-        if remaining_main:
+        # =================================================
+        # MAIN OVERFLOW
+        # =================================================
 
-            branding_cost_reply = (
-                len(branding)
-                + 2
-                if branding
-                else 0
-            )
+        if remaining_main:
 
             reply_limit = (
                 TELEGRAM_MESSAGE_SAFE_LIMIT
-                - branding_cost_reply
             )
 
             replies = split_text(
@@ -1903,13 +1776,11 @@ def create_telegram_plan(
 
             plan[
                 "followup_messages"
-            ] = (
-                brand_telegram_media_messages(
-                    replies,
-                    branding,
-                    TELEGRAM_MESSAGE_LIMIT
-                )
-            )
+            ] = replies
+
+        # =================================================
+        # BLOCKQUOTE OVERFLOW
+        # =================================================
 
         if remaining_blocks:
 
@@ -1918,9 +1789,18 @@ def create_telegram_plan(
             ] = (
                 build_branded_blockquote_messages(
                     remaining_blocks,
-                    branding
+                    ""
                 )
             )
+
+        logger.warning(
+            f"⚠️ Telegram overflow required | "
+            f"caption={telegram_html_visible_length(candidate)} | "
+            f"followups="
+            f"{len(plan['followup_messages'])} | "
+            f"blockquotes="
+            f"{len(plan['blockquote_messages'])}"
+        )
 
         return plan
 
