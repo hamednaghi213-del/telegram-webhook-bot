@@ -85,16 +85,15 @@ def test_orphan_source_icon_and_separator_are_removed():
 # =========================================================
 # TEST 02
 # EXPANDABLE BLOCKQUOTE
-# NEW MEDIA POLICY
+# FINAL ONE-MESSAGE MEDIA POLICY
 #
-# Media Caption:
-#   Main text only
-#
-# Blockquote Messages:
-#   Complete expandable content
-#
-# Followup Messages:
+# Media:
+#   Photo
+#   Main text
+#   Expandable blockquote
 #   Branding
+#
+# Everything must stay inside ONE Telegram media caption.
 # =========================================================
 
 def test_expandable_blockquote_removes_foreign_emoji():
@@ -130,9 +129,7 @@ def test_expandable_blockquote_removes_foreign_emoji():
     )
 
     # =====================================================
-    # MEDIA CAPTION POLICY
-    #
-    # Expandable content no longer lives in media caption.
+    # ONE-MESSAGE ENTITY POLICY
     # =====================================================
 
     assert (
@@ -142,11 +139,29 @@ def test_expandable_blockquote_removes_foreign_emoji():
         is None
     )
 
-    assert (
+    entities = (
         telegram[
             "media_caption_entities"
         ]
-        == []
+    )
+
+    assert (
+        len(entities)
+        == 1
+    )
+
+    assert (
+        entities[0][
+            "type"
+        ]
+        == "expandable_blockquote"
+    )
+
+    assert (
+        entities[0][
+            "length"
+        ]
+        > 0
     )
 
     caption = (
@@ -155,13 +170,9 @@ def test_expandable_blockquote_removes_foreign_emoji():
         ]
     )
 
-    assert (
-        caption
-        == main_text
-    )
-
     # =====================================================
-    # MEDIA CAPTION MUST NOT CONTAIN BLOCKQUOTE HTML
+    # CAPTION MUST BE PLAIN TEXT
+    # ENTITY IS SENT SEPARATELY TO TELEGRAM
     # =====================================================
 
     assert (
@@ -175,54 +186,17 @@ def test_expandable_blockquote_removes_foreign_emoji():
     )
 
     # =====================================================
-    # EXPANDABLE CONTENT MUST NOT BE INSIDE MEDIA CAPTION
+    # MAIN TEXT MUST REMAIN
     # =====================================================
 
     assert (
-        "بخش اول تحلیل"
-        not in caption
+        "عنوان خبر"
+        in caption
     )
 
     assert (
-        "بخش دوم تحلیل"
-        not in caption
-    )
-
-    assert (
-        "بخش سوم تحلیل"
-        not in caption
-    )
-
-    # =====================================================
-    # COMPLETE EXPANDABLE CONTENT
-    # MUST BE IN BLOCKQUOTE MESSAGE
-    # =====================================================
-
-    blockquote_messages = (
-        telegram[
-            "blockquote_messages"
-        ]
-    )
-
-    assert (
-        len(blockquote_messages)
-        == 1
-    )
-
-    quote_message = (
-        blockquote_messages[0]
-    )
-
-    assert (
-        quote_message.startswith(
-            "<blockquote expandable>"
-        )
-    )
-
-    assert (
-        quote_message.endswith(
-            "</blockquote>"
-        )
+        "متن اصلی خبر"
+        in caption
     )
 
     # =====================================================
@@ -231,85 +205,94 @@ def test_expandable_blockquote_removes_foreign_emoji():
 
     assert (
         "🔷"
-        not in quote_message
+        not in caption
     )
 
     assert (
         "🆔"
-        not in quote_message
+        not in caption
     )
 
     assert (
         "📡"
-        not in quote_message
+        not in caption
     )
 
     # =====================================================
-    # REAL CONTENT MUST REMAIN
+    # REAL EXPANDABLE CONTENT MUST REMAIN
+    # INSIDE THE SAME CAPTION
     # =====================================================
 
     assert (
         "بخش اول تحلیل"
-        in quote_message
+        in caption
     )
 
     assert (
         "بخش دوم تحلیل"
-        in quote_message
+        in caption
     )
 
     assert (
         "بخش سوم تحلیل"
-        in quote_message
+        in caption
     )
 
     # =====================================================
-    # SHORT EXPANDABLE MUST NOT BE SPLIT
-    # =====================================================
-
-    assert (
-        len(
-            blockquote_messages
-        )
-        == 1
-    )
-
-    assert (
-        telegram_html_visible_length(
-            quote_message
-        )
-        <= TELEGRAM_MESSAGE_LIMIT
-    )
-
-    # =====================================================
-    # BRANDING MUST BE SEPARATE FOLLOWUP
-    # =====================================================
-
-    followup_messages = (
-        telegram[
-            "followup_messages"
-        ]
-    )
-
-    assert (
-        len(
-            followup_messages
-        )
-        >= 1
-    )
-
-    assert (
-        followup_messages[-1]
-        == DEFAULT_BRANDING
-    )
-
-    # =====================================================
-    # BRANDING MUST NOT BE IN MEDIA CAPTION
+    # BRANDING MUST ALSO BE INSIDE SAME CAPTION
     # =====================================================
 
     assert (
         DEFAULT_BRANDING
-        not in caption
+        in caption
+    )
+
+    assert (
+        "#دنیا_۲۴_نیوز"
+        in caption
+    )
+
+    assert (
+        "@Donya24News"
+        in caption
+    )
+
+    # =====================================================
+    # NO EXTRA TELEGRAM MESSAGES
+    # =====================================================
+
+    assert (
+        telegram[
+            "followup_messages"
+        ]
+        == []
+    )
+
+    assert (
+        telegram[
+            "blockquote_messages"
+        ]
+        == []
+    )
+
+    # =====================================================
+    # NO FALLBACK
+    # =====================================================
+
+    assert (
+        telegram[
+            "document_fallback"
+        ]
+        is False
+    )
+
+    # =====================================================
+    # TELEGRAM CAPTION LIMIT
+    # =====================================================
+
+    assert (
+        len(caption)
+        <= 1024
     )
 
 
@@ -434,8 +417,6 @@ def test_long_text_compact_mode_avoids_unnecessary_split():
         )[1]
     )
 
-    # در Compact Mode بین خطوط بدنه
-    # Paragraph gap اضافی نباید وجود داشته باشد.
     assert (
         "\n\n"
         not in body_part
