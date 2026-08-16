@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 #
 # معماری:
 #
-# 1. متن کوتاه → بدون AI
+# 1. متن کوتاه
+#    → بدون AI
 #
 # 2. کاهش معمولی تا 40٪
 #    → مستقیم وارد خلاصه‌سازی امن می‌شود.
@@ -38,11 +39,18 @@ logger = logging.getLogger(__name__)
 # 6. خروجی در تمام حالت‌ها
 #    → Validator ضدتحریف
 #
-# 7. اگر تنها مشکل چند کاراکتر اضافه از Target باشد
-#    → یک Retry کنترل‌شده
+# 7. AI باید فقط به اندازه لازم متن را کوتاه کند.
 #
-# 8. شکست AI / Validation
-#    → متن اصلی دقیقاً حفظ می‌شود.
+# 8. خروجی باید تا حد امکان نزدیک Target باشد.
+#
+# 9. اگر خروجی بیش از حد کوتاه باشد
+#    → یک Retry کنترل‌شده برای استفاده بیشتر از ظرفیت
+#
+# 10. اگر خروجی کمی از Target عبور کند
+#     → یک Retry کنترل‌شده برای کوتاه‌تر شدن
+#
+# 11. شکست AI / Validation
+#     → متن اصلی دقیقاً حفظ می‌شود.
 # =========================================================
 
 
@@ -56,6 +64,33 @@ DEFAULT_CAPTION_TARGET = 940
 DEFAULT_TEXT_TARGET = 3900
 
 MINIMUM_SUMMARY_LENGTH = 80
+
+
+# =========================================================
+# TARGET UTILIZATION POLICY
+#
+# مثال:
+#
+# Target = 816
+#
+# Minimum preferred:
+#
+# ceil(816 * 0.90) = 735
+#
+# خروجی:
+#
+# 790 → مناسب
+# 760 → مناسب
+# 735 → مناسب
+# 528 → بیش از حد کوتاه → Retry
+#
+# هدف:
+#
+# استفاده حداکثری و منطقی از ظرفیت،
+# بدون پرگویی مصنوعی.
+# =========================================================
+
+SUMMARY_TARGET_MIN_UTILIZATION = 0.90
 
 
 # =========================================================
@@ -289,6 +324,58 @@ def calculate_required_reduction_ratio(
             - target_length
         )
         / original_length
+    )
+
+
+# =========================================================
+# TARGET UTILIZATION
+# =========================================================
+
+def calculate_minimum_target_length(
+    target_length: int
+) -> int:
+
+    if target_length <= 0:
+        return 0
+
+    minimum = math.ceil(
+        target_length
+        * SUMMARY_TARGET_MIN_UTILIZATION
+    )
+
+    return max(
+        1,
+        min(
+            target_length,
+            minimum
+        )
+    )
+
+
+def summary_underfills_target(
+    summary_text: str,
+    target_length: int
+) -> bool:
+
+    summary_text = normalize_text(
+        summary_text
+    )
+
+    if not summary_text:
+        return False
+
+    if target_length <= 0:
+        return False
+
+    minimum_length = (
+        calculate_minimum_target_length(
+            target_length
+        )
+    )
+
+    return (
+        len(summary_text)
+        < minimum_length
     )
 
 
@@ -889,7 +976,8 @@ def validate_summary(
 
 def build_summarization_instruction(
     target_length: int,
-    content_type: str = CONTENT_TYPE_NORMAL
+    content_type: str = CONTENT_TYPE_NORMAL,
+    minimum_length: Optional[int] = None
 ) -> str:
 
     sensitive_instruction = ""
@@ -906,10 +994,45 @@ def build_summarization_instruction(
             "استثناها و روابط میان بندها را حذف یا ادغام نکن. "
         )
 
+    if minimum_length is None:
+
+        minimum_length = (
+            calculate_minimum_target_length(
+                target_length
+            )
+        )
+
+    minimum_length = max(
+        1,
+        min(
+            target_length,
+            minimum_length
+        )
+    )
+
     return (
         "متن زیر یک محتوای خبری است. "
 
         "وظیفه شما فشرده‌سازی معنایی و وفادارانه متن است. "
+
+        "فقط به اندازه‌ای متن را کوتاه کن که در سقف تعیین‌شده "
+        "جا شود. "
+
+        "هدف این نیست که متن را تا جای ممکن کوتاه کنی. "
+
+        "هدف این است که بهترین نسخه فشرده را با استفاده "
+        "حداکثری و منطقی از ظرفیت موجود تولید کنی. "
+
+        f"طول مطلوب خروجی بین {minimum_length} تا "
+        f"{target_length} کاراکتر است. "
+
+        "تا حد امکان خروجی را به سقف بالای این بازه نزدیک کن. "
+
+        "برای رسیدن به این طول، تکرار یا پرگویی مصنوعی ایجاد نکن "
+        "و هیچ اطلاعات تازه‌ای اضافه نکن. "
+
+        "اگر اطلاعات معتبر، مهم یا زمینه مفیدی در متن وجود دارد "
+        "که می‌توان بدون عبور از سقف حفظ کرد، آن را بی‌دلیل حذف نکن. "
 
         "خودت تشخیص بده کدام بخش‌ها هسته اصلی خبر، "
         "اطلاعات حیاتی، علت رویداد، نتیجه اصلی، "
@@ -939,6 +1062,7 @@ def build_summarization_instruction(
         "میزان قطعیت را دقیقاً حفظ کن. "
 
         "احتمال را به قطعیت تبدیل نکن. "
+
         "ادعا را به واقعیت قطعی تبدیل نکن. "
 
         "اگر یک ادعا به شخص، رسانه یا مقام خاصی "
@@ -947,10 +1071,51 @@ def build_summarization_instruction(
         "در صورت تعارض میان کوتاه‌شدن و وفاداری، "
         "وفاداری به خبر اولویت مطلق دارد. "
 
-        f"خروجی نهایی نباید بیشتر از {target_length} "
-        "کاراکتر باشد. "
+        f"خروجی تحت هیچ شرایطی نباید بیشتر از "
+        f"{target_length} کاراکتر باشد. "
 
         "فقط متن نهایی خلاصه‌شده را برگردان."
+    )
+
+
+# =========================================================
+# UNDERFILL RETRY INSTRUCTION
+# =========================================================
+
+def build_underfill_retry_instruction(
+    target_length: int,
+    minimum_length: int,
+    content_type: str
+) -> str:
+
+    base_instruction = (
+        build_summarization_instruction(
+            target_length=target_length,
+            content_type=content_type,
+            minimum_length=minimum_length
+        )
+    )
+
+    return (
+        base_instruction
+        + " "
+
+        "نسخه قبلی بیش از حد کوتاه شده بود. "
+
+        "این بار متن را کمتر فشرده کن. "
+
+        "اطلاعات مهم، زمینه مفید، توضیحات ضروری، "
+        "نسبت دادن سخنان، داده‌های قابل حفظ و جزئیات معناداری "
+        "را که در متن اصلی وجود دارند و هنوز در ظرفیت جا می‌شوند "
+        "حفظ کن. "
+
+        f"خروجی باید حداقل {minimum_length} و حداکثر "
+        f"{target_length} کاراکتر باشد. "
+
+        "تا حد ممکن به سقف حداکثر نزدیک شو. "
+
+        "برای پر کردن فضا هیچ اطلاعات جدید، جمله تکراری، "
+        "تفسیر یا عبارت مصنوعی تولید نکن."
     )
 
 
@@ -958,7 +1123,7 @@ def build_summarization_instruction(
 # CONTROLLED RETRY HELPERS
 # =========================================================
 
-def should_retry_summary(
+def should_retry_overshoot(
     validation: Dict[str, Any],
     generated: str,
     target_length: int
@@ -989,6 +1154,93 @@ def should_retry_summary(
 
     return True
 
+
+def should_retry_underfill(
+    validation: Dict[str, Any],
+    generated: str,
+    target_length: int
+) -> bool:
+
+    if not SUMMARY_RETRY_ENABLED:
+        return False
+
+    if not generated:
+        return False
+
+    if not summary_underfills_target(
+        generated,
+        target_length
+    ):
+
+        return False
+
+    errors = set(
+        validation.get(
+            "errors",
+            []
+        )
+        or []
+    )
+
+    # =====================================================
+    # Underfill Retry فقط وقتی مجاز است که:
+    #
+    # 1. هیچ خطای Fact Safety وجود نداشته باشد
+    #
+    # یا
+    #
+    # 2. تنها خطا reduction_too_aggressive باشد.
+    #
+    # خطاهایی مثل:
+    #
+    # new_numbers_detected
+    # new_mentions_detected
+    # new_urls_detected
+    # certainty_markers_lost
+    #
+    # با Retry پوشانده نمی‌شوند.
+    # =====================================================
+
+    allowed_errors = {
+        "reduction_too_aggressive"
+    }
+
+    if (
+        errors
+        and not errors.issubset(
+            allowed_errors
+        )
+    ):
+
+        return False
+
+    return True
+
+
+def should_retry_summary(
+    validation: Dict[str, Any],
+    generated: str,
+    target_length: int
+) -> bool:
+
+    return (
+        should_retry_overshoot(
+            validation=validation,
+            generated=generated,
+            target_length=target_length
+        )
+        or
+        should_retry_underfill(
+            validation=validation,
+            generated=generated,
+            target_length=target_length
+        )
+    )
+
+
+# =========================================================
+# OVERSHOOT RETRY TARGET
+# =========================================================
 
 def calculate_retry_target(
     original_length: int,
@@ -1026,9 +1278,6 @@ def calculate_retry_target(
 
     # =====================================================
     # POLICY FLOOR
-    #
-    # Retry نباید ما را مجبور کند از سقف کاهش مجاز
-    # برای نوع محتوای فعلی عبور کنیم.
     # =====================================================
 
     policy_min_target = math.ceil(
@@ -1113,6 +1362,7 @@ def summarize_text_safely(
                 "summarizer_called": False,
                 "classifier_called": False,
                 "retry_called": False,
+                "retry_reason": None,
                 "content_type": (
                     CONTENT_TYPE_UNCERTAIN
                 )
@@ -1143,6 +1393,7 @@ def summarize_text_safely(
                 "summarizer_called": False,
                 "classifier_called": False,
                 "retry_called": False,
+                "retry_reason": None,
                 "content_type": (
                     CONTENT_TYPE_UNCERTAIN
                 )
@@ -1169,6 +1420,7 @@ def summarize_text_safely(
                 "summarizer_called": False,
                 "classifier_called": False,
                 "retry_called": False,
+                "retry_reason": None,
                 "content_type": (
                     CONTENT_TYPE_UNCERTAIN
                 )
@@ -1200,6 +1452,7 @@ def summarize_text_safely(
                 "summarizer_called": False,
                 "classifier_called": False,
                 "retry_called": False,
+                "retry_reason": None,
                 "content_type": (
                     CONTENT_TYPE_UNCERTAIN
                 )
@@ -1254,6 +1507,7 @@ def summarize_text_safely(
                 "summarizer_called": False,
                 "classifier_called": False,
                 "retry_called": False,
+                "retry_reason": None,
                 "content_type": (
                     CONTENT_TYPE_UNCERTAIN
                 )
@@ -1340,6 +1594,7 @@ def summarize_text_safely(
                     "summarizer_called": False,
                     "classifier_called": True,
                     "retry_called": False,
+                    "retry_reason": None,
                     "content_type": (
                         content_type
                     )
@@ -1347,13 +1602,26 @@ def summarize_text_safely(
             )
 
     # =====================================================
+    # TARGET UTILIZATION
+    # =====================================================
+
+    minimum_target_length = (
+        calculate_minimum_target_length(
+            target_length
+        )
+    )
+
+    # =====================================================
     # BUILD SMART INSTRUCTION
     # =====================================================
 
     instruction = (
         build_summarization_instruction(
-            target_length,
-            content_type=content_type
+            target_length=target_length,
+            content_type=content_type,
+            minimum_length=(
+                minimum_target_length
+            )
         )
     )
 
@@ -1395,11 +1663,15 @@ def summarize_text_safely(
                     classifier_called
                 ),
                 "retry_called": False,
+                "retry_reason": None,
                 "content_type": (
                     content_type
                 ),
                 "effective_max_reduction_ratio": (
                     effective_max_reduction_ratio
+                ),
+                "minimum_target_length": (
+                    minimum_target_length
                 )
             }
         )
@@ -1425,30 +1697,251 @@ def summarize_text_safely(
     )
 
     retry_called = False
+    retry_reason = None
     retry_target = None
-    first_candidate = generated
+
+    first_candidate = (
+        generated
+    )
+
+    first_validation = (
+        validation
+    )
 
     # =====================================================
     # CONTROLLED RETRY
     #
-    # فقط وقتی تنها خطا:
+    # TYPE 1:
     #
-    # summary_exceeds_target
+    # UNDERFILL
     #
-    # باشد.
+    # مثال:
     #
-    # خطاهای محتوایی هرگز Retry نمی‌شوند.
+    # source = 928
+    # target = 816
+    # minimum = 735
+    # output = 528
+    #
+    # → Retry
     # =====================================================
 
-    if (
-        not validation[
-            "valid"
-        ]
-        and should_retry_summary(
-            validation=validation,
-            generated=generated,
-            target_length=target_length
+    if should_retry_underfill(
+        validation=validation,
+        generated=generated,
+        target_length=target_length
+    ):
+
+        retry_called = True
+        retry_reason = "underfill"
+        retry_target = target_length
+
+        logger.info(
+            f"🔁 Smart summary underfill retry | "
+            f"content_type={content_type} | "
+            f"target={target_length} | "
+            f"minimum={minimum_target_length} | "
+            f"first_output={len(generated)}"
         )
+
+        retry_instruction = (
+            build_underfill_retry_instruction(
+                target_length=target_length,
+                minimum_length=(
+                    minimum_target_length
+                ),
+                content_type=content_type
+            )
+        )
+
+        try:
+
+            retry_generated = summarizer(
+                raw_original_text,
+                retry_instruction,
+                target_length
+            )
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Smart underfill retry "
+                f"provider failed | {e}"
+            )
+
+            return SummaryResult(
+                success=False,
+                original_text=raw_original_text,
+                summary_text=raw_original_text,
+                target_length=target_length,
+                original_length=original_length,
+                summary_length=original_length,
+                reduction_ratio=0.0,
+                validation_passed=False,
+                reason="provider_error",
+                metadata={
+                    "error": str(
+                        e
+                    ),
+                    "summarizer_called": True,
+                    "classifier_called": (
+                        classifier_called
+                    ),
+                    "retry_called": True,
+                    "retry_reason": (
+                        retry_reason
+                    ),
+                    "retry_target": (
+                        retry_target
+                    ),
+                    "minimum_target_length": (
+                        minimum_target_length
+                    ),
+                    "first_candidate_summary": (
+                        first_candidate
+                    ),
+                    "content_type": (
+                        content_type
+                    ),
+                    "effective_max_reduction_ratio": (
+                        effective_max_reduction_ratio
+                    )
+                }
+            )
+
+        retry_generated = normalize_text(
+            retry_generated
+        )
+
+        retry_validation = (
+            validate_summary(
+                original_text=raw_original_text,
+                summary_text=retry_generated,
+                target_length=target_length,
+                max_reduction_ratio=(
+                    effective_max_reduction_ratio
+                ),
+                content_type=content_type
+            )
+        )
+
+        retry_fill_ok = (
+            not summary_underfills_target(
+                retry_generated,
+                target_length
+            )
+        )
+
+        if (
+            retry_validation[
+                "valid"
+            ]
+            and retry_fill_ok
+        ):
+
+            generated = (
+                retry_generated
+            )
+
+            validation = (
+                retry_validation
+            )
+
+            logger.info(
+                f"✅ Smart underfill retry accepted | "
+                f"content_type={content_type} | "
+                f"target={target_length} | "
+                f"minimum={minimum_target_length} | "
+                f"output={len(generated)}"
+            )
+
+        else:
+
+            retry_errors = list(
+                retry_validation.get(
+                    "errors",
+                    []
+                )
+                or []
+            )
+
+            if not retry_fill_ok:
+
+                retry_errors.append(
+                    "summary_underfills_target"
+                )
+
+            logger.warning(
+                f"⚠️ Smart underfill retry rejected | "
+                f"content_type={content_type} | "
+                f"errors={retry_errors} | "
+                f"target={target_length} | "
+                f"minimum={minimum_target_length} | "
+                f"output={len(retry_generated)}"
+            )
+
+            return SummaryResult(
+                success=False,
+                original_text=raw_original_text,
+                summary_text=raw_original_text,
+                target_length=target_length,
+                original_length=original_length,
+                summary_length=original_length,
+                reduction_ratio=0.0,
+                validation_passed=False,
+                reason="validation_failed",
+                metadata={
+                    "validation": (
+                        retry_validation
+                    ),
+                    "candidate_summary": (
+                        retry_generated
+                    ),
+                    "first_validation": (
+                        first_validation
+                    ),
+                    "first_candidate_summary": (
+                        first_candidate
+                    ),
+                    "summarizer_called": True,
+                    "classifier_called": (
+                        classifier_called
+                    ),
+                    "retry_called": True,
+                    "retry_reason": (
+                        retry_reason
+                    ),
+                    "retry_target": (
+                        retry_target
+                    ),
+                    "minimum_target_length": (
+                        minimum_target_length
+                    ),
+                    "content_type": (
+                        content_type
+                    ),
+                    "effective_max_reduction_ratio": (
+                        effective_max_reduction_ratio
+                    ),
+                    "required_reduction_ratio": (
+                        required_reduction_ratio
+                    )
+                }
+            )
+
+    # =====================================================
+    # CONTROLLED RETRY
+    #
+    # TYPE 2:
+    #
+    # OVERSHOOT
+    #
+    # فقط اگر Underfill Retry اجرا نشده باشد.
+    # =====================================================
+
+    elif should_retry_overshoot(
+        validation=validation,
+        generated=generated,
+        target_length=target_length
     ):
 
         retry_target = (
@@ -1467,14 +1960,21 @@ def summarize_text_safely(
         if retry_target is not None:
 
             retry_called = True
+            retry_reason = "overshoot"
 
             overshoot = (
                 len(generated)
                 - target_length
             )
 
+            retry_minimum_target = (
+                calculate_minimum_target_length(
+                    retry_target
+                )
+            )
+
             logger.info(
-                f"🔁 Smart summary controlled retry | "
+                f"🔁 Smart summary overshoot retry | "
                 f"content_type={content_type} | "
                 f"first_target={target_length} | "
                 f"first_output={len(generated)} | "
@@ -1484,8 +1984,11 @@ def summarize_text_safely(
 
             retry_instruction = (
                 build_summarization_instruction(
-                    retry_target,
-                    content_type=content_type
+                    target_length=retry_target,
+                    content_type=content_type,
+                    minimum_length=(
+                        retry_minimum_target
+                    )
                 )
             )
 
@@ -1523,8 +2026,14 @@ def summarize_text_safely(
                             classifier_called
                         ),
                         "retry_called": True,
+                        "retry_reason": (
+                            retry_reason
+                        ),
                         "retry_target": (
                             retry_target
+                        ),
+                        "minimum_target_length": (
+                            retry_minimum_target
                         ),
                         "first_candidate_summary": (
                             first_candidate
@@ -1569,7 +2078,7 @@ def summarize_text_safely(
                 )
 
                 logger.info(
-                    f"✅ Smart summary retry accepted | "
+                    f"✅ Smart summary overshoot retry accepted | "
                     f"content_type={content_type} | "
                     f"first_target={target_length} | "
                     f"retry_target={retry_target} | "
@@ -1579,7 +2088,7 @@ def summarize_text_safely(
             else:
 
                 logger.warning(
-                    f"⚠️ Smart summary retry rejected | "
+                    f"⚠️ Smart summary overshoot retry rejected | "
                     f"content_type={content_type} | "
                     f"errors="
                     f"{retry_validation['errors']} | "
@@ -1606,7 +2115,7 @@ def summarize_text_safely(
                             retry_generated
                         ),
                         "first_validation": (
-                            validation
+                            first_validation
                         ),
                         "first_candidate_summary": (
                             first_candidate
@@ -1616,6 +2125,9 @@ def summarize_text_safely(
                             classifier_called
                         ),
                         "retry_called": True,
+                        "retry_reason": (
+                            retry_reason
+                        ),
                         "retry_target": (
                             retry_target
                         ),
@@ -1668,17 +2180,43 @@ def summarize_text_safely(
                 "retry_called": (
                     retry_called
                 ),
+                "retry_reason": (
+                    retry_reason
+                ),
                 "retry_target": (
                     retry_target
+                ),
+                "minimum_target_length": (
+                    minimum_target_length
                 ),
                 "content_type": (
                     content_type
                 ),
                 "effective_max_reduction_ratio": (
                     effective_max_reduction_ratio
+                ),
+                "required_reduction_ratio": (
+                    required_reduction_ratio
                 )
             }
         )
+
+    # =====================================================
+    # FINAL TARGET UTILIZATION CHECK
+    #
+    # اگر First Call معتبر بوده ولی بیش از حد کوتاه،
+    # Underfill Retry در بالا اجرا شده است.
+    #
+    # اگر بعد از Retry هنوز زیر حد مطلوب بوده،
+    # قبلاً Reject شده است.
+    # =====================================================
+
+    final_fill_ratio = (
+        len(generated)
+        / target_length
+        if target_length > 0
+        else 0.0
+    )
 
     # =====================================================
     # SUCCESS
@@ -1697,11 +2235,14 @@ def summarize_text_safely(
         f"before={original_length} | "
         f"after={len(generated)} | "
         f"target={target_length} | "
+        f"minimum_target={minimum_target_length} | "
+        f"fill_ratio={final_fill_ratio:.3f} | "
         f"reduction="
         f"{reduction_ratio:.3f} | "
         f"max_allowed="
         f"{effective_max_reduction_ratio:.3f} | "
-        f"retry={retry_called}"
+        f"retry={retry_called} | "
+        f"retry_reason={retry_reason or '-'}"
     )
 
     return SummaryResult(
@@ -1727,8 +2268,20 @@ def summarize_text_safely(
             "retry_called": (
                 retry_called
             ),
+            "retry_reason": (
+                retry_reason
+            ),
             "retry_target": (
                 retry_target
+            ),
+            "minimum_target_length": (
+                minimum_target_length
+            ),
+            "target_utilization_ratio": (
+                SUMMARY_TARGET_MIN_UTILIZATION
+            ),
+            "final_fill_ratio": (
+                final_fill_ratio
             ),
             "content_type": (
                 content_type
