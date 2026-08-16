@@ -50,4 +50,5 @@ jobs:
             tests/test_ai_summarizer_provider.py \
             tests/test_editorial_review.py \
             tests/test_editorial_pending.py \
-            tests/test_editorial_webhook_integration.py
+            tests/test_editorial_webhook_integration.py \
+            tests/test_editorial_structure.py
