@@ -130,17 +130,6 @@ def append_branding(
 
 # =========================================================
 # TELEGRAM MEDIA FINAL BRANDING
-#
-# IMPORTANT
-#
-# Branding is plain caption text.
-#
-# No hashtag entity.
-# No mention entity.
-# No RTL marker.
-#
-# Existing blockquote entity offsets stay valid because
-# branding is appended after all blockquote entities.
 # =========================================================
 
 def append_final_telegram_media_branding(
@@ -163,9 +152,7 @@ def append_final_telegram_media_branding(
     if not caption:
         return branding
 
-    separator = (
-        "\n\n"
-    )
+    separator = "\n\n"
 
     result = (
         caption
@@ -1320,23 +1307,6 @@ def create_bale_blockquote_messages(
 
 # =========================================================
 # TELEGRAM MEDIA PLAN
-#
-# TARGET:
-#
-# When FULL content fits:
-#
-#   ONE MEDIA MESSAGE
-#
-#   Caption:
-#       Main
-#       Expandable
-#       Branding
-#
-#   Entities:
-#       Blockquote / Expandable only
-#
-#   No followup.
-#   No standalone blockquote.
 # =========================================================
 
 def create_telegram_plan(
@@ -1384,13 +1354,6 @@ def create_telegram_plan(
 
         # =================================================
         # 1. FULL ENTITY CAPTION
-        #
-        # Builder gets NO branding.
-        #
-        # It creates only:
-        # Main + Blockquote entities
-        #
-        # Branding is appended afterwards as plain text.
         # =================================================
 
         try:
@@ -1577,10 +1540,6 @@ def create_telegram_plan(
 
         # =================================================
         # 3. REAL OVERFLOW
-        #
-        # Telegram caption physically cannot exceed 1024.
-        #
-        # Only here are extra messages allowed.
         # =================================================
 
         logger.info(
@@ -1780,6 +1739,9 @@ def create_telegram_plan(
 
         # =================================================
         # BLOCKQUOTE OVERFLOW
+        #
+        # IMPORTANT:
+        # ادامه Blockquote باید Branding خودش را داشته باشد.
         # =================================================
 
         if remaining_blocks:
@@ -1789,7 +1751,7 @@ def create_telegram_plan(
             ] = (
                 build_branded_blockquote_messages(
                     remaining_blocks,
-                    ""
+                    branding
                 )
             )
 
@@ -1799,7 +1761,9 @@ def create_telegram_plan(
             f"followups="
             f"{len(plan['followup_messages'])} | "
             f"blockquotes="
-            f"{len(plan['blockquote_messages'])}"
+            f"{len(plan['blockquote_messages'])} | "
+            f"blockquote_branding="
+            f"{bool(branding and remaining_blocks)}"
         )
 
         return plan
