@@ -55,9 +55,6 @@ SMART_SUMMARIZER_ENV = (
     "ENABLE_SMART_SUMMARIZER"
 )
 
-# اگر Main Text خبر کوتاه باشد، آن را خلاصه نمی‌کنیم.
-# این کار باعث می‌شود تیتر و مقدمه اصلی خبر حفظ شود
-# و کاهش طول از بخش‌های بلند Blockquote انجام شود.
 SMART_MAIN_PRESERVE_LIMIT = 320
 
 
@@ -862,19 +859,6 @@ def _combined_blockquotes(
 
 # =========================================================
 # SMART TELEGRAM MEDIA SUMMARY
-#
-# سیاست:
-#
-# 1. اگر Main کوتاه باشد و Blockquote وجود داشته باشد،
-#    Main بدون هیچ تغییری حفظ می‌شود.
-#
-# 2. ظرفیت باقی‌مانده به Blockquote داده می‌شود.
-#
-# 3. فقط بخش‌هایی که واقعاً نیاز به کاهش دارند
-#    برای Gemini ارسال می‌شوند.
-#
-# 4. اگر AI یا Validator رد کنند، None برمی‌گردد
-#    و مسیر Overflow پایدار قبلی اجرا می‌شود.
 # =========================================================
 
 def try_smart_telegram_media_summary(
@@ -1014,7 +998,6 @@ def try_smart_telegram_media_summary(
     )
 
     if available_text_capacity <= 0:
-
         return None
 
     total_source_text_length = sum(
@@ -1025,7 +1008,6 @@ def try_smart_telegram_media_summary(
     )
 
     if total_source_text_length <= 0:
-
         return None
 
     visible_source_length = (
@@ -1058,10 +1040,6 @@ def try_smart_telegram_media_summary(
         f"preserve_short_main={preserve_short_main} | "
         f"policy=AI_ADAPTIVE"
     )
-
-    # =====================================================
-    # PRESERVED CONTENT COST
-    # =====================================================
 
     preserved_length = sum(
         len(item["text"])
@@ -1112,10 +1090,6 @@ def try_smart_telegram_media_summary(
         f"{summarizable_budget}"
     )
 
-    # =====================================================
-    # BUILD SUMMARIZED PARTS
-    # =====================================================
-
     summarized_parts: List[
         Dict[str, Any]
     ] = []
@@ -1139,10 +1113,6 @@ def try_smart_telegram_media_summary(
         source_length = len(
             source_text
         )
-
-        # -------------------------------------------------
-        # PRESERVE
-        # -------------------------------------------------
 
         if item.get("preserve"):
 
@@ -1200,9 +1170,6 @@ def try_smart_telegram_media_summary(
                     proportional_target
                 )
             )
-
-        # اگر این بخش خودش در بودجه جا می‌شود
-        # نیازی به تماس با AI نیست.
 
         if source_length <= target_length:
 
@@ -1278,10 +1245,6 @@ def try_smart_telegram_media_summary(
 
             return None
 
-        # سخت‌گیری نهایی:
-        # خروجی AI نباید از بودجه تخصیص یافته
-        # برای این بخش عبور کند.
-
         if len(summarized_text) > target_length:
 
             logger.warning(
@@ -1325,10 +1288,6 @@ def try_smart_telegram_media_summary(
             )
 
             return None
-
-    # =====================================================
-    # REBUILD CONTENT STRUCTURE
-    # =====================================================
 
     summarized_main = ""
 
@@ -1385,10 +1344,6 @@ def try_smart_telegram_media_summary(
                 rebuilt_block
             )
 
-    # =====================================================
-    # REBUILD TELEGRAM ENTITIES
-    # =====================================================
-
     try:
 
         entity_result = (
@@ -1439,10 +1394,6 @@ def try_smart_telegram_media_summary(
             )
         )
     )
-
-    # =====================================================
-    # FINAL HARD TELEGRAM LIMIT
-    # =====================================================
 
     if (
         len(final_caption)
@@ -2226,212 +2177,51 @@ def create_telegram_plan(
             return smart_plan
 
         # =================================================
-        # 3. LEGACY OVERFLOW
+        # 3. ONE-MESSAGE HARD POLICY
+        #
+        # Blockquote / Expandable media must NOT be split
+        # into media + reply.
+        #
+        # At this point:
+        #
+        # FULL failed
+        # COMPACT failed
+        # SMART SUMMARY failed
+        #
+        # So we do not cut the text and we do not create
+        # follow-up messages.
         # =================================================
 
-        logger.info(
-            "ℹ️ Telegram smart one-message unavailable | "
-            "using stable overflow path"
+        logger.warning(
+            "⚠️ Telegram ONE-MESSAGE HARD POLICY | "
+            "smart one-message unavailable | "
+            "reply split blocked | "
+            "fallback_required=True"
         )
-
-        branding_cost = (
-            len(branding)
-            if branding
-            else 0
-        )
-
-        branding_separator_cost = (
-            2
-            if branding
-            else 0
-        )
-
-        fixed_cost = (
-            branding_cost
-            + branding_separator_cost
-        )
-
-        main_capacity = (
-            TELEGRAM_CAPTION_LIMIT
-            - fixed_cost
-        )
-
-        if main_capacity <= 0:
-
-            plan[
-                "document_fallback"
-            ] = True
-
-            return plan
-
-        if len(compact_main) <= main_capacity:
-
-            main_for_caption = compact_main
-            remaining_main = ""
-
-        else:
-
-            position = (
-                find_media_split_position(
-                    compact_main,
-                    main_capacity,
-                    minimum_fill_ratio=0.70
-                )
-            )
-
-            if position <= 0:
-                position = main_capacity
-
-            main_for_caption = (
-                compact_main[
-                    :position
-                ]
-                .strip()
-            )
-
-            remaining_main = (
-                compact_main[
-                    position:
-                ]
-                .strip()
-            )
-
-        used_visible = len(
-            main_for_caption
-        )
-
-        block_capacity = (
-            TELEGRAM_CAPTION_LIMIT
-            - used_visible
-            - fixed_cost
-            - (
-                2
-                if main_for_caption
-                else 0
-            )
-        )
-
-        inline_blocks = ""
-
-        remaining_blocks: List[
-            Dict[str, Any]
-        ] = []
-
-        if (
-            not remaining_main
-            and block_capacity > 0
-        ):
-
-            (
-                inline_blocks,
-                remaining_blocks
-            ) = (
-                fit_blockquotes_into_caption(
-                    blockquote_blocks,
-                    expandable_blocks,
-                    block_capacity
-                )
-            )
-
-        else:
-
-            remaining_blocks = (
-                _combined_blockquotes(
-                    blockquote_blocks,
-                    expandable_blocks
-                )
-            )
-
-        caption_parts: List[str] = []
-
-        if main_for_caption:
-
-            caption_parts.append(
-                escape(
-                    main_for_caption
-                )
-            )
-
-        if inline_blocks:
-
-            caption_parts.append(
-                inline_blocks
-            )
-
-        candidate_without_branding = (
-            "\n\n".join(
-                caption_parts
-            )
-        )
-
-        candidate = (
-            append_final_telegram_media_branding(
-                candidate_without_branding,
-                branding,
-                has_expandable=has_expandable
-            )
-        )
-
-        if (
-            telegram_html_visible_length(
-                candidate
-            )
-            > TELEGRAM_CAPTION_LIMIT
-        ):
-
-            logger.error(
-                "❌ Telegram overflow caption still "
-                "exceeds official visible limit"
-            )
-
-            plan[
-                "document_fallback"
-            ] = True
-
-            return plan
 
         plan[
             "media_caption"
-        ] = candidate
+        ] = ""
 
         plan[
             "media_parse_mode"
-        ] = "HTML"
+        ] = None
 
         plan[
             "media_caption_entities"
         ] = []
 
-        if remaining_main:
+        plan[
+            "followup_messages"
+        ] = []
 
-            replies = split_text(
-                remaining_main,
-                TELEGRAM_MESSAGE_SAFE_LIMIT
-            )
+        plan[
+            "blockquote_messages"
+        ] = []
 
-            plan[
-                "followup_messages"
-            ] = replies
-
-        if remaining_blocks:
-
-            plan[
-                "blockquote_messages"
-            ] = (
-                build_branded_blockquote_messages(
-                    remaining_blocks,
-                    branding
-                )
-            )
-
-        logger.warning(
-            f"⚠️ Telegram overflow required | "
-            f"caption={telegram_html_visible_length(candidate)} | "
-            f"followups="
-            f"{len(plan['followup_messages'])} | "
-            f"blockquotes="
-            f"{len(plan['blockquote_messages'])}"
-        )
+        plan[
+            "document_fallback"
+        ] = True
 
         return plan
 
@@ -2617,8 +2407,6 @@ def create_telegram_plan(
 
 # =========================================================
 # BALE MEDIA PLAN
-#
-# در این مرحله AI به Bale وصل نشده است.
 # =========================================================
 
 def create_bale_plan(
@@ -2776,8 +2564,6 @@ def create_bale_plan(
 
 # =========================================================
 # TELEGRAM TEXT PLAN
-#
-# AI هنوز به پیام متنی عادی متصل نشده است.
 # =========================================================
 
 def create_telegram_text_plan(
