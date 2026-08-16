@@ -70,22 +70,13 @@ MIN_REGENERATION_TARGET = 300
 
 # =========================================================
 # ADMIN INSTRUCTION POLICY
-#
-# تغییر با دستور ادمین:
-#
-# - از متن اصلی کامل انجام می‌شود.
-# - خلاصه فعلی فقط مرجع ویرایشی است.
-# - دستور ادمین جهت ویرایش را مشخص می‌کند.
-# - حق افزودن Fact جدید ندارد.
-# - Validator همچنان اجباری است.
-# - Regeneration Count را مصرف نمی‌کند.
 # =========================================================
 
-ADMIN_INSTRUCTION_MAX_LENGTH = 1500
+MAX_ADMIN_INSTRUCTION_LENGTH = 1500
 
-ADMIN_EDIT_TARGET_MARGIN = 20
+ADMIN_INSTRUCTION_TARGET_MARGIN = 20
 
-MIN_ADMIN_EDIT_TARGET = 300
+MIN_ADMIN_INSTRUCTION_TARGET = 300
 
 
 # =========================================================
@@ -618,39 +609,31 @@ def build_editorial_regeneration_instruction(
 
 
 # =========================================================
-# ADMIN INSTRUCTION EDIT
+# ADMIN INSTRUCTION BUILDER
 #
 # ادمین می‌تواند جهت ویرایش را مشخص کند.
 #
-# مثال:
+# نکته امنیتی:
 #
-# «نتیجه‌گیری را کوتاه‌تر کن»
+# دستور ادمین اجازه افزودن واقعیت جدید یا تغییر
+# معنای متن اصلی را ایجاد نمی‌کند.
 #
-# «تمرکز بیشتری روی رفتار ایران داشته باش»
-#
-# «پاراگراف اول کوتاه‌تر شود»
-#
-# اما دستور ادمین حق ندارد:
-#
-# - Fact جدید بسازد
-# - متن را از معنای اصلی منحرف کند
-# - قطعیت را تغییر دهد
-# - دیدگاه تازه‌ای از AI ایجاد کند
+# Original Body همیشه مرجع نهایی است.
 # =========================================================
 
-def build_admin_instruction_edit_instruction(
+def build_admin_edit_instruction(
     target_length: int,
     content_type: str,
-    previous_summary: str,
-    admin_instruction: str
+    admin_instruction: str,
+    previous_summary: str = ""
 ) -> str:
-
-    previous_summary = normalize_text(
-        previous_summary
-    )
 
     admin_instruction = normalize_text(
         admin_instruction
+    )
+
+    previous_summary = normalize_text(
+        previous_summary
     )
 
     if (
@@ -658,10 +641,9 @@ def build_admin_instruction_edit_instruction(
         == CONTENT_TYPE_OPINION_NOTE
     ):
 
-        content_rule = (
+        type_context = (
             "متن اصلی یک یادداشت یا سرمقاله تحلیلی است. "
-            "تز نویسنده، استدلال‌های اصلی، رابطه علت و نتیجه "
-            "و جمع‌بندی اصلی باید حفظ شوند. "
+            "تز نویسنده، منطق استدلال و نتیجه اصلی باید حفظ شوند. "
         )
 
     elif (
@@ -669,92 +651,131 @@ def build_admin_instruction_edit_instruction(
         == CONTENT_TYPE_NEWS_ANALYSIS
     ):
 
-        content_rule = (
+        type_context = (
             "متن اصلی یک تحلیل خبری است. "
-            "اصل رویداد، بازیگران، علت‌ها، روند اثرگذار "
-            "و پیامدهای اصلی باید حفظ شوند. "
+            "اصل رویداد، علت‌ها، بازیگران، روند و پیامد "
+            "اصلی باید حفظ شوند. "
         )
 
     else:
 
-        content_rule = (
-            "معنا و ساختار اصلی متن باید حفظ شود. "
+        type_context = (
+            "ساختار و معنای متن اصلی باید حفظ شود. "
         )
 
-    return (
-        "وظیفه تو اصلاح نسخه خلاصه‌شده یک متن رسانه‌ای "
-        "بر اساس دستور تحریری ادمین است. "
+    instruction = (
+        "وظیفه تو بازنویسی یک نسخه خلاصه رسانه‌ای "
+        "بر اساس دستور مشخص ادمین است. "
 
-        "سه منبع در اختیار داری: "
+        "مبنای اصلی و مرجع حقیقت فقط متن اصلی است. "
 
-        "یک، متن اصلی کامل که تنها منبع معتبر واقعیت و معنا است. "
+        + type_context +
 
-        "دو، خلاصه فعلی که نسخه موجود برای اصلاح است. "
+        "دستور ادمین فقط مشخص می‌کند کدام جنبه از متن "
+        "در نسخه جدید برجسته‌تر، کوتاه‌تر، منسجم‌تر یا "
+        "با اولویت متفاوت ارائه شود. "
 
-        "سه، دستور ادمین که جهت و اولویت ویرایش را مشخص می‌کند. "
+        "دستور ادمین اجازه تغییر واقعیت‌های متن اصلی را نمی‌دهد. "
 
-        + content_rule +
+        "اگر بخشی از دستور ادمین مستلزم افزودن واقعیت، تحلیل، "
+        "نام، عدد، تاریخ، ادعا یا اطلاعاتی باشد که در متن اصلی "
+        "وجود ندارد، آن بخش از دستور را اجرا نکن. "
 
-        "دستور ادمین را تا جایی اجرا کن که با متن اصلی "
-        "و قواعد وفاداری محتوایی تعارض نداشته باشد. "
+        "هیچ اطلاعات بیرونی یا دانش عمومی خودت را وارد متن نکن. "
 
-        "اگر اجرای بخشی از دستور ادمین مستلزم افزودن واقعیت، "
-        "تحلیل، نتیجه‌گیری، عدد، نام، تاریخ، ادعا یا اطلاعاتی "
-        "است که در متن اصلی وجود ندارد، آن بخش از دستور را اجرا نکن. "
+        "هیچ تحلیل، قضاوت یا نتیجه‌گیری تازه‌ای از خودت اضافه نکن. "
 
-        "دستور ادمین نمی‌تواند قواعد حفظ حقیقت و جلوگیری "
-        "از تحریف را لغو کند. "
+        "موضع و دیدگاه نویسنده را تغییر نده. "
 
-        "متن اصلی مرجع نهایی است. "
-
-        "خلاصه فعلی را می‌توانی بازنویسی، جابه‌جا، فشرده "
-        "یا در محدوده متن اصلی تکمیل کنی. "
-
-        "اگر ادمین خواسته تمرکز روی یک محور بیشتر شود، "
-        "فقط از اطلاعات موجود در متن اصلی برای تقویت آن محور استفاده کن. "
-
-        "اگر ادمین خواسته بخشی کوتاه‌تر شود، "
-        "آن بخش را فشرده کن اما معنای اصلی را حذف نکن. "
-
-        "اگر ادمین خواسته متن روان‌تر یا حرفه‌ای‌تر شود، "
-        "فقط نحوه بیان را بهبود بده و محتوای تازه نساز. "
-
-        "خروجی باید همچنان نماینده کل متن باشد. "
-
-        "تمرکز بیشتر روی یک محور نباید باعث حذف کامل "
-        "محورهای ضروری دیگر متن شود. "
-
-        "میزان قطعیت تمام گزاره‌ها را حفظ کن. "
+        "میزان قطعیت را تغییر نده. "
 
         "احتمال را به قطعیت تبدیل نکن. "
 
-        "ادعا یا ارزیابی را به واقعیت قطعی تبدیل نکن. "
+        "ادعا یا ارزیابی یک شخص یا نهاد را به واقعیت مستقل "
+        "تبدیل نکن. "
 
-        "دیدگاه نویسنده را به موضع مستقل خودت تبدیل نکن. "
+        "انتساب سخنان و دیدگاه‌ها را حفظ کن. "
 
-        "نسبت دادن سخنان، دیدگاه‌ها و ارزیابی‌ها را حفظ کن. "
+        "عدد، نام، سمت، مکان، تاریخ یا داده‌ای که در متن "
+        "اصلی نیست تولید نکن. "
 
-        "هیچ عنوان یا نام نویسنده تولید نکن. "
+        "کل متن اصلی را از ابتدا تا انتها بررسی کن و نسخه "
+        "جدید را فقط از اطلاعات موجود در همان متن بساز. "
 
-        "هیچ توضیحی درباره کاری که انجام داده‌ای ننویس. "
+        "نسخه جدید باید یکپارچه و قابل انتشار باشد. "
 
-        f"نسخه نهایی نباید بیشتر از {target_length} "
+        "عنوان و نام نویسنده قبلاً جدا شده‌اند و نباید "
+        "آنها را تولید یا بازنویسی کنی. "
+
+        f"نسخه نهایی بدنه باید حداکثر {target_length} "
         "کاراکتر باشد. "
 
         "تا حد منطقی از ظرفیت موجود استفاده کن. "
-
-        "فقط نسخه نهایی اصلاح‌شده را برگردان. "
 
         "\n\n"
         "دستور ادمین:\n"
         "-----\n"
         f"{admin_instruction}\n"
-        "-----\n\n"
-
-        "خلاصه فعلی:\n"
         "-----\n"
-        f"{previous_summary}\n"
-        "-----"
+    )
+
+    if previous_summary:
+
+        instruction += (
+            "\n"
+            "نسخه قبلی فقط برای مقایسه است. "
+            "آن را مرجع حقیقت قرار نده و صرفاً واژه‌های آن "
+            "را جابه‌جا نکن.\n"
+            "-----\n"
+            f"{previous_summary}\n"
+            "-----\n"
+        )
+
+    instruction += (
+        "\n"
+        "فقط نسخه نهایی بدنه را برگردان."
+    )
+
+    return instruction
+
+
+# =========================================================
+# ADMIN CERTAINTY RETRY
+# =========================================================
+
+def build_admin_certainty_retry_instruction(
+    target_length: int,
+    content_type: str,
+    admin_instruction: str,
+    previous_summary: str = ""
+) -> str:
+
+    base_instruction = (
+        build_admin_edit_instruction(
+            target_length=target_length,
+            content_type=content_type,
+            admin_instruction=admin_instruction,
+            previous_summary=previous_summary
+        )
+    )
+
+    return (
+        base_instruction
+        + " "
+
+        "نسخه قبلی به دلیل از بین رفتن یکی از نشانه‌های "
+        "قطعیت یا انتساب رد شد. "
+
+        "این بار دستور ادمین را فقط در چهارچوب متن اصلی "
+        "اجرا کن و تمام نشانه‌های احتمال، ادعا، ارزیابی، "
+        "انتساب و عدم قطعیت را دقیق حفظ کن. "
+
+        "اگر در متن اصلی گفته شده به باور، به گفته، "
+        "به نظر می‌رسد، احتمال دارد، ممکن است، ادعا شده، "
+        "معتقد است یا ارزیابی می‌شود، ماهیت آن گزاره "
+        "نباید به یک واقعیت قطعی تبدیل شود. "
+
+        "فقط متن نهایی را برگردان."
     )
 
 
@@ -906,10 +927,6 @@ def generate_editorial_candidate(
         )
     )
 
-    # =====================================================
-    # ACCEPT FIRST CANDIDATE
-    # =====================================================
-
     if validation[
         "valid"
     ]:
@@ -922,10 +939,6 @@ def generate_editorial_candidate(
             "error": None,
             "certainty_retry_called": False
         }
-
-    # =====================================================
-    # CERTAINTY RETRY
-    # =====================================================
 
     can_retry_certainty = (
         CERTAINTY_RETRY_ENABLED
@@ -1035,10 +1048,6 @@ def generate_editorial_candidate(
             "first_validation": validation
         }
 
-    # =====================================================
-    # OTHER VALIDATION FAILURE
-    # =====================================================
-
     logger.warning(
         f"⚠️ Editorial candidate rejected | "
         f"type={content_type} | "
@@ -1054,6 +1063,205 @@ def generate_editorial_candidate(
         "reason": "validation_failed",
         "error": None,
         "certainty_retry_called": False
+    }
+
+
+# =========================================================
+# ADMIN INSTRUCTION GENERATION
+#
+# این مسیر مستقل از Regenerate است.
+#
+# مهم:
+#
+# Retry در این مسیر باید دستور ادمین را حفظ کند.
+# بنابراین از generate_editorial_candidate عمومی
+# استفاده نمی‌کنیم.
+# =========================================================
+
+def generate_admin_instruction_candidate(
+    original_text: str,
+    previous_summary: str,
+    admin_instruction: str,
+    target_length: int,
+    content_type: str,
+    summarizer: Callable[
+        [str, str, int],
+        str
+    ]
+) -> Dict[str, Any]:
+
+    instruction = (
+        build_admin_edit_instruction(
+            target_length=target_length,
+            content_type=content_type,
+            admin_instruction=admin_instruction,
+            previous_summary=previous_summary
+        )
+    )
+
+    try:
+
+        candidate = summarizer(
+            original_text,
+            instruction,
+            target_length
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Admin editorial generation failed | "
+            f"{e}"
+        )
+
+        return {
+            "success": False,
+            "candidate": "",
+            "validation": None,
+            "reason": "provider_error",
+            "error": str(
+                e
+            ),
+            "certainty_retry_called": False
+        }
+
+    candidate = normalize_text(
+        candidate
+    )
+
+    validation = (
+        validate_editorial_candidate(
+            original_text=original_text,
+            candidate_text=candidate,
+            target_length=target_length,
+            content_type=content_type
+        )
+    )
+
+    if validation[
+        "valid"
+    ]:
+
+        return {
+            "success": True,
+            "candidate": candidate,
+            "validation": validation,
+            "reason": "accepted",
+            "error": None,
+            "certainty_retry_called": False
+        }
+
+    can_retry_certainty = (
+        CERTAINTY_RETRY_ENABLED
+        and only_certainty_validation_error(
+            validation
+        )
+    )
+
+    if not can_retry_certainty:
+
+        logger.warning(
+            f"⚠️ Admin editorial candidate rejected | "
+            f"type={content_type} | "
+            f"errors={validation['errors']} | "
+            f"output={len(candidate)} | "
+            f"target={target_length}"
+        )
+
+        return {
+            "success": False,
+            "candidate": candidate,
+            "validation": validation,
+            "reason": "validation_failed",
+            "error": None,
+            "certainty_retry_called": False
+        }
+
+    logger.info(
+        f"🔁 Admin editorial certainty retry | "
+        f"type={content_type} | "
+        f"first_output={len(candidate)} | "
+        f"target={target_length}"
+    )
+
+    retry_instruction = (
+        build_admin_certainty_retry_instruction(
+            target_length=target_length,
+            content_type=content_type,
+            admin_instruction=admin_instruction,
+            previous_summary=previous_summary
+        )
+    )
+
+    try:
+
+        retry_candidate = summarizer(
+            original_text,
+            retry_instruction,
+            target_length
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Admin editorial certainty retry failed | "
+            f"{e}"
+        )
+
+        return {
+            "success": False,
+            "candidate": candidate,
+            "validation": validation,
+            "reason": "certainty_retry_provider_error",
+            "error": str(
+                e
+            ),
+            "certainty_retry_called": True
+        }
+
+    retry_candidate = normalize_text(
+        retry_candidate
+    )
+
+    retry_validation = (
+        validate_editorial_candidate(
+            original_text=original_text,
+            candidate_text=retry_candidate,
+            target_length=target_length,
+            content_type=content_type
+        )
+    )
+
+    if retry_validation[
+        "valid"
+    ]:
+
+        logger.info(
+            f"✅ Admin editorial certainty retry accepted | "
+            f"type={content_type} | "
+            f"output={len(retry_candidate)}"
+        )
+
+        return {
+            "success": True,
+            "candidate": retry_candidate,
+            "validation": retry_validation,
+            "reason": "accepted_after_certainty_retry",
+            "error": None,
+            "certainty_retry_called": True,
+            "first_candidate": candidate,
+            "first_validation": validation
+        }
+
+    return {
+        "success": False,
+        "candidate": retry_candidate,
+        "validation": retry_validation,
+        "reason": "validation_failed",
+        "error": None,
+        "certainty_retry_called": True,
+        "first_candidate": candidate,
+        "first_validation": validation
     }
 
 
@@ -1562,15 +1770,23 @@ def regenerate_editorial_summary(
 # =========================================================
 # APPLY ADMIN INSTRUCTION
 #
-# این تابع API اصلی قابلیت:
+# این تابع قابلیت جدید است.
 #
-# ✏️ تغییر با دستور من
+# ورودی:
 #
-# است.
+# original_text
+#     بدنه اصلی و کامل یادداشت
 #
-# نکته:
+# previous_summary
+#     نسخه فعلی خلاصه
 #
-# regeneration_count اینجا تغییر نمی‌کند.
+# admin_instruction
+#     دستور متنی ادمین
+#
+# مهم:
+#
+# AI از original_text تولید می‌کند.
+# previous_summary فقط برای مقایسه است.
 # =========================================================
 
 def apply_admin_instruction_to_editorial_summary(
@@ -1581,7 +1797,6 @@ def apply_admin_instruction_to_editorial_summary(
     target_length: int = (
         DEFAULT_REVIEW_TARGET
     ),
-    regeneration_count: int = 0,
     summarizer: Optional[
         Callable[
             [str, str, int],
@@ -1617,21 +1832,17 @@ def apply_admin_instruction_to_editorial_summary(
             action=ACTION_NEEDS_APPROVAL,
             needs_approval=True,
             original_text="",
-            suggested_text=(
-                previous_summary
-            ),
+            suggested_text=previous_summary,
             summary_success=False,
             target_length=target_length,
             original_length=0,
             suggested_length=len(
                 previous_summary
             ),
-            reason="admin_edit_original_empty",
+            reason="admin_instruction_original_empty",
             metadata={
-                "regeneration_count":
-                    regeneration_count,
-                "admin_instruction_applied":
-                    False
+                "admin_instruction":
+                    admin_instruction
             }
         )
 
@@ -1659,26 +1870,23 @@ def apply_admin_instruction_to_editorial_summary(
             ),
             reason="admin_instruction_empty",
             metadata={
-                "regeneration_count":
-                    regeneration_count,
-                "admin_instruction_applied":
-                    False
+                "admin_instruction": ""
             }
         )
 
     # =====================================================
-    # LIMIT ADMIN INSTRUCTION SIZE
+    # INSTRUCTION LENGTH
     # =====================================================
 
     if (
         len(admin_instruction)
-        > ADMIN_INSTRUCTION_MAX_LENGTH
+        > MAX_ADMIN_INSTRUCTION_LENGTH
     ):
 
         logger.warning(
             f"⚠️ Admin instruction too long | "
             f"length={len(admin_instruction)} | "
-            f"max={ADMIN_INSTRUCTION_MAX_LENGTH}"
+            f"max={MAX_ADMIN_INSTRUCTION_LENGTH}"
         )
 
         return EditorialReviewResult(
@@ -1699,14 +1907,14 @@ def apply_admin_instruction_to_editorial_summary(
             ),
             reason="admin_instruction_too_long",
             metadata={
-                "regeneration_count":
-                    regeneration_count,
-                "admin_instruction_applied":
-                    False,
+                "admin_instruction":
+                    admin_instruction,
                 "admin_instruction_length":
-                    len(admin_instruction),
-                "admin_instruction_max_length":
-                    ADMIN_INSTRUCTION_MAX_LENGTH
+                    len(
+                        admin_instruction
+                    ),
+                "max_admin_instruction_length":
+                    MAX_ADMIN_INSTRUCTION_LENGTH
             }
         )
 
@@ -1743,12 +1951,10 @@ def apply_admin_instruction_to_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason="admin_edit_not_allowed_for_content_type",
+            reason="admin_instruction_not_allowed_for_content_type",
             metadata={
-                "regeneration_count":
-                    regeneration_count,
-                "admin_instruction_applied":
-                    False
+                "admin_instruction":
+                    admin_instruction
             }
         )
 
@@ -1780,26 +1986,21 @@ def apply_admin_instruction_to_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason="admin_edit_provider_unavailable",
+            reason="admin_instruction_provider_unavailable",
             metadata={
-                "regeneration_count":
-                    regeneration_count,
-                "admin_instruction_applied":
-                    False
+                "admin_instruction":
+                    admin_instruction
             }
         )
 
     # =====================================================
     # TARGET
-    #
-    # فقط حاشیه کوچک ایجاد می‌کنیم.
-    # هدف همچنان استفاده مناسب از ظرفیت است.
     # =====================================================
 
     edit_target = max(
-        MIN_ADMIN_EDIT_TARGET,
+        MIN_ADMIN_INSTRUCTION_TARGET,
         target_length
-        - ADMIN_EDIT_TARGET_MARGIN
+        - ADMIN_INSTRUCTION_TARGET_MARGIN
     )
 
     edit_target = min(
@@ -1807,49 +2008,24 @@ def apply_admin_instruction_to_editorial_summary(
         target_length
     )
 
-    # =====================================================
-    # BUILD INSTRUCTION
-    # =====================================================
-
-    instruction = (
-        build_admin_instruction_edit_instruction(
-            target_length=edit_target,
-            content_type=content_type,
-            previous_summary=previous_summary,
-            admin_instruction=(
-                admin_instruction
-            )
-        )
-    )
-
     logger.info(
         f"✏️ Admin editorial edit started | "
         f"type={content_type} | "
-        f"original={original_length} | "
+        f"body={original_length} | "
         f"previous={len(previous_summary)} | "
         f"instruction={len(admin_instruction)} | "
-        f"target={edit_target} | "
-        f"regeneration_count={regeneration_count}"
+        f"target={edit_target}"
     )
 
     # =====================================================
-    # AI GENERATION
-    #
-    # مهم:
-    #
-    # original_text همان متن اصلی کامل است.
-    #
-    # previous_summary و admin_instruction فقط داخل
-    # Instruction هستند.
-    #
-    # بنابراین Validator نیز خروجی را مستقیماً
-    # با متن اصلی می‌سنجد.
+    # GENERATE FROM ORIGINAL BODY
     # =====================================================
 
     generation = (
-        generate_editorial_candidate(
+        generate_admin_instruction_candidate(
             original_text=original_text,
-            instruction=instruction,
+            previous_summary=previous_summary,
+            admin_instruction=admin_instruction,
             target_length=edit_target,
             content_type=content_type,
             summarizer=resolved_summarizer
@@ -1857,7 +2033,7 @@ def apply_admin_instruction_to_editorial_summary(
     )
 
     # =====================================================
-    # FAILED
+    # VALIDATION FAILURE
     # =====================================================
 
     if not generation[
@@ -1867,9 +2043,7 @@ def apply_admin_instruction_to_editorial_summary(
         logger.warning(
             f"⚠️ Admin editorial edit rejected | "
             f"type={content_type} | "
-            f"reason={generation.get('reason')} | "
-            f"validation="
-            f"{generation.get('validation')}"
+            f"reason={generation['reason']}"
         )
 
         return EditorialReviewResult(
@@ -1888,27 +2062,27 @@ def apply_admin_instruction_to_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason="admin_edit_failed",
+            reason="admin_instruction_failed",
             metadata={
-                "regeneration_count":
-                    regeneration_count,
-                "admin_instruction_applied":
-                    False,
                 "admin_instruction":
                     admin_instruction,
+
                 "generation_reason":
                     generation.get(
                         "reason"
                     ),
+
                 "validation":
                     generation.get(
                         "validation"
                     ),
+
                 "failed_candidate":
                     generation.get(
                         "candidate",
                         ""
                     ),
+
                 "certainty_retry_called":
                     generation.get(
                         "certainty_retry_called",
@@ -1917,10 +2091,6 @@ def apply_admin_instruction_to_editorial_summary(
             }
         )
 
-    # =====================================================
-    # SUCCESS CANDIDATE
-    # =====================================================
-
     new_summary = normalize_text(
         generation[
             "candidate"
@@ -1928,10 +2098,7 @@ def apply_admin_instruction_to_editorial_summary(
     )
 
     # =====================================================
-    # SAME OUTPUT
-    #
-    # اگر دستور عملاً هیچ تغییری ایجاد نکرد،
-    # نسخه جدید موفق محسوب نمی‌شود.
+    # NO CHANGE
     # =====================================================
 
     if (
@@ -1940,9 +2107,9 @@ def apply_admin_instruction_to_editorial_summary(
         == previous_summary
     ):
 
-        logger.warning(
-            "⚠️ Admin editorial edit returned "
-            "same summary"
+        logger.info(
+            "ℹ️ Admin instruction produced "
+            "no effective summary change"
         )
 
         return EditorialReviewResult(
@@ -1957,17 +2124,20 @@ def apply_admin_instruction_to_editorial_summary(
             suggested_length=len(
                 previous_summary
             ),
-            reason="admin_edit_same_as_previous",
+            reason="admin_instruction_no_change",
             metadata={
-                "regeneration_count":
-                    regeneration_count,
-                "admin_instruction_applied":
-                    False,
                 "admin_instruction":
                     admin_instruction,
+
                 "validation":
                     generation.get(
                         "validation"
+                    ),
+
+                "certainty_retry_called":
+                    generation.get(
+                        "certainty_retry_called",
+                        False
                     )
             }
         )
@@ -1976,12 +2146,15 @@ def apply_admin_instruction_to_editorial_summary(
     # FINAL HARD LIMIT
     # =====================================================
 
-    if len(new_summary) > target_length:
+    if (
+        len(new_summary)
+        > target_length
+    ):
 
         logger.warning(
-            f"⚠️ Admin editorial edit exceeds "
+            f"⚠️ Admin edited summary exceeds "
             f"final target | "
-            f"output={len(new_summary)} | "
+            f"final={len(new_summary)} | "
             f"target={target_length}"
         )
 
@@ -2001,14 +2174,12 @@ def apply_admin_instruction_to_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason="admin_edit_exceeds_target",
+            reason="admin_instruction_failed",
             metadata={
-                "regeneration_count":
-                    regeneration_count,
-                "admin_instruction_applied":
-                    False,
                 "admin_instruction":
-                    admin_instruction
+                    admin_instruction,
+                "generation_reason":
+                    "summary_exceeds_target"
             }
         )
 
@@ -2019,12 +2190,10 @@ def apply_admin_instruction_to_editorial_summary(
     logger.info(
         f"✅ Admin editorial edit ready | "
         f"type={content_type} | "
-        f"original={original_length} | "
-        f"previous={len(previous_summary)} | "
-        f"new={len(new_summary)} | "
+        f"body_before={original_length} | "
+        f"body_after={len(new_summary)} | "
         f"instruction={len(admin_instruction)} | "
-        f"regeneration_count_unchanged="
-        f"{regeneration_count}"
+        f"needs_approval=True"
     )
 
     return EditorialReviewResult(
@@ -2039,31 +2208,27 @@ def apply_admin_instruction_to_editorial_summary(
         suggested_length=len(
             new_summary
         ),
-        reason="admin_instruction_edit_ready",
+        reason="admin_instruction_ready",
         metadata={
-            "regeneration_count":
-                regeneration_count,
-            "max_regeneration_count":
-                MAX_REGENERATION_COUNT,
-            "can_regenerate": (
-                regeneration_count
-                < MAX_REGENERATION_COUNT
-            ),
-            "admin_instruction_applied":
-                True,
             "admin_instruction":
                 admin_instruction,
+
             "previous_summary":
                 previous_summary,
+
             "validation":
                 generation.get(
                     "validation"
                 ),
+
             "certainty_retry_called":
                 generation.get(
                     "certainty_retry_called",
                     False
-                )
+                ),
+
+            "admin_instruction_applied":
+                True
         }
     )
 
@@ -2126,6 +2291,10 @@ def analyze_editorial_content(
         )
     )
 
+    # =====================================================
+    # NORMAL NEWS
+    # =====================================================
+
     if (
         content_type
         == CONTENT_TYPE_NORMAL_NEWS
@@ -2148,6 +2317,10 @@ def analyze_editorial_content(
                 "can_regenerate": False
             }
         )
+
+    # =====================================================
+    # SENSITIVE
+    # =====================================================
 
     if (
         content_type
@@ -2172,6 +2345,10 @@ def analyze_editorial_content(
             }
         )
 
+    # =====================================================
+    # UNCERTAIN
+    # =====================================================
+
     if (
         content_type
         == CONTENT_TYPE_UNCERTAIN
@@ -2194,6 +2371,10 @@ def analyze_editorial_content(
                 "can_regenerate": False
             }
         )
+
+    # =====================================================
+    # OPINION / ANALYSIS
+    # =====================================================
 
     summary_result = (
         summarize_editorial_content(
@@ -2226,15 +2407,18 @@ def analyze_editorial_content(
                     summary_result.get(
                         "reason"
                     ),
+
                 "summary_validation":
                     summary_result.get(
                         "validation"
                     ),
+
                 "failed_candidate":
                     summary_result.get(
                         "candidate",
                         ""
                     ),
+
                 "certainty_retry_called":
                     summary_result.get(
                         "certainty_retry_called",
@@ -2297,14 +2481,19 @@ def analyze_editorial_content(
                 summary_result.get(
                     "reason"
                 ),
+
             "summary_validation":
                 summary_result.get(
                     "validation"
                 ),
+
             "regeneration_count": 0,
+
             "max_regeneration_count":
                 MAX_REGENERATION_COUNT,
+
             "can_regenerate": True,
+
             "certainty_retry_called":
                 summary_result.get(
                     "certainty_retry_called",
