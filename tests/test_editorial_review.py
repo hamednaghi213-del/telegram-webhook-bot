@@ -807,7 +807,7 @@ def test_regeneration_same_as_previous_is_rejected():
     previous_summary = (
         trim_at_word_boundary(
             original_text,
-            950
+            910
         )
     )
 
