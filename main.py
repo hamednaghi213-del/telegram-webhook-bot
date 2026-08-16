@@ -4,8 +4,15 @@ import logging
 import threading
 import requests
 
-from flask import Flask, request
-from logging.handlers import RotatingFileHandler
+from flask import (
+    Flask,
+    request,
+    jsonify
+)
+
+from logging.handlers import (
+    RotatingFileHandler
+)
 
 from core.webhook_handler import (
     initialize as init_webhook,
@@ -36,6 +43,14 @@ from core.database import (
     init_db
 )
 
+from core.smart_summarizer import (
+    summarize_text_safely
+)
+
+from core.ai_summarizer_provider import (
+    summarize_with_ai
+)
+
 
 # =========================================================
 # FLASK
@@ -63,6 +78,12 @@ if not TOKEN:
 SECRET_TOKEN = os.getenv(
     "TELEGRAM_SECRET_TOKEN",
     "my_secret_token_123"
+)
+
+
+GEMINI_TEST_SECRET = os.getenv(
+    "GEMINI_TEST_SECRET",
+    ""
 )
 
 
@@ -281,7 +302,6 @@ def initialize_modules():
 
 def self_ping():
 
-    # بهتر است URL از Environment خوانده شود
     url = os.getenv(
         "SELF_PING_URL",
         "https://telegram-webhook-bot-onyd.onrender.com/"
@@ -330,7 +350,6 @@ def self_ping():
 
 def start_self_ping():
 
-    # جلوگیری از اجرای چندباره
     thread = threading.Thread(
         target=self_ping,
         name="SelfPingThread",
@@ -356,6 +375,159 @@ def health_check():
         "🤖 ربات خبری هوشمند - "
         "نسخه نهایی"
     )
+
+
+# =========================================================
+# GEMINI LIVE TEST
+# =========================================================
+
+@app.route(
+    "/test-gemini",
+    methods=["GET"]
+)
+def test_gemini():
+
+    # -----------------------------------------
+    # Security
+    # -----------------------------------------
+
+    configured_secret = (
+        GEMINI_TEST_SECRET
+        or ""
+    )
+
+    supplied_secret = (
+        request.args.get(
+            "secret",
+            ""
+        )
+        or ""
+    )
+
+    if not configured_secret:
+
+        logger.error(
+            "❌ GEMINI_TEST_SECRET "
+            "is not configured"
+        )
+
+        return jsonify({
+            "ok": False,
+            "error": (
+                "GEMINI_TEST_SECRET "
+                "is not configured"
+            )
+        }), 503
+
+    if supplied_secret != configured_secret:
+
+        logger.warning(
+            "⚠️ Unauthorized Gemini "
+            "test request"
+        )
+
+        return jsonify({
+            "ok": False,
+            "error": "unauthorized"
+        }), 403
+
+    # -----------------------------------------
+    # Test Text
+    # -----------------------------------------
+
+    original_text = (
+        "وزیر خارجه اعلام کرد احتمال دارد "
+        "مذاکرات در هفته آینده آغاز شود. "
+        "او گفت رایزنی‌های دیپلماتیک در "
+        "روزهای اخیر ادامه داشته و طرف‌ها "
+        "در حال بررسی پیشنهادهای مطرح شده "
+        "هستند. مقام‌های مسئول هنوز زمان "
+        "قطعی آغاز مذاکرات را اعلام نکرده‌اند. "
+        "بر اساس این گزارش، رایزنی‌ها برای "
+        "رسیدن به چارچوب اولیه همچنان "
+        "ادامه دارد."
+    )
+
+    target_length = 220
+
+    logger.info(
+        "🧠 Gemini live test started | "
+        f"original_length={len(original_text)} | "
+        f"target_length={target_length}"
+    )
+
+    # -----------------------------------------
+    # Smart Summarizer
+    # -----------------------------------------
+
+    try:
+
+        result = summarize_text_safely(
+            original_text=original_text,
+            target_length=target_length,
+            summarizer=summarize_with_ai
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Gemini live test crashed | "
+            f"{e}"
+        )
+
+        return jsonify({
+            "ok": False,
+            "error": "test_execution_failed",
+            "detail": str(e)
+        }), 500
+
+    # -----------------------------------------
+    # Result
+    # -----------------------------------------
+
+    logger.info(
+        "🧠 Gemini live test completed | "
+        f"success={result.success} | "
+        f"reason={result.reason} | "
+        f"validation="
+        f"{result.validation_passed} | "
+        f"original_length="
+        f"{result.original_length} | "
+        f"summary_length="
+        f"{result.summary_length}"
+    )
+
+    return jsonify({
+
+        "ok": True,
+
+        "summary_success":
+            result.success,
+
+        "reason":
+            result.reason,
+
+        "validation_passed":
+            result.validation_passed,
+
+        "original_length":
+            result.original_length,
+
+        "summary_length":
+            result.summary_length,
+
+        "reduction_ratio":
+            result.reduction_ratio,
+
+        "original_text":
+            result.original_text,
+
+        "summary_text":
+            result.summary_text,
+
+        "metadata":
+            result.metadata
+    })
 
 
 # =========================================================
