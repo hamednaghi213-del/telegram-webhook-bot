@@ -61,32 +61,30 @@ UNCERTAIN_MAX_REDUCTION_RATIO = 0.40
 # =========================================================
 # ADAPTIVE TARGET POLICY
 #
-# مسئله‌ای که این بخش حل می‌کند:
+# هدف:
 #
-# اگر:
+# اگر Validator اجازه ندهد متن تا requested target
+# کوتاه شود، یک Target ایمن‌تر ساخته می‌شود.
 #
-# original_length = 3918
-# max_reduction_ratio = 0.75
+# مثال واقعی:
 #
-# حداقل طول مجاز طبق Validator تقریباً:
+# body=3918
+# NEWS_ANALYSIS_MAX_REDUCTION_RATIO=0.75
 #
-# 3918 × 0.25 = 980
+# minimum_safe ~= 980
 #
-# است.
+# requested=950
 #
-# در حالی که DEFAULT_REVIEW_TARGET برابر 950 است.
-#
-# در معماری قبلی، AI مجبور بود حداکثر 950 بنویسد،
-# ولی Validator کمتر از حدود 980 را رد می‌کرد.
-#
-# Adaptive Target این تناقض را حذف می‌کند.
+# effective_target =
+# minimum_safe + buffer
+# = 1060
 # =========================================================
 
 ADAPTIVE_TARGET_ENABLED = True
 
 ADAPTIVE_TARGET_BUFFER = 80
 
-ADAPTIVE_RETRY_ENABLED = True
+MAX_ADAPTIVE_TARGET = 1800
 
 
 # =========================================================
@@ -116,6 +114,10 @@ MIN_ADMIN_INSTRUCTION_TARGET = 300
 # =========================================================
 
 CERTAINTY_RETRY_ENABLED = True
+
+LENGTH_RETRY_ENABLED = True
+
+LENGTH_RETRY_MARGIN = 25
 
 
 # =========================================================
@@ -204,24 +206,44 @@ def parse_editorial_classification(
     )
 
     if not value:
-        return CONTENT_TYPE_UNCERTAIN
+
+        return (
+            CONTENT_TYPE_UNCERTAIN
+        )
 
     if "OPINION_NOTE" in value:
-        return CONTENT_TYPE_OPINION_NOTE
+
+        return (
+            CONTENT_TYPE_OPINION_NOTE
+        )
 
     if "NEWS_ANALYSIS" in value:
-        return CONTENT_TYPE_NEWS_ANALYSIS
+
+        return (
+            CONTENT_TYPE_NEWS_ANALYSIS
+        )
 
     if "SENSITIVE_CONTENT" in value:
-        return CONTENT_TYPE_SENSITIVE
+
+        return (
+            CONTENT_TYPE_SENSITIVE
+        )
 
     if "NORMAL_NEWS" in value:
-        return CONTENT_TYPE_NORMAL_NEWS
+
+        return (
+            CONTENT_TYPE_NORMAL_NEWS
+        )
 
     if "UNCERTAIN" in value:
-        return CONTENT_TYPE_UNCERTAIN
 
-    return CONTENT_TYPE_UNCERTAIN
+        return (
+            CONTENT_TYPE_UNCERTAIN
+        )
+
+    return (
+        CONTENT_TYPE_UNCERTAIN
+    )
 
 
 # =========================================================
@@ -243,7 +265,10 @@ def classify_editorial_content(
     )
 
     if not original_text:
-        return CONTENT_TYPE_UNCERTAIN
+
+        return (
+            CONTENT_TYPE_UNCERTAIN
+        )
 
     if classifier is None:
 
@@ -254,9 +279,13 @@ def classify_editorial_content(
                 "Gemini provider not configured"
             )
 
-            return CONTENT_TYPE_UNCERTAIN
+            return (
+                CONTENT_TYPE_UNCERTAIN
+            )
 
-        classifier = summarize_with_gemini
+        classifier = (
+            summarize_with_gemini
+        )
 
     instruction = (
         build_editorial_classification_instruction()
@@ -277,7 +306,9 @@ def classify_editorial_content(
             f"{e}"
         )
 
-        return CONTENT_TYPE_UNCERTAIN
+        return (
+            CONTENT_TYPE_UNCERTAIN
+        )
 
     content_type = (
         parse_editorial_classification(
@@ -334,10 +365,10 @@ def get_review_max_reduction_ratio(
 
 
 # =========================================================
-# ADAPTIVE TARGET HELPERS
+# ADAPTIVE TARGET
 # =========================================================
 
-def calculate_minimum_safe_summary_length(
+def calculate_minimum_safe_length(
     original_length: int,
     content_type: str
 ) -> int:
@@ -351,6 +382,7 @@ def calculate_minimum_safe_summary_length(
     )
 
     if original_length <= 0:
+
         return 0
 
     max_reduction_ratio = (
@@ -359,34 +391,26 @@ def calculate_minimum_safe_summary_length(
         )
     )
 
-    retained_ratio = max(
-        0.0,
+    minimum_remaining_ratio = (
         1.0
-        - float(
-            max_reduction_ratio
-        )
+        - max_reduction_ratio
     )
 
-    minimum_length = (
-        math.ceil(
-            original_length
-            * retained_ratio
-        )
+    minimum_safe = math.ceil(
+        original_length
+        * minimum_remaining_ratio
     )
 
     return max(
         1,
-        int(
-            minimum_length
-        )
+        minimum_safe
     )
 
 
-def resolve_adaptive_target(
+def calculate_effective_target(
     original_text: str,
-    content_type: str,
     requested_target: int,
-    minimum_target: int = 0
+    content_type: str
 ) -> Dict[str, Any]:
 
     original_text = normalize_text(
@@ -401,47 +425,44 @@ def resolve_adaptive_target(
         1,
         int(
             requested_target
-            or 1
+            or DEFAULT_REVIEW_TARGET
         )
     )
 
-    minimum_target = max(
-        0,
-        int(
-            minimum_target
-            or 0
-        )
-    )
-
-    minimum_safe_length = (
-        calculate_minimum_safe_summary_length(
+    minimum_safe = (
+        calculate_minimum_safe_length(
             original_length=original_length,
             content_type=content_type
         )
     )
 
-    base_target = max(
-        requested_target,
-        minimum_target
-    )
-
-    adaptive_applied = False
+    adaptive = False
 
     effective_target = (
-        base_target
+        requested_target
     )
 
     if (
         ADAPTIVE_TARGET_ENABLED
-        and minimum_safe_length
-        > base_target
+        and minimum_safe
+        > requested_target
     ):
 
-        adaptive_applied = True
+        adaptive = True
 
         effective_target = (
-            minimum_safe_length
+            minimum_safe
             + ADAPTIVE_TARGET_BUFFER
+        )
+
+        effective_target = min(
+            effective_target,
+            MAX_ADAPTIVE_TARGET
+        )
+
+        effective_target = max(
+            effective_target,
+            minimum_safe
         )
 
     if original_length > 0:
@@ -461,26 +482,23 @@ def resolve_adaptive_target(
         f"type={content_type} | "
         f"body={original_length} | "
         f"requested={requested_target} | "
-        f"minimum_safe={minimum_safe_length} | "
+        f"minimum_safe={minimum_safe} | "
         f"effective={effective_target} | "
-        f"adaptive={adaptive_applied}"
+        f"adaptive={adaptive}"
     )
 
     return {
         "requested_target":
             requested_target,
 
-        "minimum_target":
-            minimum_target,
-
-        "minimum_safe_length":
-            minimum_safe_length,
+        "minimum_safe":
+            minimum_safe,
 
         "effective_target":
             effective_target,
 
-        "adaptive_applied":
-            adaptive_applied,
+        "adaptive":
+            adaptive,
 
         "original_length":
             original_length
@@ -495,7 +513,9 @@ def get_validator_content_type(
     content_type: str
 ) -> str:
 
-    return CONTENT_TYPE_NORMAL
+    return (
+        CONTENT_TYPE_NORMAL
+    )
 
 
 # =========================================================
@@ -504,8 +524,7 @@ def get_validator_content_type(
 
 def build_editorial_summary_instruction(
     target_length: int,
-    content_type: str,
-    minimum_length: int = 0
+    content_type: str
 ) -> str:
 
     common_instruction = (
@@ -543,19 +562,6 @@ def build_editorial_summary_instruction(
 
         "انتساب دیدگاه‌ها و ادعاها را حفظ کن. "
     )
-
-    length_instruction = (
-        f"متن خلاصه بدنه باید حداکثر {target_length} "
-        "کاراکتر باشد. "
-    )
-
-    if minimum_length > 0:
-
-        length_instruction += (
-            f"برای حفظ میزان جزئیات لازم، تلاش کن متن نهایی "
-            f"کمتر از حدود {minimum_length} کاراکتر نشود. "
-            "متن را بیش از حد فشرده نکن. "
-        )
 
     if (
         content_type
@@ -597,7 +603,10 @@ def build_editorial_summary_instruction(
             "هدف، بازنمایی فشرده کل یادداشت است، "
             "نه بریدن مکانیکی بخشی از آن. "
 
-            + length_instruction +
+            f"متن خلاصه بدنه باید حداکثر {target_length} "
+            "کاراکتر باشد. "
+
+            "از سقف تعیین‌شده عبور نکن. "
 
             "تا حد منطقی از ظرفیت موجود استفاده کن و "
             "بی‌دلیل متن را بسیار کوتاه‌تر از سقف تعیین‌شده نساز. "
@@ -635,7 +644,10 @@ def build_editorial_summary_instruction(
             "هدف، فشرده‌سازی معنایی کل تحلیل است "
             "و نه قطع مکانیکی متن. "
 
-            + length_instruction +
+            f"متن خلاصه بدنه باید حداکثر {target_length} "
+            "کاراکتر باشد. "
+
+            "از سقف تعیین‌شده عبور نکن. "
 
             "تا حد منطقی از ظرفیت موجود استفاده کن و "
             "بی‌دلیل متن را بسیار کوتاه‌تر از سقف تعیین‌شده نساز. "
@@ -649,45 +661,35 @@ def build_editorial_summary_instruction(
         "فقط در حدی کوتاه کن که هیچ اطلاعات مهم، "
         "رسمی یا حساس حذف نشود. "
 
-        + length_instruction +
+        f"خروجی نهایی نباید بیشتر از {target_length} "
+        "کاراکتر باشد. "
 
         "فقط متن نهایی را برگردان."
     )
 
 
 # =========================================================
-# CERTAINTY / LENGTH RETRY INSTRUCTION
+# CERTAINTY RETRY INSTRUCTION
 # =========================================================
 
 def build_certainty_retry_instruction(
     target_length: int,
-    content_type: str,
-    minimum_length: int = 0
+    content_type: str
 ) -> str:
 
     base_instruction = (
         build_editorial_summary_instruction(
             target_length=target_length,
-            content_type=content_type,
-            minimum_length=minimum_length
+            content_type=content_type
         )
     )
-
-    retry_length_text = ""
-
-    if minimum_length > 0:
-
-        retry_length_text = (
-            f"نسخه جدید نباید به شکل غیرضروری کمتر از "
-            f"{minimum_length} کاراکتر شود. "
-        )
 
     return (
         base_instruction
         + " "
 
         "نسخه قبلی به دلیل از بین رفتن نشانه‌های "
-        "قطعیت یا فشرده‌سازی بیش از حد مورد تأیید قرار نگرفت. "
+        "قطعیت یا انتساب مورد تأیید قرار نگرفت. "
 
         "متن اصلی را دوباره از ابتدا تا انتها بررسی کن. "
 
@@ -707,12 +709,88 @@ def build_certainty_retry_instruction(
 
         "هیچ اطلاعات تازه‌ای اضافه نکن. "
 
-        + retry_length_text +
-
         f"خروجی همچنان باید حداکثر {target_length} "
         "کاراکتر باشد. "
 
         "فقط متن خلاصه‌شده نهایی را برگردان."
+    )
+
+
+# =========================================================
+# LENGTH RETRY INSTRUCTION
+#
+# فقط وقتی فعال می‌شود که تنها خطا:
+#
+# summary_exceeds_target
+#
+# باشد.
+#
+# نکته:
+#
+# متن را با slice یا truncate کوتاه نمی‌کنیم.
+# Gemini باید نسخه فشرده‌تر ولی معنایی بسازد.
+# =========================================================
+
+def build_length_retry_instruction(
+    target_length: int,
+    content_type: str,
+    previous_candidate: str
+) -> str:
+
+    previous_candidate = (
+        normalize_text(
+            previous_candidate
+        )
+    )
+
+    safe_target = max(
+        1,
+        target_length
+        - LENGTH_RETRY_MARGIN
+    )
+
+    base_instruction = (
+        build_editorial_summary_instruction(
+            target_length=safe_target,
+            content_type=content_type
+        )
+    )
+
+    return (
+        base_instruction
+        + " "
+
+        "نسخه قبلی از سقف طول مجاز عبور کرد. "
+
+        "این بار همان معنای اصلی و همان سطح دقت را "
+        "با جمله‌بندی فشرده‌تر بازنویسی کن. "
+
+        "اطلاعات مهم را حذف نکن. "
+
+        "نتیجه‌گیری اصلی متن را حذف نکن. "
+
+        "نشانه‌های احتمال، ادعا، ارزیابی و انتساب را "
+        "همچنان حفظ کن. "
+
+        "برای کاهش طول، ابتدا تکرارها، توضیح‌های هم‌معنا، "
+        "عبارت‌های زائد و ساختارهای طولانی را فشرده کن. "
+
+        "انتهای متن را به صورت مکانیکی حذف نکن. "
+
+        "هیچ اطلاعات تازه‌ای اضافه نکن. "
+
+        f"خروجی نهایی باید حداکثر {safe_target} "
+        "کاراکتر باشد. "
+
+        "از این سقف عبور نکن. "
+
+        "\n\n"
+        "نسخه قبلی که فقط به دلیل طول زیاد رد شد:\n"
+        "-----\n"
+        f"{previous_candidate}\n"
+        "-----\n\n"
+
+        "فقط نسخه فشرده و نهایی بدنه را برگردان."
     )
 
 
@@ -723,8 +801,7 @@ def build_certainty_retry_instruction(
 def build_editorial_regeneration_instruction(
     target_length: int,
     content_type: str,
-    previous_summary: str,
-    minimum_length: int = 0
+    previous_summary: str
 ) -> str:
 
     previous_summary = normalize_text(
@@ -757,19 +834,6 @@ def build_editorial_regeneration_instruction(
 
         type_instruction = (
             "ساختار و معنای اصلی متن باید حفظ شود. "
-        )
-
-    length_instruction = (
-        f"نسخه جدید بدنه نباید بیشتر از {target_length} "
-        "کاراکتر باشد. "
-    )
-
-    if minimum_length > 0:
-
-        length_instruction += (
-            f"برای جلوگیری از حذف بیش از حد اطلاعات، "
-            f"نسخه جدید را تا حد امکان کمتر از "
-            f"{minimum_length} کاراکتر نکن. "
         )
 
     return (
@@ -819,7 +883,10 @@ def build_editorial_regeneration_instruction(
 
         "نسخه جدید باید مستقل، روان، منسجم و قابل انتشار باشد. "
 
-        + length_instruction +
+        f"نسخه جدید بدنه نباید بیشتر از {target_length} "
+        "کاراکتر باشد. "
+
+        "از سقف طول تعیین‌شده عبور نکن. "
 
         "فقط نسخه جدید بدنه را برگردان. "
 
@@ -839,8 +906,7 @@ def build_admin_edit_instruction(
     target_length: int,
     content_type: str,
     admin_instruction: str,
-    previous_summary: str = "",
-    minimum_length: int = 0
+    previous_summary: str = ""
 ) -> str:
 
     admin_instruction = normalize_text(
@@ -876,18 +942,6 @@ def build_admin_edit_instruction(
 
         type_context = (
             "ساختار و معنای متن اصلی باید حفظ شود. "
-        )
-
-    length_instruction = (
-        f"نسخه نهایی بدنه باید حداکثر {target_length} "
-        "کاراکتر باشد. "
-    )
-
-    if minimum_length > 0:
-
-        length_instruction += (
-            f"برای حفظ سطح اطلاعات مورد نیاز، تا حد امکان "
-            f"متن را کمتر از {minimum_length} کاراکتر نکن. "
         )
 
     instruction = (
@@ -934,7 +988,10 @@ def build_admin_edit_instruction(
         "عنوان و نام نویسنده قبلاً جدا شده‌اند و نباید "
         "آنها را تولید یا بازنویسی کنی. "
 
-        + length_instruction +
+        f"نسخه نهایی بدنه باید حداکثر {target_length} "
+        "کاراکتر باشد. "
+
+        "از سقف تعیین‌شده عبور نکن. "
 
         "تا حد منطقی از ظرفیت موجود استفاده کن. "
 
@@ -973,8 +1030,7 @@ def build_admin_certainty_retry_instruction(
     target_length: int,
     content_type: str,
     admin_instruction: str,
-    previous_summary: str = "",
-    minimum_length: int = 0
+    previous_summary: str = ""
 ) -> str:
 
     base_instruction = (
@@ -982,8 +1038,7 @@ def build_admin_certainty_retry_instruction(
             target_length=target_length,
             content_type=content_type,
             admin_instruction=admin_instruction,
-            previous_summary=previous_summary,
-            minimum_length=minimum_length
+            previous_summary=previous_summary
         )
     )
 
@@ -992,7 +1047,7 @@ def build_admin_certainty_retry_instruction(
         + " "
 
         "نسخه قبلی به دلیل از بین رفتن یکی از نشانه‌های "
-        "قطعیت، انتساب یا فشرده‌سازی بیش از حد رد شد. "
+        "قطعیت یا انتساب رد شد. "
 
         "این بار دستور ادمین را فقط در چهارچوب متن اصلی "
         "اجرا کن و تمام نشانه‌های احتمال، ادعا، ارزیابی، "
@@ -1003,9 +1058,66 @@ def build_admin_certainty_retry_instruction(
         "معتقد است یا ارزیابی می‌شود، ماهیت آن گزاره "
         "نباید به یک واقعیت قطعی تبدیل شود. "
 
-        "متن را بیش از حد کوتاه نکن. "
-
         "فقط متن نهایی را برگردان."
+    )
+
+
+# =========================================================
+# ADMIN LENGTH RETRY
+# =========================================================
+
+def build_admin_length_retry_instruction(
+    target_length: int,
+    content_type: str,
+    admin_instruction: str,
+    previous_summary: str,
+    failed_candidate: str
+) -> str:
+
+    safe_target = max(
+        1,
+        target_length
+        - LENGTH_RETRY_MARGIN
+    )
+
+    base_instruction = (
+        build_admin_edit_instruction(
+            target_length=safe_target,
+            content_type=content_type,
+            admin_instruction=admin_instruction,
+            previous_summary=previous_summary
+        )
+    )
+
+    failed_candidate = normalize_text(
+        failed_candidate
+    )
+
+    return (
+        base_instruction
+        + " "
+
+        "نسخه تولیدشده فقط به دلیل عبور از سقف طول رد شد. "
+
+        "دستور ادمین همچنان باید اجرا شود. "
+
+        "نسخه را بدون تغییر جهت موردنظر ادمین، "
+        "با جمله‌بندی فشرده‌تر بازنویسی کن. "
+
+        "هیچ واقعیت یا تحلیل تازه‌ای اضافه نکن. "
+
+        "هیچ بخش مهمی از منطق متن اصلی را حذف نکن. "
+
+        f"خروجی نهایی حداکثر {safe_target} "
+        "کاراکتر باشد. "
+
+        "\n\n"
+        "نسخه‌ای که فقط به دلیل طول زیاد رد شد:\n"
+        "-----\n"
+        f"{failed_candidate}\n"
+        "-----\n\n"
+
+        "فقط نسخه نهایی بدنه را برگردان."
     )
 
 
@@ -1028,6 +1140,7 @@ def resolve_summarizer(
 ]:
 
     if summarizer is not None:
+
         return summarizer
 
     if not gemini_provider_configured():
@@ -1039,7 +1152,9 @@ def resolve_summarizer(
 
         return None
 
-    return summarize_with_gemini
+    return (
+        summarize_with_gemini
+    )
 
 
 # =========================================================
@@ -1075,7 +1190,7 @@ def validate_editorial_candidate(
 
 
 # =========================================================
-# RETRY ERROR POLICY
+# VALIDATION ERROR HELPERS
 # =========================================================
 
 def only_certainty_validation_error(
@@ -1085,6 +1200,7 @@ def only_certainty_validation_error(
 ) -> bool:
 
     if not validation:
+
         return False
 
     errors = set(
@@ -1103,17 +1219,14 @@ def only_certainty_validation_error(
     )
 
 
-def adaptive_retry_validation_error(
+def only_length_validation_error(
     validation: Optional[
         Dict[str, Any]
-    ],
-    minimum_length: int = 0
+    ]
 ) -> bool:
 
     if not validation:
-        return False
 
-    if minimum_length <= 0:
         return False
 
     errors = set(
@@ -1124,22 +1237,11 @@ def adaptive_retry_validation_error(
         or []
     )
 
-    allowed_errors = {
-        "certainty_markers_lost",
-        "reduction_too_aggressive",
-    }
-
-    if not errors:
-        return False
-
-    if not errors.issubset(
-        allowed_errors
-    ):
-        return False
-
     return (
-        "reduction_too_aggressive"
-        in errors
+        errors
+        == {
+            "summary_exceeds_target"
+        }
     )
 
 
@@ -1155,8 +1257,7 @@ def generate_editorial_candidate(
     summarizer: Callable[
         [str, str, int],
         str
-    ],
-    minimum_length: int = 0
+    ]
 ) -> Dict[str, Any]:
 
     try:
@@ -1183,7 +1284,7 @@ def generate_editorial_candidate(
                 e
             ),
             "certainty_retry_called": False,
-            "adaptive_retry_called": False
+            "length_retry_called": False
         }
 
     candidate = normalize_text(
@@ -1210,10 +1311,299 @@ def generate_editorial_candidate(
             "reason": "accepted",
             "error": None,
             "certainty_retry_called": False,
-            "adaptive_retry_called": False
+            "length_retry_called": False
         }
 
-    certainty_retry = (
+    # =====================================================
+    # LENGTH RETRY
+    #
+    # مثال واقعی:
+    #
+    # target = 1060
+    # output = 1132
+    #
+    # errors = ['summary_exceeds_target']
+    #
+    # در این حالت به جای رد کامل،
+    # یک بار تولید فشرده‌تر انجام می‌شود.
+    # =====================================================
+
+    can_retry_length = (
+        LENGTH_RETRY_ENABLED
+        and only_length_validation_error(
+            validation
+        )
+    )
+
+    if can_retry_length:
+
+        retry_target = max(
+            1,
+            target_length
+            - LENGTH_RETRY_MARGIN
+        )
+
+        logger.info(
+            f"📏 Editorial length retry | "
+            f"type={content_type} | "
+            f"first_output={len(candidate)} | "
+            f"target={target_length} | "
+            f"retry_target={retry_target}"
+        )
+
+        retry_instruction = (
+            build_length_retry_instruction(
+                target_length=target_length,
+                content_type=content_type,
+                previous_candidate=candidate
+            )
+        )
+
+        try:
+
+            retry_candidate = summarizer(
+                original_text,
+                retry_instruction,
+                retry_target
+            )
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Editorial length retry failed | "
+                f"{e}"
+            )
+
+            return {
+                "success": False,
+                "candidate": candidate,
+                "validation": validation,
+                "reason":
+                    "length_retry_provider_error",
+                "error": str(
+                    e
+                ),
+                "certainty_retry_called": False,
+                "length_retry_called": True
+            }
+
+        retry_candidate = normalize_text(
+            retry_candidate
+        )
+
+        retry_validation = (
+            validate_editorial_candidate(
+                original_text=original_text,
+                candidate_text=retry_candidate,
+
+                # Validator روی سقف اصلی بررسی می‌کند.
+                # Retry Target فقط برای هدایت AI است.
+                target_length=target_length,
+
+                content_type=content_type
+            )
+        )
+
+        if retry_validation[
+            "valid"
+        ]:
+
+            logger.info(
+                f"✅ Editorial length retry accepted | "
+                f"type={content_type} | "
+                f"first_output={len(candidate)} | "
+                f"output={len(retry_candidate)} | "
+                f"target={target_length}"
+            )
+
+            return {
+                "success": True,
+                "candidate":
+                    retry_candidate,
+
+                "validation":
+                    retry_validation,
+
+                "reason":
+                    "accepted_after_length_retry",
+
+                "error":
+                    None,
+
+                "certainty_retry_called":
+                    False,
+
+                "length_retry_called":
+                    True,
+
+                "first_candidate":
+                    candidate,
+
+                "first_validation":
+                    validation
+            }
+
+        logger.warning(
+            f"⚠️ Editorial length retry rejected | "
+            f"type={content_type} | "
+            f"errors="
+            f"{retry_validation.get('errors', [])} | "
+            f"output={len(retry_candidate)} | "
+            f"target={target_length}"
+        )
+
+        # =================================================
+        # اگر Length Retry مشکل طول را حل کرد اما حالا
+        # تنها مشکل certainty شد، یک Certainty Retry
+        # نهایی مجاز است.
+        # =================================================
+
+        if (
+            CERTAINTY_RETRY_ENABLED
+            and only_certainty_validation_error(
+                retry_validation
+            )
+        ):
+
+            logger.info(
+                f"🔁 Editorial certainty retry "
+                f"after length retry | "
+                f"type={content_type}"
+            )
+
+            certainty_instruction = (
+                build_certainty_retry_instruction(
+                    target_length=target_length,
+                    content_type=content_type
+                )
+            )
+
+            try:
+
+                certainty_candidate = summarizer(
+                    original_text,
+                    certainty_instruction,
+                    target_length
+                )
+
+            except Exception as e:
+
+                logger.exception(
+                    f"❌ Editorial certainty retry "
+                    f"after length failed | {e}"
+                )
+
+                return {
+                    "success": False,
+                    "candidate":
+                        retry_candidate,
+
+                    "validation":
+                        retry_validation,
+
+                    "reason":
+                        "certainty_retry_provider_error",
+
+                    "error":
+                        str(e),
+
+                    "certainty_retry_called":
+                        True,
+
+                    "length_retry_called":
+                        True
+                }
+
+            certainty_candidate = normalize_text(
+                certainty_candidate
+            )
+
+            certainty_validation = (
+                validate_editorial_candidate(
+                    original_text=original_text,
+                    candidate_text=certainty_candidate,
+                    target_length=target_length,
+                    content_type=content_type
+                )
+            )
+
+            if certainty_validation[
+                "valid"
+            ]:
+
+                logger.info(
+                    f"✅ Editorial certainty retry "
+                    f"after length accepted | "
+                    f"type={content_type} | "
+                    f"output="
+                    f"{len(certainty_candidate)}"
+                )
+
+                return {
+                    "success": True,
+                    "candidate":
+                        certainty_candidate,
+
+                    "validation":
+                        certainty_validation,
+
+                    "reason":
+                        "accepted_after_length_and_certainty_retry",
+
+                    "error":
+                        None,
+
+                    "certainty_retry_called":
+                        True,
+
+                    "length_retry_called":
+                        True,
+
+                    "first_candidate":
+                        candidate,
+
+                    "first_validation":
+                        validation,
+
+                    "length_retry_candidate":
+                        retry_candidate,
+
+                    "length_retry_validation":
+                        retry_validation
+                }
+
+        return {
+            "success": False,
+            "candidate":
+                retry_candidate,
+
+            "validation":
+                retry_validation,
+
+            "reason":
+                "validation_failed",
+
+            "error":
+                None,
+
+            "certainty_retry_called":
+                False,
+
+            "length_retry_called":
+                True,
+
+            "first_candidate":
+                candidate,
+
+            "first_validation":
+                validation
+        }
+
+    # =====================================================
+    # CERTAINTY RETRY
+    # =====================================================
+
+    can_retry_certainty = (
         CERTAINTY_RETRY_ENABLED
         and content_type
         in (
@@ -1225,40 +1615,19 @@ def generate_editorial_candidate(
         )
     )
 
-    adaptive_retry = (
-        ADAPTIVE_RETRY_ENABLED
-        and content_type
-        in (
-            CONTENT_TYPE_OPINION_NOTE,
-            CONTENT_TYPE_NEWS_ANALYSIS,
-        )
-        and adaptive_retry_validation_error(
-            validation,
-            minimum_length=minimum_length
-        )
-    )
-
-    can_retry = (
-        certainty_retry
-        or adaptive_retry
-    )
-
-    if can_retry:
+    if can_retry_certainty:
 
         logger.info(
-            f"🔁 Editorial validation retry | "
+            f"🔁 Editorial certainty retry | "
             f"type={content_type} | "
-            f"errors={validation.get('errors', [])} | "
             f"first_output={len(candidate)} | "
-            f"minimum={minimum_length} | "
             f"target={target_length}"
         )
 
         retry_instruction = (
             build_certainty_retry_instruction(
                 target_length=target_length,
-                content_type=content_type,
-                minimum_length=minimum_length
+                content_type=content_type
             )
         )
 
@@ -1273,7 +1642,7 @@ def generate_editorial_candidate(
         except Exception as e:
 
             logger.exception(
-                f"❌ Editorial validation retry failed | "
+                f"❌ Editorial certainty retry failed | "
                 f"{e}"
             )
 
@@ -1281,14 +1650,13 @@ def generate_editorial_candidate(
                 "success": False,
                 "candidate": candidate,
                 "validation": validation,
-                "reason": "certainty_retry_provider_error",
+                "reason":
+                    "certainty_retry_provider_error",
                 "error": str(
                     e
                 ),
-                "certainty_retry_called":
-                    certainty_retry,
-                "adaptive_retry_called":
-                    adaptive_retry
+                "certainty_retry_called": True,
+                "length_retry_called": False
             }
 
         retry_candidate = normalize_text(
@@ -1309,10 +1677,9 @@ def generate_editorial_candidate(
         ]:
 
             logger.info(
-                f"✅ Editorial validation retry accepted | "
+                f"✅ Editorial certainty retry accepted | "
                 f"type={content_type} | "
                 f"output={len(retry_candidate)} | "
-                f"minimum={minimum_length} | "
                 f"target={target_length}"
             )
 
@@ -1320,40 +1687,178 @@ def generate_editorial_candidate(
                 "success": True,
                 "candidate": retry_candidate,
                 "validation": retry_validation,
-                "reason": "accepted_after_certainty_retry",
+                "reason":
+                    "accepted_after_certainty_retry",
                 "error": None,
-                "certainty_retry_called":
-                    certainty_retry,
-                "adaptive_retry_called":
-                    adaptive_retry,
-                "first_candidate":
-                    candidate,
-                "first_validation":
-                    validation
+                "certainty_retry_called": True,
+                "length_retry_called": False,
+                "first_candidate": candidate,
+                "first_validation": validation
             }
 
         logger.warning(
-            f"⚠️ Editorial validation retry rejected | "
+            f"⚠️ Editorial certainty retry rejected | "
             f"type={content_type} | "
-            f"errors="
-            f"{retry_validation['errors']} | "
+            f"errors={retry_validation['errors']} | "
             f"output={len(retry_candidate)} | "
-            f"minimum={minimum_length} | "
             f"target={target_length}"
         )
 
+        # =================================================
+        # Certainty Retry ممکن است این بار فقط از نظر طول
+        # کمی از Target عبور کند.
+        #
+        # در این حالت Length Retry نهایی مجاز است.
+        # =================================================
+
+        if (
+            LENGTH_RETRY_ENABLED
+            and only_length_validation_error(
+                retry_validation
+            )
+        ):
+
+            retry_target = max(
+                1,
+                target_length
+                - LENGTH_RETRY_MARGIN
+            )
+
+            logger.info(
+                f"📏 Editorial length retry "
+                f"after certainty | "
+                f"type={content_type} | "
+                f"output={len(retry_candidate)} | "
+                f"target={target_length}"
+            )
+
+            length_instruction = (
+                build_length_retry_instruction(
+                    target_length=target_length,
+                    content_type=content_type,
+                    previous_candidate=(
+                        retry_candidate
+                    )
+                )
+            )
+
+            try:
+
+                length_candidate = summarizer(
+                    original_text,
+                    length_instruction,
+                    retry_target
+                )
+
+            except Exception as e:
+
+                logger.exception(
+                    f"❌ Editorial length retry "
+                    f"after certainty failed | {e}"
+                )
+
+                return {
+                    "success": False,
+                    "candidate":
+                        retry_candidate,
+
+                    "validation":
+                        retry_validation,
+
+                    "reason":
+                        "length_retry_provider_error",
+
+                    "error":
+                        str(e),
+
+                    "certainty_retry_called":
+                        True,
+
+                    "length_retry_called":
+                        True
+                }
+
+            length_candidate = normalize_text(
+                length_candidate
+            )
+
+            length_validation = (
+                validate_editorial_candidate(
+                    original_text=original_text,
+                    candidate_text=length_candidate,
+                    target_length=target_length,
+                    content_type=content_type
+                )
+            )
+
+            if length_validation[
+                "valid"
+            ]:
+
+                logger.info(
+                    f"✅ Editorial length retry "
+                    f"after certainty accepted | "
+                    f"type={content_type} | "
+                    f"output="
+                    f"{len(length_candidate)}"
+                )
+
+                return {
+                    "success": True,
+                    "candidate":
+                        length_candidate,
+
+                    "validation":
+                        length_validation,
+
+                    "reason":
+                        "accepted_after_certainty_and_length_retry",
+
+                    "error":
+                        None,
+
+                    "certainty_retry_called":
+                        True,
+
+                    "length_retry_called":
+                        True,
+
+                    "first_candidate":
+                        candidate,
+
+                    "first_validation":
+                        validation,
+
+                    "certainty_retry_candidate":
+                        retry_candidate,
+
+                    "certainty_retry_validation":
+                        retry_validation
+                }
+
         return {
             "success": False,
-            "candidate": retry_candidate,
-            "validation": retry_validation,
-            "reason": "validation_failed",
-            "error": None,
+            "candidate":
+                retry_candidate,
+
+            "validation":
+                retry_validation,
+
+            "reason":
+                "validation_failed",
+
+            "error":
+                None,
+
             "certainty_retry_called":
-                certainty_retry,
-            "adaptive_retry_called":
-                adaptive_retry,
+                True,
+
+            "length_retry_called":
+                False,
+
             "first_candidate":
                 candidate,
+
             "first_validation":
                 validation
         }
@@ -1363,7 +1868,6 @@ def generate_editorial_candidate(
         f"type={content_type} | "
         f"errors={validation['errors']} | "
         f"output={len(candidate)} | "
-        f"minimum={minimum_length} | "
         f"target={target_length}"
     )
 
@@ -1374,7 +1878,7 @@ def generate_editorial_candidate(
         "reason": "validation_failed",
         "error": None,
         "certainty_retry_called": False,
-        "adaptive_retry_called": False
+        "length_retry_called": False
     }
 
 
@@ -1391,8 +1895,7 @@ def generate_admin_instruction_candidate(
     summarizer: Callable[
         [str, str, int],
         str
-    ],
-    minimum_length: int = 0
+    ]
 ) -> Dict[str, Any]:
 
     instruction = (
@@ -1400,8 +1903,7 @@ def generate_admin_instruction_candidate(
             target_length=target_length,
             content_type=content_type,
             admin_instruction=admin_instruction,
-            previous_summary=previous_summary,
-            minimum_length=minimum_length
+            previous_summary=previous_summary
         )
     )
 
@@ -1429,7 +1931,7 @@ def generate_admin_instruction_candidate(
                 e
             ),
             "certainty_retry_called": False,
-            "adaptive_retry_called": False
+            "length_retry_called": False
         }
 
     candidate = normalize_text(
@@ -1456,28 +1958,161 @@ def generate_admin_instruction_candidate(
             "reason": "accepted",
             "error": None,
             "certainty_retry_called": False,
-            "adaptive_retry_called": False
+            "length_retry_called": False
         }
 
-    certainty_retry = (
+    # =====================================================
+    # ADMIN LENGTH RETRY
+    # =====================================================
+
+    if (
+        LENGTH_RETRY_ENABLED
+        and only_length_validation_error(
+            validation
+        )
+    ):
+
+        retry_target = max(
+            1,
+            target_length
+            - LENGTH_RETRY_MARGIN
+        )
+
+        logger.info(
+            f"📏 Admin editorial length retry | "
+            f"type={content_type} | "
+            f"first_output={len(candidate)} | "
+            f"target={target_length} | "
+            f"retry_target={retry_target}"
+        )
+
+        retry_instruction = (
+            build_admin_length_retry_instruction(
+                target_length=target_length,
+                content_type=content_type,
+                admin_instruction=admin_instruction,
+                previous_summary=previous_summary,
+                failed_candidate=candidate
+            )
+        )
+
+        try:
+
+            retry_candidate = summarizer(
+                original_text,
+                retry_instruction,
+                retry_target
+            )
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Admin length retry failed | "
+                f"{e}"
+            )
+
+            return {
+                "success": False,
+                "candidate": candidate,
+                "validation": validation,
+                "reason":
+                    "length_retry_provider_error",
+                "error": str(
+                    e
+                ),
+                "certainty_retry_called": False,
+                "length_retry_called": True
+            }
+
+        retry_candidate = normalize_text(
+            retry_candidate
+        )
+
+        retry_validation = (
+            validate_editorial_candidate(
+                original_text=original_text,
+                candidate_text=retry_candidate,
+                target_length=target_length,
+                content_type=content_type
+            )
+        )
+
+        if retry_validation[
+            "valid"
+        ]:
+
+            logger.info(
+                f"✅ Admin editorial length retry accepted | "
+                f"type={content_type} | "
+                f"output={len(retry_candidate)}"
+            )
+
+            return {
+                "success": True,
+                "candidate":
+                    retry_candidate,
+
+                "validation":
+                    retry_validation,
+
+                "reason":
+                    "accepted_after_length_retry",
+
+                "error":
+                    None,
+
+                "certainty_retry_called":
+                    False,
+
+                "length_retry_called":
+                    True,
+
+                "first_candidate":
+                    candidate,
+
+                "first_validation":
+                    validation
+            }
+
+        return {
+            "success": False,
+            "candidate":
+                retry_candidate,
+
+            "validation":
+                retry_validation,
+
+            "reason":
+                "validation_failed",
+
+            "error":
+                None,
+
+            "certainty_retry_called":
+                False,
+
+            "length_retry_called":
+                True,
+
+            "first_candidate":
+                candidate,
+
+            "first_validation":
+                validation
+        }
+
+    # =====================================================
+    # ADMIN CERTAINTY RETRY
+    # =====================================================
+
+    can_retry_certainty = (
         CERTAINTY_RETRY_ENABLED
         and only_certainty_validation_error(
             validation
         )
     )
 
-    adaptive_retry = (
-        ADAPTIVE_RETRY_ENABLED
-        and adaptive_retry_validation_error(
-            validation,
-            minimum_length=minimum_length
-        )
-    )
-
-    if not (
-        certainty_retry
-        or adaptive_retry
-    ):
+    if not can_retry_certainty:
 
         logger.warning(
             f"⚠️ Admin editorial candidate rejected | "
@@ -1494,15 +2129,13 @@ def generate_admin_instruction_candidate(
             "reason": "validation_failed",
             "error": None,
             "certainty_retry_called": False,
-            "adaptive_retry_called": False
+            "length_retry_called": False
         }
 
     logger.info(
-        f"🔁 Admin editorial validation retry | "
+        f"🔁 Admin editorial certainty retry | "
         f"type={content_type} | "
-        f"errors={validation.get('errors', [])} | "
         f"first_output={len(candidate)} | "
-        f"minimum={minimum_length} | "
         f"target={target_length}"
     )
 
@@ -1511,8 +2144,7 @@ def generate_admin_instruction_candidate(
             target_length=target_length,
             content_type=content_type,
             admin_instruction=admin_instruction,
-            previous_summary=previous_summary,
-            minimum_length=minimum_length
+            previous_summary=previous_summary
         )
     )
 
@@ -1527,7 +2159,7 @@ def generate_admin_instruction_candidate(
     except Exception as e:
 
         logger.exception(
-            f"❌ Admin editorial validation retry failed | "
+            f"❌ Admin editorial certainty retry failed | "
             f"{e}"
         )
 
@@ -1535,14 +2167,13 @@ def generate_admin_instruction_candidate(
             "success": False,
             "candidate": candidate,
             "validation": validation,
-            "reason": "certainty_retry_provider_error",
+            "reason":
+                "certainty_retry_provider_error",
             "error": str(
                 e
             ),
-            "certainty_retry_called":
-                certainty_retry,
-            "adaptive_retry_called":
-                adaptive_retry
+            "certainty_retry_called": True,
+            "length_retry_called": False
         }
 
     retry_candidate = normalize_text(
@@ -1563,7 +2194,7 @@ def generate_admin_instruction_candidate(
     ]:
 
         logger.info(
-            f"✅ Admin editorial validation retry accepted | "
+            f"✅ Admin editorial certainty retry accepted | "
             f"type={content_type} | "
             f"output={len(retry_candidate)}"
         )
@@ -1572,17 +2203,121 @@ def generate_admin_instruction_candidate(
             "success": True,
             "candidate": retry_candidate,
             "validation": retry_validation,
-            "reason": "accepted_after_certainty_retry",
+            "reason":
+                "accepted_after_certainty_retry",
             "error": None,
-            "certainty_retry_called":
-                certainty_retry,
-            "adaptive_retry_called":
-                adaptive_retry,
-            "first_candidate":
-                candidate,
-            "first_validation":
-                validation
+            "certainty_retry_called": True,
+            "length_retry_called": False,
+            "first_candidate": candidate,
+            "first_validation": validation
         }
+
+    # =====================================================
+    # ADMIN CERTAINTY -> LENGTH RETRY
+    # =====================================================
+
+    if (
+        LENGTH_RETRY_ENABLED
+        and only_length_validation_error(
+            retry_validation
+        )
+    ):
+
+        retry_target = max(
+            1,
+            target_length
+            - LENGTH_RETRY_MARGIN
+        )
+
+        length_instruction = (
+            build_admin_length_retry_instruction(
+                target_length=target_length,
+                content_type=content_type,
+                admin_instruction=admin_instruction,
+                previous_summary=previous_summary,
+                failed_candidate=retry_candidate
+            )
+        )
+
+        try:
+
+            length_candidate = summarizer(
+                original_text,
+                length_instruction,
+                retry_target
+            )
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Admin length retry after certainty "
+                f"failed | {e}"
+            )
+
+            return {
+                "success": False,
+                "candidate":
+                    retry_candidate,
+
+                "validation":
+                    retry_validation,
+
+                "reason":
+                    "length_retry_provider_error",
+
+                "error":
+                    str(e),
+
+                "certainty_retry_called":
+                    True,
+
+                "length_retry_called":
+                    True
+            }
+
+        length_candidate = normalize_text(
+            length_candidate
+        )
+
+        length_validation = (
+            validate_editorial_candidate(
+                original_text=original_text,
+                candidate_text=length_candidate,
+                target_length=target_length,
+                content_type=content_type
+            )
+        )
+
+        if length_validation[
+            "valid"
+        ]:
+
+            return {
+                "success": True,
+                "candidate":
+                    length_candidate,
+
+                "validation":
+                    length_validation,
+
+                "reason":
+                    "accepted_after_certainty_and_length_retry",
+
+                "error":
+                    None,
+
+                "certainty_retry_called":
+                    True,
+
+                "length_retry_called":
+                    True,
+
+                "first_candidate":
+                    candidate,
+
+                "first_validation":
+                    validation
+            }
 
     return {
         "success": False,
@@ -1590,14 +2325,10 @@ def generate_admin_instruction_candidate(
         "validation": retry_validation,
         "reason": "validation_failed",
         "error": None,
-        "certainty_retry_called":
-            certainty_retry,
-        "adaptive_retry_called":
-            adaptive_retry,
-        "first_candidate":
-            candidate,
-        "first_validation":
-            validation
+        "certainty_retry_called": True,
+        "length_retry_called": False,
+        "first_candidate": candidate,
+        "first_validation": validation
     }
 
 
@@ -1624,6 +2355,7 @@ def summarize_editorial_content(
     )
 
     if not original_text:
+
         return None
 
     if (
@@ -1648,15 +2380,39 @@ def summarize_editorial_content(
     )
 
     if resolved_summarizer is None:
+
         return None
 
-    if len(original_text) <= target_length:
+    target_policy = (
+        calculate_effective_target(
+            original_text=original_text,
+            requested_target=target_length,
+            content_type=content_type
+        )
+    )
+
+    effective_target = int(
+        target_policy[
+            "effective_target"
+        ]
+    )
+
+    minimum_safe = int(
+        target_policy[
+            "minimum_safe"
+        ]
+    )
+
+    if (
+        len(original_text)
+        <= effective_target
+    ):
 
         validation = (
             validate_editorial_candidate(
                 original_text=original_text,
                 candidate_text=original_text,
-                target_length=target_length,
+                target_length=effective_target,
                 content_type=content_type
             )
         )
@@ -1668,36 +2424,18 @@ def summarize_editorial_content(
             "reason": "already_fits",
             "summarizer_called": False,
             "certainty_retry_called": False,
-            "adaptive_retry_called": False,
+            "length_retry_called": False,
             "requested_target":
                 target_length,
             "effective_target":
-                target_length,
-            "minimum_safe_length":
-                len(original_text),
-            "adaptive_target_applied":
-                False
+                effective_target,
+            "minimum_safe":
+                minimum_safe,
+            "adaptive_target":
+                target_policy[
+                    "adaptive"
+                ]
         }
-
-    adaptive = (
-        resolve_adaptive_target(
-            original_text=original_text,
-            content_type=content_type,
-            requested_target=target_length
-        )
-    )
-
-    effective_target = (
-        adaptive[
-            "effective_target"
-        ]
-    )
-
-    minimum_safe_length = (
-        adaptive[
-            "minimum_safe_length"
-        ]
-    )
 
     logger.info(
         f"🧠 Editorial full-body summary | "
@@ -1705,14 +2443,13 @@ def summarize_editorial_content(
         f"body={len(original_text)} | "
         f"requested_target={target_length} | "
         f"effective_target={effective_target} | "
-        f"minimum_safe={minimum_safe_length}"
+        f"minimum_safe={minimum_safe}"
     )
 
     instruction = (
         build_editorial_summary_instruction(
             target_length=effective_target,
-            content_type=content_type,
-            minimum_length=minimum_safe_length
+            content_type=content_type
         )
     )
 
@@ -1722,8 +2459,7 @@ def summarize_editorial_content(
             instruction=instruction,
             target_length=effective_target,
             content_type=content_type,
-            summarizer=resolved_summarizer,
-            minimum_length=minimum_safe_length
+            summarizer=resolved_summarizer
         )
     )
 
@@ -1740,13 +2476,13 @@ def summarize_editorial_content(
     ] = effective_target
 
     generation[
-        "minimum_safe_length"
-    ] = minimum_safe_length
+        "minimum_safe"
+    ] = minimum_safe
 
     generation[
-        "adaptive_target_applied"
-    ] = adaptive[
-        "adaptive_applied"
+        "adaptive_target"
+    ] = target_policy[
+        "adaptive"
     ]
 
     return generation
@@ -1800,6 +2536,7 @@ def regenerate_editorial_summary(
             metadata={
                 "regeneration_count":
                     regeneration_count,
+
                 "max_regeneration_count":
                     MAX_REGENERATION_COUNT
             }
@@ -1834,10 +2571,12 @@ def regenerate_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason="regeneration_not_allowed_for_content_type",
+            reason=
+                "regeneration_not_allowed_for_content_type",
             metadata={
                 "regeneration_count":
                     regeneration_count,
+
                 "max_regeneration_count":
                     MAX_REGENERATION_COUNT
             }
@@ -1874,9 +2613,12 @@ def regenerate_editorial_summary(
             metadata={
                 "regeneration_count":
                     regeneration_count,
+
                 "max_regeneration_count":
                     MAX_REGENERATION_COUNT,
-                "can_regenerate": False
+
+                "can_regenerate":
+                    False
             }
         )
 
@@ -1904,49 +2646,55 @@ def regenerate_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason="regeneration_provider_unavailable",
+            reason=
+                "regeneration_provider_unavailable",
             metadata={
                 "regeneration_count":
                     regeneration_count,
+
                 "max_regeneration_count":
                     MAX_REGENERATION_COUNT
             }
         )
 
-    requested_regeneration_target = max(
-        MIN_REGENERATION_TARGET,
-        target_length
-        - REGENERATION_TARGET_MARGIN
-    )
-
-    requested_regeneration_target = min(
-        requested_regeneration_target,
-        target_length
-    )
-
-    adaptive = (
-        resolve_adaptive_target(
+    target_policy = (
+        calculate_effective_target(
             original_text=original_text,
-            content_type=content_type,
-            requested_target=(
-                requested_regeneration_target
-            ),
-            minimum_target=(
-                MIN_REGENERATION_TARGET
-            )
+            requested_target=target_length,
+            content_type=content_type
         )
     )
 
-    regeneration_target = (
-        adaptive[
+    effective_target = int(
+        target_policy[
             "effective_target"
         ]
     )
 
-    minimum_safe_length = (
-        adaptive[
-            "minimum_safe_length"
+    regeneration_target = max(
+        MIN_REGENERATION_TARGET,
+        effective_target
+        - REGENERATION_TARGET_MARGIN
+    )
+
+    minimum_safe = int(
+        target_policy[
+            "minimum_safe"
         ]
+    )
+
+    if (
+        regeneration_target
+        < minimum_safe
+    ):
+
+        regeneration_target = (
+            effective_target
+        )
+
+    regeneration_target = min(
+        regeneration_target,
+        effective_target
     )
 
     instruction = (
@@ -1955,8 +2703,7 @@ def regenerate_editorial_summary(
                 regeneration_target
             ),
             content_type=content_type,
-            previous_summary=previous_summary,
-            minimum_length=minimum_safe_length
+            previous_summary=previous_summary
         )
     )
 
@@ -1967,22 +2714,18 @@ def regenerate_editorial_summary(
         f"{MAX_REGENERATION_COUNT} | "
         f"body={original_length} | "
         f"previous={len(previous_summary)} | "
-        f"requested_target="
-        f"{requested_regeneration_target} | "
-        f"effective_target="
-        f"{regeneration_target} | "
-        f"minimum_safe="
-        f"{minimum_safe_length}"
+        f"requested_target={target_length} | "
+        f"effective_target={effective_target} | "
+        f"generation_target={regeneration_target}"
     )
 
     generation = (
         generate_editorial_candidate(
             original_text=original_text,
             instruction=instruction,
-            target_length=regeneration_target,
+            target_length=effective_target,
             content_type=content_type,
-            summarizer=resolved_summarizer,
-            minimum_length=minimum_safe_length
+            summarizer=resolved_summarizer
         )
     )
 
@@ -2012,7 +2755,7 @@ def regenerate_editorial_summary(
                 or original_text
             ),
             summary_success=False,
-            target_length=target_length,
+            target_length=effective_target,
             original_length=original_length,
             suggested_length=len(
                 previous_summary
@@ -2026,10 +2769,11 @@ def regenerate_editorial_summary(
                 "max_regeneration_count":
                     MAX_REGENERATION_COUNT,
 
-                "can_regenerate": (
-                    next_count
-                    < MAX_REGENERATION_COUNT
-                ),
+                "can_regenerate":
+                    (
+                        next_count
+                        < MAX_REGENERATION_COUNT
+                    ),
 
                 "generation_reason":
                     generation[
@@ -2053,24 +2797,24 @@ def regenerate_editorial_summary(
                         False
                     ),
 
-                "adaptive_retry_called":
+                "length_retry_called":
                     generation.get(
-                        "adaptive_retry_called",
+                        "length_retry_called",
                         False
                     ),
 
                 "requested_target":
-                    requested_regeneration_target,
+                    target_length,
 
                 "effective_target":
-                    regeneration_target,
+                    effective_target,
 
-                "minimum_safe_length":
-                    minimum_safe_length,
+                "minimum_safe":
+                    minimum_safe,
 
-                "adaptive_target_applied":
-                    adaptive[
-                        "adaptive_applied"
+                "adaptive_target":
+                    target_policy[
+                        "adaptive"
                     ]
             }
         )
@@ -2099,12 +2843,13 @@ def regenerate_editorial_summary(
             original_text=original_text,
             suggested_text=previous_summary,
             summary_success=False,
-            target_length=target_length,
+            target_length=effective_target,
             original_length=original_length,
             suggested_length=len(
                 previous_summary
             ),
-            reason="regeneration_same_as_previous",
+            reason=
+                "regeneration_same_as_previous",
             metadata={
                 "regeneration_count":
                     next_count,
@@ -2112,10 +2857,11 @@ def regenerate_editorial_summary(
                 "max_regeneration_count":
                     MAX_REGENERATION_COUNT,
 
-                "can_regenerate": (
-                    next_count
-                    < MAX_REGENERATION_COUNT
-                ),
+                "can_regenerate":
+                    (
+                        next_count
+                        < MAX_REGENERATION_COUNT
+                    ),
 
                 "validation":
                     generation.get(
@@ -2128,30 +2874,24 @@ def regenerate_editorial_summary(
                         False
                     ),
 
-                "adaptive_retry_called":
+                "length_retry_called":
                     generation.get(
-                        "adaptive_retry_called",
+                        "length_retry_called",
                         False
-                    ),
-
-                "effective_target":
-                    regeneration_target,
-
-                "minimum_safe_length":
-                    minimum_safe_length
+                    )
             }
         )
 
     if (
         len(new_summary)
-        > regeneration_target
+        > effective_target
     ):
 
         logger.warning(
             f"⚠️ Regenerated editorial summary "
-            f"exceeds effective target | "
+            f"exceeds final target | "
             f"final={len(new_summary)} | "
-            f"target={regeneration_target}"
+            f"target={effective_target}"
         )
 
         return EditorialReviewResult(
@@ -2164,7 +2904,7 @@ def regenerate_editorial_summary(
                 or original_text
             ),
             summary_success=False,
-            target_length=target_length,
+            target_length=effective_target,
             original_length=original_length,
             suggested_length=len(
                 previous_summary
@@ -2178,16 +2918,14 @@ def regenerate_editorial_summary(
                 "max_regeneration_count":
                     MAX_REGENERATION_COUNT,
 
-                "can_regenerate": (
-                    next_count
-                    < MAX_REGENERATION_COUNT
-                ),
+                "can_regenerate":
+                    (
+                        next_count
+                        < MAX_REGENERATION_COUNT
+                    ),
 
                 "generation_reason":
-                    "summary_exceeds_target",
-
-                "effective_target":
-                    regeneration_target
+                    "summary_exceeds_target"
             }
         )
 
@@ -2197,8 +2935,6 @@ def regenerate_editorial_summary(
         f"count={next_count} | "
         f"body_before={original_length} | "
         f"body_after={len(new_summary)} | "
-        f"effective_target="
-        f"{regeneration_target} | "
         f"needs_approval=True"
     )
 
@@ -2209,12 +2945,13 @@ def regenerate_editorial_summary(
         original_text=original_text,
         suggested_text=new_summary,
         summary_success=True,
-        target_length=target_length,
+        target_length=effective_target,
         original_length=original_length,
         suggested_length=len(
             new_summary
         ),
-        reason="editorial_regeneration_ready",
+        reason=
+            "editorial_regeneration_ready",
         metadata={
             "regeneration_count":
                 next_count,
@@ -2222,10 +2959,11 @@ def regenerate_editorial_summary(
             "max_regeneration_count":
                 MAX_REGENERATION_COUNT,
 
-            "can_regenerate": (
-                next_count
-                < MAX_REGENERATION_COUNT
-            ),
+            "can_regenerate":
+                (
+                    next_count
+                    < MAX_REGENERATION_COUNT
+                ),
 
             "previous_summary":
                 previous_summary,
@@ -2241,24 +2979,24 @@ def regenerate_editorial_summary(
                     False
                 ),
 
-            "adaptive_retry_called":
+            "length_retry_called":
                 generation.get(
-                    "adaptive_retry_called",
+                    "length_retry_called",
                     False
                 ),
 
             "requested_target":
-                requested_regeneration_target,
+                target_length,
 
             "effective_target":
-                regeneration_target,
+                effective_target,
 
-            "minimum_safe_length":
-                minimum_safe_length,
+            "minimum_safe":
+                minimum_safe,
 
-            "adaptive_target_applied":
-                adaptive[
-                    "adaptive_applied"
+            "adaptive_target":
+                target_policy[
+                    "adaptive"
                 ]
         }
     )
@@ -2314,7 +3052,8 @@ def apply_admin_instruction_to_editorial_summary(
             suggested_length=len(
                 previous_summary
             ),
-            reason="admin_instruction_original_empty",
+            reason=
+                "admin_instruction_original_empty",
             metadata={
                 "admin_instruction":
                     admin_instruction
@@ -2339,9 +3078,11 @@ def apply_admin_instruction_to_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason="admin_instruction_empty",
+            reason=
+                "admin_instruction_empty",
             metadata={
-                "admin_instruction": ""
+                "admin_instruction":
+                    ""
             }
         )
 
@@ -2372,7 +3113,8 @@ def apply_admin_instruction_to_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason="admin_instruction_too_long",
+            reason=
+                "admin_instruction_too_long",
             metadata={
                 "admin_instruction":
                     admin_instruction,
@@ -2416,7 +3158,8 @@ def apply_admin_instruction_to_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason="admin_instruction_not_allowed_for_content_type",
+            reason=
+                "admin_instruction_not_allowed_for_content_type",
             metadata={
                 "admin_instruction":
                     admin_instruction
@@ -2447,47 +3190,49 @@ def apply_admin_instruction_to_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason="admin_instruction_provider_unavailable",
+            reason=
+                "admin_instruction_provider_unavailable",
             metadata={
                 "admin_instruction":
                     admin_instruction
             }
         )
 
-    requested_edit_target = max(
-        MIN_ADMIN_INSTRUCTION_TARGET,
-        target_length
-        - ADMIN_INSTRUCTION_TARGET_MARGIN
-    )
-
-    requested_edit_target = min(
-        requested_edit_target,
-        target_length
-    )
-
-    adaptive = (
-        resolve_adaptive_target(
+    target_policy = (
+        calculate_effective_target(
             original_text=original_text,
-            content_type=content_type,
-            requested_target=(
-                requested_edit_target
-            ),
-            minimum_target=(
-                MIN_ADMIN_INSTRUCTION_TARGET
-            )
+            requested_target=target_length,
+            content_type=content_type
         )
     )
 
-    edit_target = (
-        adaptive[
+    effective_target = int(
+        target_policy[
             "effective_target"
         ]
     )
 
-    minimum_safe_length = (
-        adaptive[
-            "minimum_safe_length"
+    minimum_safe = int(
+        target_policy[
+            "minimum_safe"
         ]
+    )
+
+    edit_target = max(
+        MIN_ADMIN_INSTRUCTION_TARGET,
+        effective_target
+        - ADMIN_INSTRUCTION_TARGET_MARGIN
+    )
+
+    if edit_target < minimum_safe:
+
+        edit_target = (
+            effective_target
+        )
+
+    edit_target = min(
+        edit_target,
+        effective_target
     )
 
     logger.info(
@@ -2496,12 +3241,9 @@ def apply_admin_instruction_to_editorial_summary(
         f"body={original_length} | "
         f"previous={len(previous_summary)} | "
         f"instruction={len(admin_instruction)} | "
-        f"requested_target="
-        f"{requested_edit_target} | "
-        f"effective_target="
-        f"{edit_target} | "
-        f"minimum_safe="
-        f"{minimum_safe_length}"
+        f"requested_target={target_length} | "
+        f"effective_target={effective_target} | "
+        f"generation_target={edit_target}"
     )
 
     generation = (
@@ -2509,10 +3251,9 @@ def apply_admin_instruction_to_editorial_summary(
             original_text=original_text,
             previous_summary=previous_summary,
             admin_instruction=admin_instruction,
-            target_length=edit_target,
+            target_length=effective_target,
             content_type=content_type,
-            summarizer=resolved_summarizer,
-            minimum_length=minimum_safe_length
+            summarizer=resolved_summarizer
         )
     )
 
@@ -2536,13 +3277,14 @@ def apply_admin_instruction_to_editorial_summary(
                 or original_text
             ),
             summary_success=False,
-            target_length=target_length,
+            target_length=effective_target,
             original_length=original_length,
             suggested_length=len(
                 previous_summary
                 or original_text
             ),
-            reason="admin_instruction_failed",
+            reason=
+                "admin_instruction_failed",
             metadata={
                 "admin_instruction":
                     admin_instruction,
@@ -2569,24 +3311,24 @@ def apply_admin_instruction_to_editorial_summary(
                         False
                     ),
 
-                "adaptive_retry_called":
+                "length_retry_called":
                     generation.get(
-                        "adaptive_retry_called",
+                        "length_retry_called",
                         False
                     ),
 
                 "requested_target":
-                    requested_edit_target,
+                    target_length,
 
                 "effective_target":
-                    edit_target,
+                    effective_target,
 
-                "minimum_safe_length":
-                    minimum_safe_length,
+                "minimum_safe":
+                    minimum_safe,
 
-                "adaptive_target_applied":
-                    adaptive[
-                        "adaptive_applied"
+                "adaptive_target":
+                    target_policy[
+                        "adaptive"
                     ]
             }
         )
@@ -2615,12 +3357,13 @@ def apply_admin_instruction_to_editorial_summary(
             original_text=original_text,
             suggested_text=previous_summary,
             summary_success=False,
-            target_length=target_length,
+            target_length=effective_target,
             original_length=original_length,
             suggested_length=len(
                 previous_summary
             ),
-            reason="admin_instruction_no_change",
+            reason=
+                "admin_instruction_no_change",
             metadata={
                 "admin_instruction":
                     admin_instruction,
@@ -2636,30 +3379,24 @@ def apply_admin_instruction_to_editorial_summary(
                         False
                     ),
 
-                "adaptive_retry_called":
+                "length_retry_called":
                     generation.get(
-                        "adaptive_retry_called",
+                        "length_retry_called",
                         False
-                    ),
-
-                "effective_target":
-                    edit_target,
-
-                "minimum_safe_length":
-                    minimum_safe_length
+                    )
             }
         )
 
     if (
         len(new_summary)
-        > edit_target
+        > effective_target
     ):
 
         logger.warning(
             f"⚠️ Admin edited summary exceeds "
-            f"effective target | "
+            f"final target | "
             f"final={len(new_summary)} | "
-            f"target={edit_target}"
+            f"target={effective_target}"
         )
 
         return EditorialReviewResult(
@@ -2672,22 +3409,20 @@ def apply_admin_instruction_to_editorial_summary(
                 or original_text
             ),
             summary_success=False,
-            target_length=target_length,
+            target_length=effective_target,
             original_length=original_length,
             suggested_length=len(
                 previous_summary
                 or original_text
             ),
-            reason="admin_instruction_failed",
+            reason=
+                "admin_instruction_failed",
             metadata={
                 "admin_instruction":
                     admin_instruction,
 
                 "generation_reason":
-                    "summary_exceeds_target",
-
-                "effective_target":
-                    edit_target
+                    "summary_exceeds_target"
             }
         )
 
@@ -2697,7 +3432,6 @@ def apply_admin_instruction_to_editorial_summary(
         f"body_before={original_length} | "
         f"body_after={len(new_summary)} | "
         f"instruction={len(admin_instruction)} | "
-        f"effective_target={edit_target} | "
         f"needs_approval=True"
     )
 
@@ -2708,12 +3442,13 @@ def apply_admin_instruction_to_editorial_summary(
         original_text=original_text,
         suggested_text=new_summary,
         summary_success=True,
-        target_length=target_length,
+        target_length=effective_target,
         original_length=original_length,
         suggested_length=len(
             new_summary
         ),
-        reason="admin_instruction_ready",
+        reason=
+            "admin_instruction_ready",
         metadata={
             "admin_instruction":
                 admin_instruction,
@@ -2732,9 +3467,9 @@ def apply_admin_instruction_to_editorial_summary(
                     False
                 ),
 
-            "adaptive_retry_called":
+            "length_retry_called":
                 generation.get(
-                    "adaptive_retry_called",
+                    "length_retry_called",
                     False
                 ),
 
@@ -2742,17 +3477,17 @@ def apply_admin_instruction_to_editorial_summary(
                 True,
 
             "requested_target":
-                requested_edit_target,
+                target_length,
 
             "effective_target":
-                edit_target,
+                effective_target,
 
-            "minimum_safe_length":
-                minimum_safe_length,
+            "minimum_safe":
+                minimum_safe,
 
-            "adaptive_target_applied":
-                adaptive[
-                    "adaptive_applied"
+            "adaptive_target":
+                target_policy[
+                    "adaptive"
                 ]
         }
     )
@@ -2792,8 +3527,10 @@ def analyze_editorial_content(
     if not original_text:
 
         return EditorialReviewResult(
-            content_type=CONTENT_TYPE_UNCERTAIN,
-            action=ACTION_PUBLISH_DIRECT,
+            content_type=
+                CONTENT_TYPE_UNCERTAIN,
+            action=
+                ACTION_PUBLISH_DIRECT,
             needs_approval=False,
             original_text="",
             suggested_text="",
@@ -2803,7 +3540,9 @@ def analyze_editorial_content(
             suggested_length=0,
             reason="empty_text",
             metadata={
-                "regeneration_count": 0,
+                "regeneration_count":
+                    0,
+
                 "max_regeneration_count":
                     MAX_REGENERATION_COUNT
             }
@@ -2816,6 +3555,10 @@ def analyze_editorial_content(
         )
     )
 
+    # =====================================================
+    # NORMAL NEWS
+    # =====================================================
+
     if (
         content_type
         == CONTENT_TYPE_NORMAL_NEWS
@@ -2823,7 +3566,8 @@ def analyze_editorial_content(
 
         return EditorialReviewResult(
             content_type=content_type,
-            action=ACTION_PUBLISH_DIRECT,
+            action=
+                ACTION_PUBLISH_DIRECT,
             needs_approval=False,
             original_text=original_text,
             suggested_text=original_text,
@@ -2833,11 +3577,20 @@ def analyze_editorial_content(
             suggested_length=original_length,
             reason="normal_news_direct",
             metadata={
-                "classification_only": True,
-                "regeneration_count": 0,
-                "can_regenerate": False
+                "classification_only":
+                    True,
+
+                "regeneration_count":
+                    0,
+
+                "can_regenerate":
+                    False
             }
         )
+
+    # =====================================================
+    # SENSITIVE
+    # =====================================================
 
     if (
         content_type
@@ -2846,7 +3599,8 @@ def analyze_editorial_content(
 
         return EditorialReviewResult(
             content_type=content_type,
-            action=ACTION_PUBLISH_ORIGINAL,
+            action=
+                ACTION_PUBLISH_ORIGINAL,
             needs_approval=True,
             original_text=original_text,
             suggested_text=original_text,
@@ -2854,13 +3608,23 @@ def analyze_editorial_content(
             target_length=target_length,
             original_length=original_length,
             suggested_length=original_length,
-            reason="sensitive_content_preserved",
+            reason=
+                "sensitive_content_preserved",
             metadata={
-                "automatic_summary": False,
-                "regeneration_count": 0,
-                "can_regenerate": False
+                "automatic_summary":
+                    False,
+
+                "regeneration_count":
+                    0,
+
+                "can_regenerate":
+                    False
             }
         )
+
+    # =====================================================
+    # UNCERTAIN
+    # =====================================================
 
     if (
         content_type
@@ -2879,11 +3643,20 @@ def analyze_editorial_content(
             suggested_length=original_length,
             reason="uncertain_content",
             metadata={
-                "automatic_summary": False,
-                "regeneration_count": 0,
-                "can_regenerate": False
+                "automatic_summary":
+                    False,
+
+                "regeneration_count":
+                    0,
+
+                "can_regenerate":
+                    False
             }
         )
+
+    # =====================================================
+    # OPINION / ANALYSIS
+    # =====================================================
 
     summary_result = (
         summarize_editorial_content(
@@ -2894,6 +3667,39 @@ def analyze_editorial_content(
         )
     )
 
+    effective_target = (
+        target_length
+    )
+
+    minimum_safe = 0
+
+    adaptive_target = False
+
+    if summary_result is not None:
+
+        effective_target = int(
+            summary_result.get(
+                "effective_target",
+                target_length
+            )
+            or target_length
+        )
+
+        minimum_safe = int(
+            summary_result.get(
+                "minimum_safe",
+                0
+            )
+            or 0
+        )
+
+        adaptive_target = bool(
+            summary_result.get(
+                "adaptive_target",
+                False
+            )
+        )
+
     if (
         summary_result is None
         or not summary_result.get(
@@ -2903,10 +3709,26 @@ def analyze_editorial_content(
     ):
 
         metadata: Dict[str, Any] = {
-            "regeneration_count": 0,
+            "regeneration_count":
+                0,
+
             "max_regeneration_count":
                 MAX_REGENERATION_COUNT,
-            "can_regenerate": False
+
+            "can_regenerate":
+                False,
+
+            "requested_target":
+                target_length,
+
+            "effective_target":
+                effective_target,
+
+            "minimum_safe":
+                minimum_safe,
+
+            "adaptive_target":
+                adaptive_target
         }
 
         if summary_result is not None:
@@ -2934,33 +3756,9 @@ def analyze_editorial_content(
                         False
                     ),
 
-                "adaptive_retry_called":
+                "length_retry_called":
                     summary_result.get(
-                        "adaptive_retry_called",
-                        False
-                    ),
-
-                "requested_target":
-                    summary_result.get(
-                        "requested_target",
-                        target_length
-                    ),
-
-                "effective_target":
-                    summary_result.get(
-                        "effective_target",
-                        target_length
-                    ),
-
-                "minimum_safe_length":
-                    summary_result.get(
-                        "minimum_safe_length",
-                        0
-                    ),
-
-                "adaptive_target_applied":
-                    summary_result.get(
-                        "adaptive_target_applied",
+                        "length_retry_called",
                         False
                     )
             })
@@ -2977,7 +3775,7 @@ def analyze_editorial_content(
             original_text=original_text,
             suggested_text=original_text,
             summary_success=False,
-            target_length=target_length,
+            target_length=effective_target,
             original_length=original_length,
             suggested_length=original_length,
             reason="summary_unavailable",
@@ -2997,14 +3795,12 @@ def analyze_editorial_content(
         f"type={content_type} | "
         f"before={original_length} | "
         f"after={len(suggested_text)} | "
-        f"requested_target="
-        f"{target_length} | "
-        f"effective_target="
-        f"{summary_result.get('effective_target', target_length)} | "
+        f"requested_target={target_length} | "
+        f"effective_target={effective_target} | "
         f"certainty_retry="
         f"{summary_result.get('certainty_retry_called', False)} | "
-        f"adaptive_retry="
-        f"{summary_result.get('adaptive_retry_called', False)} | "
+        f"length_retry="
+        f"{summary_result.get('length_retry_called', False)} | "
         f"needs_approval=True"
     )
 
@@ -3015,12 +3811,13 @@ def analyze_editorial_content(
         original_text=original_text,
         suggested_text=suggested_text,
         summary_success=True,
-        target_length=target_length,
+        target_length=effective_target,
         original_length=original_length,
         suggested_length=len(
             suggested_text
         ),
-        reason="editorial_summary_ready",
+        reason=
+            "editorial_summary_ready",
         metadata={
             "summary_reason":
                 summary_result.get(
@@ -3032,12 +3829,14 @@ def analyze_editorial_content(
                     "validation"
                 ),
 
-            "regeneration_count": 0,
+            "regeneration_count":
+                0,
 
             "max_regeneration_count":
                 MAX_REGENERATION_COUNT,
 
-            "can_regenerate": True,
+            "can_regenerate":
+                True,
 
             "certainty_retry_called":
                 summary_result.get(
@@ -3045,35 +3844,23 @@ def analyze_editorial_content(
                     False
                 ),
 
-            "adaptive_retry_called":
+            "length_retry_called":
                 summary_result.get(
-                    "adaptive_retry_called",
+                    "length_retry_called",
                     False
                 ),
 
             "requested_target":
-                summary_result.get(
-                    "requested_target",
-                    target_length
-                ),
+                target_length,
 
             "effective_target":
-                summary_result.get(
-                    "effective_target",
-                    target_length
-                ),
+                effective_target,
 
-            "minimum_safe_length":
-                summary_result.get(
-                    "minimum_safe_length",
-                    0
-                ),
+            "minimum_safe":
+                minimum_safe,
 
-            "adaptive_target_applied":
-                summary_result.get(
-                    "adaptive_target_applied",
-                    False
-                )
+            "adaptive_target":
+                adaptive_target
         }
     )
 
