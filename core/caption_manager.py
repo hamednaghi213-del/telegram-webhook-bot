@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 
 from html import escape, unescape
@@ -9,6 +10,16 @@ from core.cleaner import clean_text
 
 from core.telegram_caption_entities import (
     build_telegram_caption_entities
+)
+
+from core.smart_summarizer import (
+    DEFAULT_MAX_REDUCTION_RATIO,
+    summarize_text_safely
+)
+
+from core.ai_summarizer_provider import (
+    gemini_provider_configured,
+    summarize_with_gemini
 )
 
 
@@ -35,6 +46,42 @@ TELEGRAM_MESSAGE_SAFE_LIMIT = 4000
 
 BALE_CAPTION_SAFE_LIMIT = 4000
 BALE_MESSAGE_SAFE_LIMIT = 4000
+
+
+# =========================================================
+# SMART SUMMARIZER POLICY
+# =========================================================
+
+SMART_SUMMARIZER_ENV = (
+    "ENABLE_SMART_SUMMARIZER"
+)
+
+SMART_SUMMARIZER_MAX_REDUCTION = (
+    DEFAULT_MAX_REDUCTION_RATIO
+)
+
+
+def smart_summarizer_enabled() -> bool:
+
+    value = (
+        os.getenv(
+            SMART_SUMMARIZER_ENV,
+            "false"
+        )
+        or ""
+    )
+
+    return (
+        value
+        .strip()
+        .lower()
+        in (
+            "1",
+            "true",
+            "yes",
+            "on"
+        )
+    )
 
 
 # =========================================================
@@ -814,6 +861,523 @@ def _combined_blockquotes(
 
 
 # =========================================================
+# SMART TELEGRAM MEDIA SUMMARIZATION
+#
+# این مسیر فقط زمانی فعال می‌شود که:
+#
+# ENABLE_SMART_SUMMARIZER=true
+#
+# و FULL / COMPACT در Caption جا نشده باشند.
+#
+# اگر هر مرحله شکست بخورد:
+#
+# None برمی‌گردد
+#
+# و Caption Manager دقیقاً وارد Overflow پایدار قبلی می‌شود.
+# =========================================================
+
+def try_smart_telegram_media_summary(
+    main_text: str,
+    blockquote_blocks: List[
+        Dict[str, Any]
+    ],
+    expandable_blocks: List[
+        Dict[str, Any]
+    ],
+    branding: str,
+    caption_limit: int
+) -> Optional[Dict[str, Any]]:
+
+    if not smart_summarizer_enabled():
+
+        logger.info(
+            "ℹ️ Smart summarizer disabled | "
+            "legacy overflow preserved"
+        )
+
+        return None
+
+    if not gemini_provider_configured():
+
+        logger.warning(
+            "⚠️ Smart summarizer enabled but "
+            "Gemini provider is not configured | "
+            "legacy overflow preserved"
+        )
+
+        return None
+
+    main_text = normalize_text(
+        main_text
+    )
+
+    branding = normalize_text(
+        branding
+    )
+
+    combined_blocks = (
+        _combined_blockquotes(
+            blockquote_blocks,
+            expandable_blocks
+        )
+    )
+
+    # =====================================================
+    # CLEAN SOURCE PARTS
+    # =====================================================
+
+    source_parts: List[
+        Dict[str, Any]
+    ] = []
+
+    if main_text:
+
+        source_parts.append({
+            "kind": "main",
+            "text": main_text,
+            "offset": 0,
+            "expandable": False
+        })
+
+    for block in combined_blocks:
+
+        cleaned = (
+            clean_blockquote_text(
+                block.get(
+                    "text",
+                    ""
+                )
+            )
+        )
+
+        if not cleaned:
+            continue
+
+        source_parts.append({
+            "kind": "block",
+            "text": cleaned,
+            "offset": block.get(
+                "offset",
+                0
+            ),
+            "expandable": bool(
+                block.get(
+                    "expandable",
+                    False
+                )
+            )
+        })
+
+    if not source_parts:
+
+        return None
+
+    # =====================================================
+    # BRANDING COST
+    # =====================================================
+
+    branding_cost = (
+        len(branding)
+        + 2
+        if branding
+        else 0
+    )
+
+    available_content = (
+        caption_limit
+        - branding_cost
+    )
+
+    if available_content <= 0:
+
+        logger.warning(
+            "⚠️ Smart summary skipped | "
+            "branding consumes caption capacity"
+        )
+
+        return None
+
+    # =====================================================
+    # SEPARATOR COST
+    #
+    # تمام بخش‌ها با دو newline به هم متصل می‌شوند.
+    # =====================================================
+
+    separator_cost = (
+        2
+        * max(
+            0,
+            len(source_parts)
+            - 1
+        )
+    )
+
+    available_text_capacity = (
+        available_content
+        - separator_cost
+    )
+
+    if available_text_capacity <= 0:
+
+        return None
+
+    total_source_text_length = sum(
+        len(
+            item[
+                "text"
+            ]
+        )
+        for item
+        in source_parts
+    )
+
+    if total_source_text_length <= 0:
+
+        return None
+
+    visible_source_length = (
+        total_source_text_length
+        + separator_cost
+    )
+
+    if (
+        visible_source_length
+        <= available_content
+    ):
+
+        return None
+
+    required_reduction_ratio = (
+        (
+            visible_source_length
+            - available_content
+        )
+        / visible_source_length
+    )
+
+    if (
+        required_reduction_ratio
+        > SMART_SUMMARIZER_MAX_REDUCTION
+    ):
+
+        logger.info(
+            f"ℹ️ Smart summary skipped before AI | "
+            f"required_reduction="
+            f"{required_reduction_ratio:.3f} | "
+            f"max="
+            f"{SMART_SUMMARIZER_MAX_REDUCTION:.3f}"
+        )
+
+        return None
+
+    logger.info(
+        f"🧠 Smart media summarization started | "
+        f"parts={len(source_parts)} | "
+        f"source_visible={visible_source_length} | "
+        f"capacity={available_content} | "
+        f"required_reduction="
+        f"{required_reduction_ratio:.3f}"
+    )
+
+    # =====================================================
+    # PROPORTIONAL BUDGET
+    #
+    # بودجه هر بخش متناسب با طول همان بخش تعیین می‌شود.
+    #
+    # Main و Blockquote جداگانه خلاصه می‌شوند تا مرز Entity
+    # از بین نرود.
+    # =====================================================
+
+    summarized_parts: List[
+        Dict[str, Any]
+    ] = []
+
+    remaining_budget = (
+        available_text_capacity
+    )
+
+    remaining_source_length = (
+        total_source_text_length
+    )
+
+    for index, item in enumerate(
+        source_parts
+    ):
+
+        source_text = (
+            item[
+                "text"
+            ]
+        )
+
+        source_length = len(
+            source_text
+        )
+
+        is_last = (
+            index
+            == len(source_parts)
+            - 1
+        )
+
+        if is_last:
+
+            target_length = max(
+                1,
+                remaining_budget
+            )
+
+        else:
+
+            if remaining_source_length <= 0:
+
+                return None
+
+            proportional_target = int(
+                remaining_budget
+                * (
+                    source_length
+                    / remaining_source_length
+                )
+            )
+
+            target_length = max(
+                1,
+                min(
+                    source_length,
+                    proportional_target
+                )
+            )
+
+        # =================================================
+        # IMPORTANT
+        #
+        # اگر یک بخش خودش داخل بودجه باشد AI برای آن بخش
+        # هیچ تغییری ایجاد نمی‌کند.
+        # =================================================
+
+        result = (
+            summarize_text_safely(
+                original_text=source_text,
+                target_length=target_length,
+                summarizer=summarize_with_gemini,
+                max_reduction_ratio=(
+                    SMART_SUMMARIZER_MAX_REDUCTION
+                )
+            )
+        )
+
+        if not result.success:
+
+            logger.warning(
+                f"⚠️ Smart media summary rejected | "
+                f"part={index + 1} | "
+                f"kind={item['kind']} | "
+                f"reason={result.reason}"
+            )
+
+            return None
+
+        summarized_text = (
+            normalize_text(
+                result.summary_text
+            )
+        )
+
+        if not summarized_text:
+
+            logger.warning(
+                f"⚠️ Smart summary produced "
+                f"empty part | index={index + 1}"
+            )
+
+            return None
+
+        summarized_parts.append({
+            "kind": item[
+                "kind"
+            ],
+            "text": summarized_text,
+            "offset": item[
+                "offset"
+            ],
+            "expandable": item[
+                "expandable"
+            ]
+        })
+
+        remaining_budget -= len(
+            summarized_text
+        )
+
+        remaining_source_length -= (
+            source_length
+        )
+
+        if remaining_budget < 0:
+
+            logger.warning(
+                "⚠️ Smart summary exceeded "
+                "allocated text capacity"
+            )
+
+            return None
+
+    # =====================================================
+    # REBUILD MAIN + BLOCKS
+    # =====================================================
+
+    summarized_main = ""
+
+    summarized_normal_blocks: List[
+        Dict[str, Any]
+    ] = []
+
+    summarized_expandable_blocks: List[
+        Dict[str, Any]
+    ] = []
+
+    for item in summarized_parts:
+
+        if item[
+            "kind"
+        ] == "main":
+
+            summarized_main = (
+                item[
+                    "text"
+                ]
+            )
+
+            continue
+
+        rebuilt_block = {
+            "offset": item[
+                "offset"
+            ],
+            "text": item[
+                "text"
+            ]
+        }
+
+        if item[
+            "expandable"
+        ]:
+
+            rebuilt_block[
+                "type"
+            ] = (
+                "expandable_blockquote"
+            )
+
+            summarized_expandable_blocks.append(
+                rebuilt_block
+            )
+
+        else:
+
+            rebuilt_block[
+                "type"
+            ] = "blockquote"
+
+            summarized_normal_blocks.append(
+                rebuilt_block
+            )
+
+    # =====================================================
+    # ENTITY REBUILD
+    #
+    # Entityها از متن خلاصه جدید ساخته می‌شوند.
+    # Offset قدیمی Caption استفاده نمی‌شود.
+    # =====================================================
+
+    try:
+
+        entity_result = (
+            build_telegram_caption_entities(
+                main_text=summarized_main,
+                blockquote_blocks=(
+                    summarized_normal_blocks
+                ),
+                expandable_blocks=(
+                    summarized_expandable_blocks
+                ),
+                branding="",
+                include_branding_entities=False
+            )
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Smart summary entity rebuild failed | "
+            f"{e}"
+        )
+
+        return None
+
+    base_caption = (
+        entity_result.get(
+            "caption",
+            ""
+        )
+        or ""
+    )
+
+    caption_entities = list(
+        entity_result.get(
+            "caption_entities",
+            []
+        )
+        or []
+    )
+
+    final_caption = (
+        append_final_telegram_media_branding(
+            base_caption,
+            branding,
+            has_expandable=bool(
+                summarized_expandable_blocks
+            )
+        )
+    )
+
+    if (
+        len(final_caption)
+        > caption_limit
+    ):
+
+        logger.warning(
+            f"⚠️ Smart summary final caption "
+            f"still too long | "
+            f"caption={len(final_caption)} | "
+            f"limit={caption_limit}"
+        )
+
+        return None
+
+    logger.info(
+        f"✅ Smart media summary accepted | "
+        f"caption={len(final_caption)} | "
+        f"entities={len(caption_entities)} | "
+        f"followups=0 | "
+        f"reduction_required="
+        f"{required_reduction_ratio:.3f}"
+    )
+
+    return {
+        "media_caption": final_caption,
+        "media_parse_mode": None,
+        "media_caption_entities": (
+            caption_entities
+        ),
+        "followup_messages": [],
+        "blockquote_messages": [],
+        "document_fallback": False
+    }
+
+
+# =========================================================
 # TELEGRAM BLOCKQUOTES
 # =========================================================
 
@@ -1539,6 +2103,40 @@ def create_telegram_plan(
             )
 
         # =================================================
+        # 2.5 SMART SUMMARY
+        #
+        # فقط وقتی FULL و COMPACT هر دو Fail شده‌اند.
+        #
+        # اگر AI خاموش یا ناموفق باشد:
+        # هیچ تغییری در رفتار قبلی ایجاد نمی‌شود.
+        # =================================================
+
+        smart_plan = (
+            try_smart_telegram_media_summary(
+                main_text=compact_main,
+                blockquote_blocks=(
+                    blockquote_blocks
+                ),
+                expandable_blocks=(
+                    expandable_blocks
+                ),
+                branding=branding,
+                caption_limit=(
+                    TELEGRAM_CAPTION_LIMIT
+                )
+            )
+        )
+
+        if smart_plan is not None:
+
+            logger.info(
+                "✅ Telegram SMART ONE-MESSAGE "
+                "plan selected"
+            )
+
+            return smart_plan
+
+        # =================================================
         # 3. REAL OVERFLOW
         # =================================================
 
@@ -1739,9 +2337,6 @@ def create_telegram_plan(
 
         # =================================================
         # BLOCKQUOTE OVERFLOW
-        #
-        # IMPORTANT:
-        # ادامه Blockquote باید Branding خودش را داشته باشد.
         # =================================================
 
         if remaining_blocks:
@@ -1818,6 +2413,37 @@ def create_telegram_plan(
         ] = compact_final
 
         return plan
+
+    # =====================================================
+    # SMART SUMMARY FOR NORMAL MEDIA
+    #
+    # فقط بعد از شکست NORMAL + COMPACT.
+    # =====================================================
+
+    smart_plan = (
+        try_smart_telegram_media_summary(
+            main_text=compact_main,
+            blockquote_blocks=[],
+            expandable_blocks=[],
+            branding=branding,
+            caption_limit=(
+                TELEGRAM_CAPTION_SAFE_LIMIT
+            )
+        )
+    )
+
+    if smart_plan is not None:
+
+        logger.info(
+            "✅ Telegram SMART normal-media "
+            "plan selected"
+        )
+
+        return smart_plan
+
+    # =====================================================
+    # LEGACY NORMAL OVERFLOW
+    # =====================================================
 
     branding_cost = (
         len(branding)
@@ -1917,6 +2543,10 @@ def create_telegram_plan(
 
 # =========================================================
 # BALE MEDIA PLAN
+#
+# IMPORTANT:
+# در این مرحله AI به Bale متصل نشده است.
+# رفتار Bale کاملاً همان رفتار پایدار قبلی است.
 # =========================================================
 
 def create_bale_plan(
@@ -2074,6 +2704,9 @@ def create_bale_plan(
 
 # =========================================================
 # TELEGRAM TEXT PLAN
+#
+# IMPORTANT:
+# در این مرحله AI به پیام متنی 4096 متصل نشده است.
 # =========================================================
 
 def create_telegram_text_plan(
@@ -2340,7 +2973,9 @@ def analyze_content(
         f"main={len(main_text)} | "
         f"blockquote={len(blockquote_blocks)} | "
         f"expandable={len(expandable_blocks)} | "
-        f"branding={len(branding)}"
+        f"branding={len(branding)} | "
+        f"smart_summary="
+        f"{smart_summarizer_enabled()}"
     )
 
     plan = PublicationPlan()
@@ -2422,7 +3057,9 @@ def analyze_content(
         f"bale_caption="
         f"{len(plan.bale['media_caption'])} | "
         f"bale_followup="
-        f"{len(plan.bale['followup_messages'])}"
+        f"{len(plan.bale['followup_messages'])} | "
+        f"smart_summary="
+        f"{smart_summarizer_enabled()}"
     )
 
     return plan
