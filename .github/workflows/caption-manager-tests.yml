@@ -35,20 +35,4 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          pytest -v \
-            tests/test_caption_manager.py \
-            tests/test_media_handler_integration.py \
-            tests/test_content_entities.py \
-            tests/test_webhook_handler_integration.py \
-            tests/test_live_regressions.py \
-            tests/test_telegram_caption_entities.py \
-            tests/test_media_caption_entities_send.py \
-            tests/test_branding_direction_debug.py \
-            tests/test_final_caption_boundary_debug.py \
-            tests/test_final_telegram_payload_debug.py \
-            tests/test_smart_summarizer.py \
-            tests/test_ai_summarizer_provider.py \
-            tests/test_editorial_review.py \
-            tests/test_editorial_pending.py \
-            tests/test_editorial_webhook_integration.py \
-            tests/test_editorial_structure.py
+          pytest -v tests
