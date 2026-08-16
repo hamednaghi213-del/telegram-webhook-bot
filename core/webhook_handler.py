@@ -1355,14 +1355,6 @@ def process_single_photo_video(
             )
         )
 
-        logger.info(
-            f"🔬 SINGLE-MEDIA-LENGTHS | "
-            f"formatted={len(formatted_main_text)} | "
-            f"branding={len(branding)} | "
-            f"combined_estimate="
-            f"{len(formatted_main_text) + len(branding)}"
-        )
-
         publication_plan = (
             analyze_content(
                 main_text=formatted_main_text,
@@ -1377,22 +1369,6 @@ def process_single_photo_video(
                 ),
                 branding=branding
             )
-        )
-
-        logger.info(
-            f"🔬 SINGLE-MEDIA-PLAN | "
-            f"telegram_caption_length="
-            f"{len(publication_plan.telegram.get('media_caption', ''))} | "
-            f"telegram_followups="
-            f"{len(publication_plan.telegram.get('followup_messages', []))} | "
-            f"telegram_blockquotes="
-            f"{len(publication_plan.telegram.get('blockquote_messages', []))} | "
-            f"telegram_fallback="
-            f"{publication_plan.telegram.get('document_fallback', False)} | "
-            f"bale_caption_length="
-            f"{len(publication_plan.bale.get('media_caption', ''))} | "
-            f"bale_followups="
-            f"{len(publication_plan.bale.get('followup_messages', []))}"
         )
 
         files = [
@@ -1684,19 +1660,6 @@ def process_text_message(
             )
         )
 
-        logger.info(
-            f"🔬 TEXT-PRE-FORMAT | "
-            f"raw={len(text or '')} | "
-            f"main="
-            f"{len(prepared['main_text'])} | "
-            f"blockquote="
-            f"{len(prepared['blockquote_blocks'])} | "
-            f"expandable="
-            f"{len(prepared['expandable_blocks'])} | "
-            f"other_entities="
-            f"{len(prepared['other_entities'])}"
-        )
-
         return publish_prepared_text(
             chat_id=chat_id,
             main_text=(
@@ -1834,17 +1797,6 @@ def build_editorial_source_text(
 
 # =========================================================
 # EDITORIAL BUTTONS
-#
-# ترتیب:
-#
-# ✅ انتشار خلاصه
-# ✏️ اصلاح با دستور ادمین
-# 📄 انتشار متن اصلی
-# 🔄 خلاصه‌سازی دوباره
-# ❌ لغو
-#
-# دکمه اصلاح فقط وقتی Summary معتبر وجود دارد
-# نمایش داده می‌شود.
 # =========================================================
 
 def build_editorial_keyboard(
@@ -2067,10 +2019,6 @@ def try_queue_editorial_text_review(
 
             return False
 
-        # =================================================
-        # STRUCTURE EXTRACTION
-        # =================================================
-
         structure = (
             extract_editorial_structure(
                 editorial_source
@@ -2092,38 +2040,12 @@ def try_queue_editorial_text_review(
             or editorial_source
         )
 
-        logger.info(
-            f"🧩 Editorial structure ready | "
-            f"user={chat_id} | "
-            f"title={bool(editorial_title)} | "
-            f"author={editorial_author or '-'} | "
-            f"source={len(editorial_source)} | "
-            f"body={len(editorial_body)}"
-        )
-
-        logger.info(
-            f"🧠 Editorial review candidate | "
-            f"user={chat_id} | "
-            f"length={len(editorial_body)}"
-        )
-
         review_result = (
             analyze_editorial_content(
                 original_text=(
                     editorial_body
                 )
             )
-        )
-
-        logger.info(
-            f"🧠 Editorial review result | "
-            f"user={chat_id} | "
-            f"type="
-            f"{review_result.content_type} | "
-            f"approval="
-            f"{review_result.needs_approval} | "
-            f"summary_success="
-            f"{review_result.summary_success}"
         )
 
         if (
@@ -2303,6 +2225,378 @@ def try_queue_editorial_text_review(
 
 
 # =========================================================
+# ADMIN INSTRUCTION TEXT GATE
+#
+# اگر Review در حالت Waiting باشد،
+# پیام بعدی کاربر به عنوان خبر پردازش نمی‌شود.
+# =========================================================
+
+def try_handle_admin_instruction_text(
+    chat_id: int,
+    text: str,
+    req_id: str
+) -> bool:
+
+    text = str(
+        text
+        or ""
+    ).strip()
+
+    if not text:
+        return False
+
+    try:
+
+        from core.editorial_pending import (
+            get_waiting_admin_instruction_review,
+            update_pending_summary,
+            record_admin_instruction_applied,
+            clear_admin_instruction_waiting
+        )
+
+        from core.editorial_review import (
+            MAX_REGENERATION_COUNT,
+            apply_admin_instruction_to_editorial_summary
+        )
+
+        review = (
+            get_waiting_admin_instruction_review(
+                user_id=chat_id
+            )
+        )
+
+        if review is None:
+            return False
+
+        metadata = (
+            review.metadata
+            or {}
+        )
+
+        editorial_body = (
+            metadata.get(
+                "editorial_body",
+                ""
+            )
+            or ""
+        )
+
+        if not editorial_body:
+
+            clear_admin_instruction_waiting(
+                review_id=review.review_id,
+                user_id=chat_id
+            )
+
+            send_message(
+                chat_id,
+                (
+                    "❌ بدنه اصلی این یادداشت "
+                    "برای اصلاح پیدا نشد.\n\n"
+                    "نسخه فعلی خلاصه بدون تغییر باقی ماند."
+                )
+            )
+
+            logger.error(
+                f"[{req_id}] ❌ Admin instruction body missing | "
+                f"review_id={review.review_id}"
+            )
+
+            return True
+
+        logger.info(
+            f"[{req_id}] ✏️ Admin instruction received | "
+            f"review_id={review.review_id} | "
+            f"user={chat_id} | "
+            f"instruction_length={len(text)}"
+        )
+
+        send_message(
+            chat_id,
+            "✏️ در حال اعمال دستور شما روی خلاصه..."
+        )
+
+        result = (
+            apply_admin_instruction_to_editorial_summary(
+                original_text=(
+                    editorial_body
+                ),
+                previous_summary=(
+                    review.current_summary
+                ),
+                admin_instruction=text,
+                content_type=(
+                    review.content_type
+                )
+            )
+        )
+
+        # =================================================
+        # FAILED
+        #
+        # خلاصه قبلی حفظ می‌شود.
+        # Waiting خاموش می‌شود تا پیام بعدی ناخواسته
+        # به عنوان Instruction مصرف نشود.
+        # =================================================
+
+        if not result.summary_success:
+
+            clear_admin_instruction_waiting(
+                review_id=review.review_id,
+                user_id=chat_id
+            )
+
+            can_regenerate = (
+                review.regeneration_count
+                < MAX_REGENERATION_COUNT
+            )
+
+            keyboard = (
+                build_editorial_keyboard(
+                    review_id=(
+                        review.review_id
+                    ),
+                    has_summary=bool(
+                        review.current_summary
+                    ),
+                    can_regenerate=(
+                        can_regenerate
+                    )
+                )
+            )
+
+            reason = (
+                result.reason
+                or "admin_instruction_failed"
+            )
+
+            if (
+                reason
+                == "admin_instruction_too_long"
+            ):
+
+                message = (
+                    "⚠️ دستور ادمین بیش از حد طولانی بود.\n\n"
+                    "نسخه فعلی خلاصه بدون تغییر محفوظ ماند."
+                )
+
+            elif (
+                reason
+                == "admin_instruction_no_change"
+            ):
+
+                message = (
+                    "ℹ️ دستور شما تغییر مؤثری در خلاصه ایجاد نکرد.\n\n"
+                    "نسخه فعلی محفوظ ماند."
+                )
+
+            elif (
+                reason
+                == "admin_instruction_empty"
+            ):
+
+                message = (
+                    "⚠️ دستور خالی بود.\n\n"
+                    "نسخه فعلی خلاصه بدون تغییر محفوظ ماند."
+                )
+
+            else:
+
+                message = (
+                    "⚠️ نسخه اصلاح‌شده مورد تأیید "
+                    "سیستم ضدتحریف قرار نگرفت.\n\n"
+                    "نسخه فعلی خلاصه بدون تغییر محفوظ ماند."
+                )
+
+            send_message(
+                chat_id=chat_id,
+                text=message,
+                reply_markup=keyboard
+            )
+
+            logger.warning(
+                f"[{req_id}] ⚠️ Admin instruction rejected | "
+                f"review_id={review.review_id} | "
+                f"reason={reason}"
+            )
+
+            return True
+
+        # =================================================
+        # SUCCESS
+        # =================================================
+
+        updated_metadata = dict(
+            review.metadata
+            or {}
+        )
+
+        updated_metadata.update({
+            "summary_success":
+                True,
+
+            "admin_instruction_reason":
+                result.reason,
+
+            "admin_instruction_validation":
+                result.metadata.get(
+                    "validation"
+                ),
+
+            "admin_instruction_last_text":
+                text
+        })
+
+        updated = (
+            update_pending_summary(
+                review_id=(
+                    review.review_id
+                ),
+                user_id=chat_id,
+                new_summary=(
+                    result.suggested_text
+                ),
+                regeneration_count=(
+                    review.regeneration_count
+                ),
+                metadata=(
+                    updated_metadata
+                )
+            )
+        )
+
+        if updated is None:
+
+            clear_admin_instruction_waiting(
+                review_id=review.review_id,
+                user_id=chat_id
+            )
+
+            send_message(
+                chat_id,
+                (
+                    "❌ نسخه اصلاح‌شده ساخته شد، "
+                    "اما ذخیره آن با مشکل روبرو شد.\n\n"
+                    "نسخه قبلی همچنان محفوظ است."
+                )
+            )
+
+            return True
+
+        recorded = (
+            record_admin_instruction_applied(
+                review_id=(
+                    review.review_id
+                ),
+                user_id=chat_id,
+                instruction=text
+            )
+        )
+
+        if recorded is None:
+
+            logger.warning(
+                f"[{req_id}] ⚠️ Admin instruction "
+                f"record metadata failed | "
+                f"review_id={review.review_id}"
+            )
+
+        final_metadata = (
+            updated.metadata
+            or {}
+        )
+
+        can_regenerate = (
+            updated.regeneration_count
+            < MAX_REGENERATION_COUNT
+        )
+
+        keyboard = (
+            build_editorial_keyboard(
+                review_id=(
+                    updated.review_id
+                ),
+                has_summary=True,
+                can_regenerate=(
+                    can_regenerate
+                )
+            )
+        )
+
+        preview = (
+            build_editorial_preview(
+                content_type=(
+                    updated.content_type
+                ),
+                summary_text=(
+                    updated.current_summary
+                ),
+                original_length=len(
+                    final_metadata.get(
+                        "editorial_body",
+                        updated.original_text
+                    )
+                    or updated.original_text
+                ),
+                regeneration_count=(
+                    updated.regeneration_count
+                ),
+                summary_success=True,
+                title=(
+                    final_metadata.get(
+                        "editorial_title",
+                        ""
+                    )
+                    or ""
+                ),
+                author=(
+                    final_metadata.get(
+                        "editorial_author",
+                        ""
+                    )
+                    or ""
+                )
+            )
+        )
+
+        send_message(
+            chat_id=chat_id,
+            text=(
+                "✏️ دستور ادمین اعمال شد.\n\n"
+                + preview
+            ),
+            reply_markup=keyboard
+        )
+
+        logger.info(
+            f"[{req_id}] ✅ Admin instruction applied | "
+            f"review_id={updated.review_id} | "
+            f"user={chat_id} | "
+            f"summary_length="
+            f"{len(updated.current_summary or '')}"
+        )
+
+        return True
+
+    except Exception as e:
+
+        logger.exception(
+            f"[{req_id}] ❌ Admin instruction "
+            f"text handling failed | {e}"
+        )
+
+        send_message(
+            chat_id,
+            (
+                "❌ پردازش دستور ادمین با خطا روبرو شد.\n\n"
+                "نسخه فعلی خلاصه محفوظ است."
+            )
+        )
+
+        return True
+
+
+# =========================================================
 # CALLBACK HANDLER
 # =========================================================
 
@@ -2447,11 +2741,6 @@ def handle_editorial_callback(
 
         # =================================================
         # ADMIN INSTRUCTION
-        #
-        # در این مرحله فقط Waiting Mode فعال می‌شود.
-        #
-        # دریافت و پردازش پیام بعدی در مرحله بعد
-        # به Webhook Text Gate اضافه خواهد شد.
         # =================================================
 
         if action == "instruction":
@@ -2518,8 +2807,8 @@ def handle_editorial_callback(
                     "مثال:\n"
                     "متن را کمی کوتاه‌تر کن و تأکید بیشتری "
                     "روی بخش مربوط به مذاکرات داشته باش.\n\n"
-                    "تا زمان پردازش موفق دستور، "
-                    "نسخه فعلی خلاصه محفوظ می‌ماند."
+                    "نسخه فعلی خلاصه تا زمان تأیید نسخه جدید "
+                    "محفوظ می‌ماند."
                 )
             )
 
@@ -2551,11 +2840,6 @@ def handle_editorial_callback(
             send_message(
                 user_id,
                 "❌ انتشار این محتوا لغو شد."
-            )
-
-            logger.info(
-                f"[{req_id}] ❌ Editorial review cancelled | "
-                f"review_id={review_id}"
             )
 
             return True
@@ -2668,15 +2952,6 @@ def handle_editorial_callback(
                         review.current_summary
                     )
                 )
-            )
-
-            logger.info(
-                f"[{req_id}] 📝 Editorial summary display | "
-                f"review_id={review_id} | "
-                f"title={bool(editorial_title)} | "
-                f"author={bool(editorial_author)} | "
-                f"body={len(review.current_summary or '')} | "
-                f"final={len(final_summary)}"
             )
 
             success = (
@@ -2911,12 +3186,6 @@ def handle_editorial_callback(
                 reply_markup=keyboard
             )
 
-            logger.info(
-                f"[{req_id}] 🔄 Editorial regeneration "
-                f"completed | review_id={review_id} | "
-                f"count={updated.regeneration_count}"
-            )
-
             return True
 
         answer_callback_query(
@@ -2962,19 +3231,11 @@ def handle_webhook() -> Tuple[
 
     try:
 
-        # =================================================
-        # SECURITY
-        # =================================================
-
         if not validate_webhook_token():
 
             return {
                 "ok": False
             }, 403
-
-        # =================================================
-        # JSON
-        # =================================================
 
         data = request.get_json(
             silent=True
@@ -2985,10 +3246,6 @@ def handle_webhook() -> Tuple[
             return {
                 "ok": True
             }, 200
-
-        # =================================================
-        # CALLBACK QUERY
-        # =================================================
 
         callback_query = data.get(
             "callback_query"
@@ -3016,10 +3273,6 @@ def handle_webhook() -> Tuple[
                 "ok": True
             }, 200
 
-        # =================================================
-        # MESSAGE
-        # =================================================
-
         msg = data.get(
             "message"
         )
@@ -3046,10 +3299,6 @@ def handle_webhook() -> Tuple[
                 "ok": True
             }, 200
 
-        # =================================================
-        # DIAGNOSTIC + FORWARD SOURCE
-        # =================================================
-
         log_message_diagnostics(
             req_id,
             msg
@@ -3060,10 +3309,6 @@ def handle_webhook() -> Tuple[
                 msg
             )
         )
-
-        # =================================================
-        # INPUT
-        # =================================================
 
         entities = list(
             msg.get(
@@ -3080,10 +3325,6 @@ def handle_webhook() -> Tuple[
             )
             or []
         )
-
-        # =================================================
-        # COMMAND
-        # =================================================
 
         command_text = (
             msg.get(
@@ -3116,10 +3357,6 @@ def handle_webhook() -> Tuple[
             return {
                 "ok": True
             }, 200
-
-        # =================================================
-        # TENANT
-        # =================================================
 
         try:
 
@@ -3163,10 +3400,6 @@ def handle_webhook() -> Tuple[
                 "ok": True
             }, 200
 
-        # =================================================
-        # MEDIA
-        # =================================================
-
         media_info = (
             get_media_from_message(
                 msg
@@ -3192,10 +3425,6 @@ def handle_webhook() -> Tuple[
             )
             or ""
         )
-
-        # =================================================
-        # MEDIA GROUP
-        # =================================================
 
         if (
             media_type
@@ -3265,10 +3494,6 @@ def handle_webhook() -> Tuple[
                 "ok": True
             }, 200
 
-        # =================================================
-        # SINGLE PHOTO / VIDEO
-        # =================================================
-
         if (
             media_type
             in (
@@ -3321,10 +3546,6 @@ def handle_webhook() -> Tuple[
                 "ok": True
             }, 200
 
-        # =================================================
-        # DOCUMENT / VOICE / AUDIO
-        # =================================================
-
         if (
             media_type
             in (
@@ -3374,18 +3595,6 @@ def handle_webhook() -> Tuple[
                 "ok": True
             }, 200
 
-        # =================================================
-        # TEXT
-        #
-        # توجه:
-        #
-        # در این مرحله هنوز پیام بعدی ادمین به عنوان
-        # Admin Instruction مصرف نمی‌شود.
-        #
-        # این Gate را بعد از سبز شدن تست همین مرحله
-        # اضافه خواهیم کرد.
-        # =================================================
-
         pure_text = (
             msg.get(
                 "text",
@@ -3395,6 +3604,40 @@ def handle_webhook() -> Tuple[
         )
 
         if pure_text.strip():
+
+            # =================================================
+            # ADMIN INSTRUCTION GATE
+            #
+            # باید قبل از Editorial Review عادی اجرا شود.
+            #
+            # اگر Review منتظر دستور باشد،
+            # همین پیام فقط دستور ادمین محسوب می‌شود.
+            # =================================================
+
+            handled_admin_instruction = (
+                try_handle_admin_instruction_text(
+                    chat_id=chat_id,
+                    text=pure_text,
+                    req_id=req_id
+                )
+            )
+
+            if handled_admin_instruction:
+
+                logger.info(
+                    f"[{req_id}] ✏️ Text consumed as "
+                    f"admin editorial instruction | "
+                    f"user={chat_id}"
+                )
+
+                return {
+                    "ok": True,
+                    "admin_instruction": True
+                }, 200
+
+            # =================================================
+            # NORMAL EDITORIAL REVIEW GATE
+            # =================================================
 
             queued_for_review = (
                 try_queue_editorial_text_review(
