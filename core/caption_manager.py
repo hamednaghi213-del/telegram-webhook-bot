@@ -13,7 +13,6 @@ from core.telegram_caption_entities import (
 )
 
 from core.smart_summarizer import (
-    DEFAULT_MAX_REDUCTION_RATIO,
     summarize_text_safely
 )
 
@@ -49,15 +48,11 @@ BALE_MESSAGE_SAFE_LIMIT = 4000
 
 
 # =========================================================
-# SMART SUMMARIZER POLICY
+# SMART SUMMARIZER CONFIG
 # =========================================================
 
 SMART_SUMMARIZER_ENV = (
     "ENABLE_SMART_SUMMARIZER"
-)
-
-SMART_SUMMARIZER_MAX_REDUCTION = (
-    DEFAULT_MAX_REDUCTION_RATIO
 )
 
 
@@ -861,19 +856,24 @@ def _combined_blockquotes(
 
 
 # =========================================================
-# SMART TELEGRAM MEDIA SUMMARIZATION
+# SMART TELEGRAM MEDIA SUMMARY
 #
-# این مسیر فقط زمانی فعال می‌شود که:
+# IMPORTANT:
 #
-# ENABLE_SMART_SUMMARIZER=true
+# Caption Manager دیگر درباره مجاز بودن درصد کاهش
+# تصمیم نمی‌گیرد.
 #
-# و FULL / COMPACT در Caption جا نشده باشند.
+# تمام سیاست‌ها به smart_summarizer سپرده شده‌اند:
 #
-# اگر هر مرحله شکست بخورد:
+# normal_news
+# sensitive_content
+# uncertain
 #
-# None برمی‌گردد
+# اگر AI یا Validator رد کنند:
 #
-# و Caption Manager دقیقاً وارد Overflow پایدار قبلی می‌شود.
+# None
+#
+# برمی‌گردد و Overflow پایدار قبلی اجرا می‌شود.
 # =========================================================
 
 def try_smart_telegram_media_summary(
@@ -888,6 +888,10 @@ def try_smart_telegram_media_summary(
     caption_limit: int
 ) -> Optional[Dict[str, Any]]:
 
+    # =====================================================
+    # FEATURE FLAG
+    # =====================================================
+
     if not smart_summarizer_enabled():
 
         logger.info(
@@ -896,6 +900,10 @@ def try_smart_telegram_media_summary(
         )
 
         return None
+
+    # =====================================================
+    # PROVIDER
+    # =====================================================
 
     if not gemini_provider_configured():
 
@@ -923,7 +931,10 @@ def try_smart_telegram_media_summary(
     )
 
     # =====================================================
-    # CLEAN SOURCE PARTS
+    # BUILD SOURCE PARTS
+    #
+    # Main و Blockquote جدا نگه داشته می‌شوند تا بعد از
+    # خلاصه‌سازی بتوان Entityهای Telegram را دوباره ساخت.
     # =====================================================
 
     source_parts: List[
@@ -973,7 +984,7 @@ def try_smart_telegram_media_summary(
         return None
 
     # =====================================================
-    # BRANDING COST
+    # BRANDING CAPACITY
     # =====================================================
 
     branding_cost = (
@@ -998,9 +1009,7 @@ def try_smart_telegram_media_summary(
         return None
 
     # =====================================================
-    # SEPARATOR COST
-    #
-    # تمام بخش‌ها با دو newline به هم متصل می‌شوند.
+    # SEPARATORS
     # =====================================================
 
     separator_cost = (
@@ -1055,37 +1064,23 @@ def try_smart_telegram_media_summary(
         / visible_source_length
     )
 
-    if (
-        required_reduction_ratio
-        > SMART_SUMMARIZER_MAX_REDUCTION
-    ):
-
-        logger.info(
-            f"ℹ️ Smart summary skipped before AI | "
-            f"required_reduction="
-            f"{required_reduction_ratio:.3f} | "
-            f"max="
-            f"{SMART_SUMMARIZER_MAX_REDUCTION:.3f}"
-        )
-
-        return None
-
     logger.info(
-        f"🧠 Smart media summarization started | "
+        f"🧠 Smart media summarization candidate | "
         f"parts={len(source_parts)} | "
         f"source_visible={visible_source_length} | "
         f"capacity={available_content} | "
         f"required_reduction="
-        f"{required_reduction_ratio:.3f}"
+        f"{required_reduction_ratio:.3f} | "
+        f"policy=AI_ADAPTIVE"
     )
 
     # =====================================================
-    # PROPORTIONAL BUDGET
+    # PROPORTIONAL TARGET BUDGET
     #
-    # بودجه هر بخش متناسب با طول همان بخش تعیین می‌شود.
+    # Caption Manager فقط بودجه کاراکتری را محاسبه می‌کند.
     #
-    # Main و Blockquote جداگانه خلاصه می‌شوند تا مرز Entity
-    # از بین نرود.
+    # اینکه این میزان کاهش مجاز هست یا نه، فقط و فقط
+    # توسط smart_summarizer تعیین می‌شود.
     # =====================================================
 
     summarized_parts: List[
@@ -1149,21 +1144,33 @@ def try_smart_telegram_media_summary(
                 )
             )
 
+        logger.info(
+            f"🧠 Smart summary part prepared | "
+            f"part={index + 1}/{len(source_parts)} | "
+            f"kind={item['kind']} | "
+            f"source={source_length} | "
+            f"target={target_length}"
+        )
+
         # =================================================
         # IMPORTANT
         #
-        # اگر یک بخش خودش داخل بودجه باشد AI برای آن بخش
-        # هیچ تغییری ایجاد نمی‌کند.
+        # هیچ max_reduction_ratio اختصاصی اینجا Pass
+        # نمی‌کنیم.
+        #
+        # smart_summarizer خودش:
+        #
+        # - نیاز به Classification را تشخیص می‌دهد
+        # - نوع محتوا را تشخیص می‌دهد
+        # - سقف کاهش را تعیین می‌کند
+        # - Validator را اجرا می‌کند
         # =================================================
 
         result = (
             summarize_text_safely(
                 original_text=source_text,
                 target_length=target_length,
-                summarizer=summarize_with_gemini,
-                max_reduction_ratio=(
-                    SMART_SUMMARIZER_MAX_REDUCTION
-                )
+                summarizer=summarize_with_gemini
             )
         )
 
@@ -1173,7 +1180,13 @@ def try_smart_telegram_media_summary(
                 f"⚠️ Smart media summary rejected | "
                 f"part={index + 1} | "
                 f"kind={item['kind']} | "
-                f"reason={result.reason}"
+                f"reason={result.reason} | "
+                f"content_type="
+                f"{result.metadata.get('content_type', '-')} | "
+                f"required="
+                f"{result.metadata.get('required_reduction_ratio', '-')} | "
+                f"allowed="
+                f"{result.metadata.get('effective_max_reduction_ratio', '-')}"
             )
 
             return None
@@ -1188,7 +1201,8 @@ def try_smart_telegram_media_summary(
 
             logger.warning(
                 f"⚠️ Smart summary produced "
-                f"empty part | index={index + 1}"
+                f"empty part | "
+                f"index={index + 1}"
             )
 
             return None
@@ -1203,7 +1217,13 @@ def try_smart_telegram_media_summary(
             ],
             "expandable": item[
                 "expandable"
-            ]
+            ],
+            "content_type": (
+                result.metadata.get(
+                    "content_type",
+                    ""
+                )
+            )
         })
 
         remaining_budget -= len(
@@ -1224,7 +1244,7 @@ def try_smart_telegram_media_summary(
             return None
 
     # =====================================================
-    # REBUILD MAIN + BLOCKS
+    # REBUILD CONTENT STRUCTURE
     # =====================================================
 
     summarized_main = ""
@@ -1285,10 +1305,10 @@ def try_smart_telegram_media_summary(
             )
 
     # =====================================================
-    # ENTITY REBUILD
+    # REBUILD TELEGRAM ENTITIES
     #
-    # Entityها از متن خلاصه جدید ساخته می‌شوند.
-    # Offset قدیمی Caption استفاده نمی‌شود.
+    # Entity Offsetها از صفر و بر اساس متن جدید
+    # دوباره ساخته می‌شوند.
     # =====================================================
 
     try:
@@ -1342,6 +1362,10 @@ def try_smart_telegram_media_summary(
         )
     )
 
+    # =====================================================
+    # FINAL HARD TELEGRAM LIMIT
+    # =====================================================
+
     if (
         len(final_caption)
         > caption_limit
@@ -1360,8 +1384,9 @@ def try_smart_telegram_media_summary(
         f"✅ Smart media summary accepted | "
         f"caption={len(final_caption)} | "
         f"entities={len(caption_entities)} | "
+        f"parts={len(summarized_parts)} | "
         f"followups=0 | "
-        f"reduction_required="
+        f"required_reduction="
         f"{required_reduction_ratio:.3f}"
     )
 
@@ -1989,9 +2014,7 @@ def create_telegram_plan(
                     f"{len(entity_caption_entities)} | "
                     f"expandable={has_expandable} | "
                     f"branding_inside=True | "
-                    f"branding_entities=False | "
-                    f"followups=0 | "
-                    f"blockquotes=0"
+                    f"followups=0"
                 )
 
                 return plan
@@ -2086,11 +2109,7 @@ def create_telegram_plan(
                     f"{len(compact_entity_caption)} | "
                     f"entities="
                     f"{len(compact_entity_entities)} | "
-                    f"expandable={has_expandable} | "
-                    f"branding_inside=True | "
-                    f"branding_entities=False | "
-                    f"followups=0 | "
-                    f"blockquotes=0"
+                    f"expandable={has_expandable}"
                 )
 
                 return plan
@@ -2103,12 +2122,7 @@ def create_telegram_plan(
             )
 
         # =================================================
-        # 2.5 SMART SUMMARY
-        #
-        # فقط وقتی FULL و COMPACT هر دو Fail شده‌اند.
-        #
-        # اگر AI خاموش یا ناموفق باشد:
-        # هیچ تغییری در رفتار قبلی ایجاد نمی‌شود.
+        # 2.5 AI ADAPTIVE SMART SUMMARY
         # =================================================
 
         smart_plan = (
@@ -2137,12 +2151,12 @@ def create_telegram_plan(
             return smart_plan
 
         # =================================================
-        # 3. REAL OVERFLOW
+        # 3. LEGACY OVERFLOW
         # =================================================
 
         logger.info(
-            "ℹ️ Telegram ONE-MESSAGE caption exceeds "
-            "official 1024 limit | using overflow path"
+            "ℹ️ Telegram smart one-message unavailable | "
+            "using stable overflow path"
         )
 
         branding_cost = (
@@ -2319,16 +2333,9 @@ def create_telegram_plan(
 
         if remaining_main:
 
-            reply_limit = (
-                TELEGRAM_MESSAGE_SAFE_LIMIT
-            )
-
             replies = split_text(
                 remaining_main,
-                max(
-                    500,
-                    reply_limit
-                )
+                TELEGRAM_MESSAGE_SAFE_LIMIT
             )
 
             plan[
@@ -2337,6 +2344,8 @@ def create_telegram_plan(
 
         # =================================================
         # BLOCKQUOTE OVERFLOW
+        #
+        # هر پیام ادامه باید Branding خودش را داشته باشد.
         # =================================================
 
         if remaining_blocks:
@@ -2356,9 +2365,7 @@ def create_telegram_plan(
             f"followups="
             f"{len(plan['followup_messages'])} | "
             f"blockquotes="
-            f"{len(plan['blockquote_messages'])} | "
-            f"blockquote_branding="
-            f"{bool(branding and remaining_blocks)}"
+            f"{len(plan['blockquote_messages'])}"
         )
 
         return plan
@@ -2386,6 +2393,10 @@ def create_telegram_plan(
         ] = normal_final
 
         return plan
+
+    # =====================================================
+    # COMPACT
+    # =====================================================
 
     compact_main = (
         compact_long_text(
@@ -2415,9 +2426,7 @@ def create_telegram_plan(
         return plan
 
     # =====================================================
-    # SMART SUMMARY FOR NORMAL MEDIA
-    #
-    # فقط بعد از شکست NORMAL + COMPACT.
+    # AI ADAPTIVE SMART SUMMARY
     # =====================================================
 
     smart_plan = (
@@ -2544,9 +2553,7 @@ def create_telegram_plan(
 # =========================================================
 # BALE MEDIA PLAN
 #
-# IMPORTANT:
-# در این مرحله AI به Bale متصل نشده است.
-# رفتار Bale کاملاً همان رفتار پایدار قبلی است.
+# در این مرحله AI به Bale وصل نشده است.
 # =========================================================
 
 def create_bale_plan(
@@ -2705,8 +2712,7 @@ def create_bale_plan(
 # =========================================================
 # TELEGRAM TEXT PLAN
 #
-# IMPORTANT:
-# در این مرحله AI به پیام متنی 4096 متصل نشده است.
+# AI هنوز به پیام متنی عادی متصل نشده است.
 # =========================================================
 
 def create_telegram_text_plan(
@@ -2975,7 +2981,8 @@ def analyze_content(
         f"expandable={len(expandable_blocks)} | "
         f"branding={len(branding)} | "
         f"smart_summary="
-        f"{smart_summarizer_enabled()}"
+        f"{smart_summarizer_enabled()} | "
+        f"smart_policy=AI_ADAPTIVE"
     )
 
     plan = PublicationPlan()
