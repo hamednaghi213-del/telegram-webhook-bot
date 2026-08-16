@@ -140,7 +140,9 @@ def assert_telegram_limits(
     ]:
 
         assert (
-            len(message)
+            telegram_html_visible_length(
+                message
+            )
             <= TELEGRAM_MESSAGE_LIMIT
         )
 
