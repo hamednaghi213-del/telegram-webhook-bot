@@ -19,6 +19,12 @@ from core.ai_summarizer_provider import (
     summarize_with_gemini,
 )
 
+from core.editorial_structure import (
+    EditorialStructure,
+    extract_editorial_structure,
+    rebuild_editorial_text,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +72,13 @@ MAX_REGENERATION_COUNT = 3
 REGENERATION_TARGET_MARGIN = 40
 
 MIN_REGENERATION_TARGET = 300
+
+
+# =========================================================
+# STRUCTURE POLICY
+# =========================================================
+
+EDITORIAL_SEPARATOR = "\n\n"
 
 
 # =========================================================
@@ -285,27 +298,118 @@ def get_review_max_reduction_ratio(
 
 # =========================================================
 # VALIDATOR CONTENT TYPE
-#
-# Editorial Note / Analysis ماهیت حقوقی و حساس ندارند.
-# برای استفاده از Validator ضدتحریف، در این لایه
-# به عنوان محتوای خبری عادی اعتبارسنجی می‌شوند.
 # =========================================================
 
 def get_validator_content_type(
     content_type: str
 ) -> str:
 
+    return CONTENT_TYPE_NORMAL
+
+
+# =========================================================
+# EDITORIAL STRUCTURE
+# =========================================================
+
+def get_editorial_structure(
+    original_text: str
+) -> EditorialStructure:
+
+    structure = (
+        extract_editorial_structure(
+            original_text
+        )
+    )
+
+    logger.info(
+        f"🧩 Editorial review structure | "
+        f"title={structure.title or '-'} | "
+        f"author={structure.author or '-'} | "
+        f"author_source="
+        f"{structure.author_source} | "
+        f"body={len(structure.body)}"
+    )
+
+    return structure
+
+
+# =========================================================
+# STRUCTURE OVERHEAD
+#
+# Title و Author جزو سقف نهایی 950 کاراکتر هستند.
+# بنابراین ظرفیت واقعی Body جدا محاسبه می‌شود.
+# =========================================================
+
+def calculate_editorial_body_target(
+    structure: EditorialStructure,
+    target_length: int
+) -> int:
+
+    target_length = max(
+        1,
+        int(
+            target_length
+        )
+    )
+
+    overhead = 0
+
+    if structure.title:
+
+        overhead += len(
+            structure.title
+        )
+
+    if structure.author:
+
+        if overhead:
+            overhead += len(
+                EDITORIAL_SEPARATOR
+            )
+
+        overhead += len(
+            structure.author
+        )
+
     if (
-        content_type
-        in (
-            CONTENT_TYPE_OPINION_NOTE,
-            CONTENT_TYPE_NEWS_ANALYSIS,
+        structure.body
+        and (
+            structure.title
+            or structure.author
         )
     ):
 
-        return CONTENT_TYPE_NORMAL
+        overhead += len(
+            EDITORIAL_SEPARATOR
+        )
 
-    return CONTENT_TYPE_NORMAL
+    available = (
+        target_length
+        - overhead
+    )
+
+    return max(
+        1,
+        available
+    )
+
+
+# =========================================================
+# FINAL EDITORIAL OUTPUT
+# =========================================================
+
+def rebuild_editorial_summary(
+    structure: EditorialStructure,
+    summary_body: str
+) -> str:
+
+    return (
+        rebuild_editorial_text(
+            title=structure.title,
+            author=structure.author,
+            body=summary_body
+        )
+    )
 
 
 # =========================================================
@@ -317,32 +421,63 @@ def build_editorial_summary_instruction(
     content_type: str
 ) -> str:
 
+    common_instruction = (
+        "کل متن را از ابتدا تا انتها به عنوان یک واحد "
+        "استدلالی بررسی کن. "
+
+        "خلاصه نباید از انتخاب چند جمله متوالی، "
+        "چند پاراگراف پشت سر هم، بخش ابتدایی متن "
+        "یا بخش پایانی متن ساخته شود. "
+
+        "خروجی باید نماینده کل متن باشد. "
+
+        "پیش از نوشتن خروجی، در کل متن این عناصر را "
+        "برای خودت تشخیص بده: تز یا ایده مرکزی، "
+        "استدلال‌های اصلی، مهم‌ترین شواهد و نمونه‌ها، "
+        "رابطه علت و نتیجه، پیامدها و جمع‌بندی نهایی. "
+
+        "سپس بر اساس مجموع این عناصر یک متن تازه، "
+        "منسجم و فشرده بنویس. "
+
+        "هیچ بخشی را فقط به دلیل قرار گرفتن در ابتدا "
+        "یا انتهای متن مهم‌تر از سایر بخش‌ها فرض نکن. "
+
+        "خروجی نباید صرفاً کپی پیوسته یک قسمت از متن اصلی باشد. "
+
+        "تیتر و نام نویسنده در این ورودی وجود ندارند و "
+        "نباید تیتر یا نام نویسنده تازه‌ای تولید کنی. "
+    )
+
     if (
         content_type
         == CONTENT_TYPE_OPINION_NOTE
     ):
 
         return (
-            "متن زیر یک یادداشت یا سرمقاله تحلیلی است. "
+            "متن زیر بدنه کامل یک یادداشت یا سرمقاله تحلیلی است. "
 
-            "آن را برای انتشار رسانه‌ای به نسخه‌ای کوتاه، "
-            "منسجم و وفادار تبدیل کن. "
+            + common_instruction +
 
-            "ابتدا تز اصلی نویسنده را تشخیص بده. "
+            "تز اصلی نویسنده را به روشنی حفظ کن. "
 
-            "سپس فقط استدلال‌های کلیدی، رابطه علت و نتیجه، "
-            "نمونه‌های ضروری و جمع‌بندی اصلی را حفظ کن. "
+            "استدلال‌های اصلی را بر اساس اهمیت آنها در "
+            "کل یادداشت انتخاب کن، نه بر اساس محل قرار گرفتنشان. "
+
+            "رابطه منطقی میان مقدمه، استدلال‌ها، شواهد، "
+            "پیامدها و نتیجه‌گیری باید در نسخه کوتاه باقی بماند. "
+
+            "اگر نویسنده چند نمونه برای اثبات یک استدلال "
+            "آورده است، نمونه‌های مشابه را فشرده کن اما "
+            "اصل استدلال را از بین نبر. "
 
             "تکرارها، مثال‌های مشابه، توضیحات طولانی، "
-            "عبارات کش‌دار و جزئیاتی را که برای فهم استدلال "
-            "اصلی ضروری نیستند حذف یا فشرده کن. "
-
-            "ترتیب منطقی استدلال باید حفظ شود. "
+            "عبارات کش‌دار و جزئیاتی را که برای فهم تز اصلی "
+            "ضروری نیستند حذف یا فشرده کن. "
 
             "نظر نویسنده را به خبر قطعی تبدیل نکن. "
 
-            "اگر متن ماهیت دیدگاهی دارد، این ماهیت باید "
-            "در نسخه کوتاه نیز از نظر معنایی حفظ شود. "
+            "ماهیت دیدگاهی و تحلیلی متن باید در نسخه کوتاه "
+            "از نظر معنایی حفظ شود. "
 
             "هیچ تحلیل، نتیجه‌گیری یا دیدگاه تازه‌ای "
             "از خودت اضافه نکن. "
@@ -350,13 +485,13 @@ def build_editorial_summary_instruction(
             "هیچ واقعیت، عدد، نام، تاریخ یا داده تازه‌ای "
             "تولید نکن. "
 
-            "هدف، کوتاه‌کردن هوشمندانه متن است، نه بریدن "
-            "مکانیکی جملات. "
+            "هدف، بازنمایی فشرده کل یادداشت است، "
+            "نه بریدن مکانیکی بخشی از آن. "
 
-            f"خروجی نهایی باید حداکثر {target_length} "
+            f"متن خلاصه بدنه باید حداکثر {target_length} "
             "کاراکتر باشد. "
 
-            "فقط متن نهایی را برگردان."
+            "فقط متن خلاصه‌شده بدنه را برگردان."
         )
 
     if (
@@ -365,13 +500,16 @@ def build_editorial_summary_instruction(
     ):
 
         return (
-            "متن زیر یک تحلیل خبری است. "
+            "متن زیر بدنه کامل یک تحلیل خبری است. "
 
-            "آن را به نسخه‌ای کوتاه، منسجم و وفادار "
-            "برای انتشار رسانه‌ای تبدیل کن. "
+            + common_instruction +
 
             "اصل رویداد، مهم‌ترین علت‌ها، رفتار بازیگران، "
-            "روند اثرگذار و پیامد اصلی را حفظ کن. "
+            "روند اثرگذار و پیامد اصلی را از سراسر متن حفظ کن. "
+
+            "اگر تحلیل در چند بخش مختلف متن تکمیل شده است، "
+            "این بخش‌ها را با یکدیگر ترکیب کن و فقط یک بخش "
+            "از تحلیل را انتخاب نکن. "
 
             "توضیحات تکراری، مثال‌های فرعی و زمینه‌های "
             "غیرضروری را حذف یا فشرده کن. "
@@ -383,12 +521,13 @@ def build_editorial_summary_instruction(
 
             "هیچ عدد، نام، تاریخ یا واقعیت جدیدی نساز. "
 
-            "هدف، فشرده‌سازی معنایی است و نه قطع مکانیکی متن. "
+            "هدف، فشرده‌سازی معنایی کل تحلیل است "
+            "و نه قطع مکانیکی متن. "
 
-            f"خروجی نهایی باید حداکثر {target_length} "
+            f"متن خلاصه بدنه باید حداکثر {target_length} "
             "کاراکتر باشد. "
 
-            "فقط متن نهایی را برگردان."
+            "فقط متن خلاصه‌شده بدنه را برگردان."
         )
 
     return (
@@ -424,9 +563,10 @@ def build_editorial_regeneration_instruction(
     ):
 
         type_instruction = (
-            "متن اصلی یک یادداشت یا سرمقاله تحلیلی است. "
+            "متن اصلی بدنه کامل یک یادداشت یا سرمقاله تحلیلی است. "
+
             "تز اصلی نویسنده، منطق استدلال، مهم‌ترین شواهد "
-            "و نتیجه اصلی باید حفظ شوند. "
+            "و نتیجه اصلی باید از سراسر متن استخراج و حفظ شوند. "
         )
 
     elif (
@@ -435,9 +575,10 @@ def build_editorial_regeneration_instruction(
     ):
 
         type_instruction = (
-            "متن اصلی یک تحلیل خبری است. "
+            "متن اصلی بدنه کامل یک تحلیل خبری است. "
+
             "اصل رویداد، بازیگران اصلی، علت‌ها، روند اثرگذار "
-            "و پیامد اصلی باید حفظ شوند. "
+            "و پیامد اصلی باید از سراسر متن استخراج و حفظ شوند. "
         )
 
     else:
@@ -452,24 +593,32 @@ def build_editorial_regeneration_instruction(
 
         "وظیفه تو تولید یک نسخه جایگزین و بهتر است. "
 
-        "مبنای کار فقط متن اصلی است. "
+        "مبنای اصلی کار فقط بدنه کامل متن اصلی است. "
 
-        "خلاصه قبلی صرفاً برای تشخیص نقاط ضعف نسخه قبلی "
-        "در اختیار تو قرار گرفته و نباید مبنای اصلی "
-        "بازنویسی باشد. "
+        "خلاصه قبلی فقط برای مقایسه در اختیار تو قرار گرفته "
+        "و نباید مبنای اصلی بازنویسی باشد. "
 
         + type_instruction +
 
-        "متن اصلی را دوباره از ابتدا بررسی کن. "
+        "کل متن اصلی را دوباره از ابتدا تا انتها بررسی کن. "
 
-        "تشخیص بده در خلاصه قبلی چه نکات مهمی بیش از حد "
-        "فشرده شده، کم‌رنگ شده یا می‌توانسته دقیق‌تر "
-        "بیان شود. "
+        "خلاصه جدید باید نماینده کل متن باشد و نباید "
+        "صرفاً از بخش ابتدایی، میانی یا پایانی متن ساخته شود. "
+
+        "خروجی نباید کپی پیوسته چند جمله یا چند پاراگراف "
+        "از یک قسمت متن اصلی باشد. "
+
+        "ابتدا تز مرکزی، استدلال‌های اصلی، مهم‌ترین شواهد، "
+        "رابطه علت و نتیجه و جمع‌بندی را در سراسر متن تشخیص بده. "
+
+        "سپس یک نسخه تازه، مستقل و منسجم بر اساس مجموع "
+        "این عناصر تولید کن. "
+
+        "بررسی کن آیا خلاصه قبلی یکی از محورهای مهم متن "
+        "را نادیده گرفته یا بیش از حد روی یک بخش خاص "
+        "تمرکز کرده است و در نسخه جدید این مشکل را اصلاح کن. "
 
         "نسخه جدید نباید صرفاً تغییر واژه‌های خلاصه قبلی باشد. "
-
-        "اگر خلاصه قبلی مناسب بوده، باز هم ساختار بیان را "
-        "بهبود بده ولی معنای اصلی را تغییر نده. "
 
         "تکرارها، توضیحات زائد، مثال‌های فرعی و عبارت‌های "
         "کش‌دار را حذف کن. "
@@ -479,12 +628,14 @@ def build_editorial_regeneration_instruction(
 
         "میزان قطعیت و نسبت دادن دیدگاه‌ها را تغییر نده. "
 
+        "تیتر و نام نویسنده را تولید یا بازنویسی نکن. "
+
         "نسخه جدید باید مستقل، روان، منسجم و قابل انتشار باشد. "
 
-        f"نسخه جدید نباید بیشتر از {target_length} "
+        f"نسخه جدید بدنه نباید بیشتر از {target_length} "
         "کاراکتر باشد. "
 
-        "فقط نسخه جدید را برگردان. "
+        "فقط نسخه جدید بدنه را برگردان. "
 
         "\n\n"
         "خلاصه قبلی فقط برای مقایسه:\n"
@@ -643,6 +794,14 @@ def generate_editorial_candidate(
 
 # =========================================================
 # EDITORIAL SUMMARY
+#
+# مهم:
+#
+# این تابع ساختار متن را استخراج می‌کند.
+#
+# Title و Author به AI داده نمی‌شوند.
+#
+# فقط کل Body از ابتدا تا انتها به AI داده می‌شود.
 # =========================================================
 
 def summarize_editorial_content(
@@ -681,6 +840,49 @@ def summarize_editorial_content(
 
         return None
 
+    # =====================================================
+    # STRUCTURE
+    # =====================================================
+
+    structure = (
+        get_editorial_structure(
+            original_text
+        )
+    )
+
+    body = normalize_text(
+        structure.body
+    )
+
+    # اگر به هر دلیل Body خالی شد،
+    # برای جلوگیری از از دست رفتن متن، کل متن مبنا می‌شود.
+    if not body:
+
+        logger.warning(
+            "⚠️ Editorial structure returned empty body | "
+            "using original text"
+        )
+
+        body = original_text
+
+    body_target = (
+        calculate_editorial_body_target(
+            structure,
+            target_length
+        )
+    )
+
+    logger.info(
+        f"🧠 Editorial full-body summary | "
+        f"type={content_type} | "
+        f"original={len(original_text)} | "
+        f"body={len(body)} | "
+        f"title={len(structure.title)} | "
+        f"author={len(structure.author)} | "
+        f"body_target={body_target} | "
+        f"final_target={target_length}"
+    )
+
     resolved_summarizer = (
         resolve_summarizer(
             summarizer
@@ -690,47 +892,172 @@ def summarize_editorial_content(
     if resolved_summarizer is None:
         return None
 
-    if len(original_text) <= target_length:
+    # =====================================================
+    # BODY ALREADY FITS
+    # =====================================================
+
+    if len(body) <= body_target:
 
         validation = (
             validate_editorial_candidate(
-                original_text=original_text,
-                candidate_text=original_text,
-                target_length=target_length,
+                original_text=body,
+                candidate_text=body,
+                target_length=body_target,
                 content_type=content_type
+            )
+        )
+
+        final_candidate = (
+            rebuild_editorial_summary(
+                structure,
+                body
             )
         )
 
         return {
             "success": True,
-            "candidate": original_text,
+            "candidate": final_candidate,
+            "body_candidate": body,
             "validation": validation,
             "reason": "already_fits",
-            "summarizer_called": False
+            "summarizer_called": False,
+            "structure": {
+                "title": structure.title,
+                "author": structure.author,
+                "author_source":
+                    structure.author_source,
+                "author_confidence":
+                    structure.author_confidence,
+                "body_length": len(body),
+                "body_target": body_target
+            }
         }
+
+    # =====================================================
+    # AI INSTRUCTION
+    # =====================================================
 
     instruction = (
         build_editorial_summary_instruction(
-            target_length,
+            body_target,
             content_type
         )
     )
 
-    result = (
+    # =====================================================
+    # AI GETS FULL BODY
+    # =====================================================
+
+    generation = (
         generate_editorial_candidate(
-            original_text=original_text,
+            original_text=body,
             instruction=instruction,
-            target_length=target_length,
+            target_length=body_target,
             content_type=content_type,
             summarizer=resolved_summarizer
         )
     )
 
-    result[
-        "summarizer_called"
-    ] = True
+    if not generation[
+        "success"
+    ]:
 
-    return result
+        generation[
+            "summarizer_called"
+        ] = True
+
+        generation[
+            "structure"
+        ] = {
+            "title": structure.title,
+            "author": structure.author,
+            "author_source":
+                structure.author_source,
+            "author_confidence":
+                structure.author_confidence,
+            "body_length": len(body),
+            "body_target": body_target
+        }
+
+        return generation
+
+    summarized_body = normalize_text(
+        generation[
+            "candidate"
+        ]
+    )
+
+    final_candidate = (
+        rebuild_editorial_summary(
+            structure,
+            summarized_body
+        )
+    )
+
+    # =====================================================
+    # FINAL HARD LIMIT
+    # =====================================================
+
+    if len(final_candidate) > target_length:
+
+        logger.warning(
+            f"⚠️ Editorial rebuilt summary too long | "
+            f"final={len(final_candidate)} | "
+            f"target={target_length}"
+        )
+
+        return {
+            "success": False,
+            "candidate": final_candidate,
+            "body_candidate": summarized_body,
+            "validation": generation.get(
+                "validation"
+            ),
+            "reason": "rebuilt_summary_exceeds_target",
+            "error": None,
+            "summarizer_called": True,
+            "structure": {
+                "title": structure.title,
+                "author": structure.author,
+                "author_source":
+                    structure.author_source,
+                "author_confidence":
+                    structure.author_confidence,
+                "body_length": len(body),
+                "body_target": body_target
+            }
+        }
+
+    logger.info(
+        f"✅ Editorial full-body summary rebuilt | "
+        f"title={structure.title or '-'} | "
+        f"author={structure.author or '-'} | "
+        f"body_before={len(body)} | "
+        f"body_after={len(summarized_body)} | "
+        f"final={len(final_candidate)}"
+    )
+
+    return {
+        "success": True,
+        "candidate": final_candidate,
+        "body_candidate": summarized_body,
+        "validation": generation.get(
+            "validation"
+        ),
+        "reason": "accepted",
+        "error": None,
+        "summarizer_called": True,
+        "structure": {
+            "title": structure.title,
+            "author": structure.author,
+            "author_source":
+                structure.author_source,
+            "author_confidence":
+                structure.author_confidence,
+            "body_length": len(body),
+            "body_target": body_target
+        }
+    }
 
 
 # =========================================================
@@ -907,10 +1234,50 @@ def regenerate_editorial_summary(
         )
 
     # =====================================================
+    # STRUCTURE
+    # =====================================================
+
+    structure = (
+        get_editorial_structure(
+            original_text
+        )
+    )
+
+    original_body = normalize_text(
+        structure.body
+    )
+
+    if not original_body:
+
+        original_body = (
+            original_text
+        )
+
+    # خلاصه قبلی هم ممکن است Title و Author داشته باشد.
+    previous_structure = (
+        extract_editorial_structure(
+            previous_summary
+        )
+        if previous_summary
+        else None
+    )
+
+    previous_body = ""
+
+    if previous_structure is not None:
+
+        previous_body = normalize_text(
+            previous_structure.body
+        )
+
+    if not previous_body:
+
+        previous_body = (
+            previous_summary
+        )
+
+    # =====================================================
     # TARGET
-    #
-    # کمی فضای امن ایجاد می‌کنیم تا خروجی AI
-    # از سقف اصلی عبور نکند.
     # =====================================================
 
     regeneration_target = max(
@@ -924,17 +1291,22 @@ def regenerate_editorial_summary(
         target_length
     )
 
+    body_target = (
+        calculate_editorial_body_target(
+            structure,
+            regeneration_target
+        )
+    )
+
     # =====================================================
     # INSTRUCTION
     # =====================================================
 
     instruction = (
         build_editorial_regeneration_instruction(
-            target_length=(
-                regeneration_target
-            ),
+            target_length=body_target,
             content_type=content_type,
-            previous_summary=previous_summary
+            previous_summary=previous_body
         )
     )
 
@@ -944,19 +1316,20 @@ def regenerate_editorial_summary(
         f"count={regeneration_count + 1}/"
         f"{MAX_REGENERATION_COUNT} | "
         f"original={original_length} | "
-        f"previous={len(previous_summary)} | "
-        f"target={regeneration_target}"
+        f"body={len(original_body)} | "
+        f"previous_body={len(previous_body)} | "
+        f"body_target={body_target}"
     )
 
     # =====================================================
-    # GENERATE FROM ORIGINAL
+    # GENERATE FROM FULL ORIGINAL BODY
     # =====================================================
 
     generation = (
         generate_editorial_candidate(
-            original_text=original_text,
+            original_text=original_body,
             instruction=instruction,
-            target_length=regeneration_target,
+            target_length=body_target,
             content_type=content_type,
             summarizer=resolved_summarizer
         )
@@ -969,8 +1342,6 @@ def regenerate_editorial_summary(
 
     # =====================================================
     # FAILED
-    #
-    # Previous Summary حفظ می‌شود.
     # =====================================================
 
     if not generation[
@@ -1022,21 +1393,31 @@ def regenerate_editorial_summary(
                     generation.get(
                         "candidate",
                         ""
-                    )
+                    ),
+                "title":
+                    structure.title,
+                "author":
+                    structure.author,
+                "author_source":
+                    structure.author_source
             }
         )
 
-    new_summary = normalize_text(
+    new_body_summary = normalize_text(
         generation[
             "candidate"
         ]
     )
 
+    new_summary = (
+        rebuild_editorial_summary(
+            structure,
+            new_body_summary
+        )
+    )
+
     # =====================================================
     # SAME OUTPUT PROTECTION
-    #
-    # اگر دقیقاً همان خلاصه قبلی برگشته باشد،
-    # آن را نسخه جدید موفق حساب نمی‌کنیم.
     # =====================================================
 
     if (
@@ -1075,7 +1456,61 @@ def regenerate_editorial_summary(
                 "validation":
                     generation.get(
                         "validation"
-                    )
+                    ),
+                "title":
+                    structure.title,
+                "author":
+                    structure.author,
+                "author_source":
+                    structure.author_source
+            }
+        )
+
+    # =====================================================
+    # FINAL HARD LIMIT
+    # =====================================================
+
+    if len(new_summary) > target_length:
+
+        logger.warning(
+            f"⚠️ Regenerated editorial summary "
+            f"exceeds final target | "
+            f"final={len(new_summary)} | "
+            f"target={target_length}"
+        )
+
+        return EditorialReviewResult(
+            content_type=content_type,
+            action=ACTION_NEEDS_APPROVAL,
+            needs_approval=True,
+            original_text=original_text,
+            suggested_text=(
+                previous_summary
+                or original_text
+            ),
+            summary_success=False,
+            target_length=target_length,
+            original_length=original_length,
+            suggested_length=len(
+                previous_summary
+                or original_text
+            ),
+            reason="regeneration_failed",
+            metadata={
+                "regeneration_count":
+                    next_count,
+                "max_regeneration_count":
+                    MAX_REGENERATION_COUNT,
+                "can_regenerate": (
+                    next_count
+                    < MAX_REGENERATION_COUNT
+                ),
+                "generation_reason":
+                    "rebuilt_summary_exceeds_target",
+                "title":
+                    structure.title,
+                "author":
+                    structure.author
             }
         )
 
@@ -1083,9 +1518,11 @@ def regenerate_editorial_summary(
         f"✅ Editorial regeneration ready | "
         f"type={content_type} | "
         f"count={next_count} | "
-        f"before={original_length} | "
-        f"previous={len(previous_summary)} | "
-        f"new={len(new_summary)} | "
+        f"title={structure.title or '-'} | "
+        f"author={structure.author or '-'} | "
+        f"body_before={len(original_body)} | "
+        f"body_after={len(new_body_summary)} | "
+        f"final={len(new_summary)} | "
         f"needs_approval=True"
     )
 
@@ -1116,7 +1553,19 @@ def regenerate_editorial_summary(
             "validation":
                 generation.get(
                     "validation"
-                )
+                ),
+            "title":
+                structure.title,
+            "author":
+                structure.author,
+            "author_source":
+                structure.author_source,
+            "author_confidence":
+                structure.author_confidence,
+            "body_length":
+                len(original_body),
+            "summary_body_length":
+                len(new_body_summary)
         }
     )
 
@@ -1174,6 +1623,8 @@ def analyze_editorial_content(
 
     # =====================================================
     # CLASSIFICATION
+    #
+    # Classification همچنان روی متن کامل انجام می‌شود.
     # =====================================================
 
     content_type = (
@@ -1307,6 +1758,11 @@ def analyze_editorial_content(
                     summary_result.get(
                         "candidate",
                         ""
+                    ),
+                "structure":
+                    summary_result.get(
+                        "structure",
+                        {}
                     )
             })
 
@@ -1337,9 +1793,21 @@ def analyze_editorial_content(
         )
     )
 
+    structure_metadata = (
+        summary_result.get(
+            "structure",
+            {}
+        )
+        or {}
+    )
+
     logger.info(
         f"✅ Editorial review prepared | "
         f"type={content_type} | "
+        f"title="
+        f"{structure_metadata.get('title') or '-'} | "
+        f"author="
+        f"{structure_metadata.get('author') or '-'} | "
         f"before={original_length} | "
         f"after={len(suggested_text)} | "
         f"needs_approval=True"
@@ -1370,7 +1838,37 @@ def analyze_editorial_content(
             "regeneration_count": 0,
             "max_regeneration_count":
                 MAX_REGENERATION_COUNT,
-            "can_regenerate": True
+            "can_regenerate": True,
+            "title":
+                structure_metadata.get(
+                    "title",
+                    ""
+                ),
+            "author":
+                structure_metadata.get(
+                    "author",
+                    ""
+                ),
+            "author_source":
+                structure_metadata.get(
+                    "author_source",
+                    "none"
+                ),
+            "author_confidence":
+                structure_metadata.get(
+                    "author_confidence",
+                    "none"
+                ),
+            "body_length":
+                structure_metadata.get(
+                    "body_length",
+                    0
+                ),
+            "body_target":
+                structure_metadata.get(
+                    "body_target",
+                    0
+                )
         }
     )
 
