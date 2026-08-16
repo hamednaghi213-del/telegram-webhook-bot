@@ -48,7 +48,7 @@ from core.smart_summarizer import (
 )
 
 from core.ai_summarizer_provider import (
-    summarize_with_ai
+    summarize_with_gemini
 )
 
 
@@ -465,7 +465,7 @@ def test_gemini():
         result = summarize_text_safely(
             original_text=original_text,
             target_length=target_length,
-            summarizer=summarize_with_ai
+            summarizer=summarize_with_gemini
         )
 
     except Exception as e:
