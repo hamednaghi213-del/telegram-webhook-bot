@@ -174,6 +174,12 @@ def append_branding(
 
 # =========================================================
 # TELEGRAM MEDIA FINAL BRANDING
+#
+# این Helper برای مسیرهای HTML / Legacy باقی می‌ماند.
+#
+# در مسیر Entity دیگر Branding با این تابع اضافه نمی‌شود.
+# Branding مستقیماً داخل build_telegram_caption_entities
+# ساخته می‌شود تا hashtag و mention دارای Entity صریح باشند.
 # =========================================================
 
 def append_final_telegram_media_branding(
@@ -998,6 +1004,7 @@ def try_smart_telegram_media_summary(
     )
 
     if available_text_capacity <= 0:
+
         return None
 
     total_source_text_length = sum(
@@ -1008,6 +1015,7 @@ def try_smart_telegram_media_summary(
     )
 
     if total_source_text_length <= 0:
+
         return None
 
     visible_source_length = (
@@ -1344,6 +1352,21 @@ def try_smart_telegram_media_summary(
                 rebuilt_block
             )
 
+    # =====================================================
+    # REBUILD TELEGRAM ENTITIES
+    #
+    # IMPORTANT:
+    #
+    # Branding اکنون داخل Entity Builder ساخته می‌شود.
+    #
+    # بنابراین:
+    #
+    # - hashtag دارای Entity صریح است
+    # - mention دارای Entity صریح است
+    # - UTF-16 offsets دقیق می‌مانند
+    # - Branding دوباره append نمی‌شود
+    # =====================================================
+
     try:
 
         entity_result = (
@@ -1355,8 +1378,8 @@ def try_smart_telegram_media_summary(
                 expandable_blocks=(
                     summarized_expandable_blocks
                 ),
-                branding="",
-                include_branding_entities=False
+                branding=branding,
+                include_branding_entities=True
             )
         )
 
@@ -1369,7 +1392,7 @@ def try_smart_telegram_media_summary(
 
         return None
 
-    base_caption = (
+    final_caption = (
         entity_result.get(
             "caption",
             ""
@@ -1383,16 +1406,6 @@ def try_smart_telegram_media_summary(
             []
         )
         or []
-    )
-
-    final_caption = (
-        append_final_telegram_media_branding(
-            base_caption,
-            branding,
-            has_expandable=bool(
-                summarized_expandable_blocks
-            )
-        )
     )
 
     if (
@@ -1416,6 +1429,7 @@ def try_smart_telegram_media_summary(
         f"parts={len(summarized_parts)} | "
         f"main_preserved={preserve_short_main} | "
         f"followups=0 | "
+        f"branding_entities=True | "
         f"required_reduction="
         f"{required_reduction_ratio:.3f}"
     )
@@ -1969,6 +1983,8 @@ def create_telegram_plan(
 
         # =================================================
         # 1. FULL ENTITY CAPTION
+        #
+        # Branding مستقیماً داخل Entity Builder ساخته می‌شود.
         # =================================================
 
         try:
@@ -1978,12 +1994,12 @@ def create_telegram_plan(
                     main_text=main_text,
                     blockquote_blocks=blockquote_blocks,
                     expandable_blocks=expandable_blocks,
-                    branding="",
-                    include_branding_entities=False
+                    branding=branding,
+                    include_branding_entities=True
                 )
             )
 
-            base_caption = (
+            entity_caption = (
                 entity_result[
                     "caption"
                 ]
@@ -1994,14 +2010,6 @@ def create_telegram_plan(
                     "caption_entities"
                 ]
                 or []
-            )
-
-            entity_caption = (
-                append_final_telegram_media_branding(
-                    base_caption,
-                    branding,
-                    has_expandable=has_expandable
-                )
             )
 
             if (
@@ -2040,6 +2048,7 @@ def create_telegram_plan(
                     f"{len(entity_caption_entities)} | "
                     f"expandable={has_expandable} | "
                     f"branding_inside=True | "
+                    f"branding_entities=True | "
                     f"followups=0"
                 )
 
@@ -2054,6 +2063,8 @@ def create_telegram_plan(
 
         # =================================================
         # 2. COMPACT ENTITY CAPTION
+        #
+        # Branding نیز Entity صریح دارد.
         # =================================================
 
         compact_main = (
@@ -2070,12 +2081,12 @@ def create_telegram_plan(
                     main_text=compact_main,
                     blockquote_blocks=blockquote_blocks,
                     expandable_blocks=expandable_blocks,
-                    branding="",
-                    include_branding_entities=False
+                    branding=branding,
+                    include_branding_entities=True
                 )
             )
 
-            compact_base_caption = (
+            compact_entity_caption = (
                 compact_entity_result[
                     "caption"
                 ]
@@ -2086,14 +2097,6 @@ def create_telegram_plan(
                     "caption_entities"
                 ]
                 or []
-            )
-
-            compact_entity_caption = (
-                append_final_telegram_media_branding(
-                    compact_base_caption,
-                    branding,
-                    has_expandable=has_expandable
-                )
             )
 
             if (
@@ -2135,7 +2138,8 @@ def create_telegram_plan(
                     f"{len(compact_entity_caption)} | "
                     f"entities="
                     f"{len(compact_entity_entities)} | "
-                    f"expandable={has_expandable}"
+                    f"expandable={has_expandable} | "
+                    f"branding_entities=True"
                 )
 
                 return plan
@@ -2177,51 +2181,212 @@ def create_telegram_plan(
             return smart_plan
 
         # =================================================
-        # 3. ONE-MESSAGE HARD POLICY
-        #
-        # Blockquote / Expandable media must NOT be split
-        # into media + reply.
-        #
-        # At this point:
-        #
-        # FULL failed
-        # COMPACT failed
-        # SMART SUMMARY failed
-        #
-        # So we do not cut the text and we do not create
-        # follow-up messages.
+        # 3. LEGACY OVERFLOW
         # =================================================
 
-        logger.warning(
-            "⚠️ Telegram ONE-MESSAGE HARD POLICY | "
-            "smart one-message unavailable | "
-            "reply split blocked | "
-            "fallback_required=True"
+        logger.info(
+            "ℹ️ Telegram smart one-message unavailable | "
+            "using stable overflow path"
         )
+
+        branding_cost = (
+            len(branding)
+            if branding
+            else 0
+        )
+
+        branding_separator_cost = (
+            2
+            if branding
+            else 0
+        )
+
+        fixed_cost = (
+            branding_cost
+            + branding_separator_cost
+        )
+
+        main_capacity = (
+            TELEGRAM_CAPTION_LIMIT
+            - fixed_cost
+        )
+
+        if main_capacity <= 0:
+
+            plan[
+                "document_fallback"
+            ] = True
+
+            return plan
+
+        if len(compact_main) <= main_capacity:
+
+            main_for_caption = compact_main
+            remaining_main = ""
+
+        else:
+
+            position = (
+                find_media_split_position(
+                    compact_main,
+                    main_capacity,
+                    minimum_fill_ratio=0.70
+                )
+            )
+
+            if position <= 0:
+                position = main_capacity
+
+            main_for_caption = (
+                compact_main[
+                    :position
+                ]
+                .strip()
+            )
+
+            remaining_main = (
+                compact_main[
+                    position:
+                ]
+                .strip()
+            )
+
+        used_visible = len(
+            main_for_caption
+        )
+
+        block_capacity = (
+            TELEGRAM_CAPTION_LIMIT
+            - used_visible
+            - fixed_cost
+            - (
+                2
+                if main_for_caption
+                else 0
+            )
+        )
+
+        inline_blocks = ""
+
+        remaining_blocks: List[
+            Dict[str, Any]
+        ] = []
+
+        if (
+            not remaining_main
+            and block_capacity > 0
+        ):
+
+            (
+                inline_blocks,
+                remaining_blocks
+            ) = (
+                fit_blockquotes_into_caption(
+                    blockquote_blocks,
+                    expandable_blocks,
+                    block_capacity
+                )
+            )
+
+        else:
+
+            remaining_blocks = (
+                _combined_blockquotes(
+                    blockquote_blocks,
+                    expandable_blocks
+                )
+            )
+
+        caption_parts: List[str] = []
+
+        if main_for_caption:
+
+            caption_parts.append(
+                escape(
+                    main_for_caption
+                )
+            )
+
+        if inline_blocks:
+
+            caption_parts.append(
+                inline_blocks
+            )
+
+        candidate_without_branding = (
+            "\n\n".join(
+                caption_parts
+            )
+        )
+
+        candidate = (
+            append_final_telegram_media_branding(
+                candidate_without_branding,
+                branding,
+                has_expandable=has_expandable
+            )
+        )
+
+        if (
+            telegram_html_visible_length(
+                candidate
+            )
+            > TELEGRAM_CAPTION_LIMIT
+        ):
+
+            logger.error(
+                "❌ Telegram overflow caption still "
+                "exceeds official visible limit"
+            )
+
+            plan[
+                "document_fallback"
+            ] = True
+
+            return plan
 
         plan[
             "media_caption"
-        ] = ""
+        ] = candidate
 
         plan[
             "media_parse_mode"
-        ] = None
+        ] = "HTML"
 
         plan[
             "media_caption_entities"
         ] = []
 
-        plan[
-            "followup_messages"
-        ] = []
+        if remaining_main:
 
-        plan[
-            "blockquote_messages"
-        ] = []
+            replies = split_text(
+                remaining_main,
+                TELEGRAM_MESSAGE_SAFE_LIMIT
+            )
 
-        plan[
-            "document_fallback"
-        ] = True
+            plan[
+                "followup_messages"
+            ] = replies
+
+        if remaining_blocks:
+
+            plan[
+                "blockquote_messages"
+            ] = (
+                build_branded_blockquote_messages(
+                    remaining_blocks,
+                    branding
+                )
+            )
+
+        logger.warning(
+            f"⚠️ Telegram overflow required | "
+            f"caption={telegram_html_visible_length(candidate)} | "
+            f"followups="
+            f"{len(plan['followup_messages'])} | "
+            f"blockquotes="
+            f"{len(plan['blockquote_messages'])}"
+        )
 
         return plan
 
