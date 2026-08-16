@@ -69,14 +69,27 @@ MIN_REGENERATION_TARGET = 300
 
 
 # =========================================================
+# ADMIN INSTRUCTION POLICY
+#
+# تغییر با دستور ادمین:
+#
+# - از متن اصلی کامل انجام می‌شود.
+# - خلاصه فعلی فقط مرجع ویرایشی است.
+# - دستور ادمین جهت ویرایش را مشخص می‌کند.
+# - حق افزودن Fact جدید ندارد.
+# - Validator همچنان اجباری است.
+# - Regeneration Count را مصرف نمی‌کند.
+# =========================================================
+
+ADMIN_INSTRUCTION_MAX_LENGTH = 1500
+
+ADMIN_EDIT_TARGET_MARGIN = 20
+
+MIN_ADMIN_EDIT_TARGET = 300
+
+
+# =========================================================
 # VALIDATION RETRY POLICY
-#
-# اگر تنها ایراد خلاصه از بین رفتن نشانه‌های
-# قطعیت / انتساب باشد، یک بار AI مجدداً از
-# متن اصلی تولید می‌کند.
-#
-# Validator حذف نمی‌شود و همچنان تصمیم نهایی
-# با Validator است.
 # =========================================================
 
 CERTAINTY_RETRY_ENABLED = True
@@ -310,14 +323,6 @@ def get_validator_content_type(
 
 # =========================================================
 # REVIEW INSTRUCTION
-#
-# مهم:
-#
-# این فایل اکنون فقط BODY را دریافت می‌کند.
-#
-# Title و Author قبلاً در webhook_handler استخراج شده‌اند.
-#
-# این فایل دیگر هیچ Structure Extraction انجام نمی‌دهد.
 # =========================================================
 
 def build_editorial_summary_instruction(
@@ -613,6 +618,147 @@ def build_editorial_regeneration_instruction(
 
 
 # =========================================================
+# ADMIN INSTRUCTION EDIT
+#
+# ادمین می‌تواند جهت ویرایش را مشخص کند.
+#
+# مثال:
+#
+# «نتیجه‌گیری را کوتاه‌تر کن»
+#
+# «تمرکز بیشتری روی رفتار ایران داشته باش»
+#
+# «پاراگراف اول کوتاه‌تر شود»
+#
+# اما دستور ادمین حق ندارد:
+#
+# - Fact جدید بسازد
+# - متن را از معنای اصلی منحرف کند
+# - قطعیت را تغییر دهد
+# - دیدگاه تازه‌ای از AI ایجاد کند
+# =========================================================
+
+def build_admin_instruction_edit_instruction(
+    target_length: int,
+    content_type: str,
+    previous_summary: str,
+    admin_instruction: str
+) -> str:
+
+    previous_summary = normalize_text(
+        previous_summary
+    )
+
+    admin_instruction = normalize_text(
+        admin_instruction
+    )
+
+    if (
+        content_type
+        == CONTENT_TYPE_OPINION_NOTE
+    ):
+
+        content_rule = (
+            "متن اصلی یک یادداشت یا سرمقاله تحلیلی است. "
+            "تز نویسنده، استدلال‌های اصلی، رابطه علت و نتیجه "
+            "و جمع‌بندی اصلی باید حفظ شوند. "
+        )
+
+    elif (
+        content_type
+        == CONTENT_TYPE_NEWS_ANALYSIS
+    ):
+
+        content_rule = (
+            "متن اصلی یک تحلیل خبری است. "
+            "اصل رویداد، بازیگران، علت‌ها، روند اثرگذار "
+            "و پیامدهای اصلی باید حفظ شوند. "
+        )
+
+    else:
+
+        content_rule = (
+            "معنا و ساختار اصلی متن باید حفظ شود. "
+        )
+
+    return (
+        "وظیفه تو اصلاح نسخه خلاصه‌شده یک متن رسانه‌ای "
+        "بر اساس دستور تحریری ادمین است. "
+
+        "سه منبع در اختیار داری: "
+
+        "یک، متن اصلی کامل که تنها منبع معتبر واقعیت و معنا است. "
+
+        "دو، خلاصه فعلی که نسخه موجود برای اصلاح است. "
+
+        "سه، دستور ادمین که جهت و اولویت ویرایش را مشخص می‌کند. "
+
+        + content_rule +
+
+        "دستور ادمین را تا جایی اجرا کن که با متن اصلی "
+        "و قواعد وفاداری محتوایی تعارض نداشته باشد. "
+
+        "اگر اجرای بخشی از دستور ادمین مستلزم افزودن واقعیت، "
+        "تحلیل، نتیجه‌گیری، عدد، نام، تاریخ، ادعا یا اطلاعاتی "
+        "است که در متن اصلی وجود ندارد، آن بخش از دستور را اجرا نکن. "
+
+        "دستور ادمین نمی‌تواند قواعد حفظ حقیقت و جلوگیری "
+        "از تحریف را لغو کند. "
+
+        "متن اصلی مرجع نهایی است. "
+
+        "خلاصه فعلی را می‌توانی بازنویسی، جابه‌جا، فشرده "
+        "یا در محدوده متن اصلی تکمیل کنی. "
+
+        "اگر ادمین خواسته تمرکز روی یک محور بیشتر شود، "
+        "فقط از اطلاعات موجود در متن اصلی برای تقویت آن محور استفاده کن. "
+
+        "اگر ادمین خواسته بخشی کوتاه‌تر شود، "
+        "آن بخش را فشرده کن اما معنای اصلی را حذف نکن. "
+
+        "اگر ادمین خواسته متن روان‌تر یا حرفه‌ای‌تر شود، "
+        "فقط نحوه بیان را بهبود بده و محتوای تازه نساز. "
+
+        "خروجی باید همچنان نماینده کل متن باشد. "
+
+        "تمرکز بیشتر روی یک محور نباید باعث حذف کامل "
+        "محورهای ضروری دیگر متن شود. "
+
+        "میزان قطعیت تمام گزاره‌ها را حفظ کن. "
+
+        "احتمال را به قطعیت تبدیل نکن. "
+
+        "ادعا یا ارزیابی را به واقعیت قطعی تبدیل نکن. "
+
+        "دیدگاه نویسنده را به موضع مستقل خودت تبدیل نکن. "
+
+        "نسبت دادن سخنان، دیدگاه‌ها و ارزیابی‌ها را حفظ کن. "
+
+        "هیچ عنوان یا نام نویسنده تولید نکن. "
+
+        "هیچ توضیحی درباره کاری که انجام داده‌ای ننویس. "
+
+        f"نسخه نهایی نباید بیشتر از {target_length} "
+        "کاراکتر باشد. "
+
+        "تا حد منطقی از ظرفیت موجود استفاده کن. "
+
+        "فقط نسخه نهایی اصلاح‌شده را برگردان. "
+
+        "\n\n"
+        "دستور ادمین:\n"
+        "-----\n"
+        f"{admin_instruction}\n"
+        "-----\n\n"
+
+        "خلاصه فعلی:\n"
+        "-----\n"
+        f"{previous_summary}\n"
+        "-----"
+    )
+
+
+# =========================================================
 # PROVIDER RESOLUTION
 # =========================================================
 
@@ -708,9 +854,6 @@ def only_certainty_validation_error(
 
 # =========================================================
 # PROVIDER GENERATION
-#
-# اگر تنها خطا certainty_markers_lost باشد،
-# یک Retry امن روی ORIGINAL BODY انجام می‌شود.
 # =========================================================
 
 def generate_editorial_candidate(
@@ -916,12 +1059,6 @@ def generate_editorial_candidate(
 
 # =========================================================
 # EDITORIAL SUMMARY
-#
-# IMPORTANT:
-#
-# original_text در این مرحله BODY است.
-#
-# Structure Extraction عمداً اینجا انجام نمی‌شود.
 # =========================================================
 
 def summarize_editorial_content(
@@ -968,10 +1105,6 @@ def summarize_editorial_content(
 
     if resolved_summarizer is None:
         return None
-
-    # =====================================================
-    # ALREADY FITS
-    # =====================================================
 
     if len(original_text) <= target_length:
 
@@ -1026,9 +1159,6 @@ def summarize_editorial_content(
 
 # =========================================================
 # REGENERATE EDITORIAL SUMMARY
-#
-# original_text و previous_summary هر دو BODY هستند.
-# Title / Author در webhook_handler نگهداری می‌شوند.
 # =========================================================
 
 def regenerate_editorial_summary(
@@ -1058,10 +1188,6 @@ def regenerate_editorial_summary(
     original_length = len(
         original_text
     )
-
-    # =====================================================
-    # BASIC SAFETY
-    # =====================================================
 
     if not original_text:
 
@@ -1122,10 +1248,6 @@ def regenerate_editorial_summary(
             }
         )
 
-    # =====================================================
-    # MAXIMUM ATTEMPTS
-    # =====================================================
-
     if (
         regeneration_count
         >= MAX_REGENERATION_COUNT
@@ -1163,10 +1285,6 @@ def regenerate_editorial_summary(
             }
         )
 
-    # =====================================================
-    # PROVIDER
-    # =====================================================
-
     resolved_summarizer = (
         resolve_summarizer(
             summarizer
@@ -1200,10 +1318,6 @@ def regenerate_editorial_summary(
             }
         )
 
-    # =====================================================
-    # TARGET
-    # =====================================================
-
     regeneration_target = max(
         MIN_REGENERATION_TARGET,
         target_length
@@ -1214,10 +1328,6 @@ def regenerate_editorial_summary(
         regeneration_target,
         target_length
     )
-
-    # =====================================================
-    # INSTRUCTION
-    # =====================================================
 
     instruction = (
         build_editorial_regeneration_instruction(
@@ -1239,10 +1349,6 @@ def regenerate_editorial_summary(
         f"target={regeneration_target}"
     )
 
-    # =====================================================
-    # GENERATE FROM FULL ORIGINAL BODY
-    # =====================================================
-
     generation = (
         generate_editorial_candidate(
             original_text=original_text,
@@ -1257,10 +1363,6 @@ def regenerate_editorial_summary(
         regeneration_count
         + 1
     )
-
-    # =====================================================
-    # FAILED
-    # =====================================================
 
     if not generation[
         "success"
@@ -1326,10 +1428,6 @@ def regenerate_editorial_summary(
         ]
     )
 
-    # =====================================================
-    # SAME OUTPUT PROTECTION
-    # =====================================================
-
     if (
         previous_summary
         and new_summary
@@ -1374,10 +1472,6 @@ def regenerate_editorial_summary(
                     )
             }
         )
-
-    # =====================================================
-    # FINAL HARD LIMIT
-    # =====================================================
 
     if len(new_summary) > target_length:
 
@@ -1466,10 +1560,516 @@ def regenerate_editorial_summary(
 
 
 # =========================================================
-# MAIN REVIEW ANALYZER
+# APPLY ADMIN INSTRUCTION
 #
-# original_text در معماری جدید BODY است.
-# Title / Author در webhook_handler مدیریت می‌شوند.
+# این تابع API اصلی قابلیت:
+#
+# ✏️ تغییر با دستور من
+#
+# است.
+#
+# نکته:
+#
+# regeneration_count اینجا تغییر نمی‌کند.
+# =========================================================
+
+def apply_admin_instruction_to_editorial_summary(
+    original_text: str,
+    previous_summary: str,
+    admin_instruction: str,
+    content_type: str,
+    target_length: int = (
+        DEFAULT_REVIEW_TARGET
+    ),
+    regeneration_count: int = 0,
+    summarizer: Optional[
+        Callable[
+            [str, str, int],
+            str
+        ]
+    ] = None
+) -> EditorialReviewResult:
+
+    original_text = normalize_text(
+        original_text
+    )
+
+    previous_summary = normalize_text(
+        previous_summary
+    )
+
+    admin_instruction = normalize_text(
+        admin_instruction
+    )
+
+    original_length = len(
+        original_text
+    )
+
+    # =====================================================
+    # EMPTY ORIGINAL
+    # =====================================================
+
+    if not original_text:
+
+        return EditorialReviewResult(
+            content_type=content_type,
+            action=ACTION_NEEDS_APPROVAL,
+            needs_approval=True,
+            original_text="",
+            suggested_text=(
+                previous_summary
+            ),
+            summary_success=False,
+            target_length=target_length,
+            original_length=0,
+            suggested_length=len(
+                previous_summary
+            ),
+            reason="admin_edit_original_empty",
+            metadata={
+                "regeneration_count":
+                    regeneration_count,
+                "admin_instruction_applied":
+                    False
+            }
+        )
+
+    # =====================================================
+    # EMPTY INSTRUCTION
+    # =====================================================
+
+    if not admin_instruction:
+
+        return EditorialReviewResult(
+            content_type=content_type,
+            action=ACTION_NEEDS_APPROVAL,
+            needs_approval=True,
+            original_text=original_text,
+            suggested_text=(
+                previous_summary
+                or original_text
+            ),
+            summary_success=False,
+            target_length=target_length,
+            original_length=original_length,
+            suggested_length=len(
+                previous_summary
+                or original_text
+            ),
+            reason="admin_instruction_empty",
+            metadata={
+                "regeneration_count":
+                    regeneration_count,
+                "admin_instruction_applied":
+                    False
+            }
+        )
+
+    # =====================================================
+    # LIMIT ADMIN INSTRUCTION SIZE
+    # =====================================================
+
+    if (
+        len(admin_instruction)
+        > ADMIN_INSTRUCTION_MAX_LENGTH
+    ):
+
+        logger.warning(
+            f"⚠️ Admin instruction too long | "
+            f"length={len(admin_instruction)} | "
+            f"max={ADMIN_INSTRUCTION_MAX_LENGTH}"
+        )
+
+        return EditorialReviewResult(
+            content_type=content_type,
+            action=ACTION_NEEDS_APPROVAL,
+            needs_approval=True,
+            original_text=original_text,
+            suggested_text=(
+                previous_summary
+                or original_text
+            ),
+            summary_success=False,
+            target_length=target_length,
+            original_length=original_length,
+            suggested_length=len(
+                previous_summary
+                or original_text
+            ),
+            reason="admin_instruction_too_long",
+            metadata={
+                "regeneration_count":
+                    regeneration_count,
+                "admin_instruction_applied":
+                    False,
+                "admin_instruction_length":
+                    len(admin_instruction),
+                "admin_instruction_max_length":
+                    ADMIN_INSTRUCTION_MAX_LENGTH
+            }
+        )
+
+    # =====================================================
+    # CONTENT TYPE
+    # =====================================================
+
+    if (
+        content_type
+        not in (
+            CONTENT_TYPE_OPINION_NOTE,
+            CONTENT_TYPE_NEWS_ANALYSIS,
+        )
+    ):
+
+        logger.warning(
+            f"⚠️ Admin editorial edit blocked | "
+            f"type={content_type}"
+        )
+
+        return EditorialReviewResult(
+            content_type=content_type,
+            action=ACTION_NEEDS_APPROVAL,
+            needs_approval=True,
+            original_text=original_text,
+            suggested_text=(
+                previous_summary
+                or original_text
+            ),
+            summary_success=False,
+            target_length=target_length,
+            original_length=original_length,
+            suggested_length=len(
+                previous_summary
+                or original_text
+            ),
+            reason="admin_edit_not_allowed_for_content_type",
+            metadata={
+                "regeneration_count":
+                    regeneration_count,
+                "admin_instruction_applied":
+                    False
+            }
+        )
+
+    # =====================================================
+    # PROVIDER
+    # =====================================================
+
+    resolved_summarizer = (
+        resolve_summarizer(
+            summarizer
+        )
+    )
+
+    if resolved_summarizer is None:
+
+        return EditorialReviewResult(
+            content_type=content_type,
+            action=ACTION_NEEDS_APPROVAL,
+            needs_approval=True,
+            original_text=original_text,
+            suggested_text=(
+                previous_summary
+                or original_text
+            ),
+            summary_success=False,
+            target_length=target_length,
+            original_length=original_length,
+            suggested_length=len(
+                previous_summary
+                or original_text
+            ),
+            reason="admin_edit_provider_unavailable",
+            metadata={
+                "regeneration_count":
+                    regeneration_count,
+                "admin_instruction_applied":
+                    False
+            }
+        )
+
+    # =====================================================
+    # TARGET
+    #
+    # فقط حاشیه کوچک ایجاد می‌کنیم.
+    # هدف همچنان استفاده مناسب از ظرفیت است.
+    # =====================================================
+
+    edit_target = max(
+        MIN_ADMIN_EDIT_TARGET,
+        target_length
+        - ADMIN_EDIT_TARGET_MARGIN
+    )
+
+    edit_target = min(
+        edit_target,
+        target_length
+    )
+
+    # =====================================================
+    # BUILD INSTRUCTION
+    # =====================================================
+
+    instruction = (
+        build_admin_instruction_edit_instruction(
+            target_length=edit_target,
+            content_type=content_type,
+            previous_summary=previous_summary,
+            admin_instruction=(
+                admin_instruction
+            )
+        )
+    )
+
+    logger.info(
+        f"✏️ Admin editorial edit started | "
+        f"type={content_type} | "
+        f"original={original_length} | "
+        f"previous={len(previous_summary)} | "
+        f"instruction={len(admin_instruction)} | "
+        f"target={edit_target} | "
+        f"regeneration_count={regeneration_count}"
+    )
+
+    # =====================================================
+    # AI GENERATION
+    #
+    # مهم:
+    #
+    # original_text همان متن اصلی کامل است.
+    #
+    # previous_summary و admin_instruction فقط داخل
+    # Instruction هستند.
+    #
+    # بنابراین Validator نیز خروجی را مستقیماً
+    # با متن اصلی می‌سنجد.
+    # =====================================================
+
+    generation = (
+        generate_editorial_candidate(
+            original_text=original_text,
+            instruction=instruction,
+            target_length=edit_target,
+            content_type=content_type,
+            summarizer=resolved_summarizer
+        )
+    )
+
+    # =====================================================
+    # FAILED
+    # =====================================================
+
+    if not generation[
+        "success"
+    ]:
+
+        logger.warning(
+            f"⚠️ Admin editorial edit rejected | "
+            f"type={content_type} | "
+            f"reason={generation.get('reason')} | "
+            f"validation="
+            f"{generation.get('validation')}"
+        )
+
+        return EditorialReviewResult(
+            content_type=content_type,
+            action=ACTION_NEEDS_APPROVAL,
+            needs_approval=True,
+            original_text=original_text,
+            suggested_text=(
+                previous_summary
+                or original_text
+            ),
+            summary_success=False,
+            target_length=target_length,
+            original_length=original_length,
+            suggested_length=len(
+                previous_summary
+                or original_text
+            ),
+            reason="admin_edit_failed",
+            metadata={
+                "regeneration_count":
+                    regeneration_count,
+                "admin_instruction_applied":
+                    False,
+                "admin_instruction":
+                    admin_instruction,
+                "generation_reason":
+                    generation.get(
+                        "reason"
+                    ),
+                "validation":
+                    generation.get(
+                        "validation"
+                    ),
+                "failed_candidate":
+                    generation.get(
+                        "candidate",
+                        ""
+                    ),
+                "certainty_retry_called":
+                    generation.get(
+                        "certainty_retry_called",
+                        False
+                    )
+            }
+        )
+
+    # =====================================================
+    # SUCCESS CANDIDATE
+    # =====================================================
+
+    new_summary = normalize_text(
+        generation[
+            "candidate"
+        ]
+    )
+
+    # =====================================================
+    # SAME OUTPUT
+    #
+    # اگر دستور عملاً هیچ تغییری ایجاد نکرد،
+    # نسخه جدید موفق محسوب نمی‌شود.
+    # =====================================================
+
+    if (
+        previous_summary
+        and new_summary
+        == previous_summary
+    ):
+
+        logger.warning(
+            "⚠️ Admin editorial edit returned "
+            "same summary"
+        )
+
+        return EditorialReviewResult(
+            content_type=content_type,
+            action=ACTION_NEEDS_APPROVAL,
+            needs_approval=True,
+            original_text=original_text,
+            suggested_text=previous_summary,
+            summary_success=False,
+            target_length=target_length,
+            original_length=original_length,
+            suggested_length=len(
+                previous_summary
+            ),
+            reason="admin_edit_same_as_previous",
+            metadata={
+                "regeneration_count":
+                    regeneration_count,
+                "admin_instruction_applied":
+                    False,
+                "admin_instruction":
+                    admin_instruction,
+                "validation":
+                    generation.get(
+                        "validation"
+                    )
+            }
+        )
+
+    # =====================================================
+    # FINAL HARD LIMIT
+    # =====================================================
+
+    if len(new_summary) > target_length:
+
+        logger.warning(
+            f"⚠️ Admin editorial edit exceeds "
+            f"final target | "
+            f"output={len(new_summary)} | "
+            f"target={target_length}"
+        )
+
+        return EditorialReviewResult(
+            content_type=content_type,
+            action=ACTION_NEEDS_APPROVAL,
+            needs_approval=True,
+            original_text=original_text,
+            suggested_text=(
+                previous_summary
+                or original_text
+            ),
+            summary_success=False,
+            target_length=target_length,
+            original_length=original_length,
+            suggested_length=len(
+                previous_summary
+                or original_text
+            ),
+            reason="admin_edit_exceeds_target",
+            metadata={
+                "regeneration_count":
+                    regeneration_count,
+                "admin_instruction_applied":
+                    False,
+                "admin_instruction":
+                    admin_instruction
+            }
+        )
+
+    # =====================================================
+    # SUCCESS
+    # =====================================================
+
+    logger.info(
+        f"✅ Admin editorial edit ready | "
+        f"type={content_type} | "
+        f"original={original_length} | "
+        f"previous={len(previous_summary)} | "
+        f"new={len(new_summary)} | "
+        f"instruction={len(admin_instruction)} | "
+        f"regeneration_count_unchanged="
+        f"{regeneration_count}"
+    )
+
+    return EditorialReviewResult(
+        content_type=content_type,
+        action=ACTION_NEEDS_APPROVAL,
+        needs_approval=True,
+        original_text=original_text,
+        suggested_text=new_summary,
+        summary_success=True,
+        target_length=target_length,
+        original_length=original_length,
+        suggested_length=len(
+            new_summary
+        ),
+        reason="admin_instruction_edit_ready",
+        metadata={
+            "regeneration_count":
+                regeneration_count,
+            "max_regeneration_count":
+                MAX_REGENERATION_COUNT,
+            "can_regenerate": (
+                regeneration_count
+                < MAX_REGENERATION_COUNT
+            ),
+            "admin_instruction_applied":
+                True,
+            "admin_instruction":
+                admin_instruction,
+            "previous_summary":
+                previous_summary,
+            "validation":
+                generation.get(
+                    "validation"
+                ),
+            "certainty_retry_called":
+                generation.get(
+                    "certainty_retry_called",
+                    False
+                )
+        }
+    )
+
+
+# =========================================================
+# MAIN REVIEW ANALYZER
 # =========================================================
 
 def analyze_editorial_content(
@@ -1519,20 +2119,12 @@ def analyze_editorial_content(
             }
         )
 
-    # =====================================================
-    # CLASSIFICATION
-    # =====================================================
-
     content_type = (
         classify_editorial_content(
             original_text,
             classifier=classifier
         )
     )
-
-    # =====================================================
-    # NORMAL NEWS
-    # =====================================================
 
     if (
         content_type
@@ -1557,10 +2149,6 @@ def analyze_editorial_content(
             }
         )
 
-    # =====================================================
-    # SENSITIVE CONTENT
-    # =====================================================
-
     if (
         content_type
         == CONTENT_TYPE_SENSITIVE
@@ -1584,10 +2172,6 @@ def analyze_editorial_content(
             }
         )
 
-    # =====================================================
-    # UNCERTAIN
-    # =====================================================
-
     if (
         content_type
         == CONTENT_TYPE_UNCERTAIN
@@ -1610,10 +2194,6 @@ def analyze_editorial_content(
                 "can_regenerate": False
             }
         )
-
-    # =====================================================
-    # OPINION NOTE / NEWS ANALYSIS
-    # =====================================================
 
     summary_result = (
         summarize_editorial_content(
