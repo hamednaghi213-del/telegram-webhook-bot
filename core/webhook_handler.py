@@ -539,23 +539,15 @@ def get_media_from_message(
 
     if "video" in msg:
 
-        result[
-            "type"
-        ] = "video"
+        result["type"] = "video"
 
-        result[
-            "file_id"
-        ] = (
-            msg[
-                "video"
-            ].get(
+        result["file_id"] = (
+            msg["video"].get(
                 "file_id"
             )
         )
 
-        result[
-            "caption"
-        ] = (
+        result["caption"] = (
             msg.get(
                 "caption",
                 ""
@@ -577,21 +569,15 @@ def get_media_from_message(
 
         if photos:
 
-            result[
-                "type"
-            ] = "photo"
+            result["type"] = "photo"
 
-            result[
-                "file_id"
-            ] = (
+            result["file_id"] = (
                 photos[-1].get(
                     "file_id"
                 )
             )
 
-            result[
-                "caption"
-            ] = (
+            result["caption"] = (
                 msg.get(
                     "caption",
                     ""
@@ -603,23 +589,15 @@ def get_media_from_message(
 
     if "document" in msg:
 
-        result[
-            "type"
-        ] = "document"
+        result["type"] = "document"
 
-        result[
-            "file_id"
-        ] = (
-            msg[
-                "document"
-            ].get(
+        result["file_id"] = (
+            msg["document"].get(
                 "file_id"
             )
         )
 
-        result[
-            "caption"
-        ] = (
+        result["caption"] = (
             msg.get(
                 "caption",
                 ""
@@ -631,23 +609,15 @@ def get_media_from_message(
 
     if "voice" in msg:
 
-        result[
-            "type"
-        ] = "voice"
+        result["type"] = "voice"
 
-        result[
-            "file_id"
-        ] = (
-            msg[
-                "voice"
-            ].get(
+        result["file_id"] = (
+            msg["voice"].get(
                 "file_id"
             )
         )
 
-        result[
-            "caption"
-        ] = (
+        result["caption"] = (
             msg.get(
                 "caption",
                 ""
@@ -659,23 +629,15 @@ def get_media_from_message(
 
     if "audio" in msg:
 
-        result[
-            "type"
-        ] = "audio"
+        result["type"] = "audio"
 
-        result[
-            "file_id"
-        ] = (
-            msg[
-                "audio"
-            ].get(
+        result["file_id"] = (
+            msg["audio"].get(
                 "file_id"
             )
         )
 
-        result[
-            "caption"
-        ] = (
+        result["caption"] = (
             msg.get(
                 "caption",
                 ""
@@ -1041,29 +1003,35 @@ def build_editorial_display(
             or ""
         ).strip()
 
+        header_lines: List[str] = []
+
         if title:
-            parts.append(
+
+            header_lines.append(
                 f"📝 {title}"
             )
 
         if author:
-            parts.append(
+
+            header_lines.append(
                 f"✍️ {author}"
+            )
+
+        if header_lines:
+
+            parts.append(
+                "\n".join(
+                    header_lines
+                )
             )
 
         if body:
 
-            if parts:
+            parts.append(
+                body
+            )
 
-                return (
-                    "\n".join(parts)
-                    + "\n\n"
-                    + body
-                )
-
-            return body
-
-        return "\n".join(
+        return "\n\n".join(
             parts
         )
 
@@ -1895,6 +1863,19 @@ def build_editorial_keyboard(
             }
         ])
 
+        # =================================================
+        # ADMIN DIRECTED EDIT
+        # =================================================
+
+        rows.append([
+            {
+                "text":
+                    "✏️ تغییر با دستور من",
+                "callback_data":
+                    f"ed:edit:{review_id}"
+            }
+        ])
+
     rows.append([
         {
             "text":
@@ -2033,6 +2014,669 @@ def build_editorial_preview(
 
 
 # =========================================================
+# ADMIN INSTRUCTION WAIT COMPATIBILITY HELPERS
+#
+# این Wrapperها فقط اتصال webhook به
+# editorial_pending.py را انجام می‌دهند.
+#
+# هیچ State جداگانه‌ای در webhook نگهداری نمی‌شود.
+# =========================================================
+
+def get_waiting_admin_review(
+    user_id: int
+):
+
+    try:
+
+        from core.editorial_pending import (
+            get_waiting_admin_instruction_review
+        )
+
+        try:
+
+            return (
+                get_waiting_admin_instruction_review(
+                    user_id=user_id
+                )
+            )
+
+        except TypeError:
+
+            return (
+                get_waiting_admin_instruction_review(
+                    user_id
+                )
+            )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Get waiting admin review failed | "
+            f"user={user_id} | "
+            f"{e}"
+        )
+
+        return None
+
+
+def start_waiting_admin_instruction(
+    review_id: str,
+    user_id: int
+) -> bool:
+
+    try:
+
+        from core.editorial_pending import (
+            start_admin_instruction_wait
+        )
+
+        try:
+
+            result = (
+                start_admin_instruction_wait(
+                    review_id=review_id,
+                    user_id=user_id
+                )
+            )
+
+        except TypeError:
+
+            try:
+
+                result = (
+                    start_admin_instruction_wait(
+                        user_id=user_id,
+                        review_id=review_id
+                    )
+                )
+
+            except TypeError:
+
+                result = (
+                    start_admin_instruction_wait(
+                        review_id,
+                        user_id
+                    )
+                )
+
+        return (
+            result is not False
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Start admin instruction wait failed | "
+            f"review_id={review_id} | "
+            f"user={user_id} | "
+            f"{e}"
+        )
+
+        return False
+
+
+def consume_waiting_admin_instruction(
+    review_id: str,
+    user_id: int
+) -> None:
+
+    try:
+
+        from core.editorial_pending import (
+            consume_admin_instruction
+        )
+
+        try:
+
+            consume_admin_instruction(
+                review_id=review_id,
+                user_id=user_id
+            )
+
+            return
+
+        except TypeError:
+            pass
+
+        try:
+
+            consume_admin_instruction(
+                user_id=user_id
+            )
+
+            return
+
+        except TypeError:
+            pass
+
+        try:
+
+            consume_admin_instruction(
+                review_id,
+                user_id
+            )
+
+            return
+
+        except TypeError:
+            pass
+
+        consume_admin_instruction(
+            user_id
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Consume admin instruction wait failed | "
+            f"review_id={review_id} | "
+            f"user={user_id} | "
+            f"{e}"
+        )
+
+
+def cancel_waiting_admin_instruction(
+    review_id: str,
+    user_id: int
+) -> None:
+
+    try:
+
+        from core.editorial_pending import (
+            cancel_admin_instruction_wait
+        )
+
+        try:
+
+            cancel_admin_instruction_wait(
+                review_id=review_id,
+                user_id=user_id
+            )
+
+            return
+
+        except TypeError:
+            pass
+
+        try:
+
+            cancel_admin_instruction_wait(
+                user_id=user_id
+            )
+
+            return
+
+        except TypeError:
+            pass
+
+        try:
+
+            cancel_admin_instruction_wait(
+                review_id,
+                user_id
+            )
+
+            return
+
+        except TypeError:
+            pass
+
+        cancel_admin_instruction_wait(
+            user_id
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Cancel admin instruction wait failed | "
+            f"review_id={review_id} | "
+            f"user={user_id} | "
+            f"{e}"
+        )
+
+
+# =========================================================
+# RESOLVE WAITING REVIEW
+#
+# pending helper ممکن است:
+#
+# - خود Review
+# - review_id
+#
+# را برگرداند.
+#
+# هر دو حالت پشتیبانی می‌شوند.
+# =========================================================
+
+def resolve_waiting_admin_review(
+    user_id: int
+):
+
+    waiting = (
+        get_waiting_admin_review(
+            user_id
+        )
+    )
+
+    if waiting is None:
+        return None
+
+    if hasattr(
+        waiting,
+        "review_id"
+    ):
+
+        return waiting
+
+    if isinstance(
+        waiting,
+        str
+    ):
+
+        review_id = (
+            waiting.strip()
+        )
+
+        if not review_id:
+            return None
+
+        try:
+
+            from core.editorial_pending import (
+                get_pending_review
+            )
+
+            return (
+                get_pending_review(
+                    review_id=review_id,
+                    user_id=user_id
+                )
+            )
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Resolve waiting review failed | "
+                f"review_id={review_id} | "
+                f"user={user_id} | "
+                f"{e}"
+            )
+
+            return None
+
+    return None
+
+
+# =========================================================
+# HANDLE ADMIN INSTRUCTION TEXT
+#
+# True:
+# پیام مصرف شد و نباید وارد مسیر خبر شود.
+#
+# False:
+# هیچ Review منتظر دستور نیست.
+# =========================================================
+
+def try_handle_admin_instruction_text(
+    chat_id: int,
+    instruction_text: str,
+    req_id: str
+) -> bool:
+
+    instruction_text = (
+        str(
+            instruction_text
+            or ""
+        )
+        .strip()
+    )
+
+    if not instruction_text:
+
+        return False
+
+    review = (
+        resolve_waiting_admin_review(
+            chat_id
+        )
+    )
+
+    if review is None:
+
+        return False
+
+    review_id = (
+        getattr(
+            review,
+            "review_id",
+            ""
+        )
+        or ""
+    )
+
+    if not review_id:
+
+        logger.error(
+            f"[{req_id}] ❌ Waiting editorial review "
+            f"has no review_id | user={chat_id}"
+        )
+
+        return False
+
+    # =====================================================
+    # پیام همین لحظه به عنوان دستور مصرف می‌شود.
+    #
+    # قبل از AI حالت Waiting پاک می‌شود تا در صورت
+    # دریافت Webhook دیگری، همان دستور دوباره مصرف نشود.
+    # =====================================================
+
+    consume_waiting_admin_instruction(
+        review_id=review_id,
+        user_id=chat_id
+    )
+
+    try:
+
+        from core.editorial_pending import (
+            STATUS_PENDING,
+            update_pending_summary
+        )
+
+        from core.editorial_review import (
+            MAX_REGENERATION_COUNT,
+            apply_admin_instruction_to_editorial_summary
+        )
+
+        if (
+            getattr(
+                review,
+                "status",
+                None
+            )
+            != STATUS_PENDING
+        ):
+
+            send_message(
+                chat_id,
+                "⚠️ این پیش‌نمایش دیگر قابل ویرایش نیست."
+            )
+
+            return True
+
+        metadata = (
+            getattr(
+                review,
+                "metadata",
+                {}
+            )
+            or {}
+        )
+
+        editorial_title = (
+            metadata.get(
+                "editorial_title",
+                ""
+            )
+            or ""
+        )
+
+        editorial_author = (
+            metadata.get(
+                "editorial_author",
+                ""
+            )
+            or ""
+        )
+
+        editorial_body = (
+            metadata.get(
+                "editorial_body",
+                ""
+            )
+            or ""
+        )
+
+        original_body = (
+            editorial_body
+            or getattr(
+                review,
+                "original_text",
+                ""
+            )
+            or ""
+        )
+
+        previous_summary = (
+            getattr(
+                review,
+                "current_summary",
+                ""
+            )
+            or ""
+        )
+
+        regeneration_count = int(
+            getattr(
+                review,
+                "regeneration_count",
+                0
+            )
+            or 0
+        )
+
+        logger.info(
+            f"[{req_id}] ✏️ Admin instruction received | "
+            f"review_id={review_id} | "
+            f"user={chat_id} | "
+            f"instruction={len(instruction_text)} | "
+            f"original_body={len(original_body)} | "
+            f"previous={len(previous_summary)} | "
+            f"regeneration_count="
+            f"{regeneration_count}"
+        )
+
+        send_message(
+            chat_id,
+            "✏️ دستور دریافت شد. "
+            "در حال آماده‌سازی نسخه جدید..."
+        )
+
+        edit_result = (
+            apply_admin_instruction_to_editorial_summary(
+                original_text=(
+                    original_body
+                ),
+                previous_summary=(
+                    previous_summary
+                ),
+                admin_instruction=(
+                    instruction_text
+                ),
+                content_type=(
+                    review.content_type
+                ),
+                regeneration_count=(
+                    regeneration_count
+                )
+            )
+        )
+
+        # =================================================
+        # FAILED
+        #
+        # خلاصه قبلی محفوظ می‌ماند.
+        # =================================================
+
+        if not edit_result.summary_success:
+
+            logger.warning(
+                f"[{req_id}] ⚠️ Admin instruction edit "
+                f"rejected | review_id={review_id} | "
+                f"reason={edit_result.reason}"
+            )
+
+            keyboard = (
+                build_editorial_keyboard(
+                    review_id=review_id,
+                    has_summary=bool(
+                        previous_summary
+                    ),
+                    can_regenerate=(
+                        regeneration_count
+                        < MAX_REGENERATION_COUNT
+                    )
+                )
+            )
+
+            send_message(
+                chat_id=chat_id,
+                text=(
+                    "⚠️ نسخه جدید مورد تأیید "
+                    "سیستم ضدتحریف قرار نگرفت.\n\n"
+                    "نسخه قبلی خلاصه بدون تغییر محفوظ مانده است."
+                ),
+                reply_markup=keyboard
+            )
+
+            return True
+
+        # =================================================
+        # SUCCESS
+        #
+        # Regeneration Count تغییر نمی‌کند.
+        # =================================================
+
+        updated_metadata = dict(
+            metadata
+        )
+
+        updated_metadata.update({
+            "summary_success": True,
+            "admin_instruction_applied": True,
+            "last_admin_instruction":
+                instruction_text,
+            "admin_edit_reason":
+                edit_result.reason
+        })
+
+        updated = (
+            update_pending_summary(
+                review_id=review_id,
+                user_id=chat_id,
+                new_summary=(
+                    edit_result.suggested_text
+                ),
+                regeneration_count=(
+                    regeneration_count
+                ),
+                metadata=(
+                    updated_metadata
+                )
+            )
+        )
+
+        if updated is None:
+
+            logger.error(
+                f"[{req_id}] ❌ Admin edit pending "
+                f"update failed | review_id={review_id}"
+            )
+
+            send_message(
+                chat_id,
+                "❌ نسخه جدید ساخته شد اما وضعیت "
+                "پیش‌نمایش قابل به‌روزرسانی نبود."
+            )
+
+            return True
+
+        updated_metadata = (
+            updated.metadata
+            or {}
+        )
+
+        keyboard = (
+            build_editorial_keyboard(
+                review_id=review_id,
+                has_summary=True,
+                can_regenerate=(
+                    updated.regeneration_count
+                    < MAX_REGENERATION_COUNT
+                )
+            )
+        )
+
+        preview = (
+            build_editorial_preview(
+                content_type=(
+                    updated.content_type
+                ),
+                summary_text=(
+                    updated.current_summary
+                ),
+                original_length=len(
+                    updated_metadata.get(
+                        "editorial_body",
+                        updated.original_text
+                    )
+                    or updated.original_text
+                ),
+                regeneration_count=(
+                    updated.regeneration_count
+                ),
+                summary_success=True,
+                title=(
+                    updated_metadata.get(
+                        "editorial_title",
+                        editorial_title
+                    )
+                    or editorial_title
+                ),
+                author=(
+                    updated_metadata.get(
+                        "editorial_author",
+                        editorial_author
+                    )
+                    or editorial_author
+                )
+            )
+        )
+
+        send_message(
+            chat_id=chat_id,
+            text=preview,
+            reply_markup=keyboard
+        )
+
+        logger.info(
+            f"[{req_id}] ✅ Admin instruction edit "
+            f"completed | review_id={review_id} | "
+            f"before={len(previous_summary)} | "
+            f"after={len(updated.current_summary or '')} | "
+            f"regeneration_count="
+            f"{updated.regeneration_count}"
+        )
+
+        return True
+
+    except Exception as e:
+
+        logger.exception(
+            f"[{req_id}] ❌ Admin instruction handling "
+            f"failed | review_id={review_id} | "
+            f"{e}"
+        )
+
+        send_message(
+            chat_id,
+            "❌ اعمال دستور با مشکل روبرو شد. "
+            "نسخه قبلی خلاصه محفوظ است."
+        )
+
+        return True
+
+
+# =========================================================
 # CREATE EDITORIAL REVIEW FOR TEXT
 # =========================================================
 
@@ -2087,10 +2731,6 @@ def try_queue_editorial_text_review(
 
         # =================================================
         # STRUCTURE EXTRACTION
-        #
-        # title / author از متن جدا می‌شوند.
-        #
-        # فقط body برای خلاصه‌سازی AI ارسال می‌شود.
         # =================================================
 
         structure = (
@@ -2128,18 +2768,6 @@ def try_queue_editorial_text_review(
             f"user={chat_id} | "
             f"length={len(editorial_body)}"
         )
-
-        # =================================================
-        # IMPORTANT
-        #
-        # AI فقط BODY را می‌بیند.
-        #
-        # عنوان و نویسنده:
-        #
-        # - خلاصه نمی‌شوند
-        # - تغییر نمی‌کنند
-        # - وارد Validator نمی‌شوند
-        # =================================================
 
         review_result = (
             analyze_editorial_content(
@@ -2180,25 +2808,18 @@ def try_queue_editorial_text_review(
                 content_type=(
                     review_result.content_type
                 ),
-
-                # برای سازگاری با مسیر انتشار متن اصلی،
-                # Original کامل محفوظ می‌ماند.
                 original_text=(
                     editorial_source
                 ),
-
-                # Summary فقط body خلاصه‌شده است.
                 current_summary=(
                     review_result.suggested_text
                 ),
-
                 regeneration_count=(
                     review_result.metadata.get(
                         "regeneration_count",
                         0
                     )
                 ),
-
                 metadata={
                     "kind": "text",
 
@@ -2233,10 +2854,6 @@ def try_queue_editorial_text_review(
 
                     "review_reason":
                         review_result.reason,
-
-                    # =====================================
-                    # EDITORIAL STRUCTURE
-                    # =====================================
 
                     "editorial_title":
                         editorial_title,
@@ -2280,27 +2897,21 @@ def try_queue_editorial_text_review(
                 content_type=(
                     pending.content_type
                 ),
-
                 summary_text=(
                     pending.current_summary
                 ),
-
                 original_length=len(
                     editorial_body
                 ),
-
                 regeneration_count=(
                     pending.regeneration_count
                 ),
-
                 summary_success=(
                     review_result.summary_success
                 ),
-
                 title=(
                     editorial_title
                 ),
-
                 author=(
                     editorial_author
                 )
@@ -2491,6 +3102,11 @@ def handle_editorial_callback(
 
         if action == "cancel":
 
+            cancel_waiting_admin_instruction(
+                review_id=review_id,
+                user_id=user_id
+            )
+
             cancel_pending_review(
                 review_id=review_id,
                 user_id=user_id
@@ -2514,12 +3130,80 @@ def handle_editorial_callback(
             return True
 
         # =================================================
+        # ADMIN DIRECTED EDIT
+        # =================================================
+
+        if action == "edit":
+
+            if not (
+                review.current_summary
+                or ""
+            ).strip():
+
+                answer_callback_query(
+                    callback_id,
+                    "خلاصه‌ای برای ویرایش وجود ندارد."
+                )
+
+                return True
+
+            started = (
+                start_waiting_admin_instruction(
+                    review_id=review_id,
+                    user_id=user_id
+                )
+            )
+
+            if not started:
+
+                answer_callback_query(
+                    callback_id,
+                    "فعال‌سازی ویرایش با مشکل روبرو شد."
+                )
+
+                send_message(
+                    user_id,
+                    "❌ امکان دریافت دستور ویرایش "
+                    "در حال حاضر وجود ندارد."
+                )
+
+                return True
+
+            answer_callback_query(
+                callback_id,
+                "دستور تغییر را ارسال کنید."
+            )
+
+            send_message(
+                chat_id=user_id,
+                text=(
+                    "✏️ دستور تغییر را ارسال کنید.\n\n"
+                    "پیام بعدی شما فقط به عنوان دستور "
+                    "ویرایش همین خلاصه استفاده می‌شود.\n\n"
+                    "مثلاً:\n"
+                    "روی دلیل اصلی تصمیم ایران بیشتر تمرکز کن "
+                    "و نتیجه‌گیری را کوتاه‌تر کن."
+                )
+            )
+
+            logger.info(
+                f"[{req_id}] ✏️ Waiting for admin "
+                f"instruction | review_id={review_id} | "
+                f"user={user_id}"
+            )
+
+            return True
+
+        # =================================================
         # PUBLISH ORIGINAL
-        #
-        # مسیر اصلی قبلی حفظ شده است.
         # =================================================
 
         if action == "original":
+
+            cancel_waiting_admin_instruction(
+                review_id=review_id,
+                user_id=user_id
+            )
 
             success = (
                 publish_prepared_text(
@@ -2589,6 +3273,11 @@ def handle_editorial_callback(
 
         if action == "summary":
 
+            cancel_waiting_admin_instruction(
+                review_id=review_id,
+                user_id=user_id
+            )
+
             if not (
                 review.current_summary
                 or ""
@@ -2614,15 +3303,6 @@ def handle_editorial_callback(
                 )
 
                 return True
-
-            # =================================================
-            # FINAL EDITORIAL DISPLAY
-            #
-            # 📝 title
-            # ✍️ author
-            #
-            # summary body
-            # =================================================
 
             final_summary = (
                 build_editorial_display(
@@ -2692,6 +3372,11 @@ def handle_editorial_callback(
 
         if action == "regen":
 
+            cancel_waiting_admin_instruction(
+                review_id=review_id,
+                user_id=user_id
+            )
+
             if (
                 review.regeneration_count
                 >= MAX_REGENERATION_COUNT
@@ -2708,13 +3393,6 @@ def handle_editorial_callback(
                 callback_id,
                 "در حال ساخت نسخه جدید..."
             )
-
-            # =================================================
-            # REGENERATION SOURCE
-            #
-            # AI فقط body اصلی را دوباره بررسی می‌کند.
-            # title / author هرگز وارد AI نمی‌شوند.
-            # =================================================
 
             regeneration_source = (
                 editorial_body
@@ -2839,11 +3517,9 @@ def handle_editorial_callback(
                     content_type=(
                         updated.content_type
                     ),
-
                     summary_text=(
                         updated.current_summary
                     ),
-
                     original_length=len(
                         updated_metadata.get(
                             "editorial_body",
@@ -2851,13 +3527,10 @@ def handle_editorial_callback(
                         )
                         or updated.original_text
                     ),
-
                     regeneration_count=(
                         updated.regeneration_count
                     ),
-
                     summary_success=True,
-
                     title=(
                         updated_metadata.get(
                             "editorial_title",
@@ -2865,7 +3538,6 @@ def handle_editorial_callback(
                         )
                         or ""
                     ),
-
                     author=(
                         updated_metadata.get(
                             "editorial_author",
@@ -3052,10 +3724,6 @@ def handle_webhook() -> Tuple[
             or []
         )
 
-        # =================================================
-        # COMMAND
-        # =================================================
-
         command_text = (
             msg.get(
                 "text",
@@ -3063,6 +3731,13 @@ def handle_webhook() -> Tuple[
             )
             or ""
         )
+
+        # =================================================
+        # COMMAND
+        #
+        # Commands همچنان اولویت دارند و به عنوان
+        # Admin Instruction مصرف نمی‌شوند.
+        # =================================================
 
         if command_text.startswith("/"):
 
@@ -3133,6 +3808,50 @@ def handle_webhook() -> Tuple[
             return {
                 "ok": True
             }, 200
+
+        # =================================================
+        # ADMIN INSTRUCTION GATE
+        #
+        # بسیار مهم:
+        #
+        # اگر Review منتظر دستور ادمین باشد،
+        # پیام متنی بعدی همین‌جا مصرف می‌شود.
+        #
+        # بنابراین:
+        #
+        # - وارد Formatter نمی‌شود
+        # - خبر جدید تشخیص داده نمی‌شود
+        # - در کانال منتشر نمی‌شود
+        # - Editorial Review جدید ساخته نمی‌شود
+        # =================================================
+
+        if (
+            editorial_review_enabled()
+            and command_text.strip()
+        ):
+
+            admin_instruction_handled = (
+                try_handle_admin_instruction_text(
+                    chat_id=chat_id,
+                    instruction_text=(
+                        command_text
+                    ),
+                    req_id=req_id
+                )
+            )
+
+            if admin_instruction_handled:
+
+                logger.info(
+                    f"[{req_id}] ✏️ Text consumed as "
+                    f"editorial admin instruction | "
+                    f"user={chat_id}"
+                )
+
+                return {
+                    "ok": True,
+                    "editorial_admin_instruction": True
+                }, 200
 
         # =================================================
         # MEDIA
@@ -3359,6 +4078,10 @@ def handle_webhook() -> Tuple[
 
         if pure_text.strip():
 
+            # =============================================
+            # EDITORIAL REVIEW
+            # =============================================
+
             queued_for_review = (
                 try_queue_editorial_text_review(
                     chat_id=chat_id,
@@ -3385,6 +4108,10 @@ def handle_webhook() -> Tuple[
                     "ok": True,
                     "editorial_review": True
                 }, 200
+
+            # =============================================
+            # STABLE DIRECT PUBLICATION
+            # =============================================
 
             kwargs = {
                 "chat_id": chat_id,
