@@ -309,7 +309,9 @@ def test_detect_new_numbers():
 
 # =========================================================
 # TEST 10
-# VALID SUMMARY
+# VALID SAFE SUMMARY
+#
+# کاهش باید زیر سقف 40 درصد باقی بماند.
 # =========================================================
 
 def test_validate_safe_summary():
@@ -322,7 +324,8 @@ def test_validate_safe_summary():
 
     summary = (
         "وزیر خارجه گفت احتمال دارد "
-        "مذاکرات هفته آینده آغاز شود."
+        "مذاکرات هفته آینده آغاز شود و "
+        "رایزنی‌ها ادامه دارد."
     )
 
     validation = (
@@ -642,6 +645,8 @@ def test_already_fits_does_not_call_provider():
 # =========================================================
 # TEST 18
 # NO PROVIDER
+#
+# ORIGINAL MUST RETURN BYTE-FOR-BYTE / STRING-FOR-STRING
 # =========================================================
 
 def test_no_provider_returns_original():
@@ -666,6 +671,11 @@ def test_no_provider_returns_original():
 
     assert (
         result.summary_text
+        == original
+    )
+
+    assert (
+        result.original_text
         == original
     )
 
@@ -726,6 +736,11 @@ def test_provider_not_called_if_required_reduction_is_unsafe():
     )
 
     assert (
+        result.summary_text
+        == original
+    )
+
+    assert (
         called[
             "value"
         ]
@@ -736,6 +751,8 @@ def test_provider_not_called_if_required_reduction_is_unsafe():
 # =========================================================
 # TEST 20
 # SAFE PROVIDER RESULT ACCEPTED
+#
+# کاهش زیر 40 درصد باقی می‌ماند.
 # =========================================================
 
 def test_safe_provider_summary_is_accepted():
@@ -749,7 +766,8 @@ def test_safe_provider_summary_is_accepted():
 
     safe_summary = (
         "وزیر خارجه گفت احتمال دارد "
-        "مذاکرات هفته آینده آغاز شود."
+        "مذاکرات هفته آینده آغاز شود و "
+        "رایزنی‌های دیپلماتیک ادامه دارد."
     )
 
     def fake_provider(
@@ -765,7 +783,7 @@ def test_safe_provider_summary_is_accepted():
     result = (
         summarize_text_safely(
             original_text=original,
-            target_length=90,
+            target_length=100,
             summarizer=fake_provider
         )
     )
@@ -794,6 +812,9 @@ def test_safe_provider_summary_is_accepted():
 # =========================================================
 # TEST 21
 # UNSAFE PROVIDER RESULT REJECTED
+#
+# Target باید از متن اصلی کوتاه‌تر باشد تا Provider
+# واقعاً فراخوانی شود.
 # =========================================================
 
 def test_unsafe_provider_summary_is_rejected():
@@ -807,11 +828,19 @@ def test_unsafe_provider_summary_is_rejected():
         "مذاکرات هفته آینده آغاز می‌شود."
     )
 
+    called = {
+        "value": False
+    }
+
     def fake_provider(
         original_text,
         instruction,
         target_length
     ):
+
+        called[
+            "value"
+        ] = True
 
         return (
             unsafe_summary
@@ -820,9 +849,16 @@ def test_unsafe_provider_summary_is_rejected():
     result = (
         summarize_text_safely(
             original_text=original,
-            target_length=50,
+            target_length=40,
             summarizer=fake_provider
         )
+    )
+
+    assert (
+        called[
+            "value"
+        ]
+        is True
     )
 
     assert (
@@ -845,11 +881,20 @@ def test_unsafe_provider_summary_is_rejected():
         == "validation_failed"
     )
 
+    assert (
+        "certainty_markers_lost"
+        in result.metadata[
+            "validation"
+        ][
+            "errors"
+        ]
+    )
+
 
 # =========================================================
 # TEST 22
 # PROVIDER ERROR
-# ORIGINAL MUST SURVIVE
+# ORIGINAL MUST SURVIVE EXACTLY
 # =========================================================
 
 def test_provider_exception_returns_original():
@@ -889,6 +934,11 @@ def test_provider_exception_returns_original():
     )
 
     assert (
+        result.original_text
+        == original
+    )
+
+    assert (
         result.reason
         == "provider_error"
     )
@@ -924,6 +974,11 @@ def test_instruction_contains_anti_distortion_rules():
 
     assert (
         "نام افراد"
+        in instruction
+    )
+
+    assert (
+        "دیدگاه یا برداشت شخصی"
         in instruction
     )
 
