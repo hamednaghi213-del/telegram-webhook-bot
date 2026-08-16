@@ -1622,6 +1622,16 @@ def send_text_to_bale(
 
 # =========================================================
 # EXECUTE TELEGRAM PLAN
+#
+# FINAL ORDER:
+#
+# 1. MEDIA
+# 2. BLOCKQUOTE / EXPANDABLE REPLY
+# 3. FOLLOWUP / BRANDING REPLY
+#
+# IMPORTANT:
+# Blockquotes are no longer sent through the old standalone
+# path when a media anchor exists.
 # =========================================================
 
 def execute_telegram_plan(
@@ -1804,11 +1814,62 @@ def execute_telegram_plan(
     logger.info(
         f"🔗 Telegram media anchor | "
         f"message_id={media_message_id or '-'} | "
+        f"blockquote_replies={len(blockquote_messages)} | "
         f"followups={len(followup_messages)}"
     )
 
     # =====================================================
-    # FOLLOWUP
+    # STEP 2
+    # BLOCKQUOTE / EXPANDABLE REPLIES
+    # =====================================================
+
+    for index, html_message in enumerate(
+        blockquote_messages
+    ):
+
+        if media_message_id:
+
+            logger.info(
+                f"🧩 Telegram blockquote reply | "
+                f"index={index + 1} | "
+                f"reply_to={media_message_id}"
+            )
+
+            success = (
+                send_text_to_channel(
+                    html_message,
+                    parse_mode="HTML",
+                    reply_to_message_id=(
+                        media_message_id
+                    )
+                )
+            )
+
+        else:
+
+            logger.warning(
+                f"⚠️ Media message_id unavailable | "
+                f"blockquote will be sent normally | "
+                f"index={index + 1}"
+            )
+
+            success = (
+                send_text_to_channel(
+                    html_message,
+                    parse_mode="HTML"
+                )
+            )
+
+        if not success:
+
+            logger.error(
+                f"❌ Telegram blockquote reply failed | "
+                f"index={index + 1}"
+            )
+
+    # =====================================================
+    # STEP 3
+    # FOLLOWUP / BRANDING REPLIES
     # =====================================================
 
     for index, message in enumerate(
@@ -1816,6 +1877,12 @@ def execute_telegram_plan(
     ):
 
         if media_message_id:
+
+            logger.info(
+                f"🏷️ Telegram follow-up reply | "
+                f"index={index + 1} | "
+                f"reply_to={media_message_id}"
+            )
 
             success = (
                 send_text_to_channel(
@@ -1847,32 +1914,12 @@ def execute_telegram_plan(
                 f"index={index + 1}"
             )
 
-    # =====================================================
-    # LEGACY BLOCKQUOTE
-    # =====================================================
-
-    for index, html_message in enumerate(
-        blockquote_messages
-    ):
-
-        logger.warning(
-            f"⚠️ Legacy standalone blockquote path used | "
-            f"index={index + 1}"
-        )
-
-        success = (
-            send_text_to_channel(
-                html_message,
-                parse_mode="HTML"
-            )
-        )
-
-        if not success:
-
-            logger.error(
-                f"❌ Telegram blockquote failed | "
-                f"index={index + 1}"
-            )
+    logger.info(
+        f"✅ Telegram reply chain completed | "
+        f"media={media_message_id or '-'} | "
+        f"blockquote_replies={len(blockquote_messages)} | "
+        f"followup_replies={len(followup_messages)}"
+    )
 
     return True
 
