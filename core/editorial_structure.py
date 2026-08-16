@@ -87,11 +87,6 @@ class EditorialStructure:
 
 # =========================================================
 # BASIC NORMALIZATION
-#
-# توجه:
-#
-# original_text دست‌نخورده نگه داشته می‌شود.
-# این normalize فقط برای پردازش داخلی است.
 # =========================================================
 
 def normalize_text(
@@ -137,6 +132,7 @@ def get_non_empty_lines(
         value = line.strip()
 
         if value:
+
             result.append(
                 value
             )
@@ -160,78 +156,6 @@ def normalize_spaces(
         " ",
         text
     )
-
-
-# =========================================================
-# TITLE HEURISTICS
-#
-# هدف:
-# اولین خط مستقل را در صورت شباهت به تیتر جدا کنیم.
-#
-# محافظه‌کارانه عمل می‌کنیم.
-# =========================================================
-
-def looks_like_title(
-    line: str
-) -> bool:
-
-    line = normalize_spaces(
-        line
-    )
-
-    if not line:
-        return False
-
-    # تیتر خیلی طولانی احتمالاً پاراگراف است.
-    if len(line) > 140:
-        return False
-
-    # خطی که URL یا Mention باشد تیتر نیست.
-    if re.search(
-        r"https?://|@[A-Za-z0-9_]+",
-        line,
-        flags=re.IGNORECASE
-    ):
-
-        return False
-
-    # هشتگ به تنهایی تیتر نیست.
-    if line.startswith("#"):
-        return False
-
-    # خط‌های واضح نویسنده تیتر نیستند.
-    if detect_author_header(
-        line
-    ) is not None:
-
-        return False
-
-    if detect_opening_author_phrase(
-        line
-    ) is not None:
-
-        return False
-
-    # خطی که خیلی شبیه جمله کامل طولانی است،
-    # با احتمال کمتری تیتر محسوب می‌شود.
-    sentence_marks = (
-        ".",
-        "؟",
-        "?",
-        "!",
-        "؛",
-    )
-
-    if (
-        len(line) > 90
-        and line.endswith(
-            sentence_marks
-        )
-    ):
-
-        return False
-
-    return True
 
 
 # =========================================================
@@ -261,7 +185,6 @@ def clean_author_name(
         value
     )
 
-    # حذف علائم رایج انتهای عبارت نویسنده
     value = value.strip(
         "،,؛;.؟?!"
     )
@@ -273,10 +196,6 @@ def clean_author_name(
 
 # =========================================================
 # AUTHOR NAME VALIDATION
-#
-# هدف:
-# جلوگیری از اینکه یک جمله کامل به عنوان نام نویسنده
-# استخراج شود.
 # =========================================================
 
 def looks_like_person_name(
@@ -302,11 +221,9 @@ def looks_like_person_name(
     if not words:
         return False
 
-    # نام‌های خیلی بلند احتمالاً جمله هستند.
     if len(words) > 6:
         return False
 
-    # عدد داخل نام نویسنده معمولاً مشکوک است.
     if re.search(
         r"[0-9۰-۹٠-٩]",
         value
@@ -314,7 +231,6 @@ def looks_like_person_name(
 
         return False
 
-    # URL / Mention / Hashtag نباید نویسنده محسوب شود.
     if re.search(
         r"https?://|@[A-Za-z0-9_]+|#[^\s#]+",
         value,
@@ -323,7 +239,6 @@ def looks_like_person_name(
 
         return False
 
-    # برخی واژه‌ها نشانه این هستند که کل عبارت یک جمله است.
     suspicious_words = {
         "است",
         "بود",
@@ -366,7 +281,6 @@ def looks_like_person_name(
 # نویسنده حامد محمدی
 # به قلم حامد محمدی
 # قلم: حامد محمدی
-# یادداشت حامد محمدی
 # یادداشت از حامد محمدی
 # =========================================================
 
@@ -430,13 +344,6 @@ def detect_author_header(
 # حامد محمدی می نویسد
 # حامد محمدی نوشت
 # حامد محمدی در یادداشتی می‌نویسد
-# حامد محمدی در یادداشتی نوشت
-#
-# خروجی:
-#
-# author
-# remaining_text
-# confidence
 # =========================================================
 
 def detect_opening_author_phrase(
@@ -465,19 +372,11 @@ def detect_opening_author_phrase(
     )
 
     patterns = (
-        # حامد می‌نویسد: متن...
-        rf"^(.{{2,80}}?)\s+{verb}\s*[:：\-–—]?\s*(.*)$",
-
-        # حامد در یادداشتی می‌نویسد: متن...
         rf"^(.{{2,80}}?)\s+در\s+"
         rf"(?:یادداشتی|سرمقاله(?:‌| )?ای|مقاله(?:‌| )?ای)"
         rf"\s+{verb}\s*[:：\-–—]?\s*(.*)$",
-    )
 
-    # الگوی خاص‌تر باید ابتدا بررسی شود.
-    patterns = (
-        patterns[1],
-        patterns[0],
+        rf"^(.{{2,80}}?)\s+{verb}\s*[:：\-–—]?\s*(.*)$",
     )
 
     for pattern in patterns:
@@ -515,6 +414,67 @@ def detect_opening_author_phrase(
 
 
 # =========================================================
+# TITLE HEURISTICS
+# =========================================================
+
+def looks_like_title(
+    line: str
+) -> bool:
+
+    line = normalize_spaces(
+        line
+    )
+
+    if not line:
+        return False
+
+    if len(line) > 140:
+        return False
+
+    if re.search(
+        r"https?://|@[A-Za-z0-9_]+",
+        line,
+        flags=re.IGNORECASE
+    ):
+
+        return False
+
+    if line.startswith("#"):
+        return False
+
+    if detect_author_header(
+        line
+    ) is not None:
+
+        return False
+
+    if detect_opening_author_phrase(
+        line
+    ) is not None:
+
+        return False
+
+    sentence_marks = (
+        ".",
+        "؟",
+        "?",
+        "!",
+        "؛",
+    )
+
+    if (
+        len(line) > 90
+        and line.endswith(
+            sentence_marks
+        )
+    ):
+
+        return False
+
+    return True
+
+
+# =========================================================
 # FOOTER SIGNATURE
 #
 # این بخش عمداً محافظه‌کارانه است.
@@ -525,12 +485,21 @@ def detect_opening_author_phrase(
 # - شبیه نام شخص باشد
 # - جمله نباشد
 # - برندینگ / هشتگ / یوزرنیم نباشد
+# - واژه‌های عمومی محتوایی نداشته باشد
 #
 # Examples:
 #
 # حامد محمدی
 # دکتر حامد محمدی
 # محمدرضا احمدی
+#
+# اما:
+#
+# پاراگراف ششم
+# نتیجه نهایی
+# تحلیل سیاسی
+#
+# نباید نویسنده تشخیص داده شوند.
 # =========================================================
 
 def detect_footer_author(
@@ -563,7 +532,10 @@ def detect_footer_author(
 
         return None
 
-    # امضای دارای Label
+    # =====================================================
+    # EXPLICIT AUTHOR LABEL
+    # =====================================================
+
     header_result = (
         detect_author_header(
             line
@@ -572,7 +544,9 @@ def detect_footer_author(
 
     if header_result is not None:
 
-        author, _ = header_result
+        author, _ = (
+            header_result
+        )
 
         return (
             author,
@@ -581,10 +555,96 @@ def detect_footer_author(
 
     candidate = line
 
-    # عناوین رایج را برای اعتبارسنجی حذف نمی‌کنیم
-    # چون بخشی از نمایش نام می‌توانند باشند.
+    # =====================================================
+    # SENTENCE-LIKE FOOTER
+    # =====================================================
+
+    if candidate.endswith(
+        (
+            ".",
+            "؟",
+            "?",
+            "!",
+            "؛",
+            "،",
+            ",",
+            ":",
+            "：",
+        )
+    ):
+
+        return None
+
+    # =====================================================
+    # CONTENT MARKERS
+    #
+    # این واژه‌ها معمولاً نشان می‌دهند خط پایانی
+    # بخشی از محتوای متن است نه نام نویسنده.
+    # =====================================================
+
+    content_markers = {
+        "پاراگراف",
+        "بخش",
+        "فصل",
+        "نتیجه",
+        "نتیجه‌گیری",
+        "نتیجه گیری",
+        "جمع‌بندی",
+        "جمع بندی",
+        "تحلیل",
+        "یادداشت",
+        "خبر",
+        "گزارش",
+        "ادامه",
+        "پایان",
+        "مقدمه",
+        "تیتر",
+        "عنوان",
+        "قسمت",
+        "بند",
+        "مرحله",
+        "شماره",
+        "اول",
+        "دوم",
+        "سوم",
+        "چهارم",
+        "پنجم",
+        "ششم",
+        "هفتم",
+        "هشتم",
+        "نهم",
+        "دهم",
+        "نهایی",
+    }
+
+    candidate_words = {
+        word.strip(
+            "،,؛;:.؟?!"
+        )
+        for word
+        in candidate.split()
+        if word.strip()
+    }
+
+    if (
+        candidate_words
+        & content_markers
+    ):
+
+        return None
+
+    # =====================================================
+    # HONORIFIC
+    # =====================================================
+
     candidate_without_title = re.sub(
-        r"^(?:دکتر|مهندس|سید|حجت(?:‌| )?الاسلام)\s+",
+        r"^(?:"
+        r"دکتر"
+        r"|مهندس"
+        r"|سید"
+        r"|حجت(?:‌| )?الاسلام"
+        r"|آیت(?:‌| )?الله"
+        r")\s+",
         "",
         candidate
     )
@@ -595,16 +655,25 @@ def detect_footer_author(
 
         return None
 
-    words = candidate_without_title.split()
+    words = (
+        candidate_without_title
+        .split()
+    )
 
-    # یک کلمه در Footer ممکن است نویسنده باشد،
-    # ولی اطمینان پایین‌تری دارد.
+    # =====================================================
+    # ONE-WORD FOOTER
+    # =====================================================
+
     if len(words) == 1:
 
         return (
             candidate,
             AUTHOR_CONFIDENCE_LOW
         )
+
+    # =====================================================
+    # 2–5 WORD PERSON-LIKE SIGNATURE
+    # =====================================================
 
     if 2 <= len(words) <= 5:
 
@@ -645,7 +714,9 @@ def extract_title_from_lines(
             metadata
         )
 
-    first_line = working[0]
+    first_line = (
+        working[0]
+    )
 
     if not looks_like_title(
         first_line
@@ -657,8 +728,6 @@ def extract_title_from_lines(
             metadata
         )
 
-    # اگر فقط یک خط داریم، بهتر است آن را Body بدانیم
-    # نه اینکه کل محتوا را Title کنیم.
     if len(working) < 2:
 
         return (
@@ -667,7 +736,9 @@ def extract_title_from_lines(
             metadata
         )
 
-    title = first_line
+    title = (
+        first_line
+    )
 
     working = (
         working[1:]
@@ -720,10 +791,14 @@ def extract_author_from_header(
             metadata
         )
 
-    first_line = working[0]
+    first_line = (
+        working[0]
+    )
 
-    result = detect_author_header(
-        first_line
+    result = (
+        detect_author_header(
+            first_line
+        )
     )
 
     if result is None:
@@ -736,7 +811,9 @@ def extract_author_from_header(
             metadata
         )
 
-    author, confidence = result
+    author, confidence = (
+        result
+    )
 
     working = (
         working[1:]
@@ -788,10 +865,14 @@ def extract_author_from_opening_phrase(
             metadata
         )
 
-    first_line = working[0]
+    first_line = (
+        working[0]
+    )
 
-    result = detect_opening_author_phrase(
-        first_line
+    result = (
+        detect_opening_author_phrase(
+            first_line
+        )
     )
 
     if result is None:
@@ -810,10 +891,9 @@ def extract_author_from_opening_phrase(
         confidence
     ) = result
 
-    # عبارت نویسنده از Body حذف می‌شود،
-    # اما اگر همان خط بعد از "می‌نویسد" متن محتوا داشت،
-    # آن محتوا حفظ می‌شود.
-    working = working[1:]
+    working = (
+        working[1:]
+    )
 
     if remainder:
 
@@ -871,10 +951,14 @@ def extract_author_from_footer(
             metadata
         )
 
-    last_line = working[-1]
+    last_line = (
+        working[-1]
+    )
 
-    result = detect_footer_author(
-        last_line
+    result = (
+        detect_footer_author(
+            last_line
+        )
     )
 
     if result is None:
@@ -887,12 +971,15 @@ def extract_author_from_footer(
             metadata
         )
 
-    author, confidence = result
+    author, confidence = (
+        result
+    )
 
-    # برای امضای یک‌کلمه‌ای confidence پایین داریم.
-    # در استخراج خودکار نهایی فقط Medium / High را
-    # به عنوان نویسنده قطعی قبول می‌کنیم.
-    if confidence == AUTHOR_CONFIDENCE_LOW:
+    # یک‌کلمه‌ای هنوز بیش از حد مبهم است.
+    if (
+        confidence
+        == AUTHOR_CONFIDENCE_LOW
+    ):
 
         metadata[
             "footer_author_candidate"
@@ -980,8 +1067,12 @@ def extract_editorial_structure(
             original_text=raw_original,
             title="",
             author="",
-            author_source=AUTHOR_SOURCE_NONE,
-            author_confidence=AUTHOR_CONFIDENCE_NONE,
+            author_source=(
+                AUTHOR_SOURCE_NONE
+            ),
+            author_confidence=(
+                AUTHOR_CONFIDENCE_NONE
+            ),
             body="",
             metadata={
                 "empty": True,
@@ -1018,8 +1109,10 @@ def extract_editorial_structure(
         title,
         working_lines,
         title_metadata
-    ) = extract_title_from_lines(
-        lines
+    ) = (
+        extract_title_from_lines(
+            lines
+        )
     )
 
     metadata.update(
@@ -1032,12 +1125,12 @@ def extract_editorial_structure(
     # اولویت:
     #
     # 1. Header صریح
-    # 2. Opening phrase مثل «حامد می‌نویسد»
+    # 2. Opening phrase
     # 3. Footer signature
-    #
     # =====================================================
 
     author = ""
+
     author_source = (
         AUTHOR_SOURCE_NONE
     )
@@ -1056,8 +1149,10 @@ def extract_editorial_structure(
         header_confidence,
         header_lines,
         header_metadata
-    ) = extract_author_from_header(
-        working_lines
+    ) = (
+        extract_author_from_header(
+            working_lines
+        )
     )
 
     metadata.update(
@@ -1094,8 +1189,10 @@ def extract_editorial_structure(
             opening_confidence,
             opening_lines,
             opening_metadata
-        ) = extract_author_from_opening_phrase(
-            working_lines
+        ) = (
+            extract_author_from_opening_phrase(
+                working_lines
+            )
         )
 
         metadata.update(
@@ -1132,8 +1229,10 @@ def extract_editorial_structure(
             footer_confidence,
             footer_lines,
             footer_metadata
-        ) = extract_author_from_footer(
-            working_lines
+        ) = (
+            extract_author_from_footer(
+                working_lines
+            )
         )
 
         metadata.update(
@@ -1214,7 +1313,9 @@ def extract_editorial_structure(
         title=title,
         author=author,
         author_source=author_source,
-        author_confidence=author_confidence,
+        author_confidence=(
+            author_confidence
+        ),
         body=body,
         metadata=metadata
     )
@@ -1257,17 +1358,6 @@ def editorial_structure_to_dict(
 
 # =========================================================
 # REBUILD DISPLAY TEXT
-#
-# برای مراحل بعدی استفاده خواهد شد.
-#
-# این تابع فعلاً انتشار انجام نمی‌دهد.
-# فقط:
-#
-# Title
-# Author
-# Body
-#
-# را دوباره کنار هم قرار می‌دهد.
 # =========================================================
 
 def rebuild_editorial_text(
@@ -1315,11 +1405,6 @@ def rebuild_editorial_text(
 
 # =========================================================
 # BODY COVERAGE DEBUG
-#
-# این تابع برای تست و دیباگ است.
-#
-# بررسی می‌کند آیا یک عبارت مشخص از متن اصلی هنوز
-# داخل Body استخراج‌شده وجود دارد یا نه.
 # =========================================================
 
 def body_contains_text(
