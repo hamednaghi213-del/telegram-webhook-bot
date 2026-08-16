@@ -19,12 +19,6 @@ from core.ai_summarizer_provider import (
     summarize_with_gemini,
 )
 
-from core.editorial_structure import (
-    EditorialStructure,
-    extract_editorial_structure,
-    rebuild_editorial_text,
-)
-
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +69,17 @@ MIN_REGENERATION_TARGET = 300
 
 
 # =========================================================
-# STRUCTURE POLICY
+# VALIDATION RETRY POLICY
+#
+# اگر تنها ایراد خلاصه از بین رفتن نشانه‌های
+# قطعیت / انتساب باشد، یک بار AI مجدداً از
+# متن اصلی تولید می‌کند.
+#
+# Validator حذف نمی‌شود و همچنان تصمیم نهایی
+# با Validator است.
 # =========================================================
 
-EDITORIAL_SEPARATOR = "\n\n"
+CERTAINTY_RETRY_ENABLED = True
 
 
 # =========================================================
@@ -308,112 +309,15 @@ def get_validator_content_type(
 
 
 # =========================================================
-# EDITORIAL STRUCTURE
-# =========================================================
-
-def get_editorial_structure(
-    original_text: str
-) -> EditorialStructure:
-
-    structure = (
-        extract_editorial_structure(
-            original_text
-        )
-    )
-
-    logger.info(
-        f"🧩 Editorial review structure | "
-        f"title={structure.title or '-'} | "
-        f"author={structure.author or '-'} | "
-        f"author_source="
-        f"{structure.author_source} | "
-        f"body={len(structure.body)}"
-    )
-
-    return structure
-
-
-# =========================================================
-# STRUCTURE OVERHEAD
-#
-# Title و Author جزو سقف نهایی 950 کاراکتر هستند.
-# بنابراین ظرفیت واقعی Body جدا محاسبه می‌شود.
-# =========================================================
-
-def calculate_editorial_body_target(
-    structure: EditorialStructure,
-    target_length: int
-) -> int:
-
-    target_length = max(
-        1,
-        int(
-            target_length
-        )
-    )
-
-    overhead = 0
-
-    if structure.title:
-
-        overhead += len(
-            structure.title
-        )
-
-    if structure.author:
-
-        if overhead:
-            overhead += len(
-                EDITORIAL_SEPARATOR
-            )
-
-        overhead += len(
-            structure.author
-        )
-
-    if (
-        structure.body
-        and (
-            structure.title
-            or structure.author
-        )
-    ):
-
-        overhead += len(
-            EDITORIAL_SEPARATOR
-        )
-
-    available = (
-        target_length
-        - overhead
-    )
-
-    return max(
-        1,
-        available
-    )
-
-
-# =========================================================
-# FINAL EDITORIAL OUTPUT
-# =========================================================
-
-def rebuild_editorial_summary(
-    structure: EditorialStructure,
-    summary_body: str
-) -> str:
-
-    return (
-        rebuild_editorial_text(
-            title=structure.title,
-            author=structure.author,
-            body=summary_body
-        )
-    )
-
-
-# =========================================================
 # REVIEW INSTRUCTION
+#
+# مهم:
+#
+# این فایل اکنون فقط BODY را دریافت می‌کند.
+#
+# Title و Author قبلاً در webhook_handler استخراج شده‌اند.
+#
+# این فایل دیگر هیچ Structure Extraction انجام نمی‌دهد.
 # =========================================================
 
 def build_editorial_summary_instruction(
@@ -444,8 +348,17 @@ def build_editorial_summary_instruction(
 
         "خروجی نباید صرفاً کپی پیوسته یک قسمت از متن اصلی باشد. "
 
-        "تیتر و نام نویسنده در این ورودی وجود ندارند و "
-        "نباید تیتر یا نام نویسنده تازه‌ای تولید کنی. "
+        "عنوان و نام نویسنده قبلاً از متن جدا شده‌اند. "
+        "عنوان یا نام نویسنده تازه‌ای تولید نکن. "
+
+        "میزان قطعیت گزاره‌ها را دقیق حفظ کن. "
+
+        "اگر متن می‌گوید احتمال دارد، ممکن است، "
+        "به نظر می‌رسد، ادعا شده، گفته شده یا بر اساس "
+        "ارزیابی یک شخص یا نهاد نتیجه‌ای مطرح شده است، "
+        "آن را به واقعیت قطعی تبدیل نکن. "
+
+        "انتساب دیدگاه‌ها و ادعاها را حفظ کن. "
     )
 
     if (
@@ -491,6 +404,9 @@ def build_editorial_summary_instruction(
             f"متن خلاصه بدنه باید حداکثر {target_length} "
             "کاراکتر باشد. "
 
+            "تا حد منطقی از ظرفیت موجود استفاده کن و "
+            "بی‌دلیل متن را بسیار کوتاه‌تر از سقف تعیین‌شده نساز. "
+
             "فقط متن خلاصه‌شده بدنه را برگردان."
         )
 
@@ -527,6 +443,9 @@ def build_editorial_summary_instruction(
             f"متن خلاصه بدنه باید حداکثر {target_length} "
             "کاراکتر باشد. "
 
+            "تا حد منطقی از ظرفیت موجود استفاده کن و "
+            "بی‌دلیل متن را بسیار کوتاه‌تر از سقف تعیین‌شده نساز. "
+
             "فقط متن خلاصه‌شده بدنه را برگردان."
         )
 
@@ -540,6 +459,54 @@ def build_editorial_summary_instruction(
         "کاراکتر باشد. "
 
         "فقط متن نهایی را برگردان."
+    )
+
+
+# =========================================================
+# CERTAINTY RETRY INSTRUCTION
+# =========================================================
+
+def build_certainty_retry_instruction(
+    target_length: int,
+    content_type: str
+) -> str:
+
+    base_instruction = (
+        build_editorial_summary_instruction(
+            target_length=target_length,
+            content_type=content_type
+        )
+    )
+
+    return (
+        base_instruction
+        + " "
+
+        "نسخه قبلی به دلیل از بین رفتن نشانه‌های "
+        "قطعیت یا انتساب مورد تأیید قرار نگرفت. "
+
+        "متن اصلی را دوباره از ابتدا تا انتها بررسی کن. "
+
+        "این بار به طور ویژه دقت کن که گزاره‌های احتمالی، "
+        "مشروط، ادعایی، ارزیابی‌شده یا منتسب به اشخاص و نهادها "
+        "در خلاصه نیز با همان سطح قطعیت و همان ماهیت باقی بمانند. "
+
+        "عبارت‌هایی مانند احتمال، ممکن است، به نظر می‌رسد، "
+        "گفته است، اعلام کرده، معتقد است، ارزیابی می‌کند، "
+        "ادعا کرده و سایر نشانه‌های مشابه را در صورت نیاز "
+        "برای حفظ معنای اصلی نگه دار. "
+
+        "هیچ گزاره غیرقطعی را قطعی نکن. "
+
+        "هیچ دیدگاه نویسنده یا بازیگر را به واقعیت مستقل "
+        "تبدیل نکن. "
+
+        "هیچ اطلاعات تازه‌ای اضافه نکن. "
+
+        f"خروجی همچنان باید حداکثر {target_length} "
+        "کاراکتر باشد. "
+
+        "فقط متن خلاصه‌شده نهایی را برگردان."
     )
 
 
@@ -564,7 +531,6 @@ def build_editorial_regeneration_instruction(
 
         type_instruction = (
             "متن اصلی بدنه کامل یک یادداشت یا سرمقاله تحلیلی است. "
-
             "تز اصلی نویسنده، منطق استدلال، مهم‌ترین شواهد "
             "و نتیجه اصلی باید از سراسر متن استخراج و حفظ شوند. "
         )
@@ -576,7 +542,6 @@ def build_editorial_regeneration_instruction(
 
         type_instruction = (
             "متن اصلی بدنه کامل یک تحلیل خبری است. "
-
             "اصل رویداد، بازیگران اصلی، علت‌ها، روند اثرگذار "
             "و پیامد اصلی باید از سراسر متن استخراج و حفظ شوند. "
         )
@@ -628,7 +593,9 @@ def build_editorial_regeneration_instruction(
 
         "میزان قطعیت و نسبت دادن دیدگاه‌ها را تغییر نده. "
 
-        "تیتر و نام نویسنده را تولید یا بازنویسی نکن. "
+        "احتمال، ادعا، ارزیابی و دیدگاه را به واقعیت قطعی تبدیل نکن. "
+
+        "عنوان و نام نویسنده را تولید یا بازنویسی نکن. "
 
         "نسخه جدید باید مستقل، روان، منسجم و قابل انتشار باشد. "
 
@@ -711,7 +678,39 @@ def validate_editorial_candidate(
 
 
 # =========================================================
+# ONLY CERTAINTY ERROR?
+# =========================================================
+
+def only_certainty_validation_error(
+    validation: Optional[
+        Dict[str, Any]
+    ]
+) -> bool:
+
+    if not validation:
+        return False
+
+    errors = set(
+        validation.get(
+            "errors",
+            []
+        )
+        or []
+    )
+
+    return (
+        errors
+        == {
+            "certainty_markers_lost"
+        }
+    )
+
+
+# =========================================================
 # PROVIDER GENERATION
+#
+# اگر تنها خطا certainty_markers_lost باشد،
+# یک Retry امن روی ORIGINAL BODY انجام می‌شود.
 # =========================================================
 
 def generate_editorial_candidate(
@@ -747,7 +746,8 @@ def generate_editorial_candidate(
             "reason": "provider_error",
             "error": str(
                 e
-            )
+            ),
+            "certainty_retry_called": False
         }
 
     candidate = normalize_text(
@@ -763,45 +763,165 @@ def generate_editorial_candidate(
         )
     )
 
-    if not validation[
+    # =====================================================
+    # ACCEPT FIRST CANDIDATE
+    # =====================================================
+
+    if validation[
         "valid"
     ]:
 
-        logger.warning(
-            f"⚠️ Editorial candidate rejected | "
+        return {
+            "success": True,
+            "candidate": candidate,
+            "validation": validation,
+            "reason": "accepted",
+            "error": None,
+            "certainty_retry_called": False
+        }
+
+    # =====================================================
+    # CERTAINTY RETRY
+    # =====================================================
+
+    can_retry_certainty = (
+        CERTAINTY_RETRY_ENABLED
+        and content_type
+        in (
+            CONTENT_TYPE_OPINION_NOTE,
+            CONTENT_TYPE_NEWS_ANALYSIS,
+        )
+        and only_certainty_validation_error(
+            validation
+        )
+    )
+
+    if can_retry_certainty:
+
+        logger.info(
+            f"🔁 Editorial certainty retry | "
             f"type={content_type} | "
-            f"errors={validation['errors']} | "
-            f"output={len(candidate)} | "
+            f"first_output={len(candidate)} | "
+            f"target={target_length}"
+        )
+
+        retry_instruction = (
+            build_certainty_retry_instruction(
+                target_length=target_length,
+                content_type=content_type
+            )
+        )
+
+        try:
+
+            retry_candidate = summarizer(
+                original_text,
+                retry_instruction,
+                target_length
+            )
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Editorial certainty retry failed | "
+                f"{e}"
+            )
+
+            return {
+                "success": False,
+                "candidate": candidate,
+                "validation": validation,
+                "reason": "certainty_retry_provider_error",
+                "error": str(
+                    e
+                ),
+                "certainty_retry_called": True
+            }
+
+        retry_candidate = normalize_text(
+            retry_candidate
+        )
+
+        retry_validation = (
+            validate_editorial_candidate(
+                original_text=original_text,
+                candidate_text=retry_candidate,
+                target_length=target_length,
+                content_type=content_type
+            )
+        )
+
+        if retry_validation[
+            "valid"
+        ]:
+
+            logger.info(
+                f"✅ Editorial certainty retry accepted | "
+                f"type={content_type} | "
+                f"output={len(retry_candidate)} | "
+                f"target={target_length}"
+            )
+
+            return {
+                "success": True,
+                "candidate": retry_candidate,
+                "validation": retry_validation,
+                "reason": "accepted_after_certainty_retry",
+                "error": None,
+                "certainty_retry_called": True,
+                "first_candidate": candidate,
+                "first_validation": validation
+            }
+
+        logger.warning(
+            f"⚠️ Editorial certainty retry rejected | "
+            f"type={content_type} | "
+            f"errors={retry_validation['errors']} | "
+            f"output={len(retry_candidate)} | "
             f"target={target_length}"
         )
 
         return {
             "success": False,
-            "candidate": candidate,
-            "validation": validation,
+            "candidate": retry_candidate,
+            "validation": retry_validation,
             "reason": "validation_failed",
-            "error": None
+            "error": None,
+            "certainty_retry_called": True,
+            "first_candidate": candidate,
+            "first_validation": validation
         }
 
+    # =====================================================
+    # OTHER VALIDATION FAILURE
+    # =====================================================
+
+    logger.warning(
+        f"⚠️ Editorial candidate rejected | "
+        f"type={content_type} | "
+        f"errors={validation['errors']} | "
+        f"output={len(candidate)} | "
+        f"target={target_length}"
+    )
+
     return {
-        "success": True,
+        "success": False,
         "candidate": candidate,
         "validation": validation,
-        "reason": "accepted",
-        "error": None
+        "reason": "validation_failed",
+        "error": None,
+        "certainty_retry_called": False
     }
 
 
 # =========================================================
 # EDITORIAL SUMMARY
 #
-# مهم:
+# IMPORTANT:
 #
-# این تابع ساختار متن را استخراج می‌کند.
+# original_text در این مرحله BODY است.
 #
-# Title و Author به AI داده نمی‌شوند.
-#
-# فقط کل Body از ابتدا تا انتها به AI داده می‌شود.
+# Structure Extraction عمداً اینجا انجام نمی‌شود.
 # =========================================================
 
 def summarize_editorial_content(
@@ -840,49 +960,6 @@ def summarize_editorial_content(
 
         return None
 
-    # =====================================================
-    # STRUCTURE
-    # =====================================================
-
-    structure = (
-        get_editorial_structure(
-            original_text
-        )
-    )
-
-    body = normalize_text(
-        structure.body
-    )
-
-    # اگر به هر دلیل Body خالی شد،
-    # برای جلوگیری از از دست رفتن متن، کل متن مبنا می‌شود.
-    if not body:
-
-        logger.warning(
-            "⚠️ Editorial structure returned empty body | "
-            "using original text"
-        )
-
-        body = original_text
-
-    body_target = (
-        calculate_editorial_body_target(
-            structure,
-            target_length
-        )
-    )
-
-    logger.info(
-        f"🧠 Editorial full-body summary | "
-        f"type={content_type} | "
-        f"original={len(original_text)} | "
-        f"body={len(body)} | "
-        f"title={len(structure.title)} | "
-        f"author={len(structure.author)} | "
-        f"body_target={body_target} | "
-        f"final_target={target_length}"
-    )
-
     resolved_summarizer = (
         resolve_summarizer(
             summarizer
@@ -893,175 +970,65 @@ def summarize_editorial_content(
         return None
 
     # =====================================================
-    # BODY ALREADY FITS
+    # ALREADY FITS
     # =====================================================
 
-    if len(body) <= body_target:
+    if len(original_text) <= target_length:
 
         validation = (
             validate_editorial_candidate(
-                original_text=body,
-                candidate_text=body,
-                target_length=body_target,
+                original_text=original_text,
+                candidate_text=original_text,
+                target_length=target_length,
                 content_type=content_type
-            )
-        )
-
-        final_candidate = (
-            rebuild_editorial_summary(
-                structure,
-                body
             )
         )
 
         return {
             "success": True,
-            "candidate": final_candidate,
-            "body_candidate": body,
+            "candidate": original_text,
             "validation": validation,
             "reason": "already_fits",
             "summarizer_called": False,
-            "structure": {
-                "title": structure.title,
-                "author": structure.author,
-                "author_source":
-                    structure.author_source,
-                "author_confidence":
-                    structure.author_confidence,
-                "body_length": len(body),
-                "body_target": body_target
-            }
+            "certainty_retry_called": False
         }
 
-    # =====================================================
-    # AI INSTRUCTION
-    # =====================================================
+    logger.info(
+        f"🧠 Editorial full-body summary | "
+        f"type={content_type} | "
+        f"body={len(original_text)} | "
+        f"target={target_length}"
+    )
 
     instruction = (
         build_editorial_summary_instruction(
-            body_target,
-            content_type
+            target_length=target_length,
+            content_type=content_type
         )
     )
 
-    # =====================================================
-    # AI GETS FULL BODY
-    # =====================================================
-
     generation = (
         generate_editorial_candidate(
-            original_text=body,
+            original_text=original_text,
             instruction=instruction,
-            target_length=body_target,
+            target_length=target_length,
             content_type=content_type,
             summarizer=resolved_summarizer
         )
     )
 
-    if not generation[
-        "success"
-    ]:
+    generation[
+        "summarizer_called"
+    ] = True
 
-        generation[
-            "summarizer_called"
-        ] = True
-
-        generation[
-            "structure"
-        ] = {
-            "title": structure.title,
-            "author": structure.author,
-            "author_source":
-                structure.author_source,
-            "author_confidence":
-                structure.author_confidence,
-            "body_length": len(body),
-            "body_target": body_target
-        }
-
-        return generation
-
-    summarized_body = normalize_text(
-        generation[
-            "candidate"
-        ]
-    )
-
-    final_candidate = (
-        rebuild_editorial_summary(
-            structure,
-            summarized_body
-        )
-    )
-
-    # =====================================================
-    # FINAL HARD LIMIT
-    # =====================================================
-
-    if len(final_candidate) > target_length:
-
-        logger.warning(
-            f"⚠️ Editorial rebuilt summary too long | "
-            f"final={len(final_candidate)} | "
-            f"target={target_length}"
-        )
-
-        return {
-            "success": False,
-            "candidate": final_candidate,
-            "body_candidate": summarized_body,
-            "validation": generation.get(
-                "validation"
-            ),
-            "reason": "rebuilt_summary_exceeds_target",
-            "error": None,
-            "summarizer_called": True,
-            "structure": {
-                "title": structure.title,
-                "author": structure.author,
-                "author_source":
-                    structure.author_source,
-                "author_confidence":
-                    structure.author_confidence,
-                "body_length": len(body),
-                "body_target": body_target
-            }
-        }
-
-    logger.info(
-        f"✅ Editorial full-body summary rebuilt | "
-        f"title={structure.title or '-'} | "
-        f"author={structure.author or '-'} | "
-        f"body_before={len(body)} | "
-        f"body_after={len(summarized_body)} | "
-        f"final={len(final_candidate)}"
-    )
-
-    return {
-        "success": True,
-        "candidate": final_candidate,
-        "body_candidate": summarized_body,
-        "validation": generation.get(
-            "validation"
-        ),
-        "reason": "accepted",
-        "error": None,
-        "summarizer_called": True,
-        "structure": {
-            "title": structure.title,
-            "author": structure.author,
-            "author_source":
-                structure.author_source,
-            "author_confidence":
-                structure.author_confidence,
-            "body_length": len(body),
-            "body_target": body_target
-        }
-    }
+    return generation
 
 
 # =========================================================
 # REGENERATE EDITORIAL SUMMARY
+#
+# original_text و previous_summary هر دو BODY هستند.
+# Title / Author در webhook_handler نگهداری می‌شوند.
 # =========================================================
 
 def regenerate_editorial_summary(
@@ -1234,49 +1201,6 @@ def regenerate_editorial_summary(
         )
 
     # =====================================================
-    # STRUCTURE
-    # =====================================================
-
-    structure = (
-        get_editorial_structure(
-            original_text
-        )
-    )
-
-    original_body = normalize_text(
-        structure.body
-    )
-
-    if not original_body:
-
-        original_body = (
-            original_text
-        )
-
-    # خلاصه قبلی هم ممکن است Title و Author داشته باشد.
-    previous_structure = (
-        extract_editorial_structure(
-            previous_summary
-        )
-        if previous_summary
-        else None
-    )
-
-    previous_body = ""
-
-    if previous_structure is not None:
-
-        previous_body = normalize_text(
-            previous_structure.body
-        )
-
-    if not previous_body:
-
-        previous_body = (
-            previous_summary
-        )
-
-    # =====================================================
     # TARGET
     # =====================================================
 
@@ -1291,22 +1215,17 @@ def regenerate_editorial_summary(
         target_length
     )
 
-    body_target = (
-        calculate_editorial_body_target(
-            structure,
-            regeneration_target
-        )
-    )
-
     # =====================================================
     # INSTRUCTION
     # =====================================================
 
     instruction = (
         build_editorial_regeneration_instruction(
-            target_length=body_target,
+            target_length=(
+                regeneration_target
+            ),
             content_type=content_type,
-            previous_summary=previous_body
+            previous_summary=previous_summary
         )
     )
 
@@ -1315,10 +1234,9 @@ def regenerate_editorial_summary(
         f"type={content_type} | "
         f"count={regeneration_count + 1}/"
         f"{MAX_REGENERATION_COUNT} | "
-        f"original={original_length} | "
-        f"body={len(original_body)} | "
-        f"previous_body={len(previous_body)} | "
-        f"body_target={body_target}"
+        f"body={original_length} | "
+        f"previous={len(previous_summary)} | "
+        f"target={regeneration_target}"
     )
 
     # =====================================================
@@ -1327,9 +1245,9 @@ def regenerate_editorial_summary(
 
     generation = (
         generate_editorial_candidate(
-            original_text=original_body,
+            original_text=original_text,
             instruction=instruction,
-            target_length=body_target,
+            target_length=regeneration_target,
             content_type=content_type,
             summarizer=resolved_summarizer
         )
@@ -1394,26 +1312,18 @@ def regenerate_editorial_summary(
                         "candidate",
                         ""
                     ),
-                "title":
-                    structure.title,
-                "author":
-                    structure.author,
-                "author_source":
-                    structure.author_source
+                "certainty_retry_called":
+                    generation.get(
+                        "certainty_retry_called",
+                        False
+                    )
             }
         )
 
-    new_body_summary = normalize_text(
+    new_summary = normalize_text(
         generation[
             "candidate"
         ]
-    )
-
-    new_summary = (
-        rebuild_editorial_summary(
-            structure,
-            new_body_summary
-        )
     )
 
     # =====================================================
@@ -1457,12 +1367,11 @@ def regenerate_editorial_summary(
                     generation.get(
                         "validation"
                     ),
-                "title":
-                    structure.title,
-                "author":
-                    structure.author,
-                "author_source":
-                    structure.author_source
+                "certainty_retry_called":
+                    generation.get(
+                        "certainty_retry_called",
+                        False
+                    )
             }
         )
 
@@ -1506,11 +1415,7 @@ def regenerate_editorial_summary(
                     < MAX_REGENERATION_COUNT
                 ),
                 "generation_reason":
-                    "rebuilt_summary_exceeds_target",
-                "title":
-                    structure.title,
-                "author":
-                    structure.author
+                    "summary_exceeds_target"
             }
         )
 
@@ -1518,11 +1423,8 @@ def regenerate_editorial_summary(
         f"✅ Editorial regeneration ready | "
         f"type={content_type} | "
         f"count={next_count} | "
-        f"title={structure.title or '-'} | "
-        f"author={structure.author or '-'} | "
-        f"body_before={len(original_body)} | "
-        f"body_after={len(new_body_summary)} | "
-        f"final={len(new_summary)} | "
+        f"body_before={original_length} | "
+        f"body_after={len(new_summary)} | "
         f"needs_approval=True"
     )
 
@@ -1554,24 +1456,20 @@ def regenerate_editorial_summary(
                 generation.get(
                     "validation"
                 ),
-            "title":
-                structure.title,
-            "author":
-                structure.author,
-            "author_source":
-                structure.author_source,
-            "author_confidence":
-                structure.author_confidence,
-            "body_length":
-                len(original_body),
-            "summary_body_length":
-                len(new_body_summary)
+            "certainty_retry_called":
+                generation.get(
+                    "certainty_retry_called",
+                    False
+                )
         }
     )
 
 
 # =========================================================
 # MAIN REVIEW ANALYZER
+#
+# original_text در معماری جدید BODY است.
+# Title / Author در webhook_handler مدیریت می‌شوند.
 # =========================================================
 
 def analyze_editorial_content(
@@ -1623,8 +1521,6 @@ def analyze_editorial_content(
 
     # =====================================================
     # CLASSIFICATION
-    #
-    # Classification همچنان روی متن کامل انجام می‌شود.
     # =====================================================
 
     content_type = (
@@ -1759,10 +1655,10 @@ def analyze_editorial_content(
                         "candidate",
                         ""
                     ),
-                "structure":
+                "certainty_retry_called":
                     summary_result.get(
-                        "structure",
-                        {}
+                        "certainty_retry_called",
+                        False
                     )
             })
 
@@ -1793,23 +1689,13 @@ def analyze_editorial_content(
         )
     )
 
-    structure_metadata = (
-        summary_result.get(
-            "structure",
-            {}
-        )
-        or {}
-    )
-
     logger.info(
         f"✅ Editorial review prepared | "
         f"type={content_type} | "
-        f"title="
-        f"{structure_metadata.get('title') or '-'} | "
-        f"author="
-        f"{structure_metadata.get('author') or '-'} | "
         f"before={original_length} | "
         f"after={len(suggested_text)} | "
+        f"certainty_retry="
+        f"{summary_result.get('certainty_retry_called', False)} | "
         f"needs_approval=True"
     )
 
@@ -1839,35 +1725,10 @@ def analyze_editorial_content(
             "max_regeneration_count":
                 MAX_REGENERATION_COUNT,
             "can_regenerate": True,
-            "title":
-                structure_metadata.get(
-                    "title",
-                    ""
-                ),
-            "author":
-                structure_metadata.get(
-                    "author",
-                    ""
-                ),
-            "author_source":
-                structure_metadata.get(
-                    "author_source",
-                    "none"
-                ),
-            "author_confidence":
-                structure_metadata.get(
-                    "author_confidence",
-                    "none"
-                ),
-            "body_length":
-                structure_metadata.get(
-                    "body_length",
-                    0
-                ),
-            "body_target":
-                structure_metadata.get(
-                    "body_target",
-                    0
+            "certainty_retry_called":
+                summary_result.get(
+                    "certainty_retry_called",
+                    False
                 )
         }
     )
