@@ -1,4 +1,5 @@
 import logging
+import os
 import uuid
 import secrets
 import requests
@@ -26,6 +27,38 @@ CHANNEL_ID: Optional[str] = None
 SECRET_TOKEN: Optional[str] = None
 
 WEBHOOK_INITIALIZED: bool = False
+
+
+# =========================================================
+# EDITORIAL REVIEW CONFIG
+# =========================================================
+
+EDITORIAL_REVIEW_ENV = (
+    "ENABLE_EDITORIAL_REVIEW"
+)
+
+
+def editorial_review_enabled() -> bool:
+
+    value = (
+        os.getenv(
+            EDITORIAL_REVIEW_ENV,
+            "false"
+        )
+        or ""
+    )
+
+    return (
+        value
+        .strip()
+        .lower()
+        in (
+            "1",
+            "true",
+            "yes",
+            "on"
+        )
+    )
 
 
 # =========================================================
@@ -67,7 +100,9 @@ def initialize(
 
     logger.info(
         f"✅ Webhook Handler initialized | "
-        f"channel={CHANNEL_ID}"
+        f"channel={CHANNEL_ID} | "
+        f"editorial_review="
+        f"{editorial_review_enabled()}"
     )
 
 
@@ -660,7 +695,10 @@ def get_media_from_message(
 def send_message(
     chat_id: int,
     text: str,
-    parse_mode: Optional[str] = None
+    parse_mode: Optional[str] = None,
+    reply_markup: Optional[
+        Dict[str, Any]
+    ] = None
 ) -> bool:
 
     if not API_URL:
@@ -684,6 +722,12 @@ def send_message(
                 "parse_mode"
             ] = parse_mode
 
+        if reply_markup:
+
+            payload[
+                "reply_markup"
+            ] = reply_markup
+
         response = requests.post(
             f"{API_URL}/sendMessage",
             json=payload,
@@ -705,6 +749,55 @@ def send_message(
 
         logger.exception(
             f"❌ send_message failed | "
+            f"{e}"
+        )
+
+        return False
+
+
+# =========================================================
+# ANSWER CALLBACK QUERY
+# =========================================================
+
+def answer_callback_query(
+    callback_query_id: str,
+    text: str = ""
+) -> bool:
+
+    if not API_URL:
+        return False
+
+    if not callback_query_id:
+        return False
+
+    try:
+
+        payload: Dict[str, Any] = {
+            "callback_query_id":
+                callback_query_id
+        }
+
+        if text:
+
+            payload[
+                "text"
+            ] = text
+
+        response = requests.post(
+            f"{API_URL}/answerCallbackQuery",
+            json=payload,
+            timeout=30
+        )
+
+        return (
+            response.status_code
+            == 200
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ answer_callback_query failed | "
             f"{e}"
         )
 
@@ -898,6 +991,231 @@ def format_with_source(
     return format_news(
         text
     )
+
+
+# =========================================================
+# PUBLISH PREPARED TEXT
+#
+# این تابع متن از قبل آماده‌شده را بدون اجرای دوباره
+# Formatter منتشر می‌کند.
+#
+# از همین تابع برای:
+#
+# - مسیر عادی Text
+# - انتشار خلاصه تاییدشده
+# - انتشار متن اصلی تاییدشده
+#
+# استفاده می‌شود.
+# =========================================================
+
+def publish_prepared_text(
+    chat_id: int,
+    main_text: str,
+    blockquote_blocks: Optional[
+        List[Dict[str, Any]]
+    ] = None,
+    expandable_blocks: Optional[
+        List[Dict[str, Any]]
+    ] = None,
+    other_entities: Optional[
+        List[Dict[str, Any]]
+    ] = None
+) -> bool:
+
+    try:
+
+        from core.caption_manager import (
+            analyze_content
+        )
+
+        from core.bale_forwarder import (
+            send_to_bale_for_user
+        )
+
+        blockquote_blocks = list(
+            blockquote_blocks
+            or []
+        )
+
+        expandable_blocks = list(
+            expandable_blocks
+            or []
+        )
+
+        other_entities = list(
+            other_entities
+            or []
+        )
+
+        branding = (
+            build_branding_for_user(
+                chat_id
+            )
+        )
+
+        publication_plan = (
+            analyze_content(
+                main_text=main_text,
+                blockquote_blocks=(
+                    blockquote_blocks
+                ),
+                expandable_blocks=(
+                    expandable_blocks
+                ),
+                other_entities=(
+                    other_entities
+                ),
+                branding=branding
+            )
+        )
+
+        telegram_plan = (
+            publication_plan.text[
+                "telegram"
+            ]
+        )
+
+        bale_plan = (
+            publication_plan.text[
+                "bale"
+            ]
+        )
+
+        telegram_messages = list(
+            telegram_plan.get(
+                "messages",
+                []
+            )
+            or []
+        )
+
+        telegram_blockquotes = list(
+            telegram_plan.get(
+                "blockquote_messages",
+                []
+            )
+            or []
+        )
+
+        for message in telegram_messages:
+
+            if not message:
+                continue
+
+            if not send_to_channel(
+                message
+            ):
+
+                logger.error(
+                    "❌ Telegram prepared text "
+                    "main message failed"
+                )
+
+                return False
+
+        for blockquote_message in (
+            telegram_blockquotes
+        ):
+
+            if not blockquote_message:
+                continue
+
+            if not send_to_channel(
+                blockquote_message,
+                parse_mode="HTML"
+            ):
+
+                logger.error(
+                    "❌ Telegram prepared text "
+                    "blockquote failed"
+                )
+
+                return False
+
+        bale_messages = list(
+            bale_plan.get(
+                "messages",
+                []
+            )
+            or []
+        )
+
+        bale_blockquotes = list(
+            bale_plan.get(
+                "blockquote_messages",
+                []
+            )
+            or []
+        )
+
+        for message in bale_messages:
+
+            if not message:
+                continue
+
+            try:
+
+                bale_success = (
+                    send_to_bale_for_user(
+                        chat_id,
+                        message
+                    )
+                )
+
+                if bale_success is False:
+
+                    logger.warning(
+                        "⚠️ Bale prepared text "
+                        "main message failed"
+                    )
+
+            except Exception as e:
+
+                logger.warning(
+                    f"⚠️ Bale prepared text "
+                    f"main exception | {e}"
+                )
+
+        for blockquote_message in (
+            bale_blockquotes
+        ):
+
+            if not blockquote_message:
+                continue
+
+            try:
+
+                bale_success = (
+                    send_to_bale_for_user(
+                        chat_id,
+                        blockquote_message
+                    )
+                )
+
+                if bale_success is False:
+
+                    logger.warning(
+                        "⚠️ Bale prepared text "
+                        "blockquote failed"
+                    )
+
+            except Exception as e:
+
+                logger.warning(
+                    f"⚠️ Bale prepared text "
+                    f"blockquote exception | {e}"
+                )
+
+        return True
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ publish_prepared_text failed | "
+            f"{e}"
+        )
+
+        return False
 
 
 # =========================================================
@@ -1206,6 +1524,116 @@ def process_legacy_single_media(
 
 
 # =========================================================
+# PREPARE TEXT
+# =========================================================
+
+def prepare_text_content(
+    text: str,
+    entities: List[
+        Dict[str, Any]
+    ],
+    forward_source: Optional[
+        Dict[str, Any]
+    ] = None
+) -> Dict[str, Any]:
+
+    from core.content_entities import (
+        parse_telegram_entities
+    )
+
+    try:
+
+        parsed = (
+            parse_telegram_entities(
+                text or "",
+                entities or []
+            )
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Text entity parser failed | "
+            f"{e}"
+        )
+
+        parsed = {
+            "main_text": text or "",
+            "blockquote_blocks": [],
+            "expandable_blocks": [],
+            "other_entities": []
+        }
+
+    main_text = (
+        parsed.get(
+            "main_text",
+            ""
+        )
+        or ""
+    )
+
+    blockquote_blocks = list(
+        parsed.get(
+            "blockquote_blocks",
+            []
+        )
+        or []
+    )
+
+    expandable_blocks = list(
+        parsed.get(
+            "expandable_blocks",
+            []
+        )
+        or []
+    )
+
+    other_entities = list(
+        parsed.get(
+            "other_entities",
+            []
+        )
+        or []
+    )
+
+    formatted_main_text = ""
+
+    if main_text:
+
+        try:
+
+            formatted_main_text = (
+                format_with_source(
+                    main_text,
+                    forward_source
+                )
+                or main_text
+            )
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Text formatter failed | "
+                f"{e}"
+            )
+
+            formatted_main_text = (
+                main_text
+            )
+
+    return {
+        "main_text":
+            formatted_main_text,
+        "blockquote_blocks":
+            blockquote_blocks,
+        "expandable_blocks":
+            expandable_blocks,
+        "other_entities":
+            other_entities
+    }
+
+
+# =========================================================
 # TEXT MESSAGE
 # =========================================================
 
@@ -1219,354 +1647,53 @@ def process_text_message(
         Dict[str, Any]
     ] = None
 ) -> bool:
-    """
-    پردازش استاندارد پیام متنی.
-
-    Pipeline:
-
-        Raw Telegram Text
-                ↓
-        Entity Parser
-                ↓
-        Main Text / Blockquotes
-                ↓
-        Formatter
-                ↓
-        Branding
-                ↓
-        Caption Manager
-                ↓
-        Text Publication Plan
-                ↓
-        Telegram
-                ↓
-        Bale
-    """
 
     try:
 
-        from core.content_entities import (
-            parse_telegram_entities
-        )
-
-        from core.caption_manager import (
-            analyze_content
-        )
-
-        from core.bale_forwarder import (
-            send_to_bale_for_user
-        )
-
-        # =================================================
-        # ENTITY PARSING
-        # =================================================
-
-        try:
-
-            parsed = (
-                parse_telegram_entities(
-                    text or "",
-                    entities or []
-                )
+        prepared = (
+            prepare_text_content(
+                text=text,
+                entities=entities,
+                forward_source=forward_source
             )
-
-        except Exception as e:
-
-            logger.exception(
-                f"❌ Text entity parser failed | "
-                f"{e}"
-            )
-
-            parsed = {
-                "main_text": text or "",
-                "blockquote_blocks": [],
-                "expandable_blocks": [],
-                "other_entities": []
-            }
-
-        main_text = (
-            parsed.get(
-                "main_text",
-                ""
-            )
-            or ""
-        )
-
-        blockquote_blocks = list(
-            parsed.get(
-                "blockquote_blocks",
-                []
-            )
-            or []
-        )
-
-        expandable_blocks = list(
-            parsed.get(
-                "expandable_blocks",
-                []
-            )
-            or []
-        )
-
-        other_entities = list(
-            parsed.get(
-                "other_entities",
-                []
-            )
-            or []
         )
 
         logger.info(
             f"🔬 TEXT-PRE-FORMAT | "
             f"raw={len(text or '')} | "
-            f"main={len(main_text)} | "
-            f"blockquote={len(blockquote_blocks)} | "
-            f"expandable={len(expandable_blocks)} | "
-            f"other_entities={len(other_entities)}"
+            f"main="
+            f"{len(prepared['main_text'])} | "
+            f"blockquote="
+            f"{len(prepared['blockquote_blocks'])} | "
+            f"expandable="
+            f"{len(prepared['expandable_blocks'])} | "
+            f"other_entities="
+            f"{len(prepared['other_entities'])}"
         )
 
-        # =================================================
-        # FORMAT / SOURCE CLEANUP
-        # =================================================
-
-        formatted_main_text = ""
-
-        if main_text:
-
-            try:
-
-                formatted_main_text = (
-                    format_with_source(
-                        main_text,
-                        forward_source
-                    )
-                    or main_text
-                )
-
-            except Exception as e:
-
-                logger.exception(
-                    f"❌ Text formatter failed | "
-                    f"{e}"
-                )
-
-                formatted_main_text = (
-                    main_text
-                )
-
-        # =================================================
-        # BRANDING
-        # =================================================
-
-        branding = (
-            build_branding_for_user(
-                chat_id
+        return publish_prepared_text(
+            chat_id=chat_id,
+            main_text=(
+                prepared[
+                    "main_text"
+                ]
+            ),
+            blockquote_blocks=(
+                prepared[
+                    "blockquote_blocks"
+                ]
+            ),
+            expandable_blocks=(
+                prepared[
+                    "expandable_blocks"
+                ]
+            ),
+            other_entities=(
+                prepared[
+                    "other_entities"
+                ]
             )
         )
-
-        logger.info(
-            f"🔬 TEXT-BRANDING | "
-            f"formatted={len(formatted_main_text)} | "
-            f"branding={len(branding)}"
-        )
-
-        # =================================================
-        # PUBLICATION PLAN
-        # =================================================
-
-        publication_plan = (
-            analyze_content(
-                main_text=formatted_main_text,
-                blockquote_blocks=(
-                    blockquote_blocks
-                ),
-                expandable_blocks=(
-                    expandable_blocks
-                ),
-                other_entities=(
-                    other_entities
-                ),
-                branding=branding
-            )
-        )
-
-        telegram_plan = (
-            publication_plan.text[
-                "telegram"
-            ]
-        )
-
-        bale_plan = (
-            publication_plan.text[
-                "bale"
-            ]
-        )
-
-        logger.info(
-            f"🔬 TEXT-PLAN | "
-            f"telegram_messages="
-            f"{len(telegram_plan.get('messages', []))} | "
-            f"telegram_blockquotes="
-            f"{len(telegram_plan.get('blockquote_messages', []))} | "
-            f"bale_messages="
-            f"{len(bale_plan.get('messages', []))} | "
-            f"bale_blockquotes="
-            f"{len(bale_plan.get('blockquote_messages', []))}"
-        )
-
-        # =================================================
-        # TELEGRAM MAIN MESSAGES
-        # =================================================
-
-        telegram_messages = list(
-            telegram_plan.get(
-                "messages",
-                []
-            )
-            or []
-        )
-
-        telegram_blockquotes = list(
-            telegram_plan.get(
-                "blockquote_messages",
-                []
-            )
-            or []
-        )
-
-        for message in telegram_messages:
-
-            if not message:
-                continue
-
-            success = (
-                send_to_channel(
-                    message
-                )
-            )
-
-            if not success:
-
-                logger.error(
-                    "❌ Telegram text plan "
-                    "main message failed"
-                )
-
-                return False
-
-        # =================================================
-        # TELEGRAM BLOCKQUOTES
-        # =================================================
-
-        for blockquote_message in (
-            telegram_blockquotes
-        ):
-
-            if not blockquote_message:
-                continue
-
-            success = (
-                send_to_channel(
-                    blockquote_message,
-                    parse_mode="HTML"
-                )
-            )
-
-            if not success:
-
-                logger.error(
-                    "❌ Telegram text plan "
-                    "blockquote failed"
-                )
-
-                return False
-
-        # =================================================
-        # BALE
-        # =================================================
-        #
-        # Telegram موفق شده است.
-        # شکست Bale باعث False شدن کل عملیات نمی‌شود.
-        # این رفتار با مسیر Media فعلی سازگار است.
-        # =================================================
-
-        bale_messages = list(
-            bale_plan.get(
-                "messages",
-                []
-            )
-            or []
-        )
-
-        bale_blockquotes = list(
-            bale_plan.get(
-                "blockquote_messages",
-                []
-            )
-            or []
-        )
-
-        for message in bale_messages:
-
-            if not message:
-                continue
-
-            try:
-
-                bale_success = (
-                    send_to_bale_for_user(
-                        chat_id,
-                        message
-                    )
-                )
-
-                if bale_success is False:
-
-                    logger.warning(
-                        "⚠️ Bale text plan "
-                        "main message failed"
-                    )
-
-            except Exception as e:
-
-                logger.warning(
-                    f"⚠️ Bale text plan "
-                    f"main message exception | "
-                    f"{e}"
-                )
-
-        for blockquote_message in (
-            bale_blockquotes
-        ):
-
-            if not blockquote_message:
-                continue
-
-            try:
-
-                bale_success = (
-                    send_to_bale_for_user(
-                        chat_id,
-                        blockquote_message
-                    )
-                )
-
-                if bale_success is False:
-
-                    logger.warning(
-                        "⚠️ Bale text plan "
-                        "blockquote failed"
-                    )
-
-            except Exception as e:
-
-                logger.warning(
-                    f"⚠️ Bale text plan "
-                    f"blockquote exception | "
-                    f"{e}"
-                )
-
-        return True
 
     except Exception as e:
 
@@ -1576,6 +1703,942 @@ def process_text_message(
         )
 
         return False
+
+
+# =========================================================
+# EDITORIAL REVIEW SOURCE
+# =========================================================
+
+def build_editorial_source_text(
+    prepared: Dict[str, Any]
+) -> str:
+
+    parts: List[str] = []
+
+    main_text = (
+        prepared.get(
+            "main_text",
+            ""
+        )
+        or ""
+    )
+
+    if main_text:
+
+        parts.append(
+            main_text
+        )
+
+    combined_blocks: List[
+        Dict[str, Any]
+    ] = []
+
+    for block in (
+        prepared.get(
+            "blockquote_blocks",
+            []
+        )
+        or []
+    ):
+
+        value = dict(
+            block
+        )
+
+        value[
+            "_expandable"
+        ] = False
+
+        combined_blocks.append(
+            value
+        )
+
+    for block in (
+        prepared.get(
+            "expandable_blocks",
+            []
+        )
+        or []
+    ):
+
+        value = dict(
+            block
+        )
+
+        value[
+            "_expandable"
+        ] = True
+
+        combined_blocks.append(
+            value
+        )
+
+    combined_blocks.sort(
+        key=lambda item: (
+            item.get(
+                "offset",
+                0
+            )
+        )
+    )
+
+    for block in combined_blocks:
+
+        block_text = (
+            str(
+                block.get(
+                    "text",
+                    ""
+                )
+                or ""
+            )
+            .strip()
+        )
+
+        if block_text:
+
+            parts.append(
+                block_text
+            )
+
+    return "\n\n".join(
+        parts
+    ).strip()
+
+
+# =========================================================
+# EDITORIAL BUTTONS
+# =========================================================
+
+def build_editorial_keyboard(
+    review_id: str,
+    has_summary: bool = True,
+    can_regenerate: bool = True
+) -> Dict[str, Any]:
+
+    rows: List[
+        List[Dict[str, str]]
+    ] = []
+
+    if has_summary:
+
+        rows.append([
+            {
+                "text":
+                    "✅ انتشار خلاصه",
+                "callback_data":
+                    f"ed:summary:{review_id}"
+            }
+        ])
+
+    rows.append([
+        {
+            "text":
+                "📄 انتشار متن اصلی",
+            "callback_data":
+                f"ed:original:{review_id}"
+        }
+    ])
+
+    if can_regenerate:
+
+        rows.append([
+            {
+                "text":
+                    "🔄 خلاصه‌سازی دوباره",
+                "callback_data":
+                    f"ed:regen:{review_id}"
+            }
+        ])
+
+    rows.append([
+        {
+            "text":
+                "❌ لغو",
+            "callback_data":
+                f"ed:cancel:{review_id}"
+        }
+    ])
+
+    return {
+        "inline_keyboard":
+            rows
+    }
+
+
+# =========================================================
+# CONTENT TYPE LABEL
+# =========================================================
+
+def editorial_type_label(
+    content_type: str
+) -> str:
+
+    if content_type == "opinion_note":
+        return "یادداشت"
+
+    if content_type == "news_analysis":
+        return "تحلیل خبری"
+
+    if content_type == "sensitive_content":
+        return "محتوای حساس"
+
+    if content_type == "normal_news":
+        return "خبر"
+
+    return "نامشخص"
+
+
+# =========================================================
+# PREVIEW
+# =========================================================
+
+def build_editorial_preview(
+    content_type: str,
+    summary_text: str,
+    original_length: int,
+    regeneration_count: int = 0,
+    summary_success: bool = True
+) -> str:
+
+    label = (
+        editorial_type_label(
+            content_type
+        )
+    )
+
+    summary_text = (
+        str(
+            summary_text
+            or ""
+        )
+        .strip()
+    )
+
+    # پیش‌نمایش Bot API باید زیر 4096 باقی بماند.
+    preview_limit = 3000
+
+    if len(summary_text) > preview_limit:
+
+        preview_text = (
+            summary_text[
+                :preview_limit
+            ]
+            .rstrip()
+            + "\n\n..."
+        )
+
+    else:
+
+        preview_text = (
+            summary_text
+        )
+
+    if summary_success:
+
+        status = (
+            "نسخه پیشنهادی آماده است."
+        )
+
+    else:
+
+        status = (
+            "خلاصه پیشنهادی آماده نشد. "
+            "متن اصلی محفوظ است."
+        )
+
+    return (
+        "📝 پیش‌نمایش تحریریه\n\n"
+        f"نوع محتوا: {label}\n"
+        f"طول متن اصلی: {original_length}\n"
+        f"بازنویسی مجدد: {regeneration_count}/3\n"
+        f"وضعیت: {status}\n\n"
+        f"{preview_text}\n\n"
+        "تا قبل از انتخاب گزینه انتشار، "
+        "این محتوا در کانال منتشر نمی‌شود."
+    )
+
+
+# =========================================================
+# CREATE EDITORIAL REVIEW FOR TEXT
+# =========================================================
+
+def try_queue_editorial_text_review(
+    chat_id: int,
+    text: str,
+    entities: List[
+        Dict[str, Any]
+    ],
+    forward_source: Optional[
+        Dict[str, Any]
+    ] = None
+) -> bool:
+
+    if not editorial_review_enabled():
+
+        return False
+
+    try:
+
+        from core.editorial_review import (
+            CONTENT_TYPE_NEWS_ANALYSIS,
+            CONTENT_TYPE_OPINION_NOTE,
+            analyze_editorial_content
+        )
+
+        from core.editorial_pending import (
+            create_pending_review
+        )
+
+        prepared = (
+            prepare_text_content(
+                text=text,
+                entities=entities,
+                forward_source=forward_source
+            )
+        )
+
+        editorial_source = (
+            build_editorial_source_text(
+                prepared
+            )
+        )
+
+        if not editorial_source:
+
+            return False
+
+        logger.info(
+            f"🧠 Editorial review candidate | "
+            f"user={chat_id} | "
+            f"length={len(editorial_source)}"
+        )
+
+        review_result = (
+            analyze_editorial_content(
+                original_text=(
+                    editorial_source
+                )
+            )
+        )
+
+        logger.info(
+            f"🧠 Editorial review result | "
+            f"user={chat_id} | "
+            f"type="
+            f"{review_result.content_type} | "
+            f"approval="
+            f"{review_result.needs_approval} | "
+            f"summary_success="
+            f"{review_result.summary_success}"
+        )
+
+        # در این مرحله فقط یادداشت و تحلیل
+        # وارد Pending Review می‌شوند.
+        if (
+            review_result.content_type
+            not in (
+                CONTENT_TYPE_OPINION_NOTE,
+                CONTENT_TYPE_NEWS_ANALYSIS,
+            )
+        ):
+
+            return False
+
+        if not review_result.needs_approval:
+
+            return False
+
+        pending = (
+            create_pending_review(
+                user_id=chat_id,
+                content_type=(
+                    review_result.content_type
+                ),
+                original_text=(
+                    editorial_source
+                ),
+                current_summary=(
+                    review_result.suggested_text
+                ),
+                regeneration_count=(
+                    review_result.metadata.get(
+                        "regeneration_count",
+                        0
+                    )
+                ),
+                metadata={
+                    "kind": "text",
+                    "main_text":
+                        prepared[
+                            "main_text"
+                        ],
+                    "blockquote_blocks":
+                        prepared[
+                            "blockquote_blocks"
+                        ],
+                    "expandable_blocks":
+                        prepared[
+                            "expandable_blocks"
+                        ],
+                    "other_entities":
+                        prepared[
+                            "other_entities"
+                        ],
+                    "forward_source":
+                        dict(
+                            forward_source
+                            or {}
+                        ),
+                    "summary_success":
+                        review_result.summary_success,
+                    "review_reason":
+                        review_result.reason
+                }
+            )
+        )
+
+        can_regenerate = bool(
+            pending.regeneration_count
+            < 3
+        )
+
+        keyboard = (
+            build_editorial_keyboard(
+                review_id=(
+                    pending.review_id
+                ),
+                has_summary=(
+                    review_result.summary_success
+                ),
+                can_regenerate=(
+                    can_regenerate
+                )
+            )
+        )
+
+        preview = (
+            build_editorial_preview(
+                content_type=(
+                    pending.content_type
+                ),
+                summary_text=(
+                    pending.current_summary
+                ),
+                original_length=len(
+                    pending.original_text
+                ),
+                regeneration_count=(
+                    pending.regeneration_count
+                ),
+                summary_success=(
+                    review_result.summary_success
+                )
+            )
+        )
+
+        sent = send_message(
+            chat_id=chat_id,
+            text=preview,
+            reply_markup=keyboard
+        )
+
+        if not sent:
+
+            logger.error(
+                f"❌ Editorial preview send failed | "
+                f"review_id={pending.review_id}"
+            )
+
+            return False
+
+        logger.info(
+            f"✅ Editorial review queued | "
+            f"review_id={pending.review_id} | "
+            f"user={chat_id} | "
+            f"type={pending.content_type}"
+        )
+
+        return True
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Editorial review queue failed | "
+            f"{e}"
+        )
+
+        # Fail open:
+        # اگر ماژول Editorial دچار خطا شد،
+        # خبر عادی از مسیر قبلی منتشر می‌شود.
+        return False
+
+
+# =========================================================
+# CALLBACK HANDLER
+# =========================================================
+
+def handle_editorial_callback(
+    callback_query: Dict[str, Any],
+    req_id: str
+) -> bool:
+
+    callback_data = (
+        callback_query.get(
+            "data",
+            ""
+        )
+        or ""
+    )
+
+    if not callback_data.startswith(
+        "ed:"
+    ):
+
+        return False
+
+    callback_id = (
+        callback_query.get(
+            "id",
+            ""
+        )
+        or ""
+    )
+
+    from_user = (
+        callback_query.get(
+            "from",
+            {}
+        )
+        or {}
+    )
+
+    user_id = (
+        from_user.get(
+            "id"
+        )
+    )
+
+    if user_id is None:
+
+        answer_callback_query(
+            callback_id,
+            "کاربر قابل تشخیص نیست."
+        )
+
+        return True
+
+    parts = callback_data.split(
+        ":",
+        2
+    )
+
+    if len(parts) != 3:
+
+        answer_callback_query(
+            callback_id,
+            "دستور نامعتبر است."
+        )
+
+        return True
+
+    action = parts[1]
+    review_id = parts[2]
+
+    try:
+
+        from core.editorial_pending import (
+            STATUS_PENDING,
+            cancel_pending_review,
+            get_pending_review,
+            mark_original_published,
+            mark_summary_published,
+            update_pending_summary
+        )
+
+        from core.editorial_review import (
+            MAX_REGENERATION_COUNT,
+            regenerate_editorial_summary
+        )
+
+        review = get_pending_review(
+            review_id=review_id,
+            user_id=user_id
+        )
+
+        if review is None:
+
+            answer_callback_query(
+                callback_id,
+                "این پیش‌نمایش پیدا نشد."
+            )
+
+            return True
+
+        if (
+            review.status
+            != STATUS_PENDING
+        ):
+
+            answer_callback_query(
+                callback_id,
+                "این درخواست قبلاً نهایی شده است."
+            )
+
+            return True
+
+        # =================================================
+        # CANCEL
+        # =================================================
+
+        if action == "cancel":
+
+            cancel_pending_review(
+                review_id=review_id,
+                user_id=user_id
+            )
+
+            answer_callback_query(
+                callback_id,
+                "لغو شد."
+            )
+
+            send_message(
+                user_id,
+                "❌ انتشار این محتوا لغو شد."
+            )
+
+            logger.info(
+                f"[{req_id}] ❌ Editorial review cancelled | "
+                f"review_id={review_id}"
+            )
+
+            return True
+
+        # =================================================
+        # PUBLISH ORIGINAL
+        # =================================================
+
+        if action == "original":
+
+            metadata = (
+                review.metadata
+                or {}
+            )
+
+            success = (
+                publish_prepared_text(
+                    chat_id=user_id,
+                    main_text=(
+                        metadata.get(
+                            "main_text",
+                            review.original_text
+                        )
+                        or review.original_text
+                    ),
+                    blockquote_blocks=(
+                        metadata.get(
+                            "blockquote_blocks",
+                            []
+                        )
+                    ),
+                    expandable_blocks=(
+                        metadata.get(
+                            "expandable_blocks",
+                            []
+                        )
+                    ),
+                    other_entities=(
+                        metadata.get(
+                            "other_entities",
+                            []
+                        )
+                    )
+                )
+            )
+
+            if success:
+
+                mark_original_published(
+                    review_id=review_id,
+                    user_id=user_id
+                )
+
+                answer_callback_query(
+                    callback_id,
+                    "متن اصلی منتشر شد."
+                )
+
+                send_message(
+                    user_id,
+                    "✅ متن اصلی در کانال منتشر شد."
+                )
+
+            else:
+
+                answer_callback_query(
+                    callback_id,
+                    "انتشار با خطا روبرو شد."
+                )
+
+                send_message(
+                    user_id,
+                    "❌ انتشار متن اصلی با مشکل روبرو شد."
+                )
+
+            return True
+
+        # =================================================
+        # PUBLISH SUMMARY
+        # =================================================
+
+        if action == "summary":
+
+            if not (
+                review.current_summary
+                or ""
+            ).strip():
+
+                answer_callback_query(
+                    callback_id,
+                    "خلاصه‌ای برای انتشار وجود ندارد."
+                )
+
+                return True
+
+            if (
+                review.metadata.get(
+                    "summary_success"
+                )
+                is False
+            ):
+
+                answer_callback_query(
+                    callback_id,
+                    "خلاصه معتبر آماده نشده است."
+                )
+
+                return True
+
+            success = (
+                publish_prepared_text(
+                    chat_id=user_id,
+                    main_text=(
+                        review.current_summary
+                    ),
+                    blockquote_blocks=[],
+                    expandable_blocks=[],
+                    other_entities=[]
+                )
+            )
+
+            if success:
+
+                mark_summary_published(
+                    review_id=review_id,
+                    user_id=user_id
+                )
+
+                answer_callback_query(
+                    callback_id,
+                    "خلاصه منتشر شد."
+                )
+
+                send_message(
+                    user_id,
+                    "✅ نسخه خلاصه در کانال منتشر شد."
+                )
+
+            else:
+
+                answer_callback_query(
+                    callback_id,
+                    "انتشار با خطا روبرو شد."
+                )
+
+                send_message(
+                    user_id,
+                    "❌ انتشار خلاصه با مشکل روبرو شد."
+                )
+
+            return True
+
+        # =================================================
+        # REGENERATE
+        # =================================================
+
+        if action == "regen":
+
+            if (
+                review.regeneration_count
+                >= MAX_REGENERATION_COUNT
+            ):
+
+                answer_callback_query(
+                    callback_id,
+                    "حداکثر تعداد بازنویسی انجام شده است."
+                )
+
+                return True
+
+            answer_callback_query(
+                callback_id,
+                "در حال ساخت نسخه جدید..."
+            )
+
+            regeneration_result = (
+                regenerate_editorial_summary(
+                    original_text=(
+                        review.original_text
+                    ),
+                    previous_summary=(
+                        review.current_summary
+                    ),
+                    content_type=(
+                        review.content_type
+                    ),
+                    regeneration_count=(
+                        review.regeneration_count
+                    )
+                )
+            )
+
+            next_count = (
+                regeneration_result.metadata.get(
+                    "regeneration_count",
+                    review.regeneration_count
+                )
+            )
+
+            # حتی در شکست، Count جدید ذخیره می‌شود
+            # تا سقف سه بار واقعاً enforce شود.
+            updated = (
+                update_pending_summary(
+                    review_id=review_id,
+                    user_id=user_id,
+                    new_summary=(
+                        regeneration_result.suggested_text
+                        or review.current_summary
+                    ),
+                    regeneration_count=(
+                        next_count
+                    ),
+                    metadata={
+                        "summary_success":
+                            regeneration_result.summary_success,
+                        "regeneration_reason":
+                            regeneration_result.reason
+                    }
+                )
+            )
+
+            if updated is None:
+
+                send_message(
+                    user_id,
+                    "❌ وضعیت بازنویسی قابل به‌روزرسانی نیست."
+                )
+
+                return True
+
+            if not regeneration_result.summary_success:
+
+                can_regenerate = (
+                    updated.regeneration_count
+                    < MAX_REGENERATION_COUNT
+                )
+
+                keyboard = (
+                    build_editorial_keyboard(
+                        review_id=review_id,
+                        has_summary=bool(
+                            updated.current_summary
+                        ),
+                        can_regenerate=(
+                            can_regenerate
+                        )
+                    )
+                )
+
+                send_message(
+                    chat_id=user_id,
+                    text=(
+                        "⚠️ نسخه جدید مورد تأیید "
+                        "سیستم ضدتحریف قرار نگرفت.\n\n"
+                        "نسخه قبلی محفوظ مانده است."
+                    ),
+                    reply_markup=keyboard
+                )
+
+                return True
+
+            can_regenerate = (
+                updated.regeneration_count
+                < MAX_REGENERATION_COUNT
+            )
+
+            keyboard = (
+                build_editorial_keyboard(
+                    review_id=review_id,
+                    has_summary=True,
+                    can_regenerate=(
+                        can_regenerate
+                    )
+                )
+            )
+
+            preview = (
+                build_editorial_preview(
+                    content_type=(
+                        updated.content_type
+                    ),
+                    summary_text=(
+                        updated.current_summary
+                    ),
+                    original_length=len(
+                        updated.original_text
+                    ),
+                    regeneration_count=(
+                        updated.regeneration_count
+                    ),
+                    summary_success=True
+                )
+            )
+
+            send_message(
+                chat_id=user_id,
+                text=preview,
+                reply_markup=keyboard
+            )
+
+            logger.info(
+                f"[{req_id}] 🔄 Editorial regeneration "
+                f"completed | review_id={review_id} | "
+                f"count={updated.regeneration_count}"
+            )
+
+            return True
+
+        answer_callback_query(
+            callback_id,
+            "دستور ناشناخته است."
+        )
+
+        return True
+
+    except Exception as e:
+
+        logger.exception(
+            f"[{req_id}] ❌ Editorial callback failed | "
+            f"{e}"
+        )
+
+        answer_callback_query(
+            callback_id,
+            "خطا در پردازش درخواست."
+        )
+
+        return True
 
 
 # =========================================================
@@ -1623,6 +2686,43 @@ def handle_webhook() -> Tuple[
                 "ok": True
             }, 200
 
+        # =================================================
+        # CALLBACK QUERY
+        #
+        # باید قبل از message بررسی شود، چون Callback
+        # دارای message ورودی معمولی نیست.
+        # =================================================
+
+        callback_query = data.get(
+            "callback_query"
+        )
+
+        if isinstance(
+            callback_query,
+            dict
+        ):
+
+            handled = (
+                handle_editorial_callback(
+                    callback_query,
+                    req_id
+                )
+            )
+
+            if handled:
+
+                return {
+                    "ok": True
+                }, 200
+
+            return {
+                "ok": True
+            }, 200
+
+        # =================================================
+        # MESSAGE
+        # =================================================
+
         msg = data.get(
             "message"
         )
@@ -1667,12 +2767,6 @@ def handle_webhook() -> Tuple[
         # =================================================
         # INPUT
         # =================================================
-
-        text = (
-            get_message_text(
-                msg
-            )
-        )
 
         entities = list(
             msg.get(
@@ -1876,6 +2970,9 @@ def handle_webhook() -> Tuple[
 
         # =================================================
         # SINGLE PHOTO / VIDEO
+        #
+        # Editorial Review در این مرحله هنوز روی Media
+        # فعال نشده تا مسیر پایدار فعلی تغییر نکند.
         # =================================================
 
         if (
@@ -1996,6 +3093,47 @@ def handle_webhook() -> Tuple[
         )
 
         if pure_text.strip():
+
+            # =============================================
+            # EDITORIAL REVIEW GATE
+            #
+            # اگر AI تشخیص دهد متن یادداشت یا تحلیل است،
+            # محتوا منتشر نمی‌شود و وارد Pending می‌شود.
+            #
+            # اگر خبر عادی باشد یا Feature خاموش باشد،
+            # دقیقاً مسیر پایدار قبلی ادامه پیدا می‌کند.
+            # =============================================
+
+            queued_for_review = (
+                try_queue_editorial_text_review(
+                    chat_id=chat_id,
+                    text=pure_text,
+                    entities=entities,
+                    forward_source=(
+                        forward_source
+                        if forward_source.get(
+                            "is_forwarded"
+                        )
+                        else None
+                    )
+                )
+            )
+
+            if queued_for_review:
+
+                logger.info(
+                    f"[{req_id}] 📝 Text held for "
+                    f"editorial approval | user={chat_id}"
+                )
+
+                return {
+                    "ok": True,
+                    "editorial_review": True
+                }, 200
+
+            # =============================================
+            # STABLE DIRECT PUBLICATION
+            # =============================================
 
             kwargs = {
                 "chat_id": chat_id,
