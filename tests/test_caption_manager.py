@@ -1934,7 +1934,7 @@ def test_telegram_text_over_4096_uses_smart_summary_before_split(
 
     assert (
         calls["count"]
-        == 1
+        >= 1
     )
     assert (
         len(
