@@ -108,6 +108,7 @@ class PublicationPlan:
         self.text: Dict[str, Any] = {
             "telegram": {
                 "messages": [],
+                "message_parse_modes": [],
                 "blockquote_messages": []
             },
             "bale": {
@@ -2916,6 +2917,9 @@ def create_telegram_text_plan(
                 "messages": [
                     combined_html
                 ],
+                "message_parse_modes": [
+                    "HTML"
+                ],
                 "blockquote_messages": []
             }
 
@@ -2963,6 +2967,9 @@ def create_telegram_text_plan(
 
         return {
             "messages": messages,
+            "message_parse_modes": (
+                [None] * len(messages)
+            ),
             "blockquote_messages":
                 blockquote_messages
         }
@@ -3044,6 +3051,9 @@ def create_telegram_text_plan(
 
     return {
         "messages": messages,
+        "message_parse_modes": (
+            [None] * len(messages)
+        ),
         "blockquote_messages": []
     }
 

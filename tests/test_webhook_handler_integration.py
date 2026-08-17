@@ -1848,3 +1848,274 @@ def test_text_message_preserves_own_branding():
             sys.modules[
                 "core.bale_forwarder"
             ] = old_bale_module
+
+
+def test_publish_prepared_text_sends_combined_blockquote_with_html_parse_mode():
+
+    fake_bale_module = types.ModuleType(
+        "core.bale_forwarder"
+    )
+
+    fake_bale_module.send_to_bale_for_user = (
+        MagicMock(
+            return_value=True
+        )
+    )
+
+    with patch.object(
+        webhook_handler,
+        "build_branding_for_user",
+        return_value=(
+            "#دنیا_۲۴_نیوز\n"
+            "@Donya24News"
+        )
+    ), patch.object(
+        webhook_handler,
+        "send_to_channel",
+        return_value=True
+    ) as mock_telegram, patch.dict(
+        sys.modules,
+        {
+            "core.bale_forwarder":
+                fake_bale_module
+        }
+    ):
+
+        success = (
+            webhook_handler.publish_prepared_text(
+                chat_id=1001,
+                main_text=(
+                    "✨ غلامحسین کرباسچی: منظور مجلس از طرح مقابله با نفوذ محدود کردن رسانه ها است.\n\n"
+                    "🔷 با محدود کردن اینترنت و بستن تمام پنجره ها ممکن است صدای خودمان هم بیرون نرود."
+                ),
+                blockquote_blocks=[
+                    {
+                        "text": (
+                            "چرا طرح ضد جاسوسی در مجلس تصویب شده صدای اصلاح طلب در اومده از چی ترسیدن"
+                        ),
+                        "offset": 100
+                    }
+                ]
+            )
+        )
+
+    assert success is True
+
+    mock_telegram.assert_called_once()
+
+    assert (
+        mock_telegram.call_args.kwargs[
+            "parse_mode"
+        ]
+        == "HTML"
+    )
+
+    sent_text = (
+        mock_telegram.call_args.args[0]
+    )
+
+    assert (
+        "<blockquote>"
+        in sent_text
+    )
+
+    assert (
+        "&lt;blockquote&gt;"
+        not in sent_text
+    )
+
+
+def test_publish_prepared_text_sends_expandable_blockquote_with_html_parse_mode():
+
+    fake_bale_module = types.ModuleType(
+        "core.bale_forwarder"
+    )
+
+    fake_bale_module.send_to_bale_for_user = (
+        MagicMock(
+            return_value=True
+        )
+    )
+
+    with patch.object(
+        webhook_handler,
+        "build_branding_for_user",
+        return_value=(
+            "#دنیا_۲۴_نیوز\n"
+            "@Donya24News"
+        )
+    ), patch.object(
+        webhook_handler,
+        "send_to_channel",
+        return_value=True
+    ) as mock_telegram, patch.dict(
+        sys.modules,
+        {
+            "core.bale_forwarder":
+                fake_bale_module
+        }
+    ):
+
+        success = (
+            webhook_handler.publish_prepared_text(
+                chat_id=1001,
+                main_text="خبر اصلی",
+                expandable_blocks=[
+                    {
+                        "text": "تحلیل تکمیلی",
+                        "offset": 20
+                    }
+                ]
+            )
+        )
+
+    assert success is True
+
+    mock_telegram.assert_called_once()
+
+    assert (
+        mock_telegram.call_args.kwargs[
+            "parse_mode"
+        ]
+        == "HTML"
+    )
+
+    assert (
+        "<blockquote expandable>"
+        in mock_telegram.call_args.args[0]
+    )
+
+
+def test_publish_prepared_text_keeps_plain_text_without_parse_mode():
+
+    fake_bale_module = types.ModuleType(
+        "core.bale_forwarder"
+    )
+
+    fake_bale_module.send_to_bale_for_user = (
+        MagicMock(
+            return_value=True
+        )
+    )
+
+    with patch.object(
+        webhook_handler,
+        "build_branding_for_user",
+        return_value=(
+            "#دنیا_۲۴_نیوز\n"
+            "@Donya24News"
+        )
+    ), patch.object(
+        webhook_handler,
+        "send_to_channel",
+        return_value=True
+    ) as mock_telegram, patch.dict(
+        sys.modules,
+        {
+            "core.bale_forwarder":
+                fake_bale_module
+        }
+    ):
+
+        success = (
+            webhook_handler.publish_prepared_text(
+                chat_id=1001,
+                main_text="خبر عادی بدون نقل قول"
+            )
+        )
+
+    assert success is True
+
+    mock_telegram.assert_called_once()
+
+    assert (
+        mock_telegram.call_args.kwargs[
+            "parse_mode"
+        ]
+        is None
+    )
+
+    assert (
+        "<blockquote>"
+        not in mock_telegram.call_args.args[0]
+    )
+
+
+def test_publish_prepared_text_split_blockquote_keeps_parse_modes_per_piece():
+
+    fake_bale_module = types.ModuleType(
+        "core.bale_forwarder"
+    )
+
+    fake_bale_module.send_to_bale_for_user = (
+        MagicMock(
+            return_value=True
+        )
+    )
+
+    with patch.object(
+        webhook_handler,
+        "build_branding_for_user",
+        return_value=(
+            "#دنیا_۲۴_نیوز\n"
+            "@Donya24News"
+        )
+    ), patch.object(
+        webhook_handler,
+        "send_to_channel",
+        return_value=True
+    ) as mock_telegram, patch.dict(
+        sys.modules,
+        {
+            "core.bale_forwarder":
+                fake_bale_module
+        }
+    ):
+
+        success = (
+            webhook_handler.publish_prepared_text(
+                chat_id=1001,
+                main_text=("الف" * 5000),
+                blockquote_blocks=[
+                    {
+                        "text": "نقل قول کوتاه",
+                        "offset": 5001
+                    }
+                ]
+            )
+        )
+
+    assert success is True
+
+    assert (
+        mock_telegram.call_count
+        >= 2
+    )
+
+    first_call = mock_telegram.call_args_list[0]
+    last_call = mock_telegram.call_args_list[-1]
+
+    assert (
+        first_call.kwargs["parse_mode"]
+        is None
+    )
+
+    assert (
+        "#دنیا_۲۴_نیوز"
+        in first_call.args[0]
+    )
+
+    assert (
+        last_call.kwargs["parse_mode"]
+        == "HTML"
+    )
+
+    assert (
+        "<blockquote>"
+        in last_call.args[0]
+    )
+
+    assert (
+        "#دنیا_۲۴_نیوز"
+        in last_call.args[0]
+    )

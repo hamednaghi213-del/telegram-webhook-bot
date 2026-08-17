@@ -1414,6 +1414,14 @@ def publish_prepared_text(
             or []
         )
 
+        telegram_message_parse_modes = list(
+            telegram_plan.get(
+                "message_parse_modes",
+                []
+            )
+            or []
+        )
+
         telegram_blockquotes = list(
             telegram_plan.get(
                 "blockquote_messages",
@@ -1422,13 +1430,27 @@ def publish_prepared_text(
             or []
         )
 
-        for message in telegram_messages:
+        for index, message in enumerate(
+            telegram_messages
+        ):
 
             if not message:
                 continue
 
+            parse_mode = None
+
+            if index < len(
+                telegram_message_parse_modes
+            ):
+                parse_mode = (
+                    telegram_message_parse_modes[
+                        index
+                    ]
+                )
+
             if not send_to_channel(
-                message
+                message,
+                parse_mode=parse_mode
             ):
 
                 logger.error(
