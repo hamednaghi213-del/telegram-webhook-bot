@@ -1,1432 +1,2819 @@
-import json
-import logging
-import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
-
+import threading
+import logging
 import requests
+import json
 
+from typing import (
+    Dict,
+    Tuple,
+    List,
+    Optional,
+    Any
+)
+
+from collections import defaultdict
+
+from core.formatter import (
+    format_news
+)
+
+from core.content_entities import (
+    parse_telegram_entities
+)
+
+from core.caption_manager import (
+    analyze_content,
+    PublicationPlan
+)
 
 logger = logging.getLogger(__name__)
 
-
-# ============================================================
-# CONFIG
-# ============================================================
+# =========================================================
+# GLOBAL CONFIG
+# =========================================================
 
 API_URL: Optional[str] = None
 CHANNEL_ID: Optional[str] = None
 
-MEDIA_GROUP_DELAY = 2.5
-MEDIA_GROUP_MIN_WAIT = 1.5
+# =========================================================
+# THREAD-LOCAL TELEGRAM SEND STATE
+# =========================================================
 
-TELEGRAM_CONNECT_TIMEOUT = 10
-TELEGRAM_READ_TIMEOUT = 30
+telegram_send_state = threading.local()
 
+def set_last_media_message_id(
+    message_id: Optional[int]
+) -> None:
 
-# ============================================================
-# MEDIA GROUP STATE
-# ============================================================
+    telegram_send_state.last_media_message_id = (
+        message_id
+    )
 
-pending_groups: Dict[str, Dict[str, Any]] = {}
-group_timers: Dict[str, threading.Timer] = {}
+def get_last_media_message_id() -> Optional[int]:
+
+    value = getattr(
+        telegram_send_state,
+        "last_media_message_id",
+        None
+    )
+
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+    ):
+        return value
+
+    return None
+
+# =========================================================
+# MEDIA GROUP STORAGE
+# =========================================================
+
+pending_groups: Dict[
+    Tuple[int, str],
+    Dict[str, Any]
+] = defaultdict(dict)
+
+group_timers: Dict[
+    Tuple[int, str],
+    threading.Timer
+] = {}
 
 group_lock = threading.RLock()
 
+# =========================================================
+# RESOURCE LIMITS
+# =========================================================
 
-# ============================================================
+MAX_PENDING_GROUPS = 1000
+MAX_GROUP_AGE_SECONDS = 900
+CLEANUP_INTERVAL_SECONDS = 300
+
+cleanup_thread: Optional[
+    threading.Thread
+] = None
+
+cleanup_running = False
+
+# =========================================================
+# TELEGRAM LIMITS
+# =========================================================
+
+TELEGRAM_MEDIA_GROUP_MIN_ITEMS = 2
+TELEGRAM_MEDIA_GROUP_MAX_ITEMS = 10
+
+# =========================================================
+# TIMEOUT CONFIG
+# =========================================================
+
+TELEGRAM_CONNECT_TIMEOUT = 10
+TELEGRAM_READ_TIMEOUT = 60
+
+# فاصله‌ای که باید از آخرین عضو آلبوم گذشته باشد
+# تا مطمئن شویم Media Group کامل شده است.
+MEDIA_GROUP_DELAY = 2.5
+
+# حداقل فاصله محافظتی.
+# در نسخه جدید تصمیم نهایی بر اساس MEDIA_GROUP_DELAY
+# گرفته می‌شود و این مقدار فقط برای Retryهای کوتاه است.
+MEDIA_GROUP_MIN_WAIT = 1.5
+
+# اگر در زمان اجرای Timer هنوز فقط یک عضو موجود باشد،
+# به جای حذف گروه کمی دیگر صبر می‌کنیم.
+MEDIA_GROUP_INCOMPLETE_RETRY_DELAY = 1.0
+
+# =========================================================
 # INITIALIZE
-# ============================================================
+# =========================================================
 
 def initialize(
     api_url: str,
     channel_id: str
 ) -> None:
-    """
-    Initialize Telegram API URL and destination channel.
-    """
 
     global API_URL
     global CHANNEL_ID
+    global cleanup_thread
 
-    API_URL = (
-        str(api_url).rstrip("/")
-        if api_url
-        else None
-    )
-
-    CHANNEL_ID = (
-        str(channel_id)
-        if channel_id is not None
-        else None
-    )
-
-    logger.info(
-        "✅ Media Handler initialized | "
-        f"channel={CHANNEL_ID} | "
-        f"api={'SET' if API_URL else 'NOT_SET'}"
-    )
-
-
-# ============================================================
-# TELEGRAM HTTP
-# ============================================================
-
-def _telegram_endpoint(
-    method: str
-) -> str:
-    if not API_URL:
-        raise RuntimeError(
-            "Media Handler API_URL is not initialized"
+    if not api_url:
+        raise ValueError(
+            "api_url cannot be empty"
         )
 
-    return (
-        f"{API_URL.rstrip('/')}/"
-        f"{method}"
+    if not channel_id:
+        raise ValueError(
+            "channel_id cannot be empty"
+        )
+
+    API_URL = api_url.rstrip("/")
+    CHANNEL_ID = channel_id
+
+    logger.info(
+        f"✅ Media Handler initialized | "
+        f"channel={CHANNEL_ID}"
     )
 
+    if (
+        cleanup_thread is None
+        or not cleanup_thread.is_alive()
+    ):
+
+        cleanup_thread = threading.Thread(
+            target=_cleanup_scheduler,
+            daemon=True,
+            name="MediaHandlerCleanup"
+        )
+
+        cleanup_thread.start()
+
+        logger.info(
+            "🧹 Media Handler cleanup scheduler started"
+        )
+
+# =========================================================
+# CLEANUP SCHEDULER
+# =========================================================
+
+def _cleanup_scheduler() -> None:
+
+    global cleanup_running
+
+    cleanup_running = True
+
+    logger.info(
+        f"🧹 Cleanup scheduler running | "
+        f"interval={CLEANUP_INTERVAL_SECONDS}s"
+    )
+
+    while cleanup_running:
+
+        try:
+
+            time.sleep(
+                CLEANUP_INTERVAL_SECONDS
+            )
+
+            cleanup_old_groups()
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Cleanup scheduler error: {e}"
+            )
+
+# =========================================================
+# CLEANUP OLD GROUPS
+# =========================================================
+
+def cleanup_old_groups() -> None:
+
+    current_time = time.time()
+    groups_to_remove = []
+
+    with group_lock:
+
+        for group_key, group in list(
+            pending_groups.items()
+        ):
+
+            last_update = group.get(
+                "last_update",
+                current_time
+            )
+
+            age_seconds = (
+                current_time
+                - last_update
+            )
+
+            if (
+                age_seconds
+                > MAX_GROUP_AGE_SECONDS
+            ):
+
+                groups_to_remove.append(
+                    group_key
+                )
+
+                logger.warning(
+                    f"⚠️ Old Media Group | "
+                    f"group={group_key[1]} | "
+                    f"age={age_seconds:.1f}s"
+                )
+
+        if (
+            len(pending_groups)
+            > MAX_PENDING_GROUPS
+        ):
+
+            sorted_groups = sorted(
+                pending_groups.items(),
+                key=lambda item: (
+                    item[1].get(
+                        "last_update",
+                        0
+                    )
+                )
+            )
+
+            excess = (
+                len(sorted_groups)
+                - MAX_PENDING_GROUPS
+            )
+
+            for (
+                group_key,
+                _
+            ) in sorted_groups[:excess]:
+
+                if (
+                    group_key
+                    not in groups_to_remove
+                ):
+
+                    groups_to_remove.append(
+                        group_key
+                    )
+
+        for group_key in groups_to_remove:
+
+            pending_groups.pop(
+                group_key,
+                None
+            )
+
+            timer = group_timers.pop(
+                group_key,
+                None
+            )
+
+            if timer:
+
+                try:
+                    timer.cancel()
+                except Exception:
+                    pass
+
+    if groups_to_remove:
+
+        logger.info(
+            f"🧹 Media Group cleanup | "
+            f"removed={len(groups_to_remove)} | "
+            f"remaining={len(pending_groups)}"
+        )
+
+# =========================================================
+# MEDIA GROUP DETECTION
+# =========================================================
+
+def is_media_group(
+    message: Dict[str, Any]
+) -> bool:
+
+    return bool(
+        message.get(
+            "media_group_id"
+        )
+    )
+
+# =========================================================
+# ADD MEDIA TO PENDING GROUP
+# =========================================================
+
+def add_to_pending_group(
+    media_group_id: str,
+    chat_id: int,
+    file_id: str,
+    media_type: str,
+    caption: str = "",
+    caption_entities: Optional[
+        List[Dict[str, Any]]
+    ] = None,
+    forward_source: Optional[
+        Dict[str, Any]
+    ] = None
+) -> None:
+
+    group_key = (
+        chat_id,
+        media_group_id
+    )
+
+    with group_lock:
+
+        if group_key not in pending_groups:
+
+            pending_groups[
+                group_key
+            ] = {
+                "chat_id":
+                    chat_id,
+
+                "media_group_id":
+                    media_group_id,
+
+                "files":
+                    [],
+
+                "raw_caption":
+                    "",
+
+                "caption_entities":
+                    [],
+
+                "main_text":
+                    "",
+
+                "expandable_blocks":
+                    [],
+
+                "blockquote_blocks":
+                    [],
+
+                "other_entities":
+                    [],
+
+                "forward_source":
+                    {},
+
+                "caption_received":
+                    False,
+
+                "last_update":
+                    time.time(),
+
+                "is_processing":
+                    False,
+
+                # هر بار Timer جدید ساخته می‌شود
+                # این نسل افزایش پیدا می‌کند.
+                #
+                # Timer قدیمی فقط وقتی اجازه پردازش دارد
+                # که generation آن هنوز نسل فعلی باشد.
+                "timer_generation":
+                    0
+            }
+
+            logger.info(
+                f"🆕 New Media Group | "
+                f"group={media_group_id}"
+            )
+
+        group = pending_groups[
+            group_key
+        ]
+
+        if (
+            forward_source
+            and forward_source.get(
+                "is_forwarded"
+            )
+            and not group.get(
+                "forward_source"
+            )
+        ):
+
+            group[
+                "forward_source"
+            ] = dict(
+                forward_source
+            )
+
+            logger.info(
+                f"🔗 Media Group source stored | "
+                f"group={media_group_id} | "
+                f"title="
+                f"{forward_source.get('source_title') or '-'} | "
+                f"username="
+                f"{forward_source.get('source_username') or '-'}"
+            )
+
+        already_exists = any(
+            item.get(
+                "file_id"
+            ) == file_id
+
+            for item
+            in group["files"]
+        )
+
+        if not already_exists:
+
+            group["files"].append({
+                "type":
+                    media_type,
+
+                "file_id":
+                    file_id
+            })
+
+            logger.info(
+                f"📸 Media added | "
+                f"group={media_group_id} | "
+                f"type={media_type} | "
+                f"count={len(group['files'])}"
+            )
+
+        else:
+
+            logger.debug(
+                f"ℹ️ Duplicate media ignored | "
+                f"group={media_group_id}"
+            )
+
+        # مهم:
+        # زمان آخرین تغییر فقط زمانی تازه می‌شود
+        # که همین Webhook وارد گروه شده است.
+        #
+        # Timer بعدی از این نقطه محاسبه می‌شود.
+        group[
+            "last_update"
+        ] = time.time()
+
+        if (
+            caption
+            and not group[
+                "caption_received"
+            ]
+        ):
+
+            entities = list(
+                caption_entities
+                or []
+            )
+
+            group[
+                "caption_received"
+            ] = True
+
+            group[
+                "raw_caption"
+            ] = caption
+
+            group[
+                "caption_entities"
+            ] = entities
+
+            try:
+
+                parsed = (
+                    parse_telegram_entities(
+                        caption,
+                        entities
+                    )
+                )
+
+                group[
+                    "main_text"
+                ] = parsed.get(
+                    "main_text",
+                    ""
+                )
+
+                group[
+                    "expandable_blocks"
+                ] = list(
+                    parsed.get(
+                        "expandable_blocks",
+                        []
+                    )
+                    or []
+                )
+
+                group[
+                    "blockquote_blocks"
+                ] = list(
+                    parsed.get(
+                        "blockquote_blocks",
+                        []
+                    )
+                    or []
+                )
+
+                group[
+                    "other_entities"
+                ] = list(
+                    parsed.get(
+                        "other_entities",
+                        []
+                    )
+                    or []
+                )
+
+                logger.info(
+                    f"🧩 Media Group entities parsed | "
+                    f"group={media_group_id} | "
+                    f"entities={len(entities)} | "
+                    f"main={len(group['main_text'])} | "
+                    f"expandable="
+                    f"{len(group['expandable_blocks'])} | "
+                    f"blockquote="
+                    f"{len(group['blockquote_blocks'])} | "
+                    f"other="
+                    f"{len(group['other_entities'])}"
+                )
+
+            except Exception as e:
+
+                logger.exception(
+                    f"❌ Entity parsing failed | "
+                    f"group={media_group_id} | "
+                    f"{e}"
+                )
+
+                group[
+                    "main_text"
+                ] = caption
+
+                group[
+                    "expandable_blocks"
+                ] = []
+
+                group[
+                    "blockquote_blocks"
+                ] = []
+
+                group[
+                    "other_entities"
+                ] = []
+
+# =========================================================
+# REMOVE GROUP
+# =========================================================
+
+def remove_pending_group(
+    media_group_id: str,
+    chat_id: Optional[int] = None
+) -> None:
+
+    with group_lock:
+
+        if chat_id is not None:
+
+            group_key = (
+                chat_id,
+                media_group_id
+            )
+
+            pending_groups.pop(
+                group_key,
+                None
+            )
+
+            timer = group_timers.pop(
+                group_key,
+                None
+            )
+
+            if timer:
+
+                try:
+                    timer.cancel()
+                except Exception:
+                    pass
+
+            return
+
+        keys_to_remove = [
+            key
+            for key
+            in list(
+                pending_groups.keys()
+            )
+            if key[1]
+            == media_group_id
+        ]
+
+        for key in keys_to_remove:
+
+            pending_groups.pop(
+                key,
+                None
+            )
+
+            timer = group_timers.pop(
+                key,
+                None
+            )
+
+            if timer:
+
+                try:
+                    timer.cancel()
+                except Exception:
+                    pass
+
+# =========================================================
+# TELEGRAM POST
+# =========================================================
 
 def telegram_post(
-    method: str,
-    payload: Dict[str, Any],
-    *,
-    connect_timeout: int = TELEGRAM_CONNECT_TIMEOUT,
-    read_timeout: int = TELEGRAM_READ_TIMEOUT
+    endpoint: str,
+    payload: Dict[str, Any]
 ) -> Optional[requests.Response]:
-    """
-    Send one request to Telegram Bot API.
 
-    IMPORTANT:
-    A fresh HTTP connection is intentionally used for every call.
-    No persistent requests.Session is used here.
+    if not API_URL:
 
-    This is especially important for diagnosing the Render
-    sendMediaGroup issue.
-    """
-
-    url = _telegram_endpoint(
-        method
-    )
-
-    started_at = time.monotonic()
-
-    safe_payload = dict(
-        payload or {}
-    )
-
-    # Never dump the complete caption/media content into logs.
-    media_value = safe_payload.get(
-        "media"
-    )
-
-    media_count = 0
-
-    if isinstance(
-        media_value,
-        list
-    ):
-        media_count = len(
-            media_value
+        logger.error(
+            "❌ API_URL is not configured"
         )
 
+        return None
+
+    url = (
+        f"{API_URL}/{endpoint}"
+    )
+
     logger.info(
-        "📡 Telegram API request START | "
-        f"method={method} | "
-        f"chat_id={safe_payload.get('chat_id')} | "
-        f"media_count={media_count} | "
-        f"connect_timeout={connect_timeout} | "
-        f"read_timeout={read_timeout}"
+        f"🌐 Telegram API request | "
+        f"endpoint={endpoint}"
     )
 
     try:
-        #
-        # IMPORTANT:
-        # Do not reuse an HTTP session here.
-        #
-        # Connection: close prevents a stale keep-alive socket
-        # from being reused by the Render worker.
-        #
+
+        payload_preview = json.dumps(
+            payload,
+            ensure_ascii=False,
+            default=str
+        )
+
+        logger.debug(
+            f"📨 Telegram payload | "
+            f"{payload_preview[:1500]}"
+        )
+
+    except Exception as e:
+
+        logger.debug(
+            f"Payload logging error: {e}"
+        )
+
+    try:
+
+        start_time = time.time()
+
         response = requests.post(
             url,
             json=payload,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "Connection": "close"
-            },
             timeout=(
-                connect_timeout,
-                read_timeout
-            ),
-            allow_redirects=False
+                TELEGRAM_CONNECT_TIMEOUT,
+                TELEGRAM_READ_TIMEOUT
+            )
         )
 
         elapsed = (
-            time.monotonic()
-            - started_at
+            time.time()
+            - start_time
         )
 
         logger.info(
-            "📥 Telegram API response RECEIVED | "
-            f"method={method} | "
+            f"📡 Telegram response | "
+            f"endpoint={endpoint} | "
             f"status={response.status_code} | "
-            f"elapsed={elapsed:.3f}s | "
-            f"content_length="
-            f"{len(response.content or b'')}"
+            f"time={elapsed:.2f}s"
         )
 
         return response
 
-    except requests.exceptions.ConnectTimeout:
-        elapsed = (
-            time.monotonic()
-            - started_at
-        )
+    except requests.exceptions.ConnectTimeout as e:
 
         logger.error(
-            "❌ Telegram CONNECT TIMEOUT | "
-            f"method={method} | "
-            f"elapsed={elapsed:.3f}s | "
-            f"timeout={connect_timeout}s"
+            f"⏰ Telegram ConnectTimeout | "
+            f"endpoint={endpoint} | "
+            f"{e}"
         )
 
         return None
 
-    except requests.exceptions.ReadTimeout:
-        elapsed = (
-            time.monotonic()
-            - started_at
-        )
+    except requests.exceptions.ReadTimeout as e:
 
         logger.error(
-            "❌ Telegram READ TIMEOUT | "
-            f"method={method} | "
-            f"elapsed={elapsed:.3f}s | "
-            f"timeout={read_timeout}s"
+            f"⏰ Telegram ReadTimeout | "
+            f"endpoint={endpoint} | "
+            f"{e}"
         )
 
         return None
 
-    except requests.exceptions.ConnectionError as exc:
-        elapsed = (
-            time.monotonic()
-            - started_at
+    except requests.exceptions.Timeout as e:
+
+        logger.error(
+            f"⏰ Telegram Timeout | "
+            f"endpoint={endpoint} | "
+            f"{e}"
         )
+
+        return None
+
+    except requests.exceptions.ConnectionError as e:
+
+        logger.error(
+            f"🔌 Telegram ConnectionError | "
+            f"endpoint={endpoint} | "
+            f"{e}"
+        )
+
+        return None
+
+    except requests.exceptions.RequestException as e:
+
+        logger.error(
+            f"❌ Telegram RequestException | "
+            f"endpoint={endpoint} | "
+            f"{e}"
+        )
+
+        return None
+
+    except Exception as e:
 
         logger.exception(
-            "❌ Telegram CONNECTION ERROR | "
-            f"method={method} | "
-            f"elapsed={elapsed:.3f}s | "
-            f"error={exc}"
+            f"❌ Telegram API error | "
+            f"endpoint={endpoint} | "
+            f"{e}"
         )
 
         return None
 
-    except requests.exceptions.RequestException as exc:
-        elapsed = (
-            time.monotonic()
-            - started_at
-        )
-
-        logger.exception(
-            "❌ Telegram REQUEST ERROR | "
-            f"method={method} | "
-            f"elapsed={elapsed:.3f}s | "
-            f"error={exc}"
-        )
-
-        return None
-
-    except Exception as exc:
-        elapsed = (
-            time.monotonic()
-            - started_at
-        )
-
-        logger.exception(
-            "❌ Telegram UNEXPECTED HTTP ERROR | "
-            f"method={method} | "
-            f"elapsed={elapsed:.3f}s | "
-            f"error={exc}"
-        )
-
-        return None
-
+# =========================================================
+# TELEGRAM RESPONSE CHECK
+# =========================================================
 
 def telegram_response_ok(
-    response: Optional[requests.Response],
-    method: str = ""
+    response: Optional[
+        requests.Response
+    ],
+    endpoint: str
 ) -> bool:
-    """
-    Validate Telegram Bot API response.
-    """
 
     if response is None:
+
         logger.error(
-            "❌ Telegram response missing | "
-            f"method={method or 'UNKNOWN'}"
+            f"❌ No Telegram response | "
+            f"endpoint={endpoint}"
+        )
+
+        return False
+
+    if response.status_code != 200:
+
+        logger.error(
+            f"❌ Telegram HTTP error | "
+            f"endpoint={endpoint} | "
+            f"status={response.status_code} | "
+            f"response={response.text[:2000]}"
         )
 
         return False
 
     try:
+
         data = response.json()
 
-    except Exception:
-        body = (
-            response.text[:1000]
-            if response.text
-            else ""
-        )
+    except Exception as e:
 
         logger.error(
-            "❌ Telegram invalid JSON response | "
-            f"method={method or 'UNKNOWN'} | "
-            f"status={response.status_code} | "
-            f"body={body}"
+            f"❌ Invalid Telegram JSON | "
+            f"endpoint={endpoint} | "
+            f"{e}"
         )
 
         return False
 
-    if (
-        response.status_code != 200
-        or not data.get("ok")
-    ):
-        logger.error(
-            "❌ Telegram API rejected request | "
-            f"method={method or 'UNKNOWN'} | "
-            f"status={response.status_code} | "
-            f"error_code={data.get('error_code')} | "
-            f"description={data.get('description')}"
-        )
+    if data.get(
+        "ok"
+    ) is True:
 
-        return False
+        return True
 
-    logger.info(
-        "✅ Telegram API request successful | "
-        f"method={method or 'UNKNOWN'}"
+    logger.error(
+        f"❌ Telegram API returned error | "
+        f"endpoint={endpoint} | "
+        f"error_code={data.get('error_code')} | "
+        f"description={data.get('description')}"
     )
 
-    return True
+    return False
 
+# =========================================================
+# DEBUG TELEGRAM RETURNED CAPTION ENTITIES
+# =========================================================
 
-# ============================================================
-# MEDIA NORMALIZATION
-# ============================================================
+def debug_telegram_returned_caption_entities(
+    response: Optional[
+        requests.Response
+    ],
+    endpoint: str
+) -> None:
 
-def _normalize_media_info(
-    media_info: Any
-) -> Optional[Dict[str, str]]:
-    """
-    Normalize incoming media information.
-
-    Expected:
-        {
-            "type": "photo",
-            "file_id": "..."
-        }
-
-    video is also supported.
-    """
-
-    if not isinstance(
-        media_info,
-        dict
-    ):
-        return None
-
-    media_type = (
-        media_info.get("type")
-        or media_info.get("media_type")
-        or ""
-    )
-
-    file_id = (
-        media_info.get("file_id")
-        or ""
-    )
-
-    media_type = str(
-        media_type
-    ).strip().lower()
-
-    file_id = str(
-        file_id
-    ).strip()
-
-    if media_type not in (
-        "photo",
-        "video"
-    ):
-        logger.warning(
-            "⚠️ Unsupported media-group type | "
-            f"type={media_type}"
-        )
-
-        return None
-
-    if not file_id:
-        logger.warning(
-            "⚠️ Media Group item has no file_id"
-        )
-
-        return None
-
-    return {
-        "type": media_type,
-        "file_id": file_id
-    }
-
-
-# ============================================================
-# CAPTION
-# ============================================================
-
-def _build_final_caption(
-    caption: str
-) -> str:
-    """
-    Preserve the existing Formatter behavior.
-
-    Branding / advanced entity handling should remain outside
-    this transport-level repair unless already supplied in caption.
-    """
-
-    caption = (
-        caption or ""
-    ).strip()
-
-    if not caption:
-        return ""
+    if response is None:
+        return
 
     try:
-        from core.formatter import format_news
 
-        formatted = format_news(
-            caption
+        data = response.json()
+
+        if data.get(
+            "ok"
+        ) is not True:
+            return
+
+        result = data.get(
+            "result"
         )
 
-        if formatted:
-            return formatted
+        if isinstance(
+            result,
+            list
+        ):
 
-    except Exception as exc:
+            messages = result
+
+        elif isinstance(
+            result,
+            dict
+        ):
+
+            messages = [
+                result
+            ]
+
+        else:
+
+            return
+
+        for index, message in enumerate(
+            messages
+        ):
+
+            if not isinstance(
+                message,
+                dict
+            ):
+                continue
+
+            caption = (
+                message.get(
+                    "caption",
+                    ""
+                )
+                or ""
+            )
+
+            caption_entities = (
+                message.get(
+                    "caption_entities",
+                    []
+                )
+                or []
+            )
+
+            logger.warning(
+                "🔬 TELEGRAM RETURN DEBUG | "
+                f"endpoint={endpoint} | "
+                f"item={index + 1} | "
+                f"message_id="
+                f"{message.get('message_id')} | "
+                f"caption_repr="
+                f"{repr(caption)} | "
+                f"caption_entities="
+                f"{json.dumps(caption_entities, ensure_ascii=False)}"
+            )
+
+    except Exception as e:
+
         logger.exception(
-            "⚠️ Formatter failed inside Media Handler | "
-            f"error={exc}"
+            "❌ Telegram return debug failed | "
+            f"endpoint={endpoint} | "
+            f"{e}"
         )
 
-    return caption
+# =========================================================
+# EXTRACT SINGLE MESSAGE ID
+# =========================================================
 
+def extract_single_message_id(
+    response: Optional[
+        requests.Response
+    ]
+) -> Optional[int]:
 
-# ============================================================
-# SINGLE MEDIA
-# ============================================================
+    if response is None:
+        return None
 
-def _send_single_media(
-    item: Dict[str, str],
-    caption: str = "",
+    try:
+
+        data = response.json()
+
+        result = data.get(
+            "result"
+        )
+
+        if not isinstance(
+            result,
+            dict
+        ):
+
+            return None
+
+        message_id = result.get(
+            "message_id"
+        )
+
+        if (
+            isinstance(message_id, int)
+            and not isinstance(message_id, bool)
+        ):
+
+            return message_id
+
+    except Exception as e:
+
+        logger.warning(
+            f"⚠️ Cannot extract Telegram message_id | "
+            f"{e}"
+        )
+
+    return None
+
+# =========================================================
+# EXTRACT MEDIA GROUP ANCHOR
+# =========================================================
+
+def extract_media_group_message_id(
+    response: Optional[
+        requests.Response
+    ]
+) -> Optional[int]:
+
+    if response is None:
+        return None
+
+    try:
+
+        data = response.json()
+
+        result = data.get(
+            "result"
+        )
+
+        if not isinstance(
+            result,
+            list
+        ):
+
+            return None
+
+        if not result:
+            return None
+
+        first_message = result[0]
+
+        if not isinstance(
+            first_message,
+            dict
+        ):
+
+            return None
+
+        message_id = first_message.get(
+            "message_id"
+        )
+
+        if (
+            isinstance(message_id, int)
+            and not isinstance(message_id, bool)
+        ):
+
+            return message_id
+
+    except Exception as e:
+
+        logger.warning(
+            f"⚠️ Cannot extract Media Group message_id | "
+            f"{e}"
+        )
+
+    return None
+
+# =========================================================
+# SEND TEXT TO TELEGRAM CHANNEL
+# =========================================================
+
+def send_text_to_channel(
+    text: str,
     parse_mode: Optional[str] = None,
-    caption_entities: Optional[List[Dict[str, Any]]] = None
+    reply_to_message_id: Optional[int] = None
 ) -> bool:
-    """
-    Single item received as a Media Group.
-    Uses sendPhoto/sendVideo exactly as before.
-    """
 
-    media_type = item[
-        "type"
-    ]
+    if not text:
+        return True
 
-    file_id = item[
-        "file_id"
-    ]
+    if not CHANNEL_ID:
 
-    if media_type == "photo":
-        method = "sendPhoto"
-        media_key = "photo"
-
-    elif media_type == "video":
-        method = "sendVideo"
-        media_key = "video"
-
-    else:
         logger.error(
-            "❌ Unsupported single media type | "
-            f"type={media_type}"
+            "❌ CHANNEL_ID not configured"
         )
 
         return False
 
     payload: Dict[str, Any] = {
-        "chat_id": CHANNEL_ID,
-        media_key: file_id
+        "chat_id":
+            CHANNEL_ID,
+
+        "text":
+            text
     }
 
-    if caption:
-        payload["caption"] = caption
+    if parse_mode:
 
-    if caption_entities:
-        payload[
-            "caption_entities"
-        ] = caption_entities
-
-    elif parse_mode:
         payload[
             "parse_mode"
         ] = parse_mode
 
-    logger.info(
-        "📤 Single Media Group item | "
-        f"method={method} | "
-        f"type={media_type} | "
-        f"caption_len={len(caption)}"
-    )
+    if (
+        isinstance(
+            reply_to_message_id,
+            int
+        )
+        and not isinstance(
+            reply_to_message_id,
+            bool
+        )
+    ):
+
+        payload[
+            "reply_parameters"
+        ] = {
+            "message_id":
+                reply_to_message_id
+        }
+
+        logger.info(
+            f"↩️ Telegram reply prepared | "
+            f"reply_to={reply_to_message_id}"
+        )
 
     response = telegram_post(
-        method,
+        "sendMessage",
         payload
     )
 
-    return telegram_response_ok(
+    success = telegram_response_ok(
         response,
-        method
+        "sendMessage"
     )
 
+    if success:
 
-# ============================================================
-# MEDIA GROUP PAYLOAD
-# ============================================================
+        logger.info(
+            f"✅ Telegram text sent | "
+            f"length={len(text)} | "
+            f"parse_mode={parse_mode or 'NONE'} | "
+            f"reply_to="
+            f"{reply_to_message_id or '-'}"
+        )
 
-def _build_media_group_payload(
-    items: List[Dict[str, str]],
+    return success
+
+# =========================================================
+# SEND SINGLE MEDIA TO TELEGRAM
+# =========================================================
+
+def send_single_media_to_channel(
+    file_id: str,
+    media_type: str,
     caption: str = "",
     parse_mode: Optional[str] = None,
-    caption_entities: Optional[List[Dict[str, Any]]] = None
-) -> List[Dict[str, Any]]:
-    """
-    Build Telegram InputMedia array.
+    caption_entities: Optional[
+        List[Dict[str, Any]]
+    ] = None
+) -> bool:
 
-    Caption must exist ONLY on the first media item.
-    """
+    set_last_media_message_id(
+        None
+    )
 
-    media: List[
-        Dict[str, Any]
-    ] = []
+    if not API_URL:
 
-    for index, item in enumerate(
-        items
+        logger.error(
+            "❌ API_URL not configured"
+        )
+
+        return False
+
+    if not CHANNEL_ID:
+
+        logger.error(
+            "❌ CHANNEL_ID not configured"
+        )
+
+        return False
+
+    if not file_id:
+
+        logger.error(
+            "❌ file_id is empty"
+        )
+
+        return False
+
+    if media_type == "photo":
+
+        endpoint = "sendPhoto"
+
+        payload: Dict[str, Any] = {
+            "chat_id":
+                CHANNEL_ID,
+
+            "photo":
+                file_id
+        }
+
+    elif media_type == "video":
+
+        endpoint = "sendVideo"
+
+        payload = {
+            "chat_id":
+                CHANNEL_ID,
+
+            "video":
+                file_id
+        }
+
+    else:
+
+        logger.error(
+            f"❌ Unsupported media type | "
+            f"type={media_type}"
+        )
+
+        return False
+
+    if caption:
+
+        payload[
+            "caption"
+        ] = caption
+
+        if caption_entities:
+
+            payload[
+                "caption_entities"
+            ] = caption_entities
+
+        elif parse_mode:
+
+            payload[
+                "parse_mode"
+            ] = parse_mode
+
+    response = telegram_post(
+        endpoint,
+        payload
+    )
+
+    if telegram_response_ok(
+        response,
+        endpoint
     ):
-        media_type = item.get(
+
+        debug_telegram_returned_caption_entities(
+            response,
+            endpoint
+        )
+
+        message_id = (
+            extract_single_message_id(
+                response
+            )
+        )
+
+        set_last_media_message_id(
+            message_id
+        )
+
+        logger.info(
+            f"✅ Single Telegram media sent | "
+            f"type={media_type} | "
+            f"parse_mode="
+            f"{parse_mode or 'NONE'} | "
+            f"caption_entities="
+            f"{len(caption_entities or [])} | "
+            f"message_id="
+            f"{message_id or '-'}"
+        )
+
+        return True
+
+    return False
+
+# =========================================================
+# SEND MEDIA GROUP TO TELEGRAM
+# =========================================================
+
+def send_media_group_to_channel(
+    files: List[
+        Dict[str, str]
+    ],
+    caption: str = "",
+    parse_mode: Optional[str] = None,
+    caption_entities: Optional[
+        List[Dict[str, Any]]
+    ] = None
+) -> bool:
+
+    set_last_media_message_id(
+        None
+    )
+
+    file_count = (
+        len(files)
+        if files
+        else 0
+    )
+
+    logger.info(
+        f"📤 Sending Telegram Media Group | "
+        f"count={file_count}"
+    )
+
+    if not files:
+
+        logger.error(
+            "❌ Media Group files empty"
+        )
+
+        return False
+
+    if not API_URL:
+
+        logger.error(
+            "❌ API_URL not configured"
+        )
+
+        return False
+
+    if not CHANNEL_ID:
+
+        logger.error(
+            "❌ CHANNEL_ID not configured"
+        )
+
+        return False
+
+    if (
+        file_count
+        < TELEGRAM_MEDIA_GROUP_MIN_ITEMS
+    ):
+
+        logger.error(
+            f"❌ Media Group requires at least "
+            f"{TELEGRAM_MEDIA_GROUP_MIN_ITEMS} items | "
+            f"received={file_count}"
+        )
+
+        return False
+
+    if (
+        file_count
+        > TELEGRAM_MEDIA_GROUP_MAX_ITEMS
+    ):
+
+        logger.error(
+            f"❌ Media Group exceeds Telegram limit | "
+            f"count={file_count} | "
+            f"max={TELEGRAM_MEDIA_GROUP_MAX_ITEMS}"
+        )
+
+        return False
+
+    media_group = []
+
+    for index, file in enumerate(
+        files
+    ):
+
+        media_type = file.get(
             "type"
         )
 
-        file_id = item.get(
+        file_id = file.get(
             "file_id"
         )
 
-        if (
-            media_type not in (
-                "photo",
-                "video"
-            )
-            or not file_id
+        if media_type not in (
+            "photo",
+            "video"
         ):
-            continue
 
-        input_media: Dict[str, Any] = {
-            "type": media_type,
-            "media": file_id
+            logger.error(
+                f"❌ Invalid Media Group type | "
+                f"index={index} | "
+                f"type={media_type}"
+            )
+
+            return False
+
+        if not file_id:
+
+            logger.error(
+                f"❌ Empty file_id | "
+                f"index={index}"
+            )
+
+            return False
+
+        media_item: Dict[str, Any] = {
+            "type":
+                media_type,
+
+            "media":
+                file_id
         }
 
         if (
             index == 0
             and caption
         ):
-            input_media[
+
+            media_item[
                 "caption"
             ] = caption
 
             if caption_entities:
-                input_media[
+
+                media_item[
                     "caption_entities"
                 ] = caption_entities
 
             elif parse_mode:
-                input_media[
+
+                media_item[
                     "parse_mode"
                 ] = parse_mode
 
-        media.append(
-            input_media
+        media_group.append(
+            media_item
         )
 
-    return media
+    payload = {
+        "chat_id":
+            CHANNEL_ID,
 
-
-# ============================================================
-# SEND MEDIA GROUP
-# ============================================================
-
-def _send_media_group(
-    items: List[Dict[str, str]],
-    caption: str = "",
-    parse_mode: Optional[str] = None,
-    caption_entities: Optional[List[Dict[str, Any]]] = None
-) -> bool:
-    """
-    Send a real Telegram Media Group.
-
-    IMPORTANT:
-    There is intentionally NO fallback to individual messages.
-    """
-
-    media = _build_media_group_payload(
-        items=items,
-        caption=caption,
-        parse_mode=parse_mode,
-        caption_entities=caption_entities
-    )
-
-    if len(media) < 2:
-        logger.error(
-            "❌ sendMediaGroup requires at least 2 valid items | "
-            f"valid_items={len(media)}"
-        )
-
-        return False
-
-    payload: Dict[
-        str,
-        Any
-    ] = {
-        "chat_id": CHANNEL_ID,
-        "media": media
+        "media":
+            media_group
     }
-
-    #
-    # Serialization probe.
-    #
-    # This happens BEFORE requests.post.
-    # If we see this log in Render, we know JSON serialization
-    # itself is not the point where execution stops.
-    #
-    try:
-        serialized_probe = json.dumps(
-            payload,
-            ensure_ascii=False,
-            separators=(",", ":")
-        )
-
-    except Exception as exc:
-        logger.exception(
-            "❌ sendMediaGroup payload serialization failed | "
-            f"error={exc}"
-        )
-
-        return False
-
-    logger.info(
-        "🧪 sendMediaGroup payload ready | "
-        f"items={len(media)} | "
-        f"payload_bytes="
-        f"{len(serialized_probe.encode('utf-8'))} | "
-        f"caption_len={len(caption)} | "
-        f"parse_mode={parse_mode or 'NONE'} | "
-        f"caption_entities="
-        f"{len(caption_entities or [])}"
-    )
-
-    for index, item in enumerate(
-        media,
-        start=1
-    ):
-        logger.info(
-            "🧩 Media Group item | "
-            f"index={index}/{len(media)} | "
-            f"type={item.get('type')} | "
-            f"has_caption={'caption' in item} | "
-            f"caption_len="
-            f"{len(item.get('caption', ''))}"
-        )
-
-    logger.info(
-        "🚀 sendMediaGroup POST about to start | "
-        f"items={len(media)}"
-    )
 
     response = telegram_post(
         "sendMediaGroup",
-        payload,
-        connect_timeout=TELEGRAM_CONNECT_TIMEOUT,
-        read_timeout=TELEGRAM_READ_TIMEOUT
+        payload
     )
 
-    logger.info(
-        "🏁 sendMediaGroup POST returned to caller | "
-        f"response={'YES' if response is not None else 'NO'}"
-    )
-
-    if not telegram_response_ok(
+    if telegram_response_ok(
         response,
         "sendMediaGroup"
     ):
-        return False
 
-    logger.info(
-        "✅ Telegram Media Group published | "
-        f"items={len(media)}"
-    )
-
-    return True
-
-
-# ============================================================
-# BALE
-# ============================================================
-
-def _forward_album_to_bale(
-    user_id: Any,
-    items: List[Dict[str, str]],
-    caption: str
-) -> None:
-    """
-    Preserve Bale as best-effort.
-
-    Telegram success must not be rolled back if Bale fails.
-    """
-
-    if user_id is None:
-        return
-
-    try:
-        from core.bale_forwarder import (
-            send_to_bale_for_user
+        debug_telegram_returned_caption_entities(
+            response,
+            "sendMediaGroup"
         )
 
-    except Exception as exc:
-        logger.warning(
-            "⚠️ Bale forwarder unavailable | "
-            f"error={exc}"
+        message_id = (
+            extract_media_group_message_id(
+                response
+            )
         )
 
-        return
-
-    try:
-        #
-        # This call is intentionally isolated.
-        #
-        # If the existing Bale forwarder uses another signature,
-        # the TypeError is logged without affecting Telegram.
-        #
-        send_to_bale_for_user(
-            user_id=user_id,
-            media_items=items,
-            caption=caption
+        set_last_media_message_id(
+            message_id
         )
 
         logger.info(
-            "✅ Media Group forwarded to Bale"
-        )
-
-    except TypeError:
-        #
-        # Compatibility with older project signature.
-        #
-        try:
-            send_to_bale_for_user(
-                user_id,
-                items,
-                caption
-            )
-
-            logger.info(
-                "✅ Media Group forwarded to Bale "
-                "| compatibility signature"
-            )
-
-        except Exception as exc:
-            logger.exception(
-                "⚠️ Bale Media Group forwarding failed | "
-                f"error={exc}"
-            )
-
-    except Exception as exc:
-        logger.exception(
-            "⚠️ Bale Media Group forwarding failed | "
-            f"error={exc}"
-        )
-
-
-# ============================================================
-# PROCESS MEDIA GROUP
-# ============================================================
-
-def process_media_group(
-    media_group_id: str
-) -> bool:
-    """
-    Process one collected Telegram media group.
-
-    Critical design:
-    1. Lock
-    2. Mark is_processing
-    3. Snapshot
-    4. Release lock
-    5. Telegram network request
-    6. Cleanup in finally
-    """
-
-    group_id = str(
-        media_group_id
-    )
-
-    logger.info(
-        "⚙️ process_media_group START | "
-        f"group={group_id}"
-    )
-
-    snapshot: Optional[
-        Dict[str, Any]
-    ] = None
-
-    try:
-        with group_lock:
-
-            group = pending_groups.get(
-                group_id
-            )
-
-            if not group:
-                logger.warning(
-                    "⚠️ Media Group not found | "
-                    f"group={group_id}"
-                )
-
-                return False
-
-            if group.get(
-                "is_processing"
-            ):
-                logger.info(
-                    "ℹ️ Media Group already processing | "
-                    f"group={group_id}"
-                )
-
-                return False
-
-            age = (
-                time.monotonic()
-                - group.get(
-                    "last_update",
-                    time.monotonic()
-                )
-            )
-
-            if (
-                age
-                < MEDIA_GROUP_MIN_WAIT
-            ):
-                remaining = (
-                    MEDIA_GROUP_MIN_WAIT
-                    - age
-                )
-
-                logger.info(
-                    "⏳ Media Group minimum wait not reached | "
-                    f"group={group_id} | "
-                    f"remaining={remaining:.3f}s"
-                )
-
-                timer = threading.Timer(
-                    remaining,
-                    process_media_group,
-                    args=(
-                        group_id,
-                    )
-                )
-
-                timer.daemon = True
-
-                old_timer = group_timers.get(
-                    group_id
-                )
-
-                if old_timer:
-                    try:
-                        old_timer.cancel()
-                    except Exception:
-                        pass
-
-                group_timers[
-                    group_id
-                ] = timer
-
-                timer.start()
-
-                return False
-
-            group[
-                "is_processing"
-            ] = True
-
-            #
-            # Snapshot BEFORE releasing lock.
-            #
-            snapshot = {
-                "items": [
-                    dict(item)
-                    for item in group.get(
-                        "items",
-                        []
-                    )
-                ],
-                "caption": (
-                    group.get(
-                        "caption",
-                        ""
-                    )
-                    or ""
-                ),
-                "user_id": group.get(
-                    "user_id"
-                ),
-                "parse_mode": group.get(
-                    "parse_mode"
-                ),
-                "caption_entities": [
-                    dict(entity)
-                    for entity in group.get(
-                        "caption_entities",
-                        []
-                    )
-                ]
-            }
-
-        #
-        # NETWORK OPERATIONS ARE OUTSIDE THE LOCK.
-        #
-        items = snapshot[
-            "items"
-        ]
-
-        caption = snapshot[
-            "caption"
-        ]
-
-        user_id = snapshot[
-            "user_id"
-        ]
-
-        parse_mode = snapshot[
-            "parse_mode"
-        ]
-
-        caption_entities = snapshot[
-            "caption_entities"
-        ]
-
-        logger.info(
-            "📸 Media Group snapshot ready | "
-            f"group={group_id} | "
-            f"items={len(items)} | "
-            f"caption_len={len(caption)} | "
-            f"entities={len(caption_entities)}"
-        )
-
-        if not items:
-            logger.error(
-                "❌ Empty Media Group | "
-                f"group={group_id}"
-            )
-
-            return False
-
-        #
-        # If advanced caption logic already supplied parse_mode /
-        # entities, preserve it.
-        #
-        # Otherwise use existing formatter behavior.
-        #
-        final_caption = caption
-
-        if (
-            not parse_mode
-            and not caption_entities
-        ):
-            final_caption = (
-                _build_final_caption(
-                    caption
-                )
-            )
-
-        #
-        # SINGLE ITEM
-        #
-        if len(items) == 1:
-
-            logger.info(
-                "📤 Media Group contains one item | "
-                f"group={group_id}"
-            )
-
-            success = _send_single_media(
-                item=items[0],
-                caption=final_caption,
-                parse_mode=parse_mode,
-                caption_entities=caption_entities
-            )
-
-        #
-        # REAL MEDIA GROUP
-        #
-        else:
-
-            logger.info(
-                "📤 Real Media Group sending | "
-                f"group={group_id} | "
-                f"items={len(items)}"
-            )
-
-            success = _send_media_group(
-                items=items,
-                caption=final_caption,
-                parse_mode=parse_mode,
-                caption_entities=caption_entities
-            )
-
-        if not success:
-            logger.error(
-                "❌ Telegram Media Group failed | "
-                f"group={group_id}"
-            )
-
-            return False
-
-        logger.info(
-            "✅ Telegram Media Group completed | "
-            f"group={group_id}"
-        )
-
-        #
-        # Bale is executed ONLY after Telegram success.
-        #
-        _forward_album_to_bale(
-            user_id=user_id,
-            items=items,
-            caption=final_caption
+            f"🎯 Telegram Media Group sent | "
+            f"count={len(media_group)} | "
+            f"parse_mode="
+            f"{parse_mode or 'NONE'} | "
+            f"caption_entities="
+            f"{len(caption_entities or [])} | "
+            f"anchor_message_id="
+            f"{message_id or '-'}"
         )
 
         return True
 
-    except Exception as exc:
+    logger.error(
+        "❌ Telegram Media Group failed"
+    )
+
+    logger.error(
+        "🚫 Single-media fallback is disabled"
+    )
+
+    return False
+
+# =========================================================
+# BUILD BRANDING
+# =========================================================
+
+def build_branding_for_user(
+    user_id: int
+) -> str:
+
+    try:
+
+        from core.branding_manager import (
+            get_branding
+        )
+
+        branding = get_branding(
+            user_id
+        )
+
+        parts = []
+
+        hashtag = (
+            branding.get(
+                "hashtag",
+                ""
+            )
+            or ""
+        )
+
+        channel_tag = (
+            branding.get(
+                "channel_tag",
+                ""
+            )
+            or ""
+        )
+
+        if hashtag:
+            parts.append(
+                hashtag
+            )
+
+        if channel_tag:
+            parts.append(
+                channel_tag
+            )
+
+        if parts:
+
+            return "\n".join(
+                parts
+            )
+
+    except Exception as e:
+
+        logger.warning(
+            f"⚠️ Per-user branding unavailable | "
+            f"user={user_id} | "
+            f"{e}"
+        )
+
+    try:
+
+        from core.formatter import (
+            HASHTAG,
+            CHANNEL_TAG
+        )
+
+        parts = []
+
+        if HASHTAG:
+            parts.append(
+                HASHTAG
+            )
+
+        if CHANNEL_TAG:
+            parts.append(
+                CHANNEL_TAG
+            )
+
+        return "\n".join(
+            parts
+        )
+
+    except Exception as e:
+
+        logger.warning(
+            f"⚠️ Formatter branding unavailable | "
+            f"{e}"
+        )
+
+        return ""
+
+# =========================================================
+# SEND ALBUM TO BALE
+# =========================================================
+
+def send_album_to_bale(
+    user_id: int,
+    files: List[
+        Dict[str, str]
+    ],
+    caption: str = ""
+) -> bool:
+
+    if not files:
+
+        logger.error(
+            "❌ Bale album files empty"
+        )
+
+        return False
+
+    try:
+
+        from core.bale_forwarder import (
+            send_media_group_to_bale
+        )
+
+        success = (
+            send_media_group_to_bale(
+                user_id,
+                files,
+                caption
+            )
+        )
+
+        if success:
+
+            logger.info(
+                f"✅ Bale album sent | "
+                f"user={user_id}"
+            )
+
+        else:
+
+            logger.warning(
+                f"⚠️ Bale album failed | "
+                f"user={user_id}"
+            )
+
+        return success
+
+    except Exception as e:
+
         logger.exception(
-            "❌ process_media_group unexpected error | "
-            f"group={group_id} | "
-            f"error={exc}"
+            f"❌ Bale album exception | "
+            f"user={user_id} | "
+            f"{e}"
+        )
+
+        return False
+
+# =========================================================
+# SEND TEXT TO BALE
+# =========================================================
+
+def send_text_to_bale(
+    user_id: int,
+    text: str
+) -> bool:
+
+    if not text:
+        return True
+
+    try:
+
+        from core.bale_forwarder import (
+            send_to_bale_for_user
+        )
+
+        success = (
+            send_to_bale_for_user(
+                user_id,
+                text
+            )
+        )
+
+        if success:
+
+            logger.info(
+                f"✅ Bale text sent | "
+                f"user={user_id} | "
+                f"length={len(text)}"
+            )
+
+        else:
+
+            logger.warning(
+                f"⚠️ Bale text failed | "
+                f"user={user_id}"
+            )
+
+        return success
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Bale text exception | "
+            f"user={user_id} | "
+            f"{e}"
+        )
+
+        return False
+
+# =========================================================
+# EXECUTE TELEGRAM PLAN
+#
+# FINAL ORDER:
+#
+# 1. MEDIA
+# 2. BLOCKQUOTE / EXPANDABLE REPLY
+# 3. FOLLOWUP / BRANDING REPLY
+# =========================================================
+
+def execute_telegram_plan(
+    files: List[
+        Dict[str, str]
+    ],
+    plan: Dict[str, Any]
+) -> bool:
+
+    media_caption = (
+        plan.get(
+            "media_caption",
+            ""
+        )
+        or ""
+    )
+
+    media_parse_mode = (
+        plan.get(
+            "media_parse_mode"
+        )
+        or None
+    )
+
+    media_caption_entities = list(
+        plan.get(
+            "media_caption_entities",
+            []
+        )
+        or []
+    )
+
+    followup_messages = list(
+        plan.get(
+            "followup_messages",
+            []
+        )
+        or []
+    )
+
+    blockquote_messages = list(
+        plan.get(
+            "blockquote_messages",
+            []
+        )
+        or []
+    )
+
+    document_fallback = bool(
+        plan.get(
+            "document_fallback",
+            False
+        )
+    )
+
+    if document_fallback:
+
+        logger.error(
+            "❌ Telegram Publication Plan requested "
+            "document fallback"
+        )
+
+        logger.error(
+            "🚫 Unsafe Telegram media send aborted"
+        )
+
+        return False
+
+    if not files:
+
+        logger.error(
+            "❌ Telegram plan has no media files"
+        )
+
+        return False
+
+    set_last_media_message_id(
+        None
+    )
+
+    # =====================================================
+    # SINGLE MEDIA
+    # =====================================================
+
+    if len(files) == 1:
+
+        file = files[0]
+
+        if media_caption_entities:
+
+            media_success = (
+                send_single_media_to_channel(
+                    file.get(
+                        "file_id"
+                    ),
+                    file.get(
+                        "type"
+                    ),
+                    media_caption,
+                    caption_entities=(
+                        media_caption_entities
+                    )
+                )
+            )
+
+        elif media_parse_mode:
+
+            media_success = (
+                send_single_media_to_channel(
+                    file.get(
+                        "file_id"
+                    ),
+                    file.get(
+                        "type"
+                    ),
+                    media_caption,
+                    parse_mode=(
+                        media_parse_mode
+                    )
+                )
+            )
+
+        else:
+
+            media_success = (
+                send_single_media_to_channel(
+                    file.get(
+                        "file_id"
+                    ),
+                    file.get(
+                        "type"
+                    ),
+                    media_caption
+                )
+            )
+
+    # =====================================================
+    # MEDIA GROUP
+    # =====================================================
+
+    else:
+
+        if media_caption_entities:
+
+            media_success = (
+                send_media_group_to_channel(
+                    files,
+                    media_caption,
+                    caption_entities=(
+                        media_caption_entities
+                    )
+                )
+            )
+
+        elif media_parse_mode:
+
+            media_success = (
+                send_media_group_to_channel(
+                    files,
+                    media_caption,
+                    parse_mode=(
+                        media_parse_mode
+                    )
+                )
+            )
+
+        else:
+
+            media_success = (
+                send_media_group_to_channel(
+                    files,
+                    media_caption
+                )
+            )
+
+    if not media_success:
+
+        logger.error(
+            "❌ Telegram media execution failed"
+        )
+
+        return False
+
+    media_message_id = (
+        get_last_media_message_id()
+    )
+
+    logger.info(
+        f"🔗 Telegram media anchor | "
+        f"message_id={media_message_id or '-'} | "
+        f"blockquote_replies="
+        f"{len(blockquote_messages)} | "
+        f"followups="
+        f"{len(followup_messages)}"
+    )
+
+    # =====================================================
+    # STEP 2
+    # BLOCKQUOTE / EXPANDABLE REPLIES
+    # =====================================================
+
+    for index, html_message in enumerate(
+        blockquote_messages
+    ):
+
+        if media_message_id:
+
+            logger.info(
+                f"🧩 Telegram blockquote reply | "
+                f"index={index + 1} | "
+                f"reply_to={media_message_id}"
+            )
+
+            success = (
+                send_text_to_channel(
+                    html_message,
+                    parse_mode="HTML",
+                    reply_to_message_id=(
+                        media_message_id
+                    )
+                )
+            )
+
+        else:
+
+            logger.warning(
+                f"⚠️ Media message_id unavailable | "
+                f"blockquote will be sent normally | "
+                f"index={index + 1}"
+            )
+
+            success = (
+                send_text_to_channel(
+                    html_message,
+                    parse_mode="HTML"
+                )
+            )
+
+        if not success:
+
+            logger.error(
+                f"❌ Telegram blockquote reply failed | "
+                f"index={index + 1}"
+            )
+
+    # =====================================================
+    # STEP 3
+    # FOLLOWUP / BRANDING REPLIES
+    # =====================================================
+
+    for index, message in enumerate(
+        followup_messages
+    ):
+
+        if media_message_id:
+
+            logger.info(
+                f"🏷️ Telegram follow-up reply | "
+                f"index={index + 1} | "
+                f"reply_to={media_message_id}"
+            )
+
+            success = (
+                send_text_to_channel(
+                    message,
+                    reply_to_message_id=(
+                        media_message_id
+                    )
+                )
+            )
+
+        else:
+
+            logger.warning(
+                f"⚠️ Media message_id unavailable | "
+                f"follow-up will be sent normally | "
+                f"index={index + 1}"
+            )
+
+            success = (
+                send_text_to_channel(
+                    message
+                )
+            )
+
+        if not success:
+
+            logger.error(
+                f"❌ Telegram follow-up failed | "
+                f"index={index + 1}"
+            )
+
+    logger.info(
+        f"✅ Telegram reply chain completed | "
+        f"media={media_message_id or '-'} | "
+        f"blockquote_replies="
+        f"{len(blockquote_messages)} | "
+        f"followup_replies="
+        f"{len(followup_messages)}"
+    )
+
+    return True
+
+# =========================================================
+# EXECUTE BALE PLAN
+# =========================================================
+
+def execute_bale_plan(
+    user_id: int,
+    files: List[
+        Dict[str, str]
+    ],
+    plan: Dict[str, Any]
+) -> bool:
+
+    media_caption = (
+        plan.get(
+            "media_caption",
+            ""
+        )
+        or ""
+    )
+
+    followup_messages = list(
+        plan.get(
+            "followup_messages",
+            []
+        )
+        or []
+    )
+
+    blockquote_messages = list(
+        plan.get(
+            "blockquote_messages",
+            []
+        )
+        or []
+    )
+
+    document_fallback = bool(
+        plan.get(
+            "document_fallback",
+            False
+        )
+    )
+
+    if document_fallback:
+
+        logger.error(
+            "❌ Bale Publication Plan requested "
+            "document fallback"
+        )
+
+        return False
+
+    media_success = (
+        send_album_to_bale(
+            user_id,
+            files,
+            media_caption
+        )
+    )
+
+    if not media_success:
+
+        logger.warning(
+            "⚠️ Bale media execution failed"
+        )
+
+        return False
+
+    for index, message in enumerate(
+        followup_messages
+    ):
+
+        success = send_text_to_bale(
+            user_id,
+            message
+        )
+
+        if not success:
+
+            logger.warning(
+                f"⚠️ Bale follow-up failed | "
+                f"index={index + 1}"
+            )
+
+    for index, message in enumerate(
+        blockquote_messages
+    ):
+
+        success = send_text_to_bale(
+            user_id,
+            message
+        )
+
+        if not success:
+
+            logger.warning(
+                f"⚠️ Bale blockquote failed | "
+                f"index={index + 1}"
+            )
+
+    return True
+
+# =========================================================
+# PROCESS MEDIA GROUP
+# =========================================================
+
+def process_media_group(
+    media_group_id: str,
+    chat_id: int
+) -> bool:
+
+    group_key = (
+        chat_id,
+        media_group_id
+    )
+
+    logger.info(
+        f"🚀 Processing Media Group | "
+        f"group={media_group_id} | "
+        f"chat={chat_id}"
+    )
+
+    with group_lock:
+
+        group = pending_groups.get(
+            group_key
+        )
+
+        if not group:
+
+            logger.warning(
+                f"⚠️ Media Group not found | "
+                f"group={media_group_id}"
+            )
+
+            return False
+
+        if group.get(
+            "is_processing",
+            False
+        ):
+
+            logger.warning(
+                f"⚠️ Media Group already processing | "
+                f"group={media_group_id}"
+            )
+
+            return False
+
+        files = list(
+            group.get(
+                "files",
+                []
+            )
+            or []
+        )
+
+        # =================================================
+        # CRITICAL PROTECTION
+        #
+        # Media Group واقعی نباید با یک فایل پردازش شود.
+        #
+        # در نسخه قبلی اگر Timer زود اجرا می‌شد،
+        # گروه با یک فایل وارد sendMediaGroup می‌شد،
+        # Telegram آن را رد می‌کرد و finally گروه را پاک
+        # می‌کرد.
+        #
+        # حالا در این وضعیت گروه را حفظ می‌کنیم.
+        # =================================================
+
+        if (
+            len(files)
+            < TELEGRAM_MEDIA_GROUP_MIN_ITEMS
+        ):
+
+            logger.warning(
+                f"⏳ Media Group incomplete | "
+                f"group={media_group_id} | "
+                f"files={len(files)} | "
+                f"minimum="
+                f"{TELEGRAM_MEDIA_GROUP_MIN_ITEMS}"
+            )
+
+            return False
+
+        group[
+            "is_processing"
+        ] = True
+
+        raw_main_text = (
+            group.get(
+                "main_text",
+                ""
+            )
+            or ""
+        )
+
+        blockquote_blocks = list(
+            group.get(
+                "blockquote_blocks",
+                []
+            )
+            or []
+        )
+
+        expandable_blocks = list(
+            group.get(
+                "expandable_blocks",
+                []
+            )
+            or []
+        )
+
+        other_entities = list(
+            group.get(
+                "other_entities",
+                []
+            )
+            or []
+        )
+
+        forward_source = dict(
+            group.get(
+                "forward_source",
+                {}
+            )
+            or {}
+        )
+
+    logger.info(
+        f"📦 Media Group snapshot | "
+        f"files={len(files)} | "
+        f"main={len(raw_main_text)} | "
+        f"blockquote={len(blockquote_blocks)} | "
+        f"expandable={len(expandable_blocks)} | "
+        f"other={len(other_entities)} | "
+        f"forwarded="
+        f"{bool(forward_source.get('is_forwarded'))}"
+    )
+
+    try:
+
+        formatted_main_text = ""
+
+        if raw_main_text:
+
+            try:
+
+                source_title = (
+                    forward_source.get(
+                        "source_title",
+                        ""
+                    )
+                    or ""
+                )
+
+                source_username = (
+                    forward_source.get(
+                        "source_username",
+                        ""
+                    )
+                    or ""
+                )
+
+                if (
+                    forward_source.get(
+                        "is_forwarded"
+                    )
+                    and (
+                        source_title
+                        or source_username
+                    )
+                ):
+
+                    logger.info(
+                        f"🧹 Media Group source cleanup | "
+                        f"group={media_group_id} | "
+                        f"title={source_title or '-'} | "
+                        f"username="
+                        f"{source_username or '-'}"
+                    )
+
+                    formatted_main_text = (
+                        format_news(
+                            raw_main_text,
+                            source_title=source_title,
+                            source_username=source_username
+                        )
+                    )
+
+                else:
+
+                    formatted_main_text = (
+                        format_news(
+                            raw_main_text
+                        )
+                    )
+
+            except Exception as e:
+
+                logger.exception(
+                    f"❌ Formatter failed | "
+                    f"group={media_group_id} | "
+                    f"{e}"
+                )
+
+                formatted_main_text = (
+                    raw_main_text
+                )
+
+        branding = (
+            build_branding_for_user(
+                chat_id
+            )
+        )
+
+        logger.info(
+            f"🏷️ Branding prepared | "
+            f"length={len(branding)}"
+        )
+
+        publication_plan: PublicationPlan = (
+            analyze_content(
+                main_text=formatted_main_text,
+                blockquote_blocks=(
+                    blockquote_blocks
+                ),
+                expandable_blocks=(
+                    expandable_blocks
+                ),
+                other_entities=(
+                    other_entities
+                ),
+                branding=branding
+            )
+        )
+
+        telegram_plan = (
+            publication_plan.telegram
+        )
+
+        bale_plan = (
+            publication_plan.bale
+        )
+
+        logger.info(
+            f"📋 Publication Plan received | "
+            f"tg_caption="
+            f"{len(telegram_plan.get('media_caption', ''))} | "
+            f"tg_parse_mode="
+            f"{telegram_plan.get('media_parse_mode') or 'NONE'} | "
+            f"tg_entities="
+            f"{len(telegram_plan.get('media_caption_entities', []))} | "
+            f"tg_followup="
+            f"{len(telegram_plan.get('followup_messages', []))} | "
+            f"tg_blockquote="
+            f"{len(telegram_plan.get('blockquote_messages', []))} | "
+            f"bale_caption="
+            f"{len(bale_plan.get('media_caption', ''))}"
+        )
+
+        logger.info(
+            "📤 Step 1/2 | Execute Telegram Plan"
+        )
+
+        telegram_success = (
+            execute_telegram_plan(
+                files,
+                telegram_plan
+            )
+        )
+
+        if not telegram_success:
+
+            logger.error(
+                "❌ Telegram Publication Plan failed"
+            )
+
+            return False
+
+        logger.info(
+            "✅ Telegram Publication Plan completed"
+        )
+
+        logger.info(
+            "📤 Step 2/2 | Execute Bale Plan"
+        )
+
+        bale_success = (
+            execute_bale_plan(
+                chat_id,
+                files,
+                bale_plan
+            )
+        )
+
+        if bale_success:
+
+            logger.info(
+                "✅ Bale Publication Plan completed"
+            )
+
+        else:
+
+            logger.warning(
+                "⚠️ Telegram succeeded but Bale failed"
+            )
+
+        return True
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Media Group processing error | "
+            f"group={media_group_id} | "
+            f"{e}"
         )
 
         return False
 
     finally:
 
-        with group_lock:
+        # این finally فقط زمانی اجرا می‌شود که گروه
+        # واقعاً وارد مرحله processing شده باشد.
+        #
+        # گروه‌های ناقص قبل از این نقطه return می‌شوند
+        # و بنابراین دیگر حذف نمی‌شوند.
 
-            timer = group_timers.pop(
-                group_id,
-                None
-            )
-
-            if timer:
-                try:
-                    timer.cancel()
-                except Exception:
-                    pass
-
-            pending_groups.pop(
-                group_id,
-                None
-            )
-
-        logger.info(
-            "🧹 Media Group cleaned | "
-            f"group={group_id}"
+        remove_pending_group(
+            media_group_id,
+            chat_id
         )
 
+        logger.info(
+            f"🧹 Media Group cleaned | "
+            f"group={media_group_id}"
+        )
 
-# ============================================================
-# SCHEDULE
-# ============================================================
+# =========================================================
+# SCHEDULE PROCESSING
+# =========================================================
 
-def _schedule_media_group(
-    media_group_id: str
+def schedule_processing(
+    media_group_id: str,
+    chat_id: int,
+    delay: float = MEDIA_GROUP_DELAY
 ) -> None:
 
-    group_id = str(
+    group_key = (
+        chat_id,
         media_group_id
     )
 
-    old_timer = group_timers.get(
-        group_id
-    )
+    with group_lock:
 
-    if old_timer:
-        try:
-            old_timer.cancel()
-        except Exception:
-            pass
-
-    timer = threading.Timer(
-        MEDIA_GROUP_DELAY,
-        process_media_group,
-        args=(
-            group_id,
+        group = pending_groups.get(
+            group_key
         )
-    )
 
-    #
-    # Do not keep the Gunicorn worker alive solely
-    # because a Timer object exists.
-    #
-    timer.daemon = True
+        if not group:
 
-    group_timers[
-        group_id
-    ] = timer
+            logger.warning(
+                f"⚠️ Cannot schedule missing Media Group | "
+                f"group={media_group_id}"
+            )
 
-    timer.start()
+            return
 
-    logger.info(
-        "⏱️ Media Group scheduled | "
-        f"group={group_id} | "
-        f"delay={MEDIA_GROUP_DELAY}s"
-    )
+        if group.get(
+            "is_processing",
+            False
+        ):
 
+            logger.debug(
+                f"ℹ️ Media Group already processing | "
+                f"group={media_group_id}"
+            )
 
-# ============================================================
-# HANDLE MEDIA GROUP
-# ============================================================
+            return
 
-def handle_media_group_message(
+        old_timer = group_timers.get(
+            group_key
+        )
+
+        if old_timer:
+
+            try:
+                old_timer.cancel()
+            except Exception:
+                pass
+
+        current_generation = (
+            int(
+                group.get(
+                    "timer_generation",
+                    0
+                )
+                or 0
+            )
+            + 1
+        )
+
+        group[
+            "timer_generation"
+        ] = current_generation
+
+        timer = threading.Timer(
+            delay,
+            _scheduled_process,
+            args=(
+                media_group_id,
+                chat_id,
+                current_generation
+            )
+        )
+
+        timer.daemon = True
+
+        group_timers[
+            group_key
+        ] = timer
+
+        timer.start()
+
+        logger.info(
+            f"⏱️ Media Group scheduled | "
+            f"group={media_group_id} | "
+            f"delay={delay:.2f}s | "
+            f"generation={current_generation} | "
+            f"files={len(group.get('files', []))}"
+        )
+
+# =========================================================
+# SCHEDULED PROCESS
+# =========================================================
+
+def _scheduled_process(
     media_group_id: str,
-    media_info: Optional[Dict[str, Any]] = None,
-    caption: str = "",
-    user_id: Any = None,
-    caption_entities: Optional[List[Dict[str, Any]]] = None,
-    parse_mode: Optional[str] = None,
-    **kwargs
-) -> bool:
-    """
-    Add an item to pending Media Group.
+    chat_id: int,
+    timer_generation: Optional[int] = None
+) -> None:
 
-    Current preferred call:
+    group_key = (
+        chat_id,
+        media_group_id
+    )
 
-        handle_media_group_message(
-            media_group_id=...,
-            media_info={
-                "type": "photo",
-                "file_id": "..."
-            },
-            caption=...,
-            user_id=...,
-            caption_entities=...
-        )
-    """
+    with group_lock:
 
-    if not media_group_id:
-        logger.error(
-            "❌ media_group_id missing"
+        group = pending_groups.get(
+            group_key
         )
 
-        return False
+        if not group:
 
-    #
-    # Compatibility aliases.
-    #
-    if media_info is None:
-
-        media_type = (
-            kwargs.get(
-                "media_type"
+            logger.warning(
+                f"⚠️ Media Group not found at timer | "
+                f"group={media_group_id}"
             )
-            or kwargs.get(
-                "type"
+
+            return
+
+        if group.get(
+            "is_processing",
+            False
+        ):
+
+            logger.debug(
+                f"ℹ️ Media Group already processing "
+                f"at timer | "
+                f"group={media_group_id}"
             )
+
+            return
+
+        current_generation = int(
+            group.get(
+                "timer_generation",
+                0
+            )
+            or 0
         )
 
-        file_id = kwargs.get(
-            "file_id"
-        )
+        # =================================================
+        # STALE TIMER PROTECTION
+        #
+        # Timer قدیمی که قبل از ورود عضو جدید ساخته شده،
+        # دیگر اجازه پردازش گروه را ندارد.
+        # =================================================
 
         if (
-            media_type
-            and file_id
+            timer_generation is not None
+            and timer_generation
+            != current_generation
         ):
-            media_info = {
-                "type": media_type,
-                "file_id": file_id
-            }
 
-    if not caption:
-        caption = (
-            kwargs.get(
-                "text"
+            logger.info(
+                f"🛑 Stale Media Group timer ignored | "
+                f"group={media_group_id} | "
+                f"timer_generation="
+                f"{timer_generation} | "
+                f"current_generation="
+                f"{current_generation}"
             )
-            or kwargs.get(
-                "caption"
+
+            return
+
+        last_update = float(
+            group.get(
+                "last_update",
+                0
             )
-            or ""
+            or 0
         )
 
-    if user_id is None:
-        user_id = (
-            kwargs.get(
-                "telegram_user_id"
-            )
-            or kwargs.get(
-                "chat_id"
-            )
-            or kwargs.get(
-                "user_id"
-            )
+        elapsed = (
+            time.time()
+            - last_update
         )
 
-    if caption_entities is None:
-        caption_entities = (
-            kwargs.get(
-                "entities"
-            )
-            or kwargs.get(
-                "caption_entities"
+        file_count = len(
+            group.get(
+                "files",
+                []
             )
             or []
         )
 
-    if parse_mode is None:
-        parse_mode = kwargs.get(
-            "parse_mode"
+    # =====================================================
+    # SETTLE PROTECTION
+    #
+    # باید MEDIA_GROUP_DELAY کامل از آخرین عضو گذشته باشد.
+    #
+    # در نسخه قبلی فقط MEDIA_GROUP_MIN_WAIT بررسی می‌شد
+    # و Timer قدیمی می‌توانست زودتر گروه را Process کند.
+    # =====================================================
+
+    if (
+        elapsed
+        < MEDIA_GROUP_DELAY
+    ):
+
+        remaining = (
+            MEDIA_GROUP_DELAY
+            - elapsed
         )
 
-    normalized = (
-        _normalize_media_info(
-            media_info
+        next_delay = max(
+            remaining,
+            0.5
+        )
+
+        logger.info(
+            f"⏳ Media Group still receiving | "
+            f"group={media_group_id} | "
+            f"elapsed={elapsed:.2f}s | "
+            f"wait_more={next_delay:.2f}s | "
+            f"files={file_count}"
+        )
+
+        schedule_processing(
+            media_group_id,
+            chat_id,
+            delay=next_delay
+        )
+
+        return
+
+    # =====================================================
+    # MINIMUM ITEM PROTECTION
+    #
+    # اگر هنوز فقط یک عضو دریافت شده، گروه را پاک نمی‌کنیم.
+    # Telegram Media Group حداقل دو عضو دارد.
+    # =====================================================
+
+    if (
+        file_count
+        < TELEGRAM_MEDIA_GROUP_MIN_ITEMS
+    ):
+
+        logger.warning(
+            f"⏳ Media Group waiting for more items | "
+            f"group={media_group_id} | "
+            f"files={file_count} | "
+            f"minimum="
+            f"{TELEGRAM_MEDIA_GROUP_MIN_ITEMS}"
+        )
+
+        schedule_processing(
+            media_group_id,
+            chat_id,
+            delay=(
+                MEDIA_GROUP_INCOMPLETE_RETRY_DELAY
+            )
+        )
+
+        return
+
+    # =====================================================
+    # READY
+    # =====================================================
+
+    logger.info(
+        f"✅ Media Group settled | "
+        f"group={media_group_id} | "
+        f"files={file_count} | "
+        f"elapsed={elapsed:.2f}s"
+    )
+
+    process_media_group(
+        media_group_id,
+        chat_id
+    )
+
+# =========================================================
+# HANDLE MEDIA GROUP MESSAGE
+# =========================================================
+
+def handle_media_group_message(
+    message: Dict[str, Any],
+    file_id: str,
+    media_type: str,
+    caption: str = "",
+    caption_entities: Optional[
+        List[Dict[str, Any]]
+    ] = None
+) -> bool:
+
+    media_group_id = message.get(
+        "media_group_id"
+    )
+
+    if not media_group_id:
+
+        logger.warning(
+            "⚠️ media_group_id not found"
+        )
+
+        return False
+
+    chat_id = (
+        message
+        .get(
+            "chat",
+            {}
+        )
+        .get(
+            "id"
         )
     )
 
-    if not normalized:
+    if chat_id is None:
+
         logger.error(
-            "❌ Invalid Media Group item | "
+            "❌ chat_id not found"
+        )
+
+        return False
+
+    if not file_id:
+
+        logger.error(
+            f"❌ Media Group file_id missing | "
             f"group={media_group_id}"
         )
 
         return False
 
-    group_id = str(
-        media_group_id
+    if media_type not in (
+        "photo",
+        "video"
+    ):
+
+        logger.error(
+            f"❌ Unsupported Media Group type | "
+            f"group={media_group_id} | "
+            f"type={media_type}"
+        )
+
+        return False
+
+    if caption_entities is None:
+
+        caption_entities = (
+            message.get(
+                "caption_entities",
+                []
+            )
+            or []
+        )
+
+    forward_source = (
+        message.get(
+            "_forward_source"
+        )
+        or {}
     )
 
-    file_id = normalized[
-        "file_id"
-    ]
+    logger.info(
+        f"🖼️ Media Group message | "
+        f"group={media_group_id} | "
+        f"type={media_type} | "
+        f"caption={bool(caption)} | "
+        f"entities={len(caption_entities)} | "
+        f"forwarded="
+        f"{bool(forward_source.get('is_forwarded'))}"
+    )
 
-    now = time.monotonic()
+    if (
+        forward_source
+        and forward_source.get(
+            "is_forwarded"
+        )
+    ):
 
-    with group_lock:
-
-        group = pending_groups.get(
-            group_id
+        add_to_pending_group(
+            media_group_id,
+            chat_id,
+            file_id,
+            media_type,
+            caption,
+            caption_entities,
+            forward_source=(
+                forward_source
+            )
         )
 
-        if group is None:
+    else:
 
-            group = {
-                "items": [],
-                "caption": "",
-                "user_id": user_id,
-                "caption_entities": [],
-                "parse_mode": parse_mode,
-                "last_update": now,
-                "is_processing": False
-            }
-
-            pending_groups[
-                group_id
-            ] = group
-
-            logger.info(
-                "🆕 Media Group created | "
-                f"group={group_id}"
-            )
-
-        if group.get(
-            "is_processing"
-        ):
-            logger.warning(
-                "⚠️ Media arrived after processing started | "
-                f"group={group_id}"
-            )
-
-            return False
-
-        #
-        # Prevent duplicate file_id.
-        #
-        duplicate = any(
-            item.get(
-                "file_id"
-            )
-            == file_id
-
-            for item
-            in group[
-                "items"
-            ]
+        add_to_pending_group(
+            media_group_id,
+            chat_id,
+            file_id,
+            media_type,
+            caption,
+            caption_entities
         )
 
-        if duplicate:
-            logger.info(
-                "ℹ️ Duplicate Media Group item ignored | "
-                f"group={group_id} | "
-                f"file_id={file_id[:16]}..."
-            )
-
-            group[
-                "last_update"
-            ] = now
-
-            _schedule_media_group(
-                group_id
-            )
-
-            return True
-
-        group[
-            "items"
-        ].append(
-            normalized
-        )
-
-        #
-        # Telegram normally includes caption only on
-        # one item of an album.
-        #
-        if (
-            caption
-            and not group.get(
-                "caption"
-            )
-        ):
-            group[
-                "caption"
-            ] = caption
-
-            group[
-                "caption_entities"
-            ] = list(
-                caption_entities
-                or []
-            )
-
-            group[
-                "parse_mode"
-            ] = parse_mode
-
-        if (
-            user_id is not None
-            and group.get(
-                "user_id"
-            ) is None
-        ):
-            group[
-                "user_id"
-            ] = user_id
-
-        group[
-            "last_update"
-        ] = now
-
-        item_count = len(
-            group[
-                "items"
-            ]
-        )
-
-        logger.info(
-            "➕ Media Group item added | "
-            f"group={group_id} | "
-            f"items={item_count} | "
-            f"type={normalized['type']} | "
-            f"has_caption={bool(caption)}"
-        )
-
-        #
-        # Schedule AFTER the most recent media item.
-        #
-        _schedule_media_group(
-            group_id
-        )
+    # هر عضو جدید Timer قبلی را باطل می‌کند
+    # و زمان انتظار از آخرین عضو دوباره آغاز می‌شود.
+    schedule_processing(
+        media_group_id,
+        chat_id,
+        delay=MEDIA_GROUP_DELAY
+    )
 
     return True
-
-
-# ============================================================
-# DEBUG STATE
-# ============================================================
-
-def get_pending_groups_count() -> int:
-
-    with group_lock:
-        return len(
-            pending_groups
-        )
-
-
-def get_pending_group_snapshot(
-    media_group_id: str
-) -> Optional[Dict[str, Any]]:
-
-    group_id = str(
-        media_group_id
-    )
-
-    with group_lock:
-
-        group = pending_groups.get(
-            group_id
-        )
-
-        if not group:
-            return None
-
-        return {
-            "items": [
-                dict(item)
-                for item in group.get(
-                    "items",
-                    []
-                )
-            ],
-            "caption": group.get(
-                "caption",
-                ""
-            ),
-            "user_id": group.get(
-                "user_id"
-            ),
-            "caption_entities": [
-                dict(entity)
-                for entity in group.get(
-                    "caption_entities",
-                    []
-                )
-            ],
-            "parse_mode": group.get(
-                "parse_mode"
-            ),
-            "last_update": group.get(
-                "last_update"
-            ),
-            "is_processing": group.get(
-                "is_processing",
-                False
-            )
-        }
