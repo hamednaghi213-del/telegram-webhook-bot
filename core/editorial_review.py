@@ -95,6 +95,17 @@ MIN_ADMIN_INSTRUCTION_TARGET = 300
 CERTAINTY_RETRY_ENABLED = True
 LENGTH_RETRY_ENABLED = True
 
+# اگر مدل فقط کمی بیشتر از سقف خروجی بدهد،
+# یک بار دیگر با هدف پایین‌تر بازتولید می‌کنیم.
+OVERFLOW_RETRY_ENABLED = True
+
+# میزان فاصله هدف Retry از سقف نهایی.
+# مثال:
+# final target = 1059
+# minimum safe = 979
+# retry target ≈ 979
+OVERFLOW_RETRY_MARGIN = 80
+
 
 # =========================================================
 # RESULT OBJECT
@@ -174,7 +185,9 @@ def parse_editorial_classification(
     value: Optional[str]
 ) -> str:
 
-    value = normalize_text(value).upper()
+    value = normalize_text(
+        value
+    ).upper()
 
     if not value:
         return CONTENT_TYPE_UNCERTAIN
@@ -208,7 +221,9 @@ def classify_editorial_content(
     ] = None
 ) -> str:
 
-    original_text = normalize_text(original_text)
+    original_text = normalize_text(
+        original_text
+    )
 
     if not original_text:
         return CONTENT_TYPE_UNCERTAIN
@@ -226,7 +241,9 @@ def classify_editorial_content(
 
         classifier = summarize_with_gemini
 
-    instruction = build_editorial_classification_instruction()
+    instruction = (
+        build_editorial_classification_instruction()
+    )
 
     try:
 
@@ -244,8 +261,10 @@ def classify_editorial_content(
 
         return CONTENT_TYPE_UNCERTAIN
 
-    content_type = parse_editorial_classification(
-        response
+    content_type = (
+        parse_editorial_classification(
+            response
+        )
     )
 
     logger.info(
@@ -264,16 +283,36 @@ def get_review_max_reduction_ratio(
     content_type: str
 ) -> float:
 
-    if content_type == CONTENT_TYPE_OPINION_NOTE:
-        return OPINION_NOTE_MAX_REDUCTION_RATIO
+    if (
+        content_type
+        == CONTENT_TYPE_OPINION_NOTE
+    ):
 
-    if content_type == CONTENT_TYPE_NEWS_ANALYSIS:
-        return NEWS_ANALYSIS_MAX_REDUCTION_RATIO
+        return (
+            OPINION_NOTE_MAX_REDUCTION_RATIO
+        )
 
-    if content_type == CONTENT_TYPE_SENSITIVE:
-        return SENSITIVE_MAX_REDUCTION_RATIO
+    if (
+        content_type
+        == CONTENT_TYPE_NEWS_ANALYSIS
+    ):
 
-    return UNCERTAIN_MAX_REDUCTION_RATIO
+        return (
+            NEWS_ANALYSIS_MAX_REDUCTION_RATIO
+        )
+
+    if (
+        content_type
+        == CONTENT_TYPE_SENSITIVE
+    ):
+
+        return (
+            SENSITIVE_MAX_REDUCTION_RATIO
+        )
+
+    return (
+        UNCERTAIN_MAX_REDUCTION_RATIO
+    )
 
 
 # =========================================================
@@ -328,7 +367,9 @@ def resolve_effective_target(
 
     requested_target = max(
         1,
-        int(requested_target)
+        int(
+            requested_target
+        )
     )
 
     minimum_safe = (
@@ -440,8 +481,8 @@ def build_editorial_summary_instruction(
     )
 
     length_instruction = (
-        f"متن خلاصه بدنه باید حداکثر {target_length} "
-        "کاراکتر باشد. "
+        f"متن خلاصه بدنه باید حداکثر "
+        f"{target_length} کاراکتر باشد. "
     )
 
     if minimum_length > 0:
@@ -459,7 +500,10 @@ def build_editorial_summary_instruction(
         "بی‌دلیل متن را بسیار کوتاه‌تر از سقف تعیین‌شده نساز. "
     )
 
-    if content_type == CONTENT_TYPE_OPINION_NOTE:
+    if (
+        content_type
+        == CONTENT_TYPE_OPINION_NOTE
+    ):
 
         return (
             "متن زیر بدنه کامل یک یادداشت یا سرمقاله تحلیلی است. "
@@ -501,7 +545,10 @@ def build_editorial_summary_instruction(
             "فقط متن خلاصه‌شده بدنه را برگردان."
         )
 
-    if content_type == CONTENT_TYPE_NEWS_ANALYSIS:
+    if (
+        content_type
+        == CONTENT_TYPE_NEWS_ANALYSIS
+    ):
 
         return (
             "متن زیر بدنه کامل یک تحلیل خبری است. "
@@ -636,6 +683,65 @@ def build_length_retry_instruction(
 
 
 # =========================================================
+# OVERFLOW RETRY INSTRUCTION
+#
+# وقتی مدل فقط به دلیل عبور از سقف رد شده باشد،
+# کل خلاصه را دور نمی‌اندازیم.
+#
+# مدل متن اصلی را دوباره می‌بیند و یک نسخه کمی
+# فشرده‌تر می‌سازد.
+# =========================================================
+
+def build_overflow_retry_instruction(
+    target_length: int,
+    final_limit: int,
+    minimum_length: int,
+    content_type: str
+) -> str:
+
+    base_instruction = (
+        build_editorial_summary_instruction(
+            target_length=target_length,
+            content_type=content_type,
+            minimum_length=minimum_length
+        )
+    )
+
+    return (
+        base_instruction
+        + " "
+
+        "نسخه قبلی از نظر محتوایی قابل بررسی بود اما "
+        "از سقف فنی طول عبور کرد. "
+
+        "این بار متن اصلی را دوباره از ابتدا تا انتها "
+        "بررسی کن و نسخه‌ای کمی فشرده‌تر تولید کن. "
+
+        f"هدف تولید را حدود {target_length} کاراکتر در نظر بگیر "
+        f"و تحت هیچ شرایطی از سقف نهایی {final_limit} "
+        "کاراکتر عبور نکن. "
+
+        "برای کوتاه‌تر شدن متن، ابتدا تکرارها، توضیحات مشابه، "
+        "عبارات کش‌دار، مثال‌های فرعی و جزئیات کم‌اهمیت را "
+        "فشرده یا حذف کن. "
+
+        "تز اصلی، استدلال‌های اصلی، علت و نتیجه، بازیگران، "
+        "پیامدها و جمع‌بندی مهم متن را حفظ کن. "
+
+        "میزان قطعیت و انتساب دیدگاه‌ها را تغییر نده. "
+
+        "هیچ واقعیت، نام، عدد، تاریخ، تحلیل یا نتیجه تازه‌ای "
+        "از خودت اضافه نکن. "
+
+        f"نسخه نهایی نباید کمتر از {minimum_length} کاراکتر "
+        "باشد مگر اینکه متن اصلی برای رسیدن به این مقدار "
+        "ظرفیت محتوایی نداشته باشد. "
+
+        "فقط متن خلاصه‌شده نهایی را برگردان."
+    )
+
+
+# =========================================================
 # REGENERATION INSTRUCTION
 # =========================================================
 
@@ -650,7 +756,10 @@ def build_editorial_regeneration_instruction(
         previous_summary
     )
 
-    if content_type == CONTENT_TYPE_OPINION_NOTE:
+    if (
+        content_type
+        == CONTENT_TYPE_OPINION_NOTE
+    ):
 
         type_instruction = (
             "متن اصلی بدنه کامل یک یادداشت یا سرمقاله تحلیلی است. "
@@ -658,7 +767,10 @@ def build_editorial_regeneration_instruction(
             "و نتیجه اصلی باید از سراسر متن استخراج و حفظ شوند. "
         )
 
-    elif content_type == CONTENT_TYPE_NEWS_ANALYSIS:
+    elif (
+        content_type
+        == CONTENT_TYPE_NEWS_ANALYSIS
+    ):
 
         type_instruction = (
             "متن اصلی بدنه کامل یک تحلیل خبری است. "
@@ -764,14 +876,20 @@ def build_admin_edit_instruction(
         previous_summary
     )
 
-    if content_type == CONTENT_TYPE_OPINION_NOTE:
+    if (
+        content_type
+        == CONTENT_TYPE_OPINION_NOTE
+    ):
 
         type_context = (
             "متن اصلی یک یادداشت یا سرمقاله تحلیلی است. "
             "تز نویسنده، منطق استدلال و نتیجه اصلی باید حفظ شوند. "
         )
 
-    elif content_type == CONTENT_TYPE_NEWS_ANALYSIS:
+    elif (
+        content_type
+        == CONTENT_TYPE_NEWS_ANALYSIS
+    ):
 
         type_context = (
             "متن اصلی یک تحلیل خبری است. "
@@ -914,6 +1032,7 @@ def resolve_summarizer(
 ]:
 
     if summarizer is not None:
+
         return summarizer
 
     if not gemini_provider_configured():
@@ -969,6 +1088,7 @@ def get_validation_errors(
 ) -> set:
 
     if not validation:
+
         return set()
 
     return set(
@@ -996,17 +1116,36 @@ def only_certainty_validation_error(
     )
 
 
+def only_overflow_validation_error(
+    validation: Optional[
+        Dict[str, Any]
+    ]
+) -> bool:
+
+    return (
+        get_validation_errors(
+            validation
+        )
+        == {
+            "summary_exceeds_target"
+        }
+    )
+
+
 def can_length_retry_validation(
     validation: Optional[
         Dict[str, Any]
     ]
 ) -> bool:
 
-    errors = get_validation_errors(
-        validation
+    errors = (
+        get_validation_errors(
+            validation
+        )
     )
 
     if not errors:
+
         return False
 
     return errors.issubset({
@@ -1045,17 +1184,36 @@ def generate_editorial_candidate(
     except Exception as e:
 
         logger.exception(
-            f"❌ Editorial AI generation failed | {e}"
+            f"❌ Editorial AI generation failed | "
+            f"{e}"
         )
 
         return {
-            "success": False,
-            "candidate": "",
-            "validation": None,
-            "reason": "provider_error",
-            "error": str(e),
-            "certainty_retry_called": False,
-            "length_retry_called": False
+            "success":
+                False,
+
+            "candidate":
+                "",
+
+            "validation":
+                None,
+
+            "reason":
+                "provider_error",
+
+            "error":
+                str(
+                    e
+                ),
+
+            "certainty_retry_called":
+                False,
+
+            "length_retry_called":
+                False,
+
+            "overflow_retry_called":
+                False
         }
 
     candidate = normalize_text(
@@ -1071,16 +1229,438 @@ def generate_editorial_candidate(
         )
     )
 
-    if validation["valid"]:
+    if validation[
+        "valid"
+    ]:
 
         return {
-            "success": True,
-            "candidate": candidate,
-            "validation": validation,
-            "reason": "accepted",
-            "error": None,
-            "certainty_retry_called": False,
-            "length_retry_called": False
+            "success":
+                True,
+
+            "candidate":
+                candidate,
+
+            "validation":
+                validation,
+
+            "reason":
+                "accepted",
+
+            "error":
+                None,
+
+            "certainty_retry_called":
+                False,
+
+            "length_retry_called":
+                False,
+
+            "overflow_retry_called":
+                False
+        }
+
+    # =====================================================
+    # OVERFLOW RETRY
+    #
+    # مثال واقعی:
+    #
+    # target = 1059
+    # Gemini = 1103
+    #
+    # قبلاً خلاصه کامل رد می‌شد.
+    #
+    # اکنون اگر تنها ایراد summary_exceeds_target باشد،
+    # یک بار دیگر با هدف پایین‌تر بازتولید می‌کنیم.
+    # =====================================================
+
+    can_retry_overflow = (
+        OVERFLOW_RETRY_ENABLED
+        and content_type
+        in (
+            CONTENT_TYPE_OPINION_NOTE,
+            CONTENT_TYPE_NEWS_ANALYSIS,
+        )
+        and only_overflow_validation_error(
+            validation
+        )
+    )
+
+    if can_retry_overflow:
+
+        overflow_target = (
+            target_length
+            - OVERFLOW_RETRY_MARGIN
+        )
+
+        if minimum_length > 0:
+
+            overflow_target = max(
+                minimum_length,
+                overflow_target
+            )
+
+        overflow_target = max(
+            1,
+            overflow_target
+        )
+
+        overflow_target = min(
+            overflow_target,
+            target_length
+        )
+
+        logger.info(
+            f"📐 Editorial overflow retry | "
+            f"type={content_type} | "
+            f"first_output={len(candidate)} | "
+            f"final_limit={target_length} | "
+            f"retry_target={overflow_target} | "
+            f"minimum={minimum_length}"
+        )
+
+        overflow_instruction = (
+            build_overflow_retry_instruction(
+                target_length=(
+                    overflow_target
+                ),
+                final_limit=(
+                    target_length
+                ),
+                minimum_length=(
+                    minimum_length
+                ),
+                content_type=(
+                    content_type
+                )
+            )
+        )
+
+        try:
+
+            overflow_candidate = (
+                summarizer(
+                    original_text,
+                    overflow_instruction,
+                    overflow_target
+                )
+            )
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Editorial overflow retry failed | "
+                f"{e}"
+            )
+
+            return {
+                "success":
+                    False,
+
+                "candidate":
+                    candidate,
+
+                "validation":
+                    validation,
+
+                "reason":
+                    "overflow_retry_provider_error",
+
+                "error":
+                    str(
+                        e
+                    ),
+
+                "certainty_retry_called":
+                    False,
+
+                "length_retry_called":
+                    False,
+
+                "overflow_retry_called":
+                    True,
+
+                "first_candidate":
+                    candidate,
+
+                "first_validation":
+                    validation,
+
+                "overflow_target":
+                    overflow_target
+            }
+
+        overflow_candidate = normalize_text(
+            overflow_candidate
+        )
+
+        # مهم:
+        # Validator با سقف نهایی اصلی اجرا می‌شود،
+        # نه سقف کوچک‌تر Retry.
+        #
+        # بنابراین اگر Gemini مثلاً target=979 گرفته ولی
+        # خروجی 1010 داده باشد، هنوز چون از final=1059
+        # کمتر است می‌تواند معتبر باشد.
+        overflow_validation = (
+            validate_editorial_candidate(
+                original_text=original_text,
+                candidate_text=(
+                    overflow_candidate
+                ),
+                target_length=(
+                    target_length
+                ),
+                content_type=(
+                    content_type
+                )
+            )
+        )
+
+        if overflow_validation[
+            "valid"
+        ]:
+
+            logger.info(
+                f"✅ Editorial overflow retry accepted | "
+                f"type={content_type} | "
+                f"first={len(candidate)} | "
+                f"final={len(overflow_candidate)} | "
+                f"retry_target={overflow_target} | "
+                f"final_limit={target_length}"
+            )
+
+            return {
+                "success":
+                    True,
+
+                "candidate":
+                    overflow_candidate,
+
+                "validation":
+                    overflow_validation,
+
+                "reason":
+                    "accepted_after_overflow_retry",
+
+                "error":
+                    None,
+
+                "certainty_retry_called":
+                    False,
+
+                "length_retry_called":
+                    False,
+
+                "overflow_retry_called":
+                    True,
+
+                "first_candidate":
+                    candidate,
+
+                "first_validation":
+                    validation,
+
+                "overflow_target":
+                    overflow_target
+            }
+
+        # اگر Retry طولی، متن را بیش از حد کوتاه کرد،
+        # مسیر موجود LENGTH RETRY اجازه دارد اصلاحش کند.
+        if (
+            LENGTH_RETRY_ENABLED
+            and minimum_length > 0
+            and can_length_retry_validation(
+                overflow_validation
+            )
+        ):
+
+            logger.info(
+                f"📏 Editorial length retry "
+                f"after overflow | "
+                f"type={content_type} | "
+                f"output={len(overflow_candidate)} | "
+                f"minimum={minimum_length} | "
+                f"target={target_length}"
+            )
+
+            length_instruction = (
+                build_length_retry_instruction(
+                    target_length=(
+                        target_length
+                    ),
+                    minimum_length=(
+                        minimum_length
+                    ),
+                    content_type=(
+                        content_type
+                    )
+                )
+            )
+
+            try:
+
+                length_candidate = (
+                    summarizer(
+                        original_text,
+                        length_instruction,
+                        target_length
+                    )
+                )
+
+            except Exception as e:
+
+                logger.exception(
+                    f"❌ Editorial length retry "
+                    f"after overflow failed | {e}"
+                )
+
+                return {
+                    "success":
+                        False,
+
+                    "candidate":
+                        overflow_candidate,
+
+                    "validation":
+                        overflow_validation,
+
+                    "reason":
+                        "length_retry_provider_error",
+
+                    "error":
+                        str(
+                            e
+                        ),
+
+                    "certainty_retry_called":
+                        False,
+
+                    "length_retry_called":
+                        True,
+
+                    "overflow_retry_called":
+                        True,
+
+                    "first_candidate":
+                        candidate,
+
+                    "first_validation":
+                        validation,
+
+                    "overflow_target":
+                        overflow_target
+                }
+
+            length_candidate = (
+                normalize_text(
+                    length_candidate
+                )
+            )
+
+            length_validation = (
+                validate_editorial_candidate(
+                    original_text=original_text,
+                    candidate_text=(
+                        length_candidate
+                    ),
+                    target_length=(
+                        target_length
+                    ),
+                    content_type=(
+                        content_type
+                    )
+                )
+            )
+
+            if length_validation[
+                "valid"
+            ]:
+
+                logger.info(
+                    f"✅ Editorial overflow + length "
+                    f"retry accepted | "
+                    f"type={content_type} | "
+                    f"final="
+                    f"{len(length_candidate)}"
+                )
+
+                return {
+                    "success":
+                        True,
+
+                    "candidate":
+                        length_candidate,
+
+                    "validation":
+                        length_validation,
+
+                    "reason":
+                        "accepted_after_overflow_and_length_retry",
+
+                    "error":
+                        None,
+
+                    "certainty_retry_called":
+                        False,
+
+                    "length_retry_called":
+                        True,
+
+                    "overflow_retry_called":
+                        True,
+
+                    "first_candidate":
+                        candidate,
+
+                    "first_validation":
+                        validation,
+
+                    "overflow_target":
+                        overflow_target
+                }
+
+        logger.warning(
+            f"⚠️ Editorial overflow retry rejected | "
+            f"type={content_type} | "
+            f"first={len(candidate)} | "
+            f"retry={len(overflow_candidate)} | "
+            f"errors="
+            f"{overflow_validation.get('errors', [])} | "
+            f"final_limit={target_length}"
+        )
+
+        return {
+            "success":
+                False,
+
+            "candidate":
+                overflow_candidate,
+
+            "validation":
+                overflow_validation,
+
+            "reason":
+                "validation_failed",
+
+            "error":
+                None,
+
+            "certainty_retry_called":
+                False,
+
+            "length_retry_called":
+                False,
+
+            "overflow_retry_called":
+                True,
+
+            "first_candidate":
+                candidate,
+
+            "first_validation":
+                validation,
+
+            "overflow_target":
+                overflow_target
         }
 
     # =====================================================
@@ -1108,7 +1688,8 @@ def generate_editorial_candidate(
             f"first_output={len(candidate)} | "
             f"minimum={minimum_length} | "
             f"target={target_length} | "
-            f"errors={validation.get('errors', [])}"
+            f"errors="
+            f"{validation.get('errors', [])}"
         )
 
         retry_instruction = (
@@ -1121,10 +1702,12 @@ def generate_editorial_candidate(
 
         try:
 
-            retry_candidate = summarizer(
-                original_text,
-                retry_instruction,
-                target_length
+            retry_candidate = (
+                summarizer(
+                    original_text,
+                    retry_instruction,
+                    target_length
+                )
             )
 
         except Exception as e:
@@ -1135,30 +1718,57 @@ def generate_editorial_candidate(
             )
 
             return {
-                "success": False,
-                "candidate": candidate,
-                "validation": validation,
+                "success":
+                    False,
+
+                "candidate":
+                    candidate,
+
+                "validation":
+                    validation,
+
                 "reason":
                     "length_retry_provider_error",
-                "error": str(e),
-                "certainty_retry_called": False,
-                "length_retry_called": True
+
+                "error":
+                    str(
+                        e
+                    ),
+
+                "certainty_retry_called":
+                    False,
+
+                "length_retry_called":
+                    True,
+
+                "overflow_retry_called":
+                    False
             }
 
-        retry_candidate = normalize_text(
-            retry_candidate
+        retry_candidate = (
+            normalize_text(
+                retry_candidate
+            )
         )
 
         retry_validation = (
             validate_editorial_candidate(
                 original_text=original_text,
-                candidate_text=retry_candidate,
-                target_length=target_length,
-                content_type=content_type
+                candidate_text=(
+                    retry_candidate
+                ),
+                target_length=(
+                    target_length
+                ),
+                content_type=(
+                    content_type
+                )
             )
         )
 
-        if retry_validation["valid"]:
+        if retry_validation[
+            "valid"
+        ]:
 
             logger.info(
                 f"✅ Editorial length retry accepted | "
@@ -1169,20 +1779,36 @@ def generate_editorial_candidate(
             )
 
             return {
-                "success": True,
-                "candidate": retry_candidate,
-                "validation": retry_validation,
+                "success":
+                    True,
+
+                "candidate":
+                    retry_candidate,
+
+                "validation":
+                    retry_validation,
+
                 "reason":
                     "accepted_after_length_retry",
-                "error": None,
-                "certainty_retry_called": False,
-                "length_retry_called": True,
-                "first_candidate": candidate,
-                "first_validation": validation
-            }
 
-        # اگر بعد از اصلاح طول فقط certainty باقی مانده
-        # یک Retry مخصوص certainty انجام می‌دهیم.
+                "error":
+                    None,
+
+                "certainty_retry_called":
+                    False,
+
+                "length_retry_called":
+                    True,
+
+                "overflow_retry_called":
+                    False,
+
+                "first_candidate":
+                    candidate,
+
+                "first_validation":
+                    validation
+            }
 
         if (
             CERTAINTY_RETRY_ENABLED
@@ -1209,66 +1835,113 @@ def generate_editorial_candidate(
 
             try:
 
-                certainty_candidate = summarizer(
-                    original_text,
-                    certainty_instruction,
-                    target_length
+                certainty_candidate = (
+                    summarizer(
+                        original_text,
+                        certainty_instruction,
+                        target_length
+                    )
                 )
 
             except Exception as e:
 
                 logger.exception(
                     f"❌ Editorial certainty retry "
-                    f"after length failed | {e}"
+                    f"after length failed | "
+                    f"{e}"
                 )
 
                 return {
-                    "success": False,
-                    "candidate": retry_candidate,
+                    "success":
+                        False,
+
+                    "candidate":
+                        retry_candidate,
+
                     "validation":
                         retry_validation,
+
                     "reason":
                         "certainty_retry_provider_error",
-                    "error": str(e),
-                    "certainty_retry_called": True,
-                    "length_retry_called": True
+
+                    "error":
+                        str(
+                            e
+                        ),
+
+                    "certainty_retry_called":
+                        True,
+
+                    "length_retry_called":
+                        True,
+
+                    "overflow_retry_called":
+                        False
                 }
 
-            certainty_candidate = normalize_text(
-                certainty_candidate
+            certainty_candidate = (
+                normalize_text(
+                    certainty_candidate
+                )
             )
 
             certainty_validation = (
                 validate_editorial_candidate(
                     original_text=original_text,
-                    candidate_text=certainty_candidate,
-                    target_length=target_length,
-                    content_type=content_type
+                    candidate_text=(
+                        certainty_candidate
+                    ),
+                    target_length=(
+                        target_length
+                    ),
+                    content_type=(
+                        content_type
+                    )
                 )
             )
 
-            if certainty_validation["valid"]:
+            if certainty_validation[
+                "valid"
+            ]:
 
                 logger.info(
                     f"✅ Editorial certainty retry "
                     f"after length accepted | "
                     f"type={content_type} | "
-                    f"output={len(certainty_candidate)}"
+                    f"output="
+                    f"{len(certainty_candidate)}"
                 )
 
                 return {
-                    "success": True,
+                    "success":
+                        True,
+
                     "candidate":
                         certainty_candidate,
+
                     "validation":
                         certainty_validation,
+
                     "reason":
                         "accepted_after_length_and_certainty_retry",
-                    "error": None,
-                    "certainty_retry_called": True,
-                    "length_retry_called": True,
-                    "first_candidate": candidate,
-                    "first_validation": validation
+
+                    "error":
+                        None,
+
+                    "certainty_retry_called":
+                        True,
+
+                    "length_retry_called":
+                        True,
+
+                    "overflow_retry_called":
+                        False,
+
+                    "first_candidate":
+                        candidate,
+
+                    "first_validation":
+                        validation
                 }
 
             retry_candidate = (
@@ -1282,26 +1955,45 @@ def generate_editorial_candidate(
         logger.warning(
             f"⚠️ Editorial length retry rejected | "
             f"type={content_type} | "
-            f"errors={retry_validation['errors']} | "
+            f"errors="
+            f"{retry_validation['errors']} | "
             f"output={len(retry_candidate)} | "
             f"minimum={minimum_length} | "
             f"target={target_length}"
         )
 
         return {
-            "success": False,
-            "candidate": retry_candidate,
-            "validation": retry_validation,
-            "reason": "validation_failed",
-            "error": None,
-            "certainty_retry_called": (
+            "success":
+                False,
+
+            "candidate":
+                retry_candidate,
+
+            "validation":
+                retry_validation,
+
+            "reason":
+                "validation_failed",
+
+            "error":
+                None,
+
+            "certainty_retry_called":
                 only_certainty_validation_error(
                     retry_validation
-                )
-            ),
-            "length_retry_called": True,
-            "first_candidate": candidate,
-            "first_validation": validation
+                ),
+
+            "length_retry_called":
+                True,
+
+            "overflow_retry_called":
+                False,
+
+            "first_candidate":
+                candidate,
+
+            "first_validation":
+                validation
         }
 
     # =====================================================
@@ -1339,10 +2031,12 @@ def generate_editorial_candidate(
 
         try:
 
-            retry_candidate = summarizer(
-                original_text,
-                retry_instruction,
-                target_length
+            retry_candidate = (
+                summarizer(
+                    original_text,
+                    retry_instruction,
+                    target_length
+                )
             )
 
         except Exception as e:
@@ -1353,30 +2047,57 @@ def generate_editorial_candidate(
             )
 
             return {
-                "success": False,
-                "candidate": candidate,
-                "validation": validation,
+                "success":
+                    False,
+
+                "candidate":
+                    candidate,
+
+                "validation":
+                    validation,
+
                 "reason":
                     "certainty_retry_provider_error",
-                "error": str(e),
-                "certainty_retry_called": True,
-                "length_retry_called": False
+
+                "error":
+                    str(
+                        e
+                    ),
+
+                "certainty_retry_called":
+                    True,
+
+                "length_retry_called":
+                    False,
+
+                "overflow_retry_called":
+                    False
             }
 
-        retry_candidate = normalize_text(
-            retry_candidate
+        retry_candidate = (
+            normalize_text(
+                retry_candidate
+            )
         )
 
         retry_validation = (
             validate_editorial_candidate(
                 original_text=original_text,
-                candidate_text=retry_candidate,
-                target_length=target_length,
-                content_type=content_type
+                candidate_text=(
+                    retry_candidate
+                ),
+                target_length=(
+                    target_length
+                ),
+                content_type=(
+                    content_type
+                )
             )
         )
 
-        if retry_validation["valid"]:
+        if retry_validation[
+            "valid"
+        ]:
 
             logger.info(
                 f"✅ Editorial certainty retry accepted | "
@@ -1386,36 +2107,76 @@ def generate_editorial_candidate(
             )
 
             return {
-                "success": True,
-                "candidate": retry_candidate,
-                "validation": retry_validation,
+                "success":
+                    True,
+
+                "candidate":
+                    retry_candidate,
+
+                "validation":
+                    retry_validation,
+
                 "reason":
                     "accepted_after_certainty_retry",
-                "error": None,
-                "certainty_retry_called": True,
-                "length_retry_called": False,
-                "first_candidate": candidate,
-                "first_validation": validation
+
+                "error":
+                    None,
+
+                "certainty_retry_called":
+                    True,
+
+                "length_retry_called":
+                    False,
+
+                "overflow_retry_called":
+                    False,
+
+                "first_candidate":
+                    candidate,
+
+                "first_validation":
+                    validation
             }
 
         logger.warning(
             f"⚠️ Editorial certainty retry rejected | "
             f"type={content_type} | "
-            f"errors={retry_validation['errors']} | "
+            f"errors="
+            f"{retry_validation['errors']} | "
             f"output={len(retry_candidate)} | "
             f"target={target_length}"
         )
 
         return {
-            "success": False,
-            "candidate": retry_candidate,
-            "validation": retry_validation,
-            "reason": "validation_failed",
-            "error": None,
-            "certainty_retry_called": True,
-            "length_retry_called": False,
-            "first_candidate": candidate,
-            "first_validation": validation
+            "success":
+                False,
+
+            "candidate":
+                retry_candidate,
+
+            "validation":
+                retry_validation,
+
+            "reason":
+                "validation_failed",
+
+            "error":
+                None,
+
+            "certainty_retry_called":
+                True,
+
+            "length_retry_called":
+                False,
+
+            "overflow_retry_called":
+                False,
+
+            "first_candidate":
+                candidate,
+
+            "first_validation":
+                validation
         }
 
     logger.warning(
@@ -1428,13 +2189,29 @@ def generate_editorial_candidate(
     )
 
     return {
-        "success": False,
-        "candidate": candidate,
-        "validation": validation,
-        "reason": "validation_failed",
-        "error": None,
-        "certainty_retry_called": False,
-        "length_retry_called": False
+        "success":
+            False,
+
+        "candidate":
+            candidate,
+
+        "validation":
+            validation,
+
+        "reason":
+            "validation_failed",
+
+        "error":
+            None,
+
+        "certainty_retry_called":
+            False,
+
+        "length_retry_called":
+            False,
+
+        "overflow_retry_called":
+            False
     }
 
 
@@ -1474,16 +2251,30 @@ def generate_admin_instruction_candidate(
     except Exception as e:
 
         logger.exception(
-            f"❌ Admin editorial generation failed | {e}"
+            f"❌ Admin editorial generation failed | "
+            f"{e}"
         )
 
         return {
-            "success": False,
-            "candidate": "",
-            "validation": None,
-            "reason": "provider_error",
-            "error": str(e),
-            "certainty_retry_called": False
+            "success":
+                False,
+
+            "candidate":
+                "",
+
+            "validation":
+                None,
+
+            "reason":
+                "provider_error",
+
+            "error":
+                str(
+                    e
+                ),
+
+            "certainty_retry_called":
+                False
         }
 
     candidate = normalize_text(
@@ -1499,15 +2290,28 @@ def generate_admin_instruction_candidate(
         )
     )
 
-    if validation["valid"]:
+    if validation[
+        "valid"
+    ]:
 
         return {
-            "success": True,
-            "candidate": candidate,
-            "validation": validation,
-            "reason": "accepted",
-            "error": None,
-            "certainty_retry_called": False
+            "success":
+                True,
+
+            "candidate":
+                candidate,
+
+            "validation":
+                validation,
+
+            "reason":
+                "accepted",
+
+            "error":
+                None,
+
+            "certainty_retry_called":
+                False
         }
 
     can_retry_certainty = (
@@ -1528,12 +2332,23 @@ def generate_admin_instruction_candidate(
         )
 
         return {
-            "success": False,
-            "candidate": candidate,
-            "validation": validation,
-            "reason": "validation_failed",
-            "error": None,
-            "certainty_retry_called": False
+            "success":
+                False,
+
+            "candidate":
+                candidate,
+
+            "validation":
+                validation,
+
+            "reason":
+                "validation_failed",
+
+            "error":
+                None,
+
+            "certainty_retry_called":
+                False
         }
 
     logger.info(
@@ -1568,13 +2383,25 @@ def generate_admin_instruction_candidate(
         )
 
         return {
-            "success": False,
-            "candidate": candidate,
-            "validation": validation,
+            "success":
+                False,
+
+            "candidate":
+                candidate,
+
+            "validation":
+                validation,
+
             "reason":
                 "certainty_retry_provider_error",
-            "error": str(e),
-            "certainty_retry_called": True
+
+            "error":
+                str(
+                    e
+                ),
+
+            "certainty_retry_called":
+                True
         }
 
     retry_candidate = normalize_text(
@@ -1590,7 +2417,9 @@ def generate_admin_instruction_candidate(
         )
     )
 
-    if retry_validation["valid"]:
+    if retry_validation[
+        "valid"
+    ]:
 
         logger.info(
             f"✅ Admin editorial certainty retry accepted | "
@@ -1599,26 +2428,55 @@ def generate_admin_instruction_candidate(
         )
 
         return {
-            "success": True,
-            "candidate": retry_candidate,
-            "validation": retry_validation,
+            "success":
+                True,
+
+            "candidate":
+                retry_candidate,
+
+            "validation":
+                retry_validation,
+
             "reason":
                 "accepted_after_certainty_retry",
-            "error": None,
-            "certainty_retry_called": True,
-            "first_candidate": candidate,
-            "first_validation": validation
+
+            "error":
+                None,
+
+            "certainty_retry_called":
+                True,
+
+            "first_candidate":
+                candidate,
+
+            "first_validation":
+                validation
         }
 
     return {
-        "success": False,
-        "candidate": retry_candidate,
-        "validation": retry_validation,
-        "reason": "validation_failed",
-        "error": None,
-        "certainty_retry_called": True,
-        "first_candidate": candidate,
-        "first_validation": validation
+        "success":
+            False,
+
+        "candidate":
+            retry_candidate,
+
+        "validation":
+            retry_validation,
+
+        "reason":
+            "validation_failed",
+
+        "error":
+            None,
+
+        "certainty_retry_called":
+            True,
+
+        "first_candidate":
+            candidate,
+
+        "first_validation":
+            validation
     }
 
 
@@ -1640,6 +2498,7 @@ def summarize_editorial_content(
     )
 
     if not original_text:
+
         return None
 
     if content_type not in (
@@ -1661,6 +2520,7 @@ def summarize_editorial_content(
     )
 
     if resolved_summarizer is None:
+
         return None
 
     target_info = (
@@ -1683,7 +2543,10 @@ def summarize_editorial_content(
         ]
     )
 
-    if len(original_text) <= effective_target:
+    if (
+        len(original_text)
+        <= effective_target
+    ):
 
         validation = (
             validate_editorial_candidate(
@@ -1695,13 +2558,30 @@ def summarize_editorial_content(
         )
 
         return {
-            "success": True,
-            "candidate": original_text,
-            "validation": validation,
-            "reason": "already_fits",
-            "summarizer_called": False,
-            "certainty_retry_called": False,
-            "length_retry_called": False,
+            "success":
+                True,
+
+            "candidate":
+                original_text,
+
+            "validation":
+                validation,
+
+            "reason":
+                "already_fits",
+
+            "summarizer_called":
+                False,
+
+            "certainty_retry_called":
+                False,
+
+            "length_retry_called":
+                False,
+
+            "overflow_retry_called":
+                False,
+
             **target_info
         }
 
@@ -1787,6 +2667,7 @@ def regenerate_editorial_summary(
             metadata={
                 "regeneration_count":
                     regeneration_count,
+
                 "max_regeneration_count":
                     MAX_REGENERATION_COUNT
             }
@@ -1818,17 +2699,22 @@ def regenerate_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason=
-                "regeneration_not_allowed_for_content_type",
+            reason=(
+                "regeneration_not_allowed_for_content_type"
+            ),
             metadata={
                 "regeneration_count":
                     regeneration_count,
+
                 "max_regeneration_count":
                     MAX_REGENERATION_COUNT
             }
         )
 
-    if regeneration_count >= MAX_REGENERATION_COUNT:
+    if (
+        regeneration_count
+        >= MAX_REGENERATION_COUNT
+    ):
 
         logger.warning(
             f"⚠️ Editorial regeneration limit reached | "
@@ -1856,9 +2742,12 @@ def regenerate_editorial_summary(
             metadata={
                 "regeneration_count":
                     regeneration_count,
+
                 "max_regeneration_count":
                     MAX_REGENERATION_COUNT,
-                "can_regenerate": False
+
+                "can_regenerate":
+                    False
             }
         )
 
@@ -1886,11 +2775,13 @@ def regenerate_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason=
-                "regeneration_provider_unavailable",
+            reason=(
+                "regeneration_provider_unavailable"
+            ),
             metadata={
                 "regeneration_count":
                     regeneration_count,
+
                 "max_regeneration_count":
                     MAX_REGENERATION_COUNT
             }
@@ -1953,9 +2844,6 @@ def regenerate_editorial_summary(
         f"generation_target={generation_target}"
     )
 
-    # مهم:
-    # generation_target واقعاً به Provider داده می‌شود.
-
     generation = (
         generate_editorial_candidate(
             original_text=original_text,
@@ -1980,7 +2868,9 @@ def regenerate_editorial_summary(
         + 1
     )
 
-    if not generation["success"]:
+    if not generation[
+        "success"
+    ]:
 
         logger.warning(
             f"⚠️ Editorial regeneration rejected | "
@@ -2018,7 +2908,9 @@ def regenerate_editorial_summary(
                     < MAX_REGENERATION_COUNT,
 
                 "generation_reason":
-                    generation["reason"],
+                    generation[
+                        "reason"
+                    ],
 
                 "validation":
                     generation.get(
@@ -2043,6 +2935,12 @@ def regenerate_editorial_summary(
                         False
                     ),
 
+                "overflow_retry_called":
+                    generation.get(
+                        "overflow_retry_called",
+                        False
+                    ),
+
                 "requested_target":
                     target_length,
 
@@ -2063,10 +2961,6 @@ def regenerate_editorial_summary(
         ]
     )
 
-    # =====================================================
-    # SAME SUMMARY PROTECTION
-    # =====================================================
-
     if (
         previous_summary
         and new_summary
@@ -2075,7 +2969,8 @@ def regenerate_editorial_summary(
 
         logger.warning(
             f"⚠️ Editorial regeneration returned "
-            f"same summary | count={next_count}"
+            f"same summary | "
+            f"count={next_count}"
         )
 
         return EditorialReviewResult(
@@ -2090,8 +2985,9 @@ def regenerate_editorial_summary(
             suggested_length=len(
                 previous_summary
             ),
-            reason=
-                "regeneration_same_as_previous",
+            reason=(
+                "regeneration_same_as_previous"
+            ),
             metadata={
                 "regeneration_count":
                     next_count,
@@ -2120,6 +3016,12 @@ def regenerate_editorial_summary(
                         False
                     ),
 
+                "overflow_retry_called":
+                    generation.get(
+                        "overflow_retry_called",
+                        False
+                    ),
+
                 "requested_target":
                     target_length,
 
@@ -2134,15 +3036,10 @@ def regenerate_editorial_summary(
             }
         )
 
-    # =====================================================
-    # FINAL HARD LIMIT
-    #
-    # adaptive target ممکن است از requested target
-    # بزرگ‌تر باشد. بنابراین سقف واقعی این مرحله
-    # effective_target است.
-    # =====================================================
-
-    if len(new_summary) > effective_target:
+    if (
+        len(new_summary)
+        > effective_target
+    ):
 
         logger.warning(
             f"⚠️ Regenerated editorial summary "
@@ -2217,7 +3114,9 @@ def regenerate_editorial_summary(
         suggested_length=len(
             new_summary
         ),
-        reason="editorial_regeneration_ready",
+        reason=(
+            "editorial_regeneration_ready"
+        ),
         metadata={
             "regeneration_count":
                 next_count,
@@ -2246,6 +3145,12 @@ def regenerate_editorial_summary(
             "length_retry_called":
                 generation.get(
                     "length_retry_called",
+                    False
+                ),
+
+            "overflow_retry_called":
+                generation.get(
+                    "overflow_retry_called",
                     False
                 ),
 
@@ -2309,8 +3214,9 @@ def apply_admin_instruction_to_editorial_summary(
             suggested_length=len(
                 previous_summary
             ),
-            reason=
-                "admin_instruction_original_empty",
+            reason=(
+                "admin_instruction_original_empty"
+            ),
             metadata={
                 "admin_instruction":
                     admin_instruction
@@ -2337,7 +3243,8 @@ def apply_admin_instruction_to_editorial_summary(
             ),
             reason="admin_instruction_empty",
             metadata={
-                "admin_instruction": ""
+                "admin_instruction":
+                    ""
             }
         )
 
@@ -2368,13 +3275,17 @@ def apply_admin_instruction_to_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason="admin_instruction_too_long",
+            reason=(
+                "admin_instruction_too_long"
+            ),
             metadata={
                 "admin_instruction":
                     admin_instruction,
 
                 "admin_instruction_length":
-                    len(admin_instruction),
+                    len(
+                        admin_instruction
+                    ),
 
                 "max_admin_instruction_length":
                     MAX_ADMIN_INSTRUCTION_LENGTH
@@ -2407,8 +3318,9 @@ def apply_admin_instruction_to_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason=
-                "admin_instruction_not_allowed_for_content_type",
+            reason=(
+                "admin_instruction_not_allowed_for_content_type"
+            ),
             metadata={
                 "admin_instruction":
                     admin_instruction
@@ -2439,8 +3351,9 @@ def apply_admin_instruction_to_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason=
-                "admin_instruction_provider_unavailable",
+            reason=(
+                "admin_instruction_provider_unavailable"
+            ),
             metadata={
                 "admin_instruction":
                     admin_instruction
@@ -2478,7 +3391,9 @@ def apply_admin_instruction_to_editorial_summary(
         )
     )
 
-    if not generation["success"]:
+    if not generation[
+        "success"
+    ]:
 
         logger.warning(
             f"⚠️ Admin editorial edit rejected | "
@@ -2502,7 +3417,9 @@ def apply_admin_instruction_to_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason="admin_instruction_failed",
+            reason=(
+                "admin_instruction_failed"
+            ),
             metadata={
                 "admin_instruction":
                     admin_instruction,
@@ -2560,8 +3477,9 @@ def apply_admin_instruction_to_editorial_summary(
             suggested_length=len(
                 previous_summary
             ),
-            reason=
-                "admin_instruction_no_change",
+            reason=(
+                "admin_instruction_no_change"
+            ),
             metadata={
                 "admin_instruction":
                     admin_instruction,
@@ -2579,7 +3497,10 @@ def apply_admin_instruction_to_editorial_summary(
             }
         )
 
-    if len(new_summary) > target_length:
+    if (
+        len(new_summary)
+        > target_length
+    ):
 
         logger.warning(
             f"⚠️ Admin edited summary exceeds "
@@ -2604,7 +3525,9 @@ def apply_admin_instruction_to_editorial_summary(
                 previous_summary
                 or original_text
             ),
-            reason="admin_instruction_failed",
+            reason=(
+                "admin_instruction_failed"
+            ),
             metadata={
                 "admin_instruction":
                     admin_instruction,
@@ -2686,8 +3609,9 @@ def analyze_editorial_content(
     if not original_text:
 
         return EditorialReviewResult(
-            content_type=
-                CONTENT_TYPE_UNCERTAIN,
+            content_type=(
+                CONTENT_TYPE_UNCERTAIN
+            ),
             action=ACTION_PUBLISH_DIRECT,
             needs_approval=False,
             original_text="",
@@ -2698,7 +3622,9 @@ def analyze_editorial_content(
             suggested_length=0,
             reason="empty_text",
             metadata={
-                "regeneration_count": 0,
+                "regeneration_count":
+                    0,
+
                 "max_regeneration_count":
                     MAX_REGENERATION_COUNT
             }
@@ -2711,7 +3637,10 @@ def analyze_editorial_content(
         )
     )
 
-    if content_type == CONTENT_TYPE_NORMAL_NEWS:
+    if (
+        content_type
+        == CONTENT_TYPE_NORMAL_NEWS
+    ):
 
         return EditorialReviewResult(
             content_type=content_type,
@@ -2725,13 +3654,21 @@ def analyze_editorial_content(
             suggested_length=original_length,
             reason="normal_news_direct",
             metadata={
-                "classification_only": True,
-                "regeneration_count": 0,
-                "can_regenerate": False
+                "classification_only":
+                    True,
+
+                "regeneration_count":
+                    0,
+
+                "can_regenerate":
+                    False
             }
         )
 
-    if content_type == CONTENT_TYPE_SENSITIVE:
+    if (
+        content_type
+        == CONTENT_TYPE_SENSITIVE
+    ):
 
         return EditorialReviewResult(
             content_type=content_type,
@@ -2743,16 +3680,25 @@ def analyze_editorial_content(
             target_length=target_length,
             original_length=original_length,
             suggested_length=original_length,
-            reason=
-                "sensitive_content_preserved",
+            reason=(
+                "sensitive_content_preserved"
+            ),
             metadata={
-                "automatic_summary": False,
-                "regeneration_count": 0,
-                "can_regenerate": False
+                "automatic_summary":
+                    False,
+
+                "regeneration_count":
+                    0,
+
+                "can_regenerate":
+                    False
             }
         )
 
-    if content_type == CONTENT_TYPE_UNCERTAIN:
+    if (
+        content_type
+        == CONTENT_TYPE_UNCERTAIN
+    ):
 
         return EditorialReviewResult(
             content_type=content_type,
@@ -2766,9 +3712,14 @@ def analyze_editorial_content(
             suggested_length=original_length,
             reason="uncertain_content",
             metadata={
-                "automatic_summary": False,
-                "regeneration_count": 0,
-                "can_regenerate": False
+                "automatic_summary":
+                    False,
+
+                "regeneration_count":
+                    0,
+
+                "can_regenerate":
+                    False
             }
         )
 
@@ -2789,14 +3740,24 @@ def analyze_editorial_content(
         )
     ):
 
-        metadata: Dict[str, Any] = {
-            "regeneration_count": 0,
+        metadata: Dict[
+            str,
+            Any
+        ] = {
+            "regeneration_count":
+                0,
+
             "max_regeneration_count":
                 MAX_REGENERATION_COUNT,
-            "can_regenerate": False
+
+            "can_regenerate":
+                False
         }
 
-        if summary_result is not None:
+        if (
+            summary_result
+            is not None
+        ):
 
             metadata.update({
                 "summary_reason":
@@ -2824,6 +3785,12 @@ def analyze_editorial_content(
                 "length_retry_called":
                     summary_result.get(
                         "length_retry_called",
+                        False
+                    ),
+
+                "overflow_retry_called":
+                    summary_result.get(
+                        "overflow_retry_called",
                         False
                     ),
 
@@ -2883,6 +3850,8 @@ def analyze_editorial_content(
         f"{summary_result.get('certainty_retry_called', False)} | "
         f"length_retry="
         f"{summary_result.get('length_retry_called', False)} | "
+        f"overflow_retry="
+        f"{summary_result.get('overflow_retry_called', False)} | "
         f"needs_approval=True"
     )
 
@@ -2910,12 +3879,14 @@ def analyze_editorial_content(
                     "validation"
                 ),
 
-            "regeneration_count": 0,
+            "regeneration_count":
+                0,
 
             "max_regeneration_count":
                 MAX_REGENERATION_COUNT,
 
-            "can_regenerate": True,
+            "can_regenerate":
+                True,
 
             "certainty_retry_called":
                 summary_result.get(
@@ -2926,6 +3897,12 @@ def analyze_editorial_content(
             "length_retry_called":
                 summary_result.get(
                     "length_retry_called",
+                    False
+                ),
+
+            "overflow_retry_called":
+                summary_result.get(
+                    "overflow_retry_called",
                     False
                 ),
 
