@@ -2879,6 +2879,98 @@ def create_telegram_text_plan(
         branding
     )
 
+    # =====================================================
+    # STEP 1: TRY A SINGLE COMBINED MESSAGE
+    #
+    # When blockquotes are present, attempt to inline
+    # them into one HTML message together with the main
+    # text and branding.  Only split when the VISIBLE
+    # character count genuinely exceeds the limit.
+    # =====================================================
+
+    combined_blocks = _combined_blockquotes(
+        blockquote_blocks,
+        expandable_blocks
+    )
+
+    if combined_blocks:
+
+        combined_html = (
+            build_telegram_html_caption(
+                main_text,
+                blockquote_blocks,
+                expandable_blocks,
+                branding
+            )
+        )
+
+        if (
+            combined_html
+            and telegram_html_visible_length(
+                combined_html
+            )
+            <= TELEGRAM_MESSAGE_LIMIT
+        ):
+
+            return {
+                "messages": [
+                    combined_html
+                ],
+                "blockquote_messages": []
+            }
+
+        # -------------------------------------------------
+        # Genuine split required: brand every part once.
+        # -------------------------------------------------
+
+        compact_text = (
+            compact_long_text(
+                main_text
+            )
+            or main_text
+        )
+
+        branding_cost = (
+            len(branding)
+            + 2
+            if branding
+            else 0
+        )
+
+        content_limit = max(
+            500,
+            TELEGRAM_MESSAGE_LIMIT
+            - branding_cost
+        )
+
+        messages = split_text(
+            compact_text,
+            content_limit
+        )
+
+        messages = brand_every_message(
+            messages,
+            branding,
+            TELEGRAM_MESSAGE_LIMIT
+        )
+
+        blockquote_messages = (
+            build_branded_blockquote_messages(
+                combined_blocks,
+                branding
+            )
+        )
+
+        return {
+            "messages": messages,
+            "blockquote_messages":
+                blockquote_messages
+        }
+
+    # =====================================================
+    # NO BLOCKQUOTES — original plain-text path
+    # =====================================================
+
     normal_final = append_branding(
         main_text,
         branding
@@ -2951,13 +3043,8 @@ def create_telegram_text_plan(
             )
 
     return {
-        "messages":
-            messages,
-        "blockquote_messages":
-            create_telegram_blockquote_messages(
-                blockquote_blocks,
-                expandable_blocks
-            )
+        "messages": messages,
+        "blockquote_messages": []
     }
 
 
