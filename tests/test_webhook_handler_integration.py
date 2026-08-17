@@ -153,6 +153,14 @@ TEXT_MESSAGE = {
 
 def setup_function():
 
+    sys.modules[
+        "core.database"
+    ] = fake_database
+
+    sys.modules[
+        "core.command_handler"
+    ] = fake_command_handler
+
     fake_database.get_tenant.reset_mock()
 
     fake_database.get_tenant.return_value = {
