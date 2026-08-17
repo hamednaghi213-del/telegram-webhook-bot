@@ -1,6 +1,7 @@
 import os
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from supabase import create_client
 
@@ -21,6 +22,15 @@ RETRY_BACKOFF: float = 2.0  # exponential backoff multiplier
 # Default Values
 DEFAULT_HASHTAG: str = "#دنیا_۲۴_نیوز"
 DEFAULT_CHANNEL_TAG: str = "@Donya24News"
+USER_STATUS_VALUES = {"active", "suspended", "removed"}
+WORKSPACE_STATUS_VALUES = {"active", "suspended", "removed"}
+WORKSPACE_MEMBER_ROLE_VALUES = {
+    "owner",
+    "manager",
+    "publisher",
+    "writer"
+}
+WORKSPACE_MEMBER_STATUS_VALUES = {"active", "suspended", "removed"}
 
 # =========================================================
 # VALIDATION
@@ -556,3 +566,285 @@ def batch_update_tenants(
     except Exception as e:
         logger.exception(f"❌ batch_update_tenants(): {e}")
         raise
+
+
+# =========================================================
+# WORKSPACE FOUNDATION (PHASE 1)
+# =========================================================
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _validate_workspace_status(status: str) -> None:
+    if status not in WORKSPACE_STATUS_VALUES:
+        raise ValueError(f"Invalid workspace status: {status}")
+
+
+def _validate_member_role(role: str) -> None:
+    if role not in WORKSPACE_MEMBER_ROLE_VALUES:
+        raise ValueError(f"Invalid workspace role: {role}")
+
+
+def _validate_member_status(status: str) -> None:
+    if status not in WORKSPACE_MEMBER_STATUS_VALUES:
+        raise ValueError(f"Invalid workspace member status: {status}")
+
+
+@with_retry
+def get_or_create_user_by_telegram_id(
+    telegram_user_id: int,
+    status: str = "active"
+) -> Dict[str, Any]:
+    if status not in USER_STATUS_VALUES:
+        raise ValueError(f"Invalid user status: {status}")
+
+    result = (
+        supabase
+        .table("users")
+        .select("*")
+        .eq("telegram_user_id", telegram_user_id)
+        .limit(1)
+        .execute()
+    )
+    if result.data:
+        return result.data[0]
+
+    now_iso = _utc_now_iso()
+    insert_result = (
+        supabase
+        .table("users")
+        .insert({
+            "telegram_user_id": telegram_user_id,
+            "status": status,
+            "created_at": now_iso,
+            "updated_at": now_iso
+        })
+        .execute()
+    )
+    if not insert_result.data:
+        raise RuntimeError("Failed to create user")
+    return insert_result.data[0]
+
+
+@with_retry
+def create_workspace(
+    name: str,
+    owner_user_id: str,
+    status: str = "active"
+) -> Dict[str, Any]:
+    _validate_workspace_status(status)
+    now_iso = _utc_now_iso()
+
+    result = (
+        supabase
+        .table("workspaces")
+        .insert({
+            "name": name,
+            "owner_user_id": owner_user_id,
+            "status": status,
+            "created_at": now_iso,
+            "updated_at": now_iso
+        })
+        .execute()
+    )
+    if not result.data:
+        raise RuntimeError("Failed to create workspace")
+
+    workspace = result.data[0]
+    add_workspace_member(
+        workspace_id=workspace["id"],
+        user_id=owner_user_id,
+        role="owner",
+        status="active"
+    )
+    return workspace
+
+
+@with_retry
+def get_workspace(workspace_id: str) -> Optional[Dict[str, Any]]:
+    result = (
+        supabase
+        .table("workspaces")
+        .select("*")
+        .eq("id", workspace_id)
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        return None
+    return result.data[0]
+
+
+@with_retry
+def list_user_workspaces(
+    user_id: str,
+    include_inactive: bool = False
+) -> List[Dict[str, Any]]:
+    member_query = (
+        supabase
+        .table("workspace_members")
+        .select("workspace_id")
+        .eq("user_id", user_id)
+    )
+    if not include_inactive:
+        member_query = member_query.eq("status", "active")
+    member_result = member_query.execute()
+    workspace_ids = [
+        row.get("workspace_id")
+        for row in (member_result.data or [])
+        if row.get("workspace_id")
+    ]
+    if not workspace_ids:
+        return []
+
+    workspace_query = (
+        supabase
+        .table("workspaces")
+        .select("*")
+        .in_("id", workspace_ids)
+    )
+    if not include_inactive:
+        workspace_query = workspace_query.eq("status", "active")
+    workspace_result = workspace_query.execute()
+    return workspace_result.data or []
+
+
+@with_retry
+def get_workspace_member(
+    workspace_id: str,
+    user_id: str
+) -> Optional[Dict[str, Any]]:
+    result = (
+        supabase
+        .table("workspace_members")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        return None
+    return result.data[0]
+
+
+@with_retry
+def add_workspace_member(
+    workspace_id: str,
+    user_id: str,
+    role: str = "writer",
+    status: str = "active"
+) -> Dict[str, Any]:
+    _validate_member_role(role)
+    _validate_member_status(status)
+
+    existing = get_workspace_member(
+        workspace_id=workspace_id,
+        user_id=user_id
+    )
+    now_iso = _utc_now_iso()
+
+    if existing:
+        if (
+            existing.get("role") == role
+            and existing.get("status") == status
+        ):
+            return existing
+
+        result = (
+            supabase
+            .table("workspace_members")
+            .update({
+                "role": role,
+                "status": status,
+                "updated_at": now_iso
+            })
+            .eq("id", existing["id"])
+            .execute()
+        )
+        if not result.data:
+            raise RuntimeError("Failed to update workspace member")
+        return result.data[0]
+
+    result = (
+        supabase
+        .table("workspace_members")
+        .insert({
+            "workspace_id": workspace_id,
+            "user_id": user_id,
+            "role": role,
+            "status": status,
+            "created_at": now_iso,
+            "updated_at": now_iso
+        })
+        .execute()
+    )
+    if not result.data:
+        raise RuntimeError("Failed to add workspace member")
+    return result.data[0]
+
+
+@with_retry
+def list_workspace_members(
+    workspace_id: str,
+    include_inactive: bool = False
+) -> List[Dict[str, Any]]:
+    query = (
+        supabase
+        .table("workspace_members")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+    )
+    if not include_inactive:
+        query = query.eq("status", "active")
+    result = query.execute()
+    return result.data or []
+
+
+@with_retry
+def update_workspace_member_role(
+    workspace_id: str,
+    user_id: str,
+    role: str
+) -> Optional[Dict[str, Any]]:
+    _validate_member_role(role)
+    now_iso = _utc_now_iso()
+    result = (
+        supabase
+        .table("workspace_members")
+        .update({
+            "role": role,
+            "updated_at": now_iso
+        })
+        .eq("workspace_id", workspace_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    if not result.data:
+        return None
+    return result.data[0]
+
+
+@with_retry
+def update_workspace_member_status(
+    workspace_id: str,
+    user_id: str,
+    status: str
+) -> Optional[Dict[str, Any]]:
+    _validate_member_status(status)
+    now_iso = _utc_now_iso()
+    result = (
+        supabase
+        .table("workspace_members")
+        .update({
+            "status": status,
+            "updated_at": now_iso
+        })
+        .eq("workspace_id", workspace_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    if not result.data:
+        return None
+    return result.data[0]
