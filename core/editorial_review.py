@@ -1176,6 +1176,72 @@ BOUNDARY_RANK = {
         3,
 }
 
+# =========================================================
+# FIX A: PERSIAN INCOMPLETE CONNECTOR DETECTION
+#
+# هنگامی که برش مرزی-کلمه‌ای متن را در میانه یک
+# ساختار ناقص فارسی قطع می‌کند، نتیجه معنایی ندارد.
+# این فهرست غیر جامع است؛ شامل رایج‌ترین موارد است.
+# =========================================================
+
+PERSIAN_INCOMPLETE_CONNECTORS = (
+    "نه از",
+    "نه به",
+    "نه برای",
+    "در حالی که",
+    "به دلیل",
+    "به رغم",
+    "در نتیجه",
+    "از سوی",
+    "از جمله",
+    "از",
+    "به",
+    "در",
+    "با",
+    "برای",
+    "که",
+    "و",
+    "یا",
+    "اما",
+    "بلکه",
+    "اگر",
+    "چون",
+    "تا",
+    "این",
+    "آن",
+)
+
+
+def _ends_with_incomplete_connector(
+    text: str
+) -> bool:
+    """
+    بررسی می‌کند که آیا متن با یک接続詞 ناقص فارسی پایان می‌یابد.
+    فقط زمانی مثبت است که کلمه آخر دقیقاً با فاصله از متن قبل جدا شده باشد.
+    """
+
+    stripped = text.rstrip()
+
+    if not stripped:
+        return False
+
+    for connector in PERSIAN_INCOMPLETE_CONNECTORS:
+
+        if not stripped.endswith(connector):
+            continue
+
+        prefix = stripped[
+            : -len(connector)
+        ]
+
+        if (
+            not prefix
+            or prefix[-1].isspace()
+        ):
+            return True
+
+    return False
+
 
 def _cuts_word_middle(
     text: str,
@@ -1341,6 +1407,9 @@ def reduce_overflow_at_safe_boundaries(
 
         if (
             reduced is not None
+            and not _ends_with_incomplete_connector(
+                reduced["text"]
+            )
             and all(
                 item["text"] != reduced["text"]
                 for item in candidates
@@ -1456,18 +1525,18 @@ def select_best_reduced_overflow_candidate(
     return max(
         candidates,
         key=lambda item: (
-            len(
-                item.get(
-                    "candidate",
-                    ""
-                )
-            ),
             BOUNDARY_RANK.get(
                 item.get(
                     "boundary",
                     "word"
                 ),
                 0
+            ),
+            len(
+                item.get(
+                    "candidate",
+                    ""
+                )
             ),
         )
     )

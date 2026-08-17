@@ -1340,7 +1340,8 @@ def publish_prepared_text(
     ] = None,
     other_entities: Optional[
         List[Dict[str, Any]]
-    ] = None
+    ] = None,
+    editorial_finalized: bool = False
 ) -> bool:
 
     try:
@@ -1386,7 +1387,10 @@ def publish_prepared_text(
                 other_entities=(
                     other_entities
                 ),
-                branding=branding
+                branding=branding,
+                editorial_finalized=(
+                    editorial_finalized
+                )
             )
         )
 
@@ -3242,7 +3246,8 @@ def handle_editorial_callback(
                             "other_entities",
                             []
                         )
-                    )
+                    ),
+                    editorial_finalized=True
                 )
             )
 
@@ -3304,7 +3309,8 @@ def handle_editorial_callback(
                     ),
                     blockquote_blocks=[],
                     expandable_blocks=[],
-                    other_entities=[]
+                    other_entities=[],
+                    editorial_finalized=True
                 )
             )
 
@@ -3336,6 +3342,13 @@ def handle_editorial_callback(
 
         if action == "regen":
 
+            logger.info(
+                f"[{req_id}] 🔄 Editorial regenerate "
+                f"callback received | "
+                f"review_id={review_id} | "
+                f"user_id={user_id}"
+            )
+
             if (
                 review.regeneration_count
                 >= MAX_REGENERATION_COUNT
@@ -3348,6 +3361,13 @@ def handle_editorial_callback(
 
                 return True
 
+            logger.info(
+                f"[{req_id}] ✅ Editorial review loaded | "
+                f"review_id={review_id} | "
+                f"count={review.regeneration_count} | "
+                f"type={review.content_type}"
+            )
+
             answer_callback_query(
                 callback_id,
                 "در حال ساخت نسخه جدید..."
@@ -3356,6 +3376,13 @@ def handle_editorial_callback(
             regeneration_source = (
                 editorial_body
                 or review.original_text
+            )
+
+            logger.info(
+                f"[{req_id}] 🚀 Editorial regeneration "
+                f"started | "
+                f"review_id={review_id} | "
+                f"body_len={len(regeneration_source)}"
             )
 
             regeneration_result = (
@@ -3374,6 +3401,24 @@ def handle_editorial_callback(
                     )
                 )
             )
+
+            if regeneration_result.summary_success:
+
+                logger.info(
+                    f"[{req_id}] ✅ Editorial regeneration "
+                    f"ready | "
+                    f"review_id={review_id} | "
+                    f"reason={regeneration_result.reason}"
+                )
+
+            else:
+
+                logger.warning(
+                    f"[{req_id}] ⚠️ Editorial regeneration "
+                    f"failed | "
+                    f"review_id={review_id} | "
+                    f"reason={regeneration_result.reason}"
+                )
 
             next_count = (
                 regeneration_result.metadata.get(
@@ -3415,6 +3460,12 @@ def handle_editorial_callback(
             if updated is None:
 
                 return True
+
+            logger.info(
+                f"[{req_id}] ✅ Review updated | "
+                f"review_id={review_id} | "
+                f"new_count={updated.regeneration_count}"
+            )
 
             keyboard = (
                 build_editorial_keyboard(

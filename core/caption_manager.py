@@ -3243,7 +3243,8 @@ def analyze_content(
     other_entities: Optional[
         List[Dict[str, Any]]
     ] = None,
-    branding: str = ""
+    branding: str = "",
+    editorial_finalized: bool = False
 ) -> PublicationPlan:
 
     main_text = normalize_text(
@@ -3280,6 +3281,8 @@ def analyze_content(
         f"{len(branding)} | "
         f"smart_summary="
         f"{smart_summarizer_enabled()} | "
+        f"editorial_finalized="
+        f"{editorial_finalized} | "
         f"smart_policy=AI_ADAPTIVE"
     )
 
@@ -3289,23 +3292,60 @@ def analyze_content(
         "other_entities"
     ] = other_entities
 
-    plan.telegram = (
-        create_telegram_plan(
-            main_text,
-            blockquote_blocks,
-            expandable_blocks,
-            branding
-        )
-    )
+    # FIX B: When editorial content is already finalized,
+    # skip the AI-capable media plans to prevent double
+    # summarization.  Text-only publishing (via
+    # publish_prepared_text) only reads plan.text, so
+    # stub media plans are sufficient here.
+    if editorial_finalized:
 
-    plan.bale = (
-        create_bale_plan(
-            main_text,
-            blockquote_blocks,
-            expandable_blocks,
-            branding
+        plan.telegram = {
+            "media_caption":
+                "",
+            "media_parse_mode":
+                None,
+            "media_caption_entities":
+                [],
+            "followup_messages":
+                [],
+            "blockquote_messages":
+                [],
+            "document_fallback":
+                False,
+        }
+
+        plan.bale = {
+            "media_caption":
+                "",
+            "media_caption_entities":
+                [],
+            "followup_messages":
+                [],
+            "blockquote_messages":
+                [],
+            "document_fallback":
+                False,
+        }
+
+    else:
+
+        plan.telegram = (
+            create_telegram_plan(
+                main_text,
+                blockquote_blocks,
+                expandable_blocks,
+                branding
+            )
         )
-    )
+
+        plan.bale = (
+            create_bale_plan(
+                main_text,
+                blockquote_blocks,
+                expandable_blocks,
+                branding
+            )
+        )
 
     plan.text[
         "telegram"
