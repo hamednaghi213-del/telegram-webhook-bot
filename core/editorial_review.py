@@ -1400,18 +1400,18 @@ def select_best_reduced_overflow_candidate(
     return max(
         candidates,
         key=lambda item: (
-            len(
-                item.get(
-                    "candidate",
-                    ""
-                )
-            ),
             BOUNDARY_RANK.get(
                 item.get(
                     "boundary",
                     "word"
                 ),
                 0
+            ),
+            len(
+                item.get(
+                    "candidate",
+                    ""
+                )
             ),
         )
     )
@@ -1567,7 +1567,7 @@ def generate_editorial_candidate(
                     "first",
             })
 
-        
+
         overflow_target = (
             target_length
             - OVERFLOW_RETRY_MARGIN

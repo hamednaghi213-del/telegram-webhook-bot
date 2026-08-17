@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from core.editorial_review import (
     ACTION_NEEDS_APPROVAL,
     ACTION_PUBLISH_DIRECT,
@@ -661,17 +663,19 @@ def test_overflow_first_candidate_reduced_safely():
 def test_overflow_retry_candidate_reduced_when_first_not_reducible():
 
     original_text = (
-        "الف" * 1200
+        "A" * 1200
     ) + (
         " " + build_text_with_length(
             2800
         )
     )
 
-    first_candidate = "الف" * 1129
+    first_candidate = "A" * 1129
 
     retry_candidate = trim_at_word_boundary(
-        original_text,
+        build_text_with_length(
+            2800
+        ),
         1066
     )
 
@@ -753,9 +757,9 @@ def test_analyze_overflow_first_and_retry_do_not_fallback_to_original():
 def test_overflow_reduction_prefers_paragraph_boundary():
 
     text = (
-        ("الف " * 240)
+        ("الف " * 200)
         + "\n\n"
-        + ("ب " * 240)
+        + ("ب " * 260)
     ).strip()
 
     reduced = reduce_overflow_at_safe_boundary(
