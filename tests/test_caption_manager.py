@@ -410,7 +410,7 @@ def test_media_caption_whitespace_normalization_avoids_followup_without_ai(
 ):
 
     body = (
-        "ا" * 965
+        "ا" * 983
     )
 
     main_text = (
@@ -587,23 +587,21 @@ def test_entity_media_whitespace_normalization_preserves_one_caption(
 ):
 
     main_text = (
-        "❇️ تیتر خبر\n\nمتن کوتاه"
+        "❇️ تیتر خبر\n\n\n\n"
+        + ("ا" * 482)
+        + "\n\n\n\n"
+        + ("ب" * 481)
+    )
+
+    normalized_main = (
+        normalize_media_caption_whitespace(
+            main_text,
+            label="test_entity_main"
+        )
     )
 
     raw_blockquote = (
-        ("ا" * 320)
-        + "\n\n\n\n"
-        + ("ب" * 320)
-        + "\n\n\n\n"
-        + ("ج" * 320)
-        + "\n\n\n"
-    )
-
-    normalized_blockquote = (
-        normalize_media_caption_whitespace(
-            raw_blockquote,
-            label="test_blockquote"
-        )
+        "نقل‌قول کوتاه"
     )
 
     raw_entity_caption = (
@@ -626,12 +624,12 @@ def test_entity_media_whitespace_normalization_preserves_one_caption(
 
     normalized_entity_result = (
         build_telegram_caption_entities(
-            main_text=main_text,
+            main_text=normalized_main,
             blockquote_blocks=[
                 {
                     "type": "blockquote",
                     "offset": 0,
-                    "text": normalized_blockquote,
+                    "text": raw_blockquote,
                 }
             ],
             expandable_blocks=[],
