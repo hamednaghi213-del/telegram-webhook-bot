@@ -1048,6 +1048,50 @@ def resolve_summarizer(
 
 
 # =========================================================
+# SAFE TRUNCATION HELPER
+# =========================================================
+
+def safe_truncate_summary_to_limit(
+    text: str,
+    limit: int
+) -> str:
+    """
+    Truncates *text* to at most *limit* characters,
+    respecting natural boundaries in this priority order:
+      1. Paragraph break (\\n\\n)
+      2. Sentence-ending punctuation (۔ . ! ? ؟)
+      3. Word boundary (space)
+      4. Hard cut at *limit* (last resort)
+
+    Returns text with len(result) <= limit.
+    """
+
+    if len(text) <= limit:
+        return text
+
+    window = text[:limit]
+
+    # 1. Paragraph break
+    idx = window.rfind("\n\n")
+    if idx > 0:
+        return text[:idx].rstrip()
+
+    # 2. Sentence boundary
+    for punct in ("۔", ".", "!", "?", "؟"):
+        idx = window.rfind(punct)
+        if idx > 0:
+            return text[: idx + 1].rstrip()
+
+    # 3. Word boundary
+    idx = window.rfind(" ")
+    if idx > 0:
+        return text[:idx].rstrip()
+
+    # 4. Hard cut
+    return text[:limit]
+
+
+# =========================================================
 # EDITORIAL VALIDATION
 # =========================================================
 
@@ -1627,6 +1671,112 @@ def generate_editorial_candidate(
             f"{overflow_validation.get('errors', [])} | "
             f"final_limit={target_length}"
         )
+
+        # If the only remaining error is still
+        # summary_exceeds_target, attempt boundary-aware
+        # truncation before giving up entirely.
+        #
+        # Truncation is attempted on:
+        #   1. overflow_candidate – validated above; only
+        #      overflow error confirmed by the guard.
+        #   2. first_candidate (candidate) – its validation
+        #      is confirmed overflow-only by the
+        #      can_retry_overflow guard at line entry.
+        #
+        # certainty_retry_called / length_retry_called are
+        # False here: this code path is inside the overflow
+        # retry block, which executes before either of
+        # those retry stages is reached.
+        if only_overflow_validation_error(
+            overflow_validation
+        ):
+
+            for src_name, src_text, src_validation in (
+                (
+                    "overflow_candidate",
+                    overflow_candidate,
+                    overflow_validation,
+                ),
+                (
+                    "first_candidate",
+                    candidate,
+                    # can_retry_overflow already confirmed
+                    # this is only-overflow-error
+                    validation,
+                ),
+            ):
+
+                if not only_overflow_validation_error(
+                    src_validation
+                ):
+                    continue
+
+                truncated = (
+                    safe_truncate_summary_to_limit(
+                        src_text,
+                        target_length
+                    )
+                )
+
+                trunc_validation = (
+                    validate_editorial_candidate(
+                        original_text=original_text,
+                        candidate_text=truncated,
+                        target_length=target_length,
+                        content_type=content_type
+                    )
+                )
+
+                if trunc_validation["valid"]:
+
+                    logger.info(
+                        f"✂️ Editorial overflow "
+                        f"truncation accepted | "
+                        f"type={content_type} | "
+                        f"source={src_name} | "
+                        f"before="
+                        f"{len(src_text)} | "
+                        f"after="
+                        f"{len(truncated)} | "
+                        f"limit={target_length}"
+                    )
+
+                    return {
+                        "success":
+                            True,
+
+                        "candidate":
+                            truncated,
+
+                        "validation":
+                            trunc_validation,
+
+                        "reason":
+                            "accepted_after_truncation",
+
+                        "error":
+                            None,
+
+                        # Truncation block reached before
+                        # certainty / length retry stages
+                        "certainty_retry_called":
+                            False,
+
+                        "length_retry_called":
+                            False,
+
+                        "overflow_retry_called":
+                            True,
+
+                        "first_candidate":
+                            candidate,
+
+                        "first_validation":
+                            validation,
+
+                        "overflow_target":
+                            overflow_target
+                    }
 
         return {
             "success":

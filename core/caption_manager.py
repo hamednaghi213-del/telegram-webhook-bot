@@ -2860,6 +2860,48 @@ def create_bale_plan(
 # TELEGRAM TEXT PLAN
 # =========================================================
 
+def try_combine_text_and_blockquotes_inline(
+    main_text: str,
+    blockquote_blocks: List[
+        Dict[str, Any]
+    ],
+    expandable_blocks: List[
+        Dict[str, Any]
+    ],
+    branding: str
+) -> Optional[str]:
+    """
+    Returns a single combined message string if
+    main_text + all inline blockquotes + branding
+    fits within TELEGRAM_MESSAGE_LIMIT.
+    Returns None if the combined content is too long.
+    """
+
+    inline_bq = build_inline_telegram_blockquotes(
+        blockquote_blocks,
+        expandable_blocks
+    )
+
+    if not inline_bq:
+        return None
+
+    combined = (
+        f"{main_text}\n\n{inline_bq}"
+        if main_text
+        else inline_bq
+    )
+
+    with_branding = append_branding(
+        combined,
+        branding
+    )
+
+    if len(with_branding) <= TELEGRAM_MESSAGE_LIMIT:
+        return with_branding
+
+    return None
+
+
 def create_telegram_text_plan(
     main_text: str,
     blockquote_blocks: List[
@@ -2878,6 +2920,22 @@ def create_telegram_text_plan(
     branding = normalize_text(
         branding
     )
+
+    # Check if main_text + blockquotes + branding
+    # all fit in one message before splitting
+    combined = try_combine_text_and_blockquotes_inline(
+        main_text,
+        blockquote_blocks,
+        expandable_blocks,
+        branding
+    )
+
+    if combined is not None:
+
+        return {
+            "messages": [combined],
+            "blockquote_messages": []
+        }
 
     normal_final = append_branding(
         main_text,
