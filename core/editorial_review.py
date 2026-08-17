@@ -1675,20 +1675,41 @@ def generate_editorial_candidate(
         # If the only remaining error is still
         # summary_exceeds_target, attempt boundary-aware
         # truncation before giving up entirely.
+        #
+        # Truncation is attempted on:
+        #   1. overflow_candidate – validated above; only
+        #      overflow error confirmed by the guard.
+        #   2. first_candidate (candidate) – its validation
+        #      is confirmed overflow-only by the
+        #      can_retry_overflow guard at line entry.
+        #
+        # certainty_retry_called / length_retry_called are
+        # False here: this code path is inside the overflow
+        # retry block, which executes before either of
+        # those retry stages is reached.
         if only_overflow_validation_error(
             overflow_validation
         ):
 
-            for src_name, src_text in (
+            for src_name, src_text, src_validation in (
                 (
                     "overflow_candidate",
                     overflow_candidate,
+                    overflow_validation,
                 ),
                 (
                     "first_candidate",
                     candidate,
+                    # can_retry_overflow already confirmed
+                    # this is only-overflow-error
+                    validation,
                 ),
             ):
+
+                if not only_overflow_validation_error(
+                    src_validation
+                ):
+                    continue
 
                 truncated = (
                     safe_truncate_summary_to_limit(
@@ -1736,6 +1757,8 @@ def generate_editorial_candidate(
                         "error":
                             None,
 
+                        # Truncation block reached before
+                        # certainty / length retry stages
                         "certainty_retry_called":
                             False,
 
