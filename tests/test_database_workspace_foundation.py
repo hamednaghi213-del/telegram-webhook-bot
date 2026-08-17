@@ -1,5 +1,6 @@
 import importlib
 import sys
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -102,16 +103,18 @@ class FakeSupabase:
 @pytest.fixture
 def db_module(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
-    monkeypatch.setenv("SUPABASE_KEY", "test-key")
-
-    if "core.database" in sys.modules:
-        db = importlib.reload(sys.modules["core.database"])
-    else:
-        import core.database as db
+    monkeypatch.setenv("SUPABASE_KEY", "a.b.c")
 
     fake_supabase = FakeSupabase()
-    monkeypatch.setattr(db, "supabase", fake_supabase)
-    return db
+    fake_supabase_module = types.ModuleType("supabase")
+    fake_supabase_module.create_client = lambda _url, _key: fake_supabase
+    monkeypatch.setitem(sys.modules, "supabase", fake_supabase_module)
+
+    if "core.database" in sys.modules:
+        del sys.modules["core.database"]
+    import core.database as db
+
+    return importlib.reload(db)
 
 
 def test_create_user_from_telegram_id(db_module):
