@@ -1551,6 +1551,547 @@ def try_smart_telegram_media_summary(
 
 
 # =========================================================
+# SMART TELEGRAM TEXT SUMMARY
+# =========================================================
+
+def try_smart_telegram_text_summary(
+    main_text: str,
+    blockquote_blocks: List[
+        Dict[str, Any]
+    ],
+    expandable_blocks: List[
+        Dict[str, Any]
+    ],
+    branding: str
+) -> Optional[Dict[str, Any]]:
+
+    if not smart_summarizer_enabled():
+        return None
+
+    if not gemini_provider_configured():
+        return None
+
+    main_text = normalize_text(
+        main_text
+    )
+
+    branding = normalize_text(
+        branding
+    )
+
+    combined_blocks = (
+        _combined_blockquotes(
+            blockquote_blocks,
+            expandable_blocks
+        )
+    )
+
+    if not combined_blocks:
+
+        branding_cost = (
+            len(branding)
+            + 2
+            if branding
+            else 0
+        )
+
+        target_length = (
+            TELEGRAM_MESSAGE_LIMIT
+            - branding_cost
+        )
+
+        if target_length <= 0:
+            return None
+
+        if len(main_text) <= target_length:
+            return None
+
+        result = (
+            summarize_text_safely(
+                original_text=main_text,
+                target_length=target_length,
+                summarizer=(
+                    summarize_with_gemini
+                )
+            )
+        )
+
+        if not result.success:
+            return None
+
+        summary_text = normalize_text(
+            result.summary_text
+        )
+
+        if not summary_text:
+            return None
+
+        final_message = (
+            append_branding(
+                summary_text,
+                branding
+            )
+        )
+
+        if (
+            not final_message
+            or len(final_message)
+            > TELEGRAM_MESSAGE_LIMIT
+        ):
+            return None
+
+        return {
+            "messages": [
+                final_message
+            ],
+            "message_parse_modes": [
+                None
+            ],
+            "blockquote_messages": []
+        }
+
+    source_parts: List[
+        Dict[str, Any]
+    ] = []
+
+    preserve_short_main = bool(
+        main_text
+        and len(main_text)
+        <= SMART_MAIN_PRESERVE_LIMIT
+    )
+
+    if main_text:
+
+        source_parts.append({
+            "kind":
+                "main",
+            "text":
+                main_text,
+            "offset":
+                0,
+            "expandable":
+                False,
+            "preserve":
+                preserve_short_main
+        })
+
+    for block in combined_blocks:
+
+        cleaned = (
+            clean_blockquote_text(
+                block.get(
+                    "text",
+                    ""
+                )
+            )
+        )
+
+        if not cleaned:
+            continue
+
+        source_parts.append({
+            "kind":
+                "block",
+            "text":
+                cleaned,
+            "offset":
+                block.get(
+                    "offset",
+                    0
+                ),
+            "expandable":
+                bool(
+                    block.get(
+                        "expandable",
+                        False
+                    )
+                ),
+            "preserve":
+                False
+        })
+
+    if not source_parts:
+        return None
+
+    branding_cost = (
+        len(branding)
+        + 2
+        if branding
+        else 0
+    )
+
+    available_content = (
+        TELEGRAM_MESSAGE_LIMIT
+        - branding_cost
+    )
+
+    if available_content <= 0:
+        return None
+
+    separator_cost = (
+        2
+        * max(
+            0,
+            len(source_parts)
+            - 1
+        )
+    )
+
+    available_text_capacity = (
+        available_content
+        - separator_cost
+    )
+
+    if available_text_capacity <= 0:
+        return None
+
+    total_source_text_length = sum(
+        len(
+            item[
+                "text"
+            ]
+        )
+        for item
+        in source_parts
+    )
+
+    if total_source_text_length <= 0:
+        return None
+
+    visible_source_length = (
+        total_source_text_length
+        + separator_cost
+    )
+
+    if (
+        visible_source_length
+        <= available_content
+    ):
+        return None
+
+    preserved_length = sum(
+        len(
+            item[
+                "text"
+            ]
+        )
+        for item
+        in source_parts
+        if item.get(
+            "preserve"
+        )
+    )
+
+    summarizable_parts = [
+        item
+        for item
+        in source_parts
+        if not item.get(
+            "preserve"
+        )
+    ]
+
+    summarizable_source_length = sum(
+        len(
+            item[
+                "text"
+            ]
+        )
+        for item
+        in summarizable_parts
+    )
+
+    summarizable_budget = (
+        available_text_capacity
+        - preserved_length
+    )
+
+    if summarizable_budget <= 0:
+        return None
+
+    if (
+        summarizable_source_length
+        <= summarizable_budget
+    ):
+        return None
+
+    summarized_parts: List[
+        Dict[str, Any]
+    ] = []
+
+    remaining_budget = (
+        summarizable_budget
+    )
+
+    remaining_source_length = (
+        summarizable_source_length
+    )
+
+    summarizable_index = 0
+
+    total_summarizable_parts = len(
+        summarizable_parts
+    )
+
+    for item in source_parts:
+
+        source_text = (
+            item[
+                "text"
+            ]
+        )
+
+        source_length = len(
+            source_text
+        )
+
+        if item.get(
+            "preserve"
+        ):
+
+            summarized_parts.append({
+                "kind":
+                    item[
+                        "kind"
+                    ],
+                "text":
+                    source_text,
+                "offset":
+                    item[
+                        "offset"
+                    ],
+                "expandable":
+                    item[
+                        "expandable"
+                    ]
+            })
+
+            continue
+
+        summarizable_index += 1
+
+        is_last = (
+            summarizable_index
+            == total_summarizable_parts
+        )
+
+        if is_last:
+
+            target_length = max(
+                1,
+                remaining_budget
+            )
+
+        else:
+
+            if remaining_source_length <= 0:
+                return None
+
+            proportional_target = int(
+                remaining_budget
+                * (
+                    source_length
+                    / remaining_source_length
+                )
+            )
+
+            target_length = max(
+                1,
+                min(
+                    source_length,
+                    proportional_target
+                )
+            )
+
+        if source_length <= target_length:
+
+            summarized_parts.append({
+                "kind":
+                    item[
+                        "kind"
+                    ],
+                "text":
+                    source_text,
+                "offset":
+                    item[
+                        "offset"
+                    ],
+                "expandable":
+                    item[
+                        "expandable"
+                    ]
+            })
+
+            remaining_budget -= (
+                source_length
+            )
+
+            remaining_source_length -= (
+                source_length
+            )
+
+            continue
+
+        result = (
+            summarize_text_safely(
+                original_text=(
+                    source_text
+                ),
+                target_length=(
+                    target_length
+                ),
+                summarizer=(
+                    summarize_with_gemini
+                )
+            )
+        )
+
+        if not result.success:
+            return None
+
+        summarized_text = normalize_text(
+            result.summary_text
+        )
+
+        if not summarized_text:
+            return None
+
+        if (
+            len(summarized_text)
+            > target_length
+        ):
+            return None
+
+        summarized_parts.append({
+            "kind":
+                item[
+                    "kind"
+                ],
+            "text":
+                summarized_text,
+            "offset":
+                item[
+                    "offset"
+                ],
+            "expandable":
+                item[
+                    "expandable"
+                ]
+        })
+
+        remaining_budget -= len(
+            summarized_text
+        )
+
+        remaining_source_length -= (
+            source_length
+        )
+
+        if remaining_budget < 0:
+            return None
+
+    summarized_main = ""
+
+    summarized_normal_blocks: List[
+        Dict[str, Any]
+    ] = []
+
+    summarized_expandable_blocks: List[
+        Dict[str, Any]
+    ] = []
+
+    for item in summarized_parts:
+
+        if (
+            item[
+                "kind"
+            ]
+            == "main"
+        ):
+
+            summarized_main = (
+                item[
+                    "text"
+                ]
+            )
+
+            continue
+
+        rebuilt_block = {
+            "offset":
+                item[
+                    "offset"
+                ],
+            "text":
+                item[
+                    "text"
+                ]
+        }
+
+        if item[
+            "expandable"
+        ]:
+
+            rebuilt_block[
+                "type"
+            ] = (
+                "expandable_blockquote"
+            )
+
+            summarized_expandable_blocks.append(
+                rebuilt_block
+            )
+
+        else:
+
+            rebuilt_block[
+                "type"
+            ] = "blockquote"
+
+            summarized_normal_blocks.append(
+                rebuilt_block
+            )
+
+    final_message = (
+        build_telegram_html_caption(
+            main_text=(
+                summarized_main
+            ),
+            blockquote_blocks=(
+                summarized_normal_blocks
+            ),
+            expandable_blocks=(
+                summarized_expandable_blocks
+            ),
+            branding=(
+                branding
+            )
+        )
+    )
+
+    if not final_message:
+        return None
+
+    if (
+        telegram_html_visible_length(
+            final_message
+        )
+        > TELEGRAM_MESSAGE_LIMIT
+    ):
+        return None
+
+    return {
+        "messages": [
+            final_message
+        ],
+        "message_parse_modes": [
+            "HTML"
+        ],
+        "blockquote_messages": []
+    }
+
+
+# =========================================================
 # TELEGRAM BLOCKQUOTES
 # =========================================================
 
@@ -2869,7 +3410,8 @@ def create_telegram_text_plan(
     expandable_blocks: List[
         Dict[str, Any]
     ],
-    branding: str
+    branding: str,
+    editorial_finalized: bool = False
 ) -> Dict[str, Any]:
 
     main_text = normalize_text(
@@ -2922,6 +3464,28 @@ def create_telegram_text_plan(
                 ],
                 "blockquote_messages": []
             }
+
+        if not editorial_finalized:
+
+            smart_plan = (
+                try_smart_telegram_text_summary(
+                    main_text=(
+                        main_text
+                    ),
+                    blockquote_blocks=(
+                        blockquote_blocks
+                    ),
+                    expandable_blocks=(
+                        expandable_blocks
+                    ),
+                    branding=(
+                        branding
+                    )
+                )
+            )
+
+            if smart_plan is not None:
+                return smart_plan
 
         # -------------------------------------------------
         # Genuine split required: brand every part once.
@@ -2994,6 +3558,24 @@ def create_telegram_text_plan(
         ]
 
     else:
+
+        if not editorial_finalized:
+
+            smart_plan = (
+                try_smart_telegram_text_summary(
+                    main_text=(
+                        main_text
+                    ),
+                    blockquote_blocks=[],
+                    expandable_blocks=[],
+                    branding=(
+                        branding
+                    )
+                )
+            )
+
+            if smart_plan is not None:
+                return smart_plan
 
         compact_text = (
             compact_long_text(
@@ -3364,7 +3946,10 @@ def analyze_content(
             main_text,
             blockquote_blocks,
             expandable_blocks,
-            branding
+            branding,
+            editorial_finalized=(
+                editorial_finalized
+            )
         )
     )
 
