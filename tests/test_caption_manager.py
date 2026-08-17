@@ -13,6 +13,7 @@ from core.caption_manager import (
     place_branding,
     create_telegram_blockquote_messages,
     create_bale_blockquote_messages,
+    build_telegram_html_caption,
     telegram_html_visible_length,
     analyze_content,
 )
@@ -198,6 +199,25 @@ def assert_telegram_text_limits(
         assert (
             len(message)
             <= TELEGRAM_MESSAGE_LIMIT
+        )
+
+    parse_modes = list(
+        telegram_text.get(
+            "message_parse_modes",
+            []
+        )
+        or []
+    )
+
+    if parse_modes:
+
+        assert (
+            len(parse_modes)
+            == len(
+                telegram_text[
+                    "messages"
+                ]
+            )
         )
 
     for message in telegram_text[
@@ -1475,6 +1495,12 @@ def test_telegram_text_plan_expandable_blockquote():
         ]
     )
 
+    parse_modes = (
+        telegram_text[
+            "message_parse_modes"
+        ]
+    )
+
     blockquotes = (
         telegram_text[
             "blockquote_messages"
@@ -1492,6 +1518,11 @@ def test_telegram_text_plan_expandable_blockquote():
     )
 
     assert (
+        parse_modes
+        == ["HTML"]
+    )
+
+    assert (
         "<blockquote expandable>"
         in messages[0]
     )
@@ -1503,6 +1534,131 @@ def test_telegram_text_plan_expandable_blockquote():
 
     assert_telegram_text_limits(
         plan
+    )
+
+
+def test_telegram_text_plan_normal_blockquote_keeps_html_parse_mode():
+
+    plan = analyze_content(
+        main_text=(
+            "✨ غلامحسین کرباسچی: منظور مجلس از طرح مقابله با نفوذ محدود کردن رسانه ها است.\n\n"
+            "🔷 با محدود کردن اینترنت و بستن تمام پنجره ها ممکن است صدای خودمان هم بیرون نرود."
+        ),
+        blockquote_blocks=[
+            {
+                "text": (
+                    "چرا طرح ضد جاسوسی در مجلس تصویب شده صدای اصلاح طلب در اومده از چی ترسیدن"
+                ),
+                "offset": 100
+            }
+        ],
+        branding=DEFAULT_BRANDING
+    )
+
+    telegram_text = (
+        plan.text["telegram"]
+    )
+
+    assert (
+        len(
+            telegram_text["messages"]
+        )
+        == 1
+    )
+
+    assert (
+        telegram_text[
+            "message_parse_modes"
+        ]
+        == ["HTML"]
+    )
+
+    message = telegram_text[
+        "messages"
+    ][0]
+
+    assert (
+        "<blockquote>"
+        in message
+    )
+
+    assert (
+        "&lt;blockquote&gt;"
+        not in message
+    )
+
+    assert (
+        telegram_text[
+            "blockquote_messages"
+        ]
+        == []
+    )
+
+    assert_telegram_text_limits(
+        plan
+    )
+
+
+def test_telegram_text_plan_without_blockquote_stays_plain():
+
+    plan = analyze_content(
+        main_text=(
+            "خبر عادی بدون نقل قول"
+        ),
+        branding=DEFAULT_BRANDING
+    )
+
+    telegram_text = (
+        plan.text["telegram"]
+    )
+
+    assert (
+        telegram_text[
+            "message_parse_modes"
+        ]
+        == [None]
+    )
+
+    assert (
+        "<blockquote>"
+        not in telegram_text[
+            "messages"
+        ][0]
+    )
+
+
+def test_build_telegram_html_caption_does_not_double_escape_blockquote_tags():
+
+    result = build_telegram_html_caption(
+        main_text="متن <اصلی>",
+        blockquote_blocks=[
+            {
+                "text": "نقل قول <ویژه>",
+                "offset": 10
+            }
+        ],
+        expandable_blocks=[],
+        branding="#دنیا <۲۴>"
+    )
+
+    assert (
+        "متن &lt;اصلی&gt;"
+        in result
+    )
+
+    assert (
+        "<blockquote>نقل قول &lt;ویژه&gt;</blockquote>"
+        in result
+    )
+
+    assert (
+        "#دنیا &lt;۲۴&gt;"
+        in result
+    )
+
+    assert (
+        "&lt;blockquote&gt;"
+        not in result
     )
 
 

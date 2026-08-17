@@ -153,6 +153,14 @@ TEXT_MESSAGE = {
 
 def setup_function():
 
+    sys.modules[
+        "core.database"
+    ] = fake_database
+
+    sys.modules[
+        "core.command_handler"
+    ] = fake_command_handler
+
     fake_database.get_tenant.reset_mock()
 
     fake_database.get_tenant.return_value = {
@@ -1663,7 +1671,8 @@ def test_text_message_preserves_own_branding():
     )
 
     mock_telegram.assert_called_once_with(
-        expected_output
+        expected_output,
+        parse_mode=None
     )
 
     fake_bale_module.send_to_bale_for_user.assert_called_once_with(
