@@ -17,6 +17,7 @@ from core.caption_manager import (
     telegram_html_visible_length,
     analyze_content,
 )
+from core.smart_summarizer import SummaryResult
 
 
 # =========================================================
@@ -1816,6 +1817,423 @@ def test_telegram_text_does_not_split_when_final_message_fits_4096():
     assert (
         len(messages[0])
         <= TELEGRAM_MESSAGE_LIMIT
+    )
+
+
+# =========================================================
+# SMART TELEGRAM TEXT PLAN
+# =========================================================
+
+def _fake_summary_result(
+    original_text: str,
+    target_length: int,
+    summary_text: str,
+    success: bool = True
+) -> SummaryResult:
+
+    return SummaryResult(
+        success=success,
+        original_text=original_text,
+        summary_text=summary_text,
+        target_length=target_length,
+        original_length=len(original_text),
+        summary_length=len(summary_text),
+        reduction_ratio=0.0,
+        validation_passed=success,
+        reason=(
+            "ok"
+            if success
+            else "rejected"
+        ),
+        metadata={}
+    )
+
+
+def test_telegram_text_under_4096_does_not_call_smart_summary(
+    monkeypatch
+):
+
+    called = {
+        "smart": 0
+    }
+
+    def fake_smart(*args, **kwargs):
+        called["smart"] += 1
+        return None
+
+    monkeypatch.setattr(
+        "core.caption_manager.try_smart_telegram_text_summary",
+        fake_smart
+    )
+
+    plan = analyze_content(
+        main_text=(
+            "خبر کوتاه و عادی"
+        ),
+        branding=DEFAULT_BRANDING
+    )
+
+    assert (
+        called["smart"]
+        == 0
+    )
+
+    assert (
+        len(
+            plan.text["telegram"]["messages"]
+        )
+        == 1
+    )
+
+
+def test_telegram_text_over_4096_uses_smart_summary_before_split(
+    monkeypatch
+):
+
+    monkeypatch.setattr(
+        "core.caption_manager.smart_summarizer_enabled",
+        lambda: True
+    )
+    monkeypatch.setattr(
+        "core.caption_manager.gemini_provider_configured",
+        lambda: True
+    )
+
+    calls = {
+        "count": 0
+    }
+
+    def fake_summarize_text_safely(
+        original_text,
+        target_length,
+        summarizer
+    ):
+        calls["count"] += 1
+        return _fake_summary_result(
+            original_text=original_text,
+            target_length=target_length,
+            summary_text=(
+                "خلاصه خبر"
+            )
+        )
+
+    monkeypatch.setattr(
+        "core.caption_manager.summarize_text_safely",
+        fake_summarize_text_safely
+    )
+
+    plan = analyze_content(
+        main_text=(
+            "ا"
+            * 4500
+        ),
+        branding=DEFAULT_BRANDING
+    )
+
+    telegram_text = plan.text["telegram"]
+
+    assert (
+        calls["count"]
+        >= 1
+    )
+    assert (
+        len(
+            telegram_text["messages"]
+        )
+        == 1
+    )
+    assert (
+        telegram_text["messages"][0]
+        .count(DEFAULT_BRANDING)
+        == 1
+    )
+
+
+def test_telegram_text_blockquote_smart_attempt_keeps_html_structure(
+    monkeypatch
+):
+
+    monkeypatch.setattr(
+        "core.caption_manager.smart_summarizer_enabled",
+        lambda: True
+    )
+    monkeypatch.setattr(
+        "core.caption_manager.gemini_provider_configured",
+        lambda: True
+    )
+
+    def fake_summarize_text_safely(
+        original_text,
+        target_length,
+        summarizer
+    ):
+        return _fake_summary_result(
+            original_text=original_text,
+            target_length=target_length,
+            summary_text=(
+                "خلاصه نقل قول"
+            )
+        )
+
+    monkeypatch.setattr(
+        "core.caption_manager.summarize_text_safely",
+        fake_summarize_text_safely
+    )
+
+    plan = analyze_content(
+        main_text=(
+            "تیتر کوتاه"
+        ),
+        blockquote_blocks=[
+            {
+                "text": (
+                    "نقل قول خیلی بلند "
+                    * 450
+                ),
+                "offset": 50
+            }
+        ],
+        branding=DEFAULT_BRANDING
+    )
+
+    telegram_text = plan.text["telegram"]
+
+    assert (
+        len(
+            telegram_text["messages"]
+        )
+        == 1
+    )
+    assert (
+        telegram_text[
+            "message_parse_modes"
+        ]
+        == ["HTML"]
+    )
+    assert (
+        "<blockquote>"
+        in telegram_text["messages"][0]
+    )
+    assert (
+        "&lt;blockquote&gt;"
+        not in telegram_text["messages"][0]
+    )
+    assert (
+        telegram_text[
+            "blockquote_messages"
+        ]
+        == []
+    )
+
+
+def test_telegram_text_expandable_blockquote_smart_attempt(
+    monkeypatch
+):
+
+    monkeypatch.setattr(
+        "core.caption_manager.smart_summarizer_enabled",
+        lambda: True
+    )
+    monkeypatch.setattr(
+        "core.caption_manager.gemini_provider_configured",
+        lambda: True
+    )
+
+    def fake_summarize_text_safely(
+        original_text,
+        target_length,
+        summarizer
+    ):
+        return _fake_summary_result(
+            original_text=original_text,
+            target_length=target_length,
+            summary_text=(
+                "خلاصه تحلیل"
+            )
+        )
+
+    monkeypatch.setattr(
+        "core.caption_manager.summarize_text_safely",
+        fake_summarize_text_safely
+    )
+
+    plan = analyze_content(
+        main_text=(
+            "تیتر کوتاه"
+        ),
+        expandable_blocks=[
+            {
+                "text": (
+                    "تحلیل خیلی بلند "
+                    * 450
+                ),
+                "offset": 40
+            }
+        ],
+        branding=DEFAULT_BRANDING
+    )
+
+    telegram_text = plan.text["telegram"]
+
+    assert (
+        len(
+            telegram_text["messages"]
+        )
+        == 1
+    )
+    assert (
+        telegram_text[
+            "message_parse_modes"
+        ]
+        == ["HTML"]
+    )
+    assert (
+        "<blockquote expandable>"
+        in telegram_text["messages"][0]
+    )
+    assert (
+        telegram_text[
+            "blockquote_messages"
+        ]
+        == []
+    )
+
+
+def test_telegram_text_smart_disabled_falls_back_to_split(
+    monkeypatch
+):
+
+    monkeypatch.setattr(
+        "core.caption_manager.smart_summarizer_enabled",
+        lambda: False
+    )
+
+    plan = analyze_content(
+        main_text=(
+            "الف "
+            * 3000
+        ),
+        branding=DEFAULT_BRANDING
+    )
+
+    assert (
+        len(
+            plan.text["telegram"]["messages"]
+        )
+        >= 2
+    )
+
+
+def test_telegram_text_provider_unavailable_falls_back_to_split(
+    monkeypatch
+):
+
+    monkeypatch.setattr(
+        "core.caption_manager.smart_summarizer_enabled",
+        lambda: True
+    )
+    monkeypatch.setattr(
+        "core.caption_manager.gemini_provider_configured",
+        lambda: False
+    )
+
+    plan = analyze_content(
+        main_text=(
+            "الف "
+            * 3000
+        ),
+        branding=DEFAULT_BRANDING
+    )
+
+    assert (
+        len(
+            plan.text["telegram"]["messages"]
+        )
+        >= 2
+    )
+
+
+def test_telegram_text_rejected_smart_summary_falls_back_to_split(
+    monkeypatch
+):
+
+    monkeypatch.setattr(
+        "core.caption_manager.smart_summarizer_enabled",
+        lambda: True
+    )
+    monkeypatch.setattr(
+        "core.caption_manager.gemini_provider_configured",
+        lambda: True
+    )
+
+    def fake_summarize_text_safely(
+        original_text,
+        target_length,
+        summarizer
+    ):
+        return _fake_summary_result(
+            original_text=original_text,
+            target_length=target_length,
+            summary_text="",
+            success=False
+        )
+
+    monkeypatch.setattr(
+        "core.caption_manager.summarize_text_safely",
+        fake_summarize_text_safely
+    )
+
+    plan = analyze_content(
+        main_text=(
+            "الف "
+            * 3000
+        ),
+        branding=DEFAULT_BRANDING
+    )
+
+    messages = plan.text["telegram"]["messages"]
+
+    assert (
+        len(messages)
+        >= 2
+    )
+
+    for message in messages:
+        assert (
+            message.count(DEFAULT_BRANDING)
+            == 1
+        )
+
+
+def test_telegram_text_editorial_finalized_skips_smart_summary(
+    monkeypatch
+):
+
+    called = {
+        "smart": 0
+    }
+
+    def fake_smart(*args, **kwargs):
+        called["smart"] += 1
+        return None
+
+    monkeypatch.setattr(
+        "core.caption_manager.try_smart_telegram_text_summary",
+        fake_smart
+    )
+
+    analyze_content(
+        main_text=(
+            "الف "
+            * 3000
+        ),
+        branding=DEFAULT_BRANDING,
+        editorial_finalized=True
+    )
+
+    assert (
+        called["smart"]
+        == 0
     )
 
 
