@@ -1,10 +1,12 @@
 import logging
+import re
 
 from dataclasses import dataclass
 from typing import (
     Any,
     Callable,
     Dict,
+    List,
     Optional,
 )
 
@@ -1158,6 +1160,264 @@ def can_length_retry_validation(
 
 
 # =========================================================
+# OVERFLOW SAFE REDUCTION
+# =========================================================
+
+SENTENCE_BOUNDARY_PATTERN = re.compile(
+    r"[.!?؟؛۔](?:[\]\)»\"'”’\s]|$)"
+)
+
+BOUNDARY_RANK = {
+    "word":
+        1,
+    "sentence":
+        2,
+    "paragraph":
+        3,
+}
+
+
+def _cuts_word_middle(
+    text: str,
+    cut_index: int
+) -> bool:
+
+    if (
+        cut_index <= 0
+        or cut_index >= len(text)
+    ):
+        return False
+
+    return (
+        text[
+            cut_index - 1
+        ].isalnum()
+        and text[
+            cut_index
+        ].isalnum()
+    )
+
+
+def reduce_overflow_at_safe_boundary(
+    text: str,
+    limit: int
+) -> Optional[Dict[str, str]]:
+
+    text = normalize_text(
+        text
+    )
+
+    if not text:
+        return None
+
+    if (
+        limit <= 0
+        or len(text)
+        <= limit
+    ):
+        return None
+
+    def build_reduced(
+        cut_index: int,
+        boundary: str
+    ) -> Optional[Dict[str, str]]:
+
+        if (
+            cut_index <= 0
+            or cut_index > len(text)
+            or cut_index > limit
+        ):
+            return None
+
+        if _cuts_word_middle(
+            text,
+            cut_index
+        ):
+            return None
+
+        reduced = normalize_text(
+            text[
+                :cut_index
+            ].rstrip()
+        )
+
+        if (
+            not reduced
+            or len(reduced)
+            > limit
+        ):
+            return None
+
+        return {
+            "text":
+                reduced,
+            "boundary":
+                boundary,
+        }
+
+    paragraph_index = -1
+
+    for separator in (
+        "\r\n\r\n",
+        "\n\n",
+    ):
+
+        found = text.rfind(
+            separator,
+            0,
+            limit + 1
+        )
+
+        if found > paragraph_index:
+            paragraph_index = found
+
+    if paragraph_index > 0:
+
+        reduced = build_reduced(
+            paragraph_index,
+            "paragraph"
+        )
+
+        if reduced is not None:
+            return reduced
+
+    sentence_cut = -1
+
+    for match in (
+        SENTENCE_BOUNDARY_PATTERN.finditer(
+            text
+        )
+    ):
+
+        boundary = match.start() + 1
+
+        if boundary <= limit:
+            sentence_cut = boundary
+        else:
+            break
+
+    if sentence_cut > 0:
+
+        reduced = build_reduced(
+            sentence_cut,
+            "sentence"
+        )
+
+        if reduced is not None:
+            return reduced
+
+    whitespace_cut = -1
+
+    for index in range(
+        limit,
+        0,
+        -1
+    ):
+
+        if text[
+            index - 1
+        ].isspace():
+            whitespace_cut = index - 1
+            break
+
+    if whitespace_cut > 0:
+
+        reduced = build_reduced(
+            whitespace_cut,
+            "word"
+        )
+
+        if reduced is not None:
+            return reduced
+
+    return None
+
+
+def reduce_valid_overflow_candidate(
+    original_text: str,
+    candidate_text: str,
+    validation: Optional[
+        Dict[str, Any]
+    ],
+    target_length: int,
+    content_type: str
+) -> Optional[Dict[str, Any]]:
+
+    if not only_overflow_validation_error(
+        validation
+    ):
+        return None
+
+    reduced = (
+        reduce_overflow_at_safe_boundary(
+            text=candidate_text,
+            limit=target_length
+        )
+    )
+
+    if reduced is None:
+        return None
+
+    reduced_text = reduced[
+        "text"
+    ]
+
+    reduced_validation = (
+        validate_editorial_candidate(
+            original_text=original_text,
+            candidate_text=reduced_text,
+            target_length=target_length,
+            content_type=content_type
+        )
+    )
+
+    if not reduced_validation[
+        "valid"
+    ]:
+        return None
+
+    return {
+        "candidate":
+            reduced_text,
+        "validation":
+            reduced_validation,
+        "boundary":
+            reduced[
+                "boundary"
+            ],
+    }
+
+
+def select_best_reduced_overflow_candidate(
+    candidates: List[
+        Dict[str, Any]
+    ]
+) -> Optional[Dict[str, Any]]:
+
+    if not candidates:
+        return None
+
+    return max(
+        candidates,
+        key=lambda item: (
+            len(
+                item.get(
+                    "candidate",
+                    ""
+                )
+            ),
+            BOUNDARY_RANK.get(
+                item.get(
+                    "boundary",
+                    "word"
+                ),
+                0
+            ),
+        )
+    )
+
+
+# =========================================================
 # PROVIDER GENERATION
 # =========================================================
 
@@ -1286,7 +1546,28 @@ def generate_editorial_candidate(
     )
 
     if can_retry_overflow:
+        reduced_candidates: List[
+            Dict[str, Any]
+        ] = []
 
+        first_reduced = (
+            reduce_valid_overflow_candidate(
+                original_text=original_text,
+                candidate_text=candidate,
+                validation=validation,
+                target_length=target_length,
+                content_type=content_type
+            )
+        )
+
+        if first_reduced is not None:
+            reduced_candidates.append({
+                **first_reduced,
+                "source":
+                    "first",
+            })
+
+        
         overflow_target = (
             target_length
             - OVERFLOW_RETRY_MARGIN
@@ -1351,6 +1632,73 @@ def generate_editorial_candidate(
                 f"❌ Editorial overflow retry failed | "
                 f"{e}"
             )
+
+            best_reduced = (
+                select_best_reduced_overflow_candidate(
+                    reduced_candidates
+                )
+            )
+
+            if best_reduced is not None:
+
+                logger.info(
+                    f"✅ Editorial overflow boundary "
+                    f"fallback accepted | "
+                    f"type={content_type} | "
+                    f"source={best_reduced['source']} | "
+                    f"boundary={best_reduced['boundary']} | "
+                    f"final={len(best_reduced['candidate'])} | "
+                    f"target={target_length}"
+                )
+
+                return {
+                    "success":
+                        True,
+
+                    "candidate":
+                        best_reduced[
+                            "candidate"
+                        ],
+
+                    "validation":
+                        best_reduced[
+                            "validation"
+                        ],
+
+                    "reason":
+                        "accepted_after_overflow_boundary_reduction",
+
+                    "error":
+                        None,
+
+                    "certainty_retry_called":
+                        False,
+
+                    "length_retry_called":
+                        False,
+
+                    "overflow_retry_called":
+                        True,
+
+                    "first_candidate":
+                        candidate,
+
+                    "first_validation":
+                        validation,
+
+                    "overflow_target":
+                        overflow_target,
+
+                    "overflow_reduction_source":
+                        best_reduced[
+                            "source"
+                        ],
+
+                    "overflow_reduction_boundary":
+                        best_reduced[
+                            "boundary"
+                        ]
+                }
 
             return {
                 "success":
@@ -1617,6 +1965,92 @@ def generate_editorial_candidate(
                     "overflow_target":
                         overflow_target
                 }
+
+        overflow_reduced = (
+            reduce_valid_overflow_candidate(
+                original_text=original_text,
+                candidate_text=overflow_candidate,
+                validation=overflow_validation,
+                target_length=target_length,
+                content_type=content_type
+            )
+        )
+
+        if overflow_reduced is not None:
+            reduced_candidates.append({
+                **overflow_reduced,
+                "source":
+                    "retry",
+            })
+
+        best_reduced = (
+            select_best_reduced_overflow_candidate(
+                reduced_candidates
+            )
+        )
+
+        if best_reduced is not None:
+
+            logger.info(
+                f"✅ Editorial overflow boundary "
+                f"fallback accepted | "
+                f"type={content_type} | "
+                f"source={best_reduced['source']} | "
+                f"boundary={best_reduced['boundary']} | "
+                f"first={len(candidate)} | "
+                f"retry={len(overflow_candidate)} | "
+                f"final={len(best_reduced['candidate'])} | "
+                f"target={target_length}"
+            )
+
+            return {
+                "success":
+                    True,
+
+                "candidate":
+                    best_reduced[
+                        "candidate"
+                    ],
+
+                "validation":
+                    best_reduced[
+                        "validation"
+                    ],
+
+                "reason":
+                    "accepted_after_overflow_boundary_reduction",
+
+                "error":
+                    None,
+
+                "certainty_retry_called":
+                    False,
+
+                "length_retry_called":
+                    False,
+
+                "overflow_retry_called":
+                    True,
+
+                "first_candidate":
+                    candidate,
+
+                "first_validation":
+                    validation,
+
+                "overflow_target":
+                    overflow_target,
+
+                "overflow_reduction_source":
+                    best_reduced[
+                        "source"
+                    ],
+
+                "overflow_reduction_boundary":
+                    best_reduced[
+                        "boundary"
+                    ]
+            }
 
         logger.warning(
             f"⚠️ Editorial overflow retry rejected | "

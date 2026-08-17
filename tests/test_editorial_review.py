@@ -10,9 +10,12 @@ from core.editorial_review import (
     CONTENT_TYPE_UNCERTAIN,
     MAX_REGENERATION_COUNT,
     analyze_editorial_content,
+    generate_editorial_candidate,
     can_regenerate_editorial_summary,
     parse_editorial_classification,
+    reduce_overflow_at_safe_boundary,
     regenerate_editorial_summary,
+    validate_editorial_candidate as editorial_validator,
 )
 
 
@@ -127,6 +130,30 @@ def fake_regenerator_error(
     raise RuntimeError(
         "provider failed"
     )
+
+
+def build_text_with_length(
+    length
+):
+    block = (
+        "این متن برای آزمون خلاصه‌سازی "
+        "ایمن و مرزبندی‌شده ساخته شده است. "
+    )
+
+    chunks = []
+
+    while len(
+        "".join(chunks)
+    ) < length:
+        chunks.append(
+            block
+        )
+
+    text = "".join(chunks)
+
+    return text[
+        :length
+    ]
 
 
 # =========================================================
@@ -538,6 +565,360 @@ def test_short_opinion_still_requires_approval():
         result.suggested_text
         == text
     )
+
+
+# =========================================================
+# OVERFLOW SAFE FALLBACK
+# =========================================================
+
+def test_generate_editorial_candidate_accepts_valid_within_target():
+
+    original_text = build_text_with_length(
+        1800
+    )
+
+    expected = trim_at_word_boundary(
+        original_text,
+        900
+    )
+
+    def summarizer(
+        text,
+        instruction,
+        target_length
+    ):
+        return expected
+
+    result = generate_editorial_candidate(
+        original_text=original_text,
+        instruction="instruction",
+        target_length=950,
+        content_type=CONTENT_TYPE_OPINION_NOTE,
+        summarizer=summarizer,
+        minimum_length=0
+    )
+
+    assert result["success"] is True
+    assert result["candidate"] == expected
+    assert len(result["candidate"]) <= 950
+
+
+def test_overflow_first_candidate_reduced_safely():
+
+    original_text = build_text_with_length(
+        3918
+    )
+
+    first_candidate = trim_at_word_boundary(
+        original_text,
+        1129
+    )
+
+    bad_retry = (
+        trim_at_word_boundary(
+            original_text,
+            1066
+        )
+        + " 9999"
+    )
+
+    calls = []
+
+    def summarizer(
+        text,
+        instruction,
+        target_length
+    ):
+        calls.append(
+            target_length
+        )
+
+        if len(calls) == 1:
+            return first_candidate
+
+        return bad_retry
+
+    result = generate_editorial_candidate(
+        original_text=original_text,
+        instruction="instruction",
+        target_length=950,
+        content_type=CONTENT_TYPE_OPINION_NOTE,
+        summarizer=summarizer,
+        minimum_length=587
+    )
+
+    assert result["success"] is True
+    assert len(result["candidate"]) <= 950
+    assert result["candidate"] != original_text
+    assert result["overflow_reduction_source"] == "first"
+    assert result["overflow_reduction_boundary"] in {
+        "paragraph",
+        "sentence",
+        "word",
+    }
+
+
+def test_overflow_retry_candidate_reduced_when_first_not_reducible():
+
+    original_text = (
+        "الف" * 1200
+    ) + (
+        " " + build_text_with_length(
+            2800
+        )
+    )
+
+    first_candidate = "الف" * 1129
+
+    retry_candidate = trim_at_word_boundary(
+        original_text,
+        1066
+    )
+
+    calls = []
+
+    def summarizer(
+        text,
+        instruction,
+        target_length
+    ):
+        calls.append(
+            target_length
+        )
+
+        if len(calls) == 1:
+            return first_candidate
+
+        return retry_candidate
+
+    result = generate_editorial_candidate(
+        original_text=original_text,
+        instruction="instruction",
+        target_length=950,
+        content_type=CONTENT_TYPE_OPINION_NOTE,
+        summarizer=summarizer,
+        minimum_length=587
+    )
+
+    assert result["success"] is True
+    assert len(result["candidate"]) <= 950
+    assert result["overflow_reduction_source"] == "retry"
+
+
+def test_analyze_overflow_first_and_retry_do_not_fallback_to_original():
+
+    original_text = build_text_with_length(
+        3918
+    )
+
+    first_candidate = trim_at_word_boundary(
+        original_text,
+        1129
+    )
+
+    retry_candidate = trim_at_word_boundary(
+        original_text,
+        1066
+    )
+
+    calls = []
+
+    def summarizer(
+        text,
+        instruction,
+        target_length
+    ):
+        calls.append(
+            target_length
+        )
+
+        if len(calls) == 1:
+            return first_candidate
+
+        return retry_candidate
+
+    result = analyze_editorial_content(
+        original_text=original_text,
+        target_length=950,
+        classifier=fake_classifier_opinion,
+        summarizer=summarizer
+    )
+
+    assert result.summary_success is True
+    assert result.content_type == CONTENT_TYPE_OPINION_NOTE
+    assert len(result.suggested_text) <= 950
+    assert result.suggested_text != original_text
+
+
+def test_overflow_reduction_prefers_paragraph_boundary():
+
+    text = (
+        ("الف " * 240)
+        + "\n\n"
+        + ("ب " * 240)
+    ).strip()
+
+    reduced = reduce_overflow_at_safe_boundary(
+        text=text,
+        limit=950
+    )
+
+    assert reduced is not None
+    assert reduced["boundary"] == "paragraph"
+    assert len(reduced["text"]) <= 950
+
+
+def test_overflow_reduction_prefers_sentence_boundary_without_paragraph():
+
+    text = (
+        ("این یک جمله کامل است. " * 55)
+        + ("واژه " * 120)
+    ).strip()
+
+    reduced = reduce_overflow_at_safe_boundary(
+        text=text,
+        limit=950
+    )
+
+    assert reduced is not None
+    assert reduced["boundary"] == "sentence"
+    assert len(reduced["text"]) <= 950
+
+
+def test_overflow_reduction_uses_word_boundary_without_sentence():
+
+    text = (
+        " ".join(
+            [
+                "واژه"
+            ] * 400
+        )
+    )
+
+    reduced = reduce_overflow_at_safe_boundary(
+        text=text,
+        limit=950
+    )
+
+    assert reduced is not None
+    assert reduced["boundary"] == "word"
+    assert len(reduced["text"]) <= 950
+
+
+def test_overflow_reduction_never_cuts_word_in_half():
+
+    text = (
+        " ".join(
+            [
+                "ابرواژه"
+            ] * 300
+        )
+    )
+
+    reduced = reduce_overflow_at_safe_boundary(
+        text=text,
+        limit=950
+    )
+
+    assert reduced is not None
+    assert len(reduced["text"]) <= 950
+    cut_index = len(
+        reduced["text"]
+    )
+    assert (
+        cut_index
+        == len(text)
+        or text[
+            cut_index
+        ].isspace()
+    )
+
+
+def test_overflow_reduction_is_revalidated():
+
+    original_text = build_text_with_length(
+        3918
+    )
+
+    first_candidate = trim_at_word_boundary(
+        original_text,
+        1129
+    )
+
+    def summarizer(
+        text,
+        instruction,
+        target_length
+    ):
+        return first_candidate
+
+    with patch(
+        "core.editorial_review.validate_editorial_candidate",
+        wraps=editorial_validator
+    ) as validation_mock:
+        result = generate_editorial_candidate(
+            original_text=original_text,
+            instruction="instruction",
+            target_length=950,
+            content_type=CONTENT_TYPE_OPINION_NOTE,
+            summarizer=summarizer,
+            minimum_length=587
+        )
+
+    assert result["success"] is True
+
+    validated_candidates = [
+        call.kwargs.get(
+            "candidate_text",
+            ""
+        )
+        for call in validation_mock.call_args_list
+    ]
+
+    assert any(
+        len(value) <= 950
+        and value
+        == result["candidate"]
+        for value in validated_candidates
+    )
+
+
+def test_semantic_validation_errors_are_not_bypassed_by_overflow_reduction():
+
+    original_text = build_text_with_length(
+        3918
+    )
+
+    bad_candidate = (
+        trim_at_word_boundary(
+            original_text,
+            1129
+        )
+        + " 9999"
+    )
+
+    calls = []
+
+    def summarizer(
+        text,
+        instruction,
+        target_length
+    ):
+        calls.append(
+            target_length
+        )
+        return bad_candidate
+
+    result = analyze_editorial_content(
+        original_text=original_text,
+        target_length=950,
+        classifier=fake_classifier_opinion,
+        summarizer=summarizer
+    )
+
+    assert result.summary_success is False
+    assert result.reason == "summary_unavailable"
+    assert result.suggested_text == original_text
 
 
 # =========================================================
