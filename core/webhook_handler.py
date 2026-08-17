@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import uuid
 import secrets
 import requests
@@ -59,6 +60,243 @@ def editorial_review_enabled() -> bool:
             "on"
         )
     )
+
+
+# =========================================================
+# EXPLICIT EDITORIAL ADMIN TAGS
+# =========================================================
+
+EDITORIAL_TAG_OPINION = "opinion_note"
+EDITORIAL_TAG_ANALYSIS = "news_analysis"
+
+
+def detect_editorial_admin_tag(
+    text: str
+) -> Tuple[
+    Optional[str],
+    str,
+    int
+]:
+
+    original_text = str(
+        text
+        or ""
+    )
+
+    if not original_text:
+
+        return (
+            None,
+            "",
+            0
+        )
+
+    lines = original_text.splitlines(
+        keepends=True
+    )
+
+    prefix_length = 0
+
+    for raw_line in lines:
+
+        line_without_newline = (
+            raw_line.rstrip(
+                "\r\n"
+            )
+        )
+
+        stripped_line = (
+            line_without_newline.strip()
+        )
+
+        if not stripped_line:
+
+            prefix_length += len(
+                raw_line
+            )
+
+            continue
+
+        normalized = re.sub(
+            r"\s+",
+            "",
+            stripped_line
+        )
+
+        if normalized == "#یادداشت":
+
+            forced_type = (
+                EDITORIAL_TAG_OPINION
+            )
+
+        elif normalized == "#تحلیل":
+
+            forced_type = (
+                EDITORIAL_TAG_ANALYSIS
+            )
+
+        else:
+
+            return (
+                None,
+                original_text,
+                0
+            )
+
+        remove_until = (
+            prefix_length
+            + len(
+                raw_line
+            )
+        )
+
+        remaining_text = (
+            original_text[
+                remove_until:
+            ]
+            .lstrip(
+                "\r\n"
+            )
+        )
+
+        removed_character_count = (
+            len(original_text)
+            - len(remaining_text)
+        )
+
+        removed_prefix = (
+            original_text[
+                :removed_character_count
+            ]
+        )
+
+        removed_utf16_units = (
+            len(
+                removed_prefix.encode(
+                    "utf-16-le"
+                )
+            )
+            // 2
+        )
+
+        logger.info(
+            f"🏷️ Explicit editorial tag detected | "
+            f"type={forced_type} | "
+            f"tag={stripped_line!r} | "
+            f"removed_utf16="
+            f"{removed_utf16_units} | "
+            f"remaining={len(remaining_text)}"
+        )
+
+        return (
+            forced_type,
+            remaining_text,
+            removed_utf16_units
+        )
+
+    return (
+        None,
+        original_text,
+        0
+    )
+
+
+# =========================================================
+# SHIFT ENTITIES AFTER EDITORIAL TAG REMOVAL
+# =========================================================
+
+def shift_entities_after_prefix_removal(
+    entities: List[
+        Dict[str, Any]
+    ],
+    removed_utf16_units: int
+) -> List[Dict[str, Any]]:
+
+    if not entities:
+
+        return []
+
+    if removed_utf16_units <= 0:
+
+        return [
+            dict(entity)
+            for entity in entities
+        ]
+
+    result: List[
+        Dict[str, Any]
+    ] = []
+
+    for entity in entities:
+
+        try:
+
+            value = dict(
+                entity
+            )
+
+            offset = int(
+                value.get(
+                    "offset",
+                    0
+                )
+                or 0
+            )
+
+            length = int(
+                value.get(
+                    "length",
+                    0
+                )
+                or 0
+            )
+
+            entity_end = (
+                offset
+                + length
+            )
+
+            if (
+                entity_end
+                <= removed_utf16_units
+            ):
+
+                continue
+
+            if (
+                offset
+                < removed_utf16_units
+            ):
+
+                logger.warning(
+                    "⚠️ Editorial tag entity overlap "
+                    "discarded | "
+                    f"type={value.get('type')} | "
+                    f"offset={offset} | "
+                    f"length={length}"
+                )
+
+                continue
+
+            value[
+                "offset"
+            ] = (
+                offset
+                - removed_utf16_units
+            )
+
+            result.append(
+                value
+            )
+
+        except Exception as e:
+
+            logger.warning(
+                f"⚠️ Editorial entity shift skipped | "
+                f"{e}"
+            )
+
+    return result
 
 
 # =========================================================
@@ -1799,21 +2037,6 @@ def build_editorial_source_text(
 
 # =========================================================
 # EDITORIAL BUTTONS
-#
-# FINAL POLICY
-#
-# منوی تحریریه همیشه پنج ردیف دارد.
-#
-# اگر خلاصه معتبر باشد:
-#
-# ✅ انتشار خلاصه
-# 📄 انتشار متن اصلی
-# 🔄 خلاصه‌سازی دوباره
-# ✏️ اصلاح با دستور ادمین
-# ❌ لغو
-#
-# اگر خلاصه معتبر نباشد، گزینه‌های مربوط به
-# Summary حذف نمی‌شوند و فقط حالت اطلاع‌رسانی دارند.
 # =========================================================
 
 def build_editorial_keyboard(
@@ -1825,10 +2048,6 @@ def build_editorial_keyboard(
     rows: List[
         List[Dict[str, str]]
     ] = []
-
-    # =====================================================
-    # 1. SUMMARY
-    # =====================================================
 
     if has_summary:
 
@@ -1852,10 +2071,6 @@ def build_editorial_keyboard(
             }
         ])
 
-    # =====================================================
-    # 2. ORIGINAL
-    # =====================================================
-
     rows.append([
         {
             "text":
@@ -1864,10 +2079,6 @@ def build_editorial_keyboard(
                 f"ed:original:{review_id}"
         }
     ])
-
-    # =====================================================
-    # 3. REGENERATE
-    # =====================================================
 
     if can_regenerate:
 
@@ -1891,10 +2102,6 @@ def build_editorial_keyboard(
             }
         ])
 
-    # =====================================================
-    # 4. ADMIN INSTRUCTION
-    # =====================================================
-
     if has_summary:
 
         rows.append([
@@ -1916,10 +2123,6 @@ def build_editorial_keyboard(
                     f"ed:instruction_unavailable:{review_id}"
             }
         ])
-
-    # =====================================================
-    # 5. CANCEL
-    # =====================================================
 
     rows.append([
         {
@@ -2050,6 +2253,9 @@ def try_queue_editorial_text_review(
     ],
     forward_source: Optional[
         Dict[str, Any]
+    ] = None,
+    forced_content_type: Optional[
+        str
     ] = None
 ) -> bool:
 
@@ -2117,16 +2323,63 @@ def try_queue_editorial_text_review(
             f"title={bool(editorial_title)} | "
             f"author={editorial_author or '-'} | "
             f"source={len(editorial_source)} | "
-            f"body={len(editorial_body)}"
+            f"body={len(editorial_body)} | "
+            f"forced_type="
+            f"{forced_content_type or '-'}"
         )
+
+        classifier = None
+
+        if (
+            forced_content_type
+            == CONTENT_TYPE_OPINION_NOTE
+        ):
+
+            def classifier(
+                original_text: str,
+                instruction: str,
+                target_length: int
+            ) -> str:
+
+                return "OPINION_NOTE"
+
+        elif (
+            forced_content_type
+            == CONTENT_TYPE_NEWS_ANALYSIS
+        ):
+
+            def classifier(
+                original_text: str,
+                instruction: str,
+                target_length: int
+            ) -> str:
+
+                return "NEWS_ANALYSIS"
 
         review_result = (
             analyze_editorial_content(
                 original_text=(
                     editorial_body
-                )
+                ),
+                classifier=classifier
             )
         )
+
+        if (
+            forced_content_type
+            and review_result.content_type
+            != forced_content_type
+        ):
+
+            logger.error(
+                "❌ Explicit editorial classification "
+                "mismatch | "
+                f"forced={forced_content_type} | "
+                f"result="
+                f"{review_result.content_type}"
+            )
+
+            return False
 
         if (
             review_result.content_type
@@ -2161,42 +2414,58 @@ def try_queue_editorial_text_review(
                     )
                 ),
                 metadata={
-                    "kind": "text",
+                    "kind":
+                        "text",
+
                     "main_text":
                         prepared[
                             "main_text"
                         ],
+
                     "blockquote_blocks":
                         prepared[
                             "blockquote_blocks"
                         ],
+
                     "expandable_blocks":
                         prepared[
                             "expandable_blocks"
                         ],
+
                     "other_entities":
                         prepared[
                             "other_entities"
                         ],
+
                     "forward_source":
                         dict(
                             forward_source
                             or {}
                         ),
+
                     "summary_success":
                         review_result.summary_success,
+
                     "review_reason":
                         review_result.reason,
+
                     "editorial_title":
                         editorial_title,
+
                     "editorial_author":
                         editorial_author,
+
                     "editorial_body":
                         editorial_body,
+
                     "editorial_author_source":
                         structure.author_source,
+
                     "editorial_author_confidence":
-                        structure.author_confidence
+                        structure.author_confidence,
+
+                    "explicit_editorial_type":
+                        forced_content_type
                 }
             )
         )
@@ -2260,7 +2529,9 @@ def try_queue_editorial_text_review(
         logger.info(
             f"✅ Editorial review queued | "
             f"review_id={pending.review_id} | "
-            f"user={chat_id}"
+            f"user={chat_id} | "
+            f"explicit_type="
+            f"{forced_content_type or '-'}"
         )
 
         return True
@@ -2410,12 +2681,6 @@ def process_admin_instruction_message(
 
         if not new_summary:
 
-            logger.warning(
-                f"[{req_id}] ⚠️ Admin instruction "
-                f"returned empty summary | "
-                f"review_id={review.review_id}"
-            )
-
             send_message(
                 chat_id,
                 (
@@ -2466,12 +2731,6 @@ def process_admin_instruction_message(
 
         if updated is None:
 
-            logger.error(
-                f"[{req_id}] ❌ Admin instruction "
-                f"summary update failed | "
-                f"review_id={review.review_id}"
-            )
-
             send_message(
                 chat_id,
                 (
@@ -2499,24 +2758,6 @@ def process_admin_instruction_message(
 
             updated = recorded
 
-        from core.editorial_pending import (
-            STATUS_PENDING
-        )
-
-        if updated.status != STATUS_PENDING:
-
-            logger.error(
-                f"[{req_id}] ❌ Admin edit unexpectedly "
-                f"finalized review | "
-                f"review_id={updated.review_id} | "
-                f"status={updated.status}"
-            )
-
-        updated_metadata = (
-            updated.metadata
-            or {}
-        )
-
         can_regenerate = (
             updated.regeneration_count
             < MAX_REGENERATION_COUNT
@@ -2532,6 +2773,11 @@ def process_admin_instruction_message(
                     can_regenerate
                 )
             )
+        )
+
+        updated_metadata = (
+            updated.metadata
+            or {}
         )
 
         preview = (
@@ -2577,15 +2823,6 @@ def process_admin_instruction_message(
                 + preview
             ),
             reply_markup=keyboard
-        )
-
-        logger.info(
-            f"[{req_id}] ✅ Admin instruction applied | "
-            f"review_id={updated.review_id} | "
-            f"user={chat_id} | "
-            f"summary_length="
-            f"{len(updated.current_summary or '')} | "
-            f"status={updated.status}"
         )
 
         return True
@@ -2751,10 +2988,6 @@ def handle_editorial_callback(
             or ""
         )
 
-        # =================================================
-        # INFORMATIONAL / UNAVAILABLE ACTIONS
-        # =================================================
-
         if action == "summary_unavailable":
 
             answer_callback_query(
@@ -2781,15 +3014,6 @@ def handle_editorial_callback(
                 "ابتدا باید یک خلاصه معتبر ساخته شود."
             )
 
-            send_message(
-                user_id,
-                (
-                    "✏️ اصلاح با دستور ادمین زمانی فعال می‌شود "
-                    "که ابتدا یک نسخه خلاصه معتبر آماده باشد.\n\n"
-                    "ابتدا «خلاصه‌سازی دوباره» را انتخاب کنید."
-                )
-            )
-
             return True
 
         if action == "regen_unavailable":
@@ -2799,20 +3023,7 @@ def handle_editorial_callback(
                 "حداکثر تعداد بازنویسی انجام شده است."
             )
 
-            send_message(
-                user_id,
-                (
-                    "⛔️ سقف مجاز خلاصه‌سازی دوباره "
-                    "برای این محتوا به پایان رسیده است.\n\n"
-                    "می‌توانید نسخه موجود یا متن اصلی را منتشر کنید."
-                )
-            )
-
             return True
-
-        # =================================================
-        # ADMIN INSTRUCTION MODE
-        # =================================================
 
         if action == "instruction":
 
@@ -2824,20 +3035,6 @@ def handle_editorial_callback(
                 answer_callback_query(
                     callback_id,
                     "خلاصه‌ای برای اصلاح وجود ندارد."
-                )
-
-                return True
-
-            if (
-                metadata.get(
-                    "summary_success"
-                )
-                is False
-            ):
-
-                answer_callback_query(
-                    callback_id,
-                    "خلاصه معتبر آماده نشده است."
                 )
 
                 return True
@@ -2856,14 +3053,6 @@ def handle_editorial_callback(
                     "فعال‌سازی حالت اصلاح ناموفق بود."
                 )
 
-                send_message(
-                    user_id,
-                    (
-                        "❌ امکان فعال‌سازی اصلاح "
-                        "با دستور ادمین وجود ندارد."
-                    )
-                )
-
                 return True
 
             answer_callback_query(
@@ -2876,27 +3065,11 @@ def handle_editorial_callback(
                 (
                     "✏️ حالت اصلاح با دستور ادمین فعال شد.\n\n"
                     "در پیام بعدی دقیقاً بنویس چه تغییری "
-                    "می‌خواهی روی خلاصه اعمال شود.\n\n"
-                    "مثال:\n"
-                    "متن را کمی کوتاه‌تر کن و تأکید بیشتری "
-                    "روی بخش مربوط به مذاکرات داشته باش.\n\n"
-                    "تا زمان پردازش موفق دستور، "
-                    "نسخه فعلی خلاصه محفوظ می‌ماند."
+                    "می‌خواهی روی خلاصه اعمال شود."
                 )
             )
 
-            logger.info(
-                f"[{req_id}] ✏️ Editorial admin "
-                f"instruction waiting enabled | "
-                f"review_id={review_id} | "
-                f"user={user_id}"
-            )
-
             return True
-
-        # =================================================
-        # CANCEL
-        # =================================================
 
         if action == "cancel":
 
@@ -2916,10 +3089,6 @@ def handle_editorial_callback(
             )
 
             return True
-
-        # =================================================
-        # ORIGINAL
-        # =================================================
 
         if action == "original":
 
@@ -2978,16 +3147,7 @@ def handle_editorial_callback(
                     "انتشار با خطا روبرو شد."
                 )
 
-                send_message(
-                    user_id,
-                    "❌ انتشار متن اصلی با مشکل روبرو شد."
-                )
-
             return True
-
-        # =================================================
-        # SUMMARY
-        # =================================================
 
         if action == "summary":
 
@@ -2999,20 +3159,6 @@ def handle_editorial_callback(
                 answer_callback_query(
                     callback_id,
                     "خلاصه‌ای برای انتشار وجود ندارد."
-                )
-
-                return True
-
-            if (
-                metadata.get(
-                    "summary_success"
-                )
-                is False
-            ):
-
-                answer_callback_query(
-                    callback_id,
-                    "خلاصه معتبر آماده نشده است."
                 )
 
                 return True
@@ -3063,16 +3209,7 @@ def handle_editorial_callback(
                     "انتشار با خطا روبرو شد."
                 )
 
-                send_message(
-                    user_id,
-                    "❌ انتشار خلاصه با مشکل روبرو شد."
-                )
-
             return True
-
-        # =================================================
-        # REGENERATE
-        # =================================================
 
         if action == "regen":
 
@@ -3155,10 +3292,7 @@ def handle_editorial_callback(
 
                 send_message(
                     user_id,
-                    (
-                        "❌ وضعیت بازنویسی "
-                        "قابل به‌روزرسانی نیست."
-                    )
+                    "❌ وضعیت بازنویسی قابل به‌روزرسانی نیست."
                 )
 
                 return True
@@ -3291,19 +3425,11 @@ def handle_webhook() -> Tuple[
 
     try:
 
-        # =================================================
-        # SECURITY
-        # =================================================
-
         if not validate_webhook_token():
 
             return {
                 "ok": False
             }, 403
-
-        # =================================================
-        # JSON
-        # =================================================
 
         data = request.get_json(
             silent=True
@@ -3314,10 +3440,6 @@ def handle_webhook() -> Tuple[
             return {
                 "ok": True
             }, 200
-
-        # =================================================
-        # CALLBACK
-        # =================================================
 
         callback_query = data.get(
             "callback_query"
@@ -3342,10 +3464,6 @@ def handle_webhook() -> Tuple[
                         handled
                     )
             }, 200
-
-        # =================================================
-        # MESSAGE
-        # =================================================
 
         msg = data.get(
             "message"
@@ -3373,10 +3491,6 @@ def handle_webhook() -> Tuple[
                 "ok": True
             }, 200
 
-        # =================================================
-        # DIAGNOSTICS
-        # =================================================
-
         log_message_diagnostics(
             req_id,
             msg
@@ -3403,10 +3517,6 @@ def handle_webhook() -> Tuple[
             )
             or []
         )
-
-        # =================================================
-        # COMMAND
-        # =================================================
 
         command_text = (
             msg.get(
@@ -3439,10 +3549,6 @@ def handle_webhook() -> Tuple[
             return {
                 "ok": True
             }, 200
-
-        # =================================================
-        # TENANT
-        # =================================================
 
         try:
 
@@ -3489,10 +3595,6 @@ def handle_webhook() -> Tuple[
                 "ok": True
             }, 200
 
-        # =================================================
-        # ADMIN INSTRUCTION TEXT GATE
-        # =================================================
-
         pure_text = (
             msg.get(
                 "text",
@@ -3500,6 +3602,10 @@ def handle_webhook() -> Tuple[
             )
             or ""
         )
+
+        # =================================================
+        # ADMIN INSTRUCTION GATE
+        # =================================================
 
         if pure_text.strip():
 
@@ -3526,13 +3632,6 @@ def handle_webhook() -> Tuple[
 
             if waiting_review is not None:
 
-                logger.info(
-                    f"[{req_id}] ✏️ ADMIN-INSTRUCTION-GATE | "
-                    f"review_id="
-                    f"{waiting_review.review_id} | "
-                    f"user={chat_id}"
-                )
-
                 process_admin_instruction_message(
                     chat_id=chat_id,
                     instruction_text=(
@@ -3547,10 +3646,6 @@ def handle_webhook() -> Tuple[
                     "review_id":
                         waiting_review.review_id
                 }, 200
-
-        # =================================================
-        # MEDIA INFO
-        # =================================================
 
         media_info = (
             get_media_from_message(
@@ -3776,37 +3871,133 @@ def handle_webhook() -> Tuple[
 
         # =================================================
         # NORMAL TEXT
+        #
+        # FINAL POLICY:
+        #
+        # #یادداشت / # یادداشت
+        # → editorial opinion_note
+        #
+        # #تحلیل / # تحلیل
+        # → editorial news_analysis
+        #
+        # بدون برچسب
+        # → خبر عادی
+        # → بدون AI classification
         # =================================================
 
         if pure_text.strip():
 
-            queued_for_review = (
-                try_queue_editorial_text_review(
-                    chat_id=chat_id,
-                    text=pure_text,
-                    entities=entities,
-                    forward_source=(
-                        forward_source
-                        if forward_source.get(
-                            "is_forwarded"
-                        )
-                        else None
-                    )
+            (
+                forced_editorial_type,
+                cleaned_editorial_text,
+                removed_utf16_units
+            ) = (
+                detect_editorial_admin_tag(
+                    pure_text
                 )
             )
 
-            if queued_for_review:
+            # =============================================
+            # EXPLICIT EDITORIAL CONTENT
+            # =============================================
 
-                logger.info(
-                    f"[{req_id}] 📝 Text held for "
-                    f"editorial approval | "
-                    f"user={chat_id}"
+            if forced_editorial_type:
+
+                adjusted_entities = (
+                    shift_entities_after_prefix_removal(
+                        entities,
+                        removed_utf16_units
+                    )
+                )
+
+                if not (
+                    cleaned_editorial_text
+                    or ""
+                ).strip():
+
+                    send_message(
+                        chat_id,
+                        (
+                            "❌ بعد از برچسب تحریریه "
+                            "متنی وجود ندارد."
+                        )
+                    )
+
+                    return {
+                        "ok": True,
+                        "editorial_empty": True
+                    }, 200
+
+                queued_for_review = (
+                    try_queue_editorial_text_review(
+                        chat_id=chat_id,
+                        text=(
+                            cleaned_editorial_text
+                        ),
+                        entities=(
+                            adjusted_entities
+                        ),
+                        forward_source=(
+                            forward_source
+                            if forward_source.get(
+                                "is_forwarded"
+                            )
+                            else None
+                        ),
+                        forced_content_type=(
+                            forced_editorial_type
+                        )
+                    )
+                )
+
+                if queued_for_review:
+
+                    logger.info(
+                        f"[{req_id}] 📝 Explicit editorial "
+                        f"text held for approval | "
+                        f"user={chat_id} | "
+                        f"type="
+                        f"{forced_editorial_type}"
+                    )
+
+                    return {
+                        "ok": True,
+                        "editorial_review": True,
+                        "editorial_type":
+                            forced_editorial_type
+                    }, 200
+
+                logger.error(
+                    f"[{req_id}] ❌ Explicit editorial "
+                    f"review could not be created | "
+                    f"user={chat_id} | "
+                    f"type={forced_editorial_type}"
+                )
+
+                send_message(
+                    chat_id,
+                    (
+                        "❌ پردازش محتوای تحریریه "
+                        "با مشکل روبرو شد."
+                    )
                 )
 
                 return {
                     "ok": True,
-                    "editorial_review": True
+                    "editorial_review": False,
+                    "editorial_error": True
                 }, 200
+
+            # =============================================
+            # NO TAG = NORMAL NEWS
+            #
+            # مهم:
+            # اینجا دیگر try_queue_editorial_text_review
+            # فراخوانی نمی‌شود.
+            #
+            # بنابراین Gemini اجازه ندارد متن عادی را
+            # یادداشت یا تحلیل تشخیص دهد.
+            # =============================================
 
             kwargs = {
                 "chat_id": chat_id,
@@ -3821,6 +4012,12 @@ def handle_webhook() -> Tuple[
                 kwargs[
                     "forward_source"
                 ] = forward_source
+
+            logger.info(
+                f"[{req_id}] 📰 Normal news by default | "
+                f"user={chat_id} | "
+                f"explicit_editorial_tag=False"
+            )
 
             success = (
                 process_text_message(
