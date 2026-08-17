@@ -877,7 +877,7 @@ def test_admin_instruction_applied_to_original_body(
 
     def fake_apply(
         original_text,
-        instruction,
+        admin_instruction,
         content_type,
         **kwargs,
     ):
@@ -913,10 +913,10 @@ def test_admin_instruction_applied_to_original_body(
             instruction_text="این را کوتاه‌تر کن",
         )
 
-    if apply_called_with:
-        assert apply_called_with[0] == body, (
-            "Admin instruction must use original BODY"
-        )
+    assert apply_called_with, "apply_admin_instruction_to_editorial_summary was not called"
+    assert apply_called_with[0] == body, (
+        "Admin instruction must use original BODY"
+    )
 
 
 # =========================================================
