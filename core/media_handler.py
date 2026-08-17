@@ -27,7 +27,9 @@ from core.caption_manager import (
     PublicationPlan
 )
 
+
 logger = logging.getLogger(__name__)
+
 
 # =========================================================
 # GLOBAL CONFIG
@@ -36,11 +38,13 @@ logger = logging.getLogger(__name__)
 API_URL: Optional[str] = None
 CHANNEL_ID: Optional[str] = None
 
+
 # =========================================================
 # THREAD-LOCAL TELEGRAM SEND STATE
 # =========================================================
 
 telegram_send_state = threading.local()
+
 
 def set_last_media_message_id(
     message_id: Optional[int]
@@ -49,6 +53,7 @@ def set_last_media_message_id(
     telegram_send_state.last_media_message_id = (
         message_id
     )
+
 
 def get_last_media_message_id() -> Optional[int]:
 
@@ -66,6 +71,7 @@ def get_last_media_message_id() -> Optional[int]:
 
     return None
 
+
 # =========================================================
 # MEDIA GROUP STORAGE
 # =========================================================
@@ -75,12 +81,15 @@ pending_groups: Dict[
     Dict[str, Any]
 ] = defaultdict(dict)
 
+
 group_timers: Dict[
     Tuple[int, str],
     threading.Timer
 ] = {}
 
+
 group_lock = threading.RLock()
+
 
 # =========================================================
 # RESOURCE LIMITS
@@ -90,11 +99,13 @@ MAX_PENDING_GROUPS = 1000
 MAX_GROUP_AGE_SECONDS = 900
 CLEANUP_INTERVAL_SECONDS = 300
 
+
 cleanup_thread: Optional[
     threading.Thread
 ] = None
 
 cleanup_running = False
+
 
 # =========================================================
 # TELEGRAM LIMITS
@@ -103,6 +114,7 @@ cleanup_running = False
 TELEGRAM_MEDIA_GROUP_MIN_ITEMS = 2
 TELEGRAM_MEDIA_GROUP_MAX_ITEMS = 10
 
+
 # =========================================================
 # TIMEOUT CONFIG
 # =========================================================
@@ -110,18 +122,10 @@ TELEGRAM_MEDIA_GROUP_MAX_ITEMS = 10
 TELEGRAM_CONNECT_TIMEOUT = 10
 TELEGRAM_READ_TIMEOUT = 60
 
-# فاصله‌ای که باید از آخرین عضو آلبوم گذشته باشد
-# تا مطمئن شویم Media Group کامل شده است.
 MEDIA_GROUP_DELAY = 2.5
-
-# حداقل فاصله محافظتی.
-# در نسخه جدید تصمیم نهایی بر اساس MEDIA_GROUP_DELAY
-# گرفته می‌شود و این مقدار فقط برای Retryهای کوتاه است.
 MEDIA_GROUP_MIN_WAIT = 1.5
-
-# اگر در زمان اجرای Timer هنوز فقط یک عضو موجود باشد،
-# به جای حذف گروه کمی دیگر صبر می‌کنیم.
 MEDIA_GROUP_INCOMPLETE_RETRY_DELAY = 1.0
+
 
 # =========================================================
 # INITIALIZE
@@ -171,6 +175,7 @@ def initialize(
             "🧹 Media Handler cleanup scheduler started"
         )
 
+
 # =========================================================
 # CLEANUP SCHEDULER
 # =========================================================
@@ -201,6 +206,7 @@ def _cleanup_scheduler() -> None:
             logger.exception(
                 f"❌ Cleanup scheduler error: {e}"
             )
+
 
 # =========================================================
 # CLEANUP OLD GROUPS
@@ -303,6 +309,7 @@ def cleanup_old_groups() -> None:
             f"remaining={len(pending_groups)}"
         )
 
+
 # =========================================================
 # MEDIA GROUP DETECTION
 # =========================================================
@@ -316,6 +323,7 @@ def is_media_group(
             "media_group_id"
         )
     )
+
 
 # =========================================================
 # ADD MEDIA TO PENDING GROUP
@@ -386,11 +394,6 @@ def add_to_pending_group(
                 "is_processing":
                     False,
 
-                # هر بار Timer جدید ساخته می‌شود
-                # این نسل افزایش پیدا می‌کند.
-                #
-                # Timer قدیمی فقط وقتی اجازه پردازش دارد
-                # که generation آن هنوز نسل فعلی باشد.
                 "timer_generation":
                     0
             }
@@ -462,11 +465,6 @@ def add_to_pending_group(
                 f"group={media_group_id}"
             )
 
-        # مهم:
-        # زمان آخرین تغییر فقط زمانی تازه می‌شود
-        # که همین Webhook وارد گروه شده است.
-        #
-        # Timer بعدی از این نقطه محاسبه می‌شود.
         group[
             "last_update"
         ] = time.time()
@@ -578,6 +576,7 @@ def add_to_pending_group(
                     "other_entities"
                 ] = []
 
+
 # =========================================================
 # REMOVE GROUP
 # =========================================================
@@ -644,8 +643,11 @@ def remove_pending_group(
                 except Exception:
                     pass
 
+
 # =========================================================
 # TELEGRAM POST
+#
+# DIAGNOSTIC VERSION FOR RENDER / SENDMEDIAGROUP
 # =========================================================
 
 def telegram_post(
@@ -665,33 +667,190 @@ def telegram_post(
         f"{API_URL}/{endpoint}"
     )
 
-    logger.info(
-        f"🌐 Telegram API request | "
-        f"endpoint={endpoint}"
+    request_started = (
+        time.monotonic()
     )
+
+    payload_bytes = 0
+    media_count = 0
+
+    # =====================================================
+    # PAYLOAD DIAGNOSTIC
+    # =====================================================
 
     try:
 
-        payload_preview = json.dumps(
+        serialized_payload = json.dumps(
             payload,
             ensure_ascii=False,
-            default=str
+            default=str,
+            separators=(",", ":")
+        )
+
+        payload_bytes = len(
+            serialized_payload.encode(
+                "utf-8"
+            )
+        )
+
+        media_value = payload.get(
+            "media"
+        )
+
+        if isinstance(
+            media_value,
+            list
+        ):
+
+            media_count = len(
+                media_value
+            )
+
+        logger.info(
+            f"🌐 Telegram API request | "
+            f"endpoint={endpoint} | "
+            f"media_count={media_count} | "
+            f"payload_bytes={payload_bytes}"
         )
 
         logger.debug(
             f"📨 Telegram payload | "
-            f"{payload_preview[:1500]}"
+            f"{serialized_payload[:1500]}"
         )
 
     except Exception as e:
 
-        logger.debug(
-            f"Payload logging error: {e}"
+        logger.warning(
+            f"⚠️ Telegram payload diagnostic failed | "
+            f"endpoint={endpoint} | "
+            f"{e}"
         )
+
+    # =====================================================
+    # SENDMEDIAGROUP ITEM DIAGNOSTIC
+    # =====================================================
+
+    if endpoint == "sendMediaGroup":
+
+        media_value = payload.get(
+            "media",
+            []
+        )
+
+        if isinstance(
+            media_value,
+            list
+        ):
+
+            logger.info(
+                f"🧪 sendMediaGroup prepared | "
+                f"items={len(media_value)} | "
+                f"payload_bytes={payload_bytes}"
+            )
+
+            for index, item in enumerate(
+                media_value
+            ):
+
+                if not isinstance(
+                    item,
+                    dict
+                ):
+                    continue
+
+                logger.info(
+                    f"🧩 sendMediaGroup item | "
+                    f"index={index + 1}/"
+                    f"{len(media_value)} | "
+                    f"type={item.get('type')} | "
+                    f"has_media="
+                    f"{bool(item.get('media'))} | "
+                    f"has_caption="
+                    f"{bool(item.get('caption'))} | "
+                    f"caption_length="
+                    f"{len(item.get('caption', '') or '')} | "
+                    f"caption_entities="
+                    f"{len(item.get('caption_entities', []) or [])} | "
+                    f"parse_mode="
+                    f"{item.get('parse_mode') or 'NONE'}"
+                )
+
+    # =====================================================
+    # REQUEST WATCHDOG
+    #
+    # این Thread درخواست را تغییر نمی‌دهد.
+    # فقط مشخص می‌کند requests.post چند ثانیه
+    # بدون Response مانده است.
+    # =====================================================
+
+    watchdog_cancelled = (
+        threading.Event()
+    )
+
+    def request_watchdog() -> None:
+
+        checkpoints = (
+            10,
+            30,
+            55
+        )
+
+        previous_checkpoint = 0
+
+        for checkpoint in checkpoints:
+
+            wait_seconds = (
+                checkpoint
+                - previous_checkpoint
+            )
+
+            previous_checkpoint = (
+                checkpoint
+            )
+
+            if watchdog_cancelled.wait(
+                wait_seconds
+            ):
+                return
+
+            elapsed = (
+                time.monotonic()
+                - request_started
+            )
+
+            logger.warning(
+                f"⏳ Telegram request still waiting | "
+                f"endpoint={endpoint} | "
+                f"elapsed={elapsed:.2f}s"
+            )
+
+    watchdog_thread = (
+        threading.Thread(
+            target=request_watchdog,
+            daemon=True,
+            name=(
+                f"TelegramWatchdog-"
+                f"{endpoint}"
+            )
+        )
+    )
+
+    watchdog_thread.start()
+
+    # =====================================================
+    # ACTUAL TELEGRAM REQUEST
+    # =====================================================
 
     try:
 
-        start_time = time.time()
+        logger.info(
+            f"➡️ requests.post ENTER | "
+            f"endpoint={endpoint} | "
+            f"connect_timeout="
+            f"{TELEGRAM_CONNECT_TIMEOUT}s | "
+            f"read_timeout="
+            f"{TELEGRAM_READ_TIMEOUT}s"
+        )
 
         response = requests.post(
             url,
@@ -703,8 +862,17 @@ def telegram_post(
         )
 
         elapsed = (
-            time.time()
-            - start_time
+            time.monotonic()
+            - request_started
+        )
+
+        logger.info(
+            f"⬅️ requests.post RETURNED | "
+            f"endpoint={endpoint} | "
+            f"status={response.status_code} | "
+            f"time={elapsed:.2f}s | "
+            f"response_bytes="
+            f"{len(response.content or b'')}"
         )
 
         logger.info(
@@ -718,9 +886,15 @@ def telegram_post(
 
     except requests.exceptions.ConnectTimeout as e:
 
+        elapsed = (
+            time.monotonic()
+            - request_started
+        )
+
         logger.error(
             f"⏰ Telegram ConnectTimeout | "
             f"endpoint={endpoint} | "
+            f"time={elapsed:.2f}s | "
             f"{e}"
         )
 
@@ -728,9 +902,15 @@ def telegram_post(
 
     except requests.exceptions.ReadTimeout as e:
 
+        elapsed = (
+            time.monotonic()
+            - request_started
+        )
+
         logger.error(
             f"⏰ Telegram ReadTimeout | "
             f"endpoint={endpoint} | "
+            f"time={elapsed:.2f}s | "
             f"{e}"
         )
 
@@ -738,9 +918,15 @@ def telegram_post(
 
     except requests.exceptions.Timeout as e:
 
+        elapsed = (
+            time.monotonic()
+            - request_started
+        )
+
         logger.error(
             f"⏰ Telegram Timeout | "
             f"endpoint={endpoint} | "
+            f"time={elapsed:.2f}s | "
             f"{e}"
         )
 
@@ -748,9 +934,15 @@ def telegram_post(
 
     except requests.exceptions.ConnectionError as e:
 
+        elapsed = (
+            time.monotonic()
+            - request_started
+        )
+
         logger.error(
             f"🔌 Telegram ConnectionError | "
             f"endpoint={endpoint} | "
+            f"time={elapsed:.2f}s | "
             f"{e}"
         )
 
@@ -758,9 +950,15 @@ def telegram_post(
 
     except requests.exceptions.RequestException as e:
 
+        elapsed = (
+            time.monotonic()
+            - request_started
+        )
+
         logger.error(
             f"❌ Telegram RequestException | "
             f"endpoint={endpoint} | "
+            f"time={elapsed:.2f}s | "
             f"{e}"
         )
 
@@ -768,13 +966,35 @@ def telegram_post(
 
     except Exception as e:
 
+        elapsed = (
+            time.monotonic()
+            - request_started
+        )
+
         logger.exception(
             f"❌ Telegram API error | "
             f"endpoint={endpoint} | "
+            f"time={elapsed:.2f}s | "
             f"{e}"
         )
 
         return None
+
+    finally:
+
+        watchdog_cancelled.set()
+
+        elapsed = (
+            time.monotonic()
+            - request_started
+        )
+
+        logger.info(
+            f"🏁 Telegram request EXIT | "
+            f"endpoint={endpoint} | "
+            f"time={elapsed:.2f}s"
+        )
+
 
 # =========================================================
 # TELEGRAM RESPONSE CHECK
@@ -835,6 +1055,7 @@ def telegram_response_ok(
     )
 
     return False
+
 
 # =========================================================
 # DEBUG TELEGRAM RETURNED CAPTION ENTITIES
@@ -929,6 +1150,7 @@ def debug_telegram_returned_caption_entities(
             f"{e}"
         )
 
+
 # =========================================================
 # EXTRACT SINGLE MESSAGE ID
 # =========================================================
@@ -976,6 +1198,7 @@ def extract_single_message_id(
         )
 
     return None
+
 
 # =========================================================
 # EXTRACT MEDIA GROUP ANCHOR
@@ -1036,6 +1259,7 @@ def extract_media_group_message_id(
         )
 
     return None
+
 
 # =========================================================
 # SEND TEXT TO TELEGRAM CHANNEL
@@ -1116,6 +1340,7 @@ def send_text_to_channel(
         )
 
     return success
+
 
 # =========================================================
 # SEND SINGLE MEDIA TO TELEGRAM
@@ -1249,6 +1474,7 @@ def send_single_media_to_channel(
         return True
 
     return False
+
 
 # =========================================================
 # SEND MEDIA GROUP TO TELEGRAM
@@ -1455,6 +1681,7 @@ def send_media_group_to_channel(
 
     return False
 
+
 # =========================================================
 # BUILD BRANDING
 # =========================================================
@@ -1547,6 +1774,7 @@ def build_branding_for_user(
 
         return ""
 
+
 # =========================================================
 # SEND ALBUM TO BALE
 # =========================================================
@@ -1607,6 +1835,7 @@ def send_album_to_bale(
 
         return False
 
+
 # =========================================================
 # SEND TEXT TO BALE
 # =========================================================
@@ -1659,14 +1888,9 @@ def send_text_to_bale(
 
         return False
 
+
 # =========================================================
 # EXECUTE TELEGRAM PLAN
-#
-# FINAL ORDER:
-#
-# 1. MEDIA
-# 2. BLOCKQUOTE / EXPANDABLE REPLY
-# 3. FOLLOWUP / BRANDING REPLY
 # =========================================================
 
 def execute_telegram_plan(
@@ -1747,10 +1971,6 @@ def execute_telegram_plan(
         None
     )
 
-    # =====================================================
-    # SINGLE MEDIA
-    # =====================================================
-
     if len(files) == 1:
 
         file = files[0]
@@ -1802,10 +2022,6 @@ def execute_telegram_plan(
                     media_caption
                 )
             )
-
-    # =====================================================
-    # MEDIA GROUP
-    # =====================================================
 
     else:
 
@@ -1863,11 +2079,6 @@ def execute_telegram_plan(
         f"{len(followup_messages)}"
     )
 
-    # =====================================================
-    # STEP 2
-    # BLOCKQUOTE / EXPANDABLE REPLIES
-    # =====================================================
-
     for index, html_message in enumerate(
         blockquote_messages
     ):
@@ -1911,11 +2122,6 @@ def execute_telegram_plan(
                 f"❌ Telegram blockquote reply failed | "
                 f"index={index + 1}"
             )
-
-    # =====================================================
-    # STEP 3
-    # FOLLOWUP / BRANDING REPLIES
-    # =====================================================
 
     for index, message in enumerate(
         followup_messages
@@ -1969,6 +2175,7 @@ def execute_telegram_plan(
     )
 
     return True
+
 
 # =========================================================
 # EXECUTE BALE PLAN
@@ -2072,6 +2279,7 @@ def execute_bale_plan(
 
     return True
 
+
 # =========================================================
 # PROCESS MEDIA GROUP
 # =========================================================
@@ -2126,19 +2334,6 @@ def process_media_group(
             )
             or []
         )
-
-        # =================================================
-        # CRITICAL PROTECTION
-        #
-        # Media Group واقعی نباید با یک فایل پردازش شود.
-        #
-        # در نسخه قبلی اگر Timer زود اجرا می‌شد،
-        # گروه با یک فایل وارد sendMediaGroup می‌شد،
-        # Telegram آن را رد می‌کرد و finally گروه را پاک
-        # می‌کرد.
-        #
-        # حالا در این وضعیت گروه را حفظ می‌کنیم.
-        # =================================================
 
         if (
             len(files)
@@ -2392,12 +2587,6 @@ def process_media_group(
 
     finally:
 
-        # این finally فقط زمانی اجرا می‌شود که گروه
-        # واقعاً وارد مرحله processing شده باشد.
-        #
-        # گروه‌های ناقص قبل از این نقطه return می‌شوند
-        # و بنابراین دیگر حذف نمی‌شوند.
-
         remove_pending_group(
             media_group_id,
             chat_id
@@ -2407,6 +2596,7 @@ def process_media_group(
             f"🧹 Media Group cleaned | "
             f"group={media_group_id}"
         )
+
 
 # =========================================================
 # SCHEDULE PROCESSING
@@ -2502,6 +2692,7 @@ def schedule_processing(
             f"files={len(group.get('files', []))}"
         )
 
+
 # =========================================================
 # SCHEDULED PROCESS
 # =========================================================
@@ -2553,13 +2744,6 @@ def _scheduled_process(
             or 0
         )
 
-        # =================================================
-        # STALE TIMER PROTECTION
-        #
-        # Timer قدیمی که قبل از ورود عضو جدید ساخته شده،
-        # دیگر اجازه پردازش گروه را ندارد.
-        # =================================================
-
         if (
             timer_generation is not None
             and timer_generation
@@ -2598,15 +2782,6 @@ def _scheduled_process(
             or []
         )
 
-    # =====================================================
-    # SETTLE PROTECTION
-    #
-    # باید MEDIA_GROUP_DELAY کامل از آخرین عضو گذشته باشد.
-    #
-    # در نسخه قبلی فقط MEDIA_GROUP_MIN_WAIT بررسی می‌شد
-    # و Timer قدیمی می‌توانست زودتر گروه را Process کند.
-    # =====================================================
-
     if (
         elapsed
         < MEDIA_GROUP_DELAY
@@ -2638,13 +2813,6 @@ def _scheduled_process(
 
         return
 
-    # =====================================================
-    # MINIMUM ITEM PROTECTION
-    #
-    # اگر هنوز فقط یک عضو دریافت شده، گروه را پاک نمی‌کنیم.
-    # Telegram Media Group حداقل دو عضو دارد.
-    # =====================================================
-
     if (
         file_count
         < TELEGRAM_MEDIA_GROUP_MIN_ITEMS
@@ -2668,10 +2836,6 @@ def _scheduled_process(
 
         return
 
-    # =====================================================
-    # READY
-    # =====================================================
-
     logger.info(
         f"✅ Media Group settled | "
         f"group={media_group_id} | "
@@ -2683,6 +2847,7 @@ def _scheduled_process(
         media_group_id,
         chat_id
     )
+
 
 # =========================================================
 # HANDLE MEDIA GROUP MESSAGE
@@ -2808,8 +2973,6 @@ def handle_media_group_message(
             caption_entities
         )
 
-    # هر عضو جدید Timer قبلی را باطل می‌کند
-    # و زمان انتظار از آخرین عضو دوباره آغاز می‌شود.
     schedule_processing(
         media_group_id,
         chat_id,
