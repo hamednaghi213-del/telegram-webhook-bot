@@ -15,9 +15,14 @@ from core.caption_manager import (
     create_bale_blockquote_messages,
     build_telegram_html_caption,
     telegram_html_visible_length,
+    append_final_telegram_media_branding,
     analyze_content,
+    normalize_media_caption_whitespace,
 )
 from core.smart_summarizer import SummaryResult
+from core.telegram_caption_entities import (
+    build_telegram_caption_entities,
+)
 
 
 # =========================================================
@@ -396,6 +401,94 @@ def test_caption_above_telegram_safe_limit_creates_followup():
 
 
 # =========================================================
+# TEST 03B
+# NORMALIZED MEDIA CAPTION MUST FIT WITHOUT AI
+# =========================================================
+
+def test_media_caption_whitespace_normalization_avoids_followup_without_ai(
+    monkeypatch
+):
+
+    body = (
+        "ا" * 965
+    )
+
+    main_text = (
+        "❇️ تیتر خبر\n\n\n\n"
+        + body
+        + "\n\n\n\n"
+    )
+
+    raw_caption = (
+        append_final_telegram_media_branding(
+            main_text,
+            DEFAULT_BRANDING,
+            has_expandable=False
+        )
+    )
+
+    normalized_main = (
+        normalize_media_caption_whitespace(
+            main_text,
+            label="test_main"
+        )
+    )
+
+    normalized_caption = (
+        append_final_telegram_media_branding(
+            normalized_main,
+            DEFAULT_BRANDING,
+            has_expandable=False
+        )
+    )
+
+    assert (
+        len(raw_caption)
+        > TELEGRAM_CAPTION_LIMIT
+    )
+
+    assert (
+        len(normalized_caption)
+        <= TELEGRAM_CAPTION_LIMIT
+    )
+
+    ai_calls = []
+
+    monkeypatch.setattr(
+        "core.caption_manager.try_smart_telegram_media_summary",
+        lambda *args, **kwargs: ai_calls.append(1) or None,
+    )
+
+    plan = analyze_content(
+        main_text=main_text,
+        branding=DEFAULT_BRANDING
+    )
+
+    assert (
+        ai_calls
+        == []
+    )
+
+    assert (
+        plan.telegram[
+            "followup_messages"
+        ]
+        == []
+    )
+
+    assert (
+        plan.telegram[
+            "media_caption"
+        ]
+        == normalized_caption
+    )
+
+    assert_telegram_limits(
+        plan
+    )
+
+
+# =========================================================
 # TEST 04
 # LONG MEDIA TEXT
 # =========================================================
@@ -477,6 +570,148 @@ def test_very_long_paragraph_text_preserves_content():
     assert (
         "پاراگراف شماره 19"
         in telegram_text
+    )
+
+    assert_telegram_limits(
+        plan
+    )
+
+
+# =========================================================
+# TEST 05B
+# ENTITY MEDIA NORMALIZATION MUST PRESERVE ONE CAPTION
+# =========================================================
+
+def test_entity_media_whitespace_normalization_preserves_one_caption(
+    monkeypatch
+):
+
+    main_text = (
+        "❇️ تیتر خبر\n\nمتن کوتاه"
+    )
+
+    raw_blockquote = (
+        ("ا" * 320)
+        + "\n\n\n\n"
+        + ("ب" * 320)
+        + "\n\n\n\n"
+        + ("ج" * 320)
+        + "\n\n\n"
+    )
+
+    normalized_blockquote = (
+        normalize_media_caption_whitespace(
+            raw_blockquote,
+            label="test_blockquote"
+        )
+    )
+
+    raw_entity_caption = (
+        build_telegram_caption_entities(
+            main_text=main_text,
+            blockquote_blocks=[
+                {
+                    "type": "blockquote",
+                    "offset": 0,
+                    "text": raw_blockquote,
+                }
+            ],
+            expandable_blocks=[],
+            branding=DEFAULT_BRANDING,
+            include_branding_entities=True,
+        )[
+            "caption"
+        ]
+    )
+
+    normalized_entity_result = (
+        build_telegram_caption_entities(
+            main_text=main_text,
+            blockquote_blocks=[
+                {
+                    "type": "blockquote",
+                    "offset": 0,
+                    "text": normalized_blockquote,
+                }
+            ],
+            expandable_blocks=[],
+            branding=DEFAULT_BRANDING,
+            include_branding_entities=True,
+        )
+    )
+
+    assert (
+        len(raw_entity_caption)
+        > TELEGRAM_CAPTION_LIMIT
+    )
+
+    assert (
+        len(
+            normalized_entity_result[
+                "caption"
+            ]
+        )
+        <= TELEGRAM_CAPTION_LIMIT
+    )
+
+    ai_calls = []
+
+    monkeypatch.setattr(
+        "core.caption_manager.try_smart_telegram_media_summary",
+        lambda *args, **kwargs: ai_calls.append(1) or None,
+    )
+
+    plan = analyze_content(
+        main_text=main_text,
+        blockquote_blocks=[
+            {
+                "type": "blockquote",
+                "offset": 0,
+                "text": raw_blockquote,
+            }
+        ],
+        branding=DEFAULT_BRANDING,
+    )
+
+    assert (
+        ai_calls
+        == []
+    )
+
+    assert (
+        plan.telegram[
+            "followup_messages"
+        ]
+        == []
+    )
+
+    assert (
+        plan.telegram[
+            "blockquote_messages"
+        ]
+        == []
+    )
+
+    assert (
+        plan.telegram[
+            "media_parse_mode"
+        ]
+        is None
+    )
+
+    assert (
+        plan.telegram[
+            "media_caption_entities"
+        ]
+    )
+
+    assert (
+        plan.telegram[
+            "media_caption"
+        ]
+        == normalized_entity_result[
+            "caption"
+        ]
     )
 
     assert_telegram_limits(
