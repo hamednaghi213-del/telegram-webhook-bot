@@ -1465,6 +1465,16 @@ def test_telegram_text_plan_expandable_blockquote():
         ]
     )
 
+    # When the combined message (main text + blockquote + branding)
+    # fits within Telegram's 4096-char limit the blockquote must be
+    # inlined into messages[0] and blockquote_messages must be empty.
+
+    messages = (
+        telegram_text[
+            "messages"
+        ]
+    )
+
     blockquotes = (
         telegram_text[
             "blockquote_messages"
@@ -1473,24 +1483,22 @@ def test_telegram_text_plan_expandable_blockquote():
 
     assert (
         len(blockquotes)
+        == 0
+    ), "blockquote_messages must be empty when content fits in one message"
+
+    assert (
+        len(messages)
         == 1
     )
 
     assert (
-        blockquotes[0].startswith(
-            "<blockquote expandable>"
-        )
+        "<blockquote expandable>"
+        in messages[0]
     )
 
     assert (
         "این تحلیل تکمیلی است"
-        in blockquotes[0]
-    )
-
-    assert (
-        blockquotes[0].endswith(
-            "</blockquote>"
-        )
+        in messages[0]
     )
 
     assert_telegram_text_limits(
