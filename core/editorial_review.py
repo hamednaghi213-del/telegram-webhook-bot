@@ -1048,6 +1048,50 @@ def resolve_summarizer(
 
 
 # =========================================================
+# SAFE TRUNCATION HELPER
+# =========================================================
+
+def safe_truncate_summary_to_limit(
+    text: str,
+    limit: int
+) -> str:
+    """
+    Truncates *text* to at most *limit* characters,
+    respecting natural boundaries in this priority order:
+      1. Paragraph break (\\n\\n)
+      2. Sentence-ending punctuation (۔ . ! ? ؟)
+      3. Word boundary (space)
+      4. Hard cut at *limit* (last resort)
+
+    Returns text with len(result) <= limit.
+    """
+
+    if len(text) <= limit:
+        return text
+
+    window = text[:limit]
+
+    # 1. Paragraph break
+    idx = window.rfind("\n\n")
+    if idx > 0:
+        return text[:idx].rstrip()
+
+    # 2. Sentence boundary
+    for punct in ("۔", ".", "!", "?", "؟"):
+        idx = window.rfind(punct)
+        if idx > 0:
+            return text[: idx + 1].rstrip()
+
+    # 3. Word boundary
+    idx = window.rfind(" ")
+    if idx > 0:
+        return text[:idx].rstrip()
+
+    # 4. Hard cut
+    return text[:limit]
+
+
+# =========================================================
 # EDITORIAL VALIDATION
 # =========================================================
 
@@ -1627,6 +1671,89 @@ def generate_editorial_candidate(
             f"{overflow_validation.get('errors', [])} | "
             f"final_limit={target_length}"
         )
+
+        # If the only remaining error is still
+        # summary_exceeds_target, attempt boundary-aware
+        # truncation before giving up entirely.
+        if only_overflow_validation_error(
+            overflow_validation
+        ):
+
+            for src_name, src_text in (
+                (
+                    "overflow_candidate",
+                    overflow_candidate,
+                ),
+                (
+                    "first_candidate",
+                    candidate,
+                ),
+            ):
+
+                truncated = (
+                    safe_truncate_summary_to_limit(
+                        src_text,
+                        target_length
+                    )
+                )
+
+                trunc_validation = (
+                    validate_editorial_candidate(
+                        original_text=original_text,
+                        candidate_text=truncated,
+                        target_length=target_length,
+                        content_type=content_type
+                    )
+                )
+
+                if trunc_validation["valid"]:
+
+                    logger.info(
+                        f"✂️ Editorial overflow "
+                        f"truncation accepted | "
+                        f"type={content_type} | "
+                        f"source={src_name} | "
+                        f"before="
+                        f"{len(src_text)} | "
+                        f"after="
+                        f"{len(truncated)} | "
+                        f"limit={target_length}"
+                    )
+
+                    return {
+                        "success":
+                            True,
+
+                        "candidate":
+                            truncated,
+
+                        "validation":
+                            trunc_validation,
+
+                        "reason":
+                            "accepted_after_truncation",
+
+                        "error":
+                            None,
+
+                        "certainty_retry_called":
+                            False,
+
+                        "length_retry_called":
+                            False,
+
+                        "overflow_retry_called":
+                            True,
+
+                        "first_candidate":
+                            candidate,
+
+                        "first_validation":
+                            validation,
+
+                        "overflow_target":
+                            overflow_target
+                    }
 
         return {
             "success":

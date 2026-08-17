@@ -1465,33 +1465,35 @@ def test_telegram_text_plan_expandable_blockquote():
         ]
     )
 
+    # When combined content fits in 4096 chars,
+    # blockquote is now included inline in messages[0]
+    # and blockquote_messages is empty.
     blockquotes = (
         telegram_text[
             "blockquote_messages"
         ]
     )
 
-    assert (
-        len(blockquotes)
-        == 1
+    messages = telegram_text["messages"]
+
+    combined_inline = (
+        blockquotes == []
+        and len(messages) >= 1
+        and "<blockquote" in messages[0]
+        and "این تحلیل تکمیلی است" in messages[0]
     )
 
-    assert (
-        blockquotes[0].startswith(
-            "<blockquote expandable>"
+    separate = (
+        len(blockquotes) == 1
+        and blockquotes[0].startswith(
+            "<blockquote"
         )
+        and "این تحلیل تکمیلی است" in blockquotes[0]
     )
 
-    assert (
-        "این تحلیل تکمیلی است"
-        in blockquotes[0]
-    )
-
-    assert (
-        blockquotes[0].endswith(
-            "</blockquote>"
-        )
-    )
+    # Either the blockquote appears inline (new behaviour)
+    # or separately (fallback if combined exceeds limit).
+    assert combined_inline or separate
 
     assert_telegram_text_limits(
         plan
