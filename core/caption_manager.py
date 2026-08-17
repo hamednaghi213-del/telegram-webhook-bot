@@ -277,6 +277,120 @@ def clean_blockquote_text(
 
 
 # =========================================================
+# MEDIA CAPTION WHITESPACE NORMALIZATION
+# =========================================================
+
+def count_blank_lines(
+    text: str
+) -> int:
+
+    if not text:
+        return 0
+
+    return sum(
+        1
+        for line in text.splitlines()
+        if not line.strip()
+    )
+
+
+def normalize_media_caption_whitespace(
+    text: Optional[str],
+    *,
+    label: str = "content"
+) -> str:
+
+    raw_text = (
+        ""
+        if text is None
+        else str(text)
+    )
+
+    if not raw_text:
+        return ""
+
+    unified = (
+        raw_text
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+
+    cleaned_lines: List[str] = []
+    previous_blank = False
+
+    for line in unified.split("\n"):
+
+        trimmed_line = line.rstrip()
+
+        if not trimmed_line.strip():
+
+            if cleaned_lines and not previous_blank:
+                cleaned_lines.append("")
+
+            previous_blank = True
+            continue
+
+        cleaned_lines.append(trimmed_line)
+        previous_blank = False
+
+    normalized = "\n".join(
+        cleaned_lines
+    ).strip()
+
+    if normalized != raw_text.strip():
+
+        logger.info(
+            f"🧹 Media caption whitespace normalized | "
+            f"part={label} | "
+            f"before={len(raw_text)} | "
+            f"after={len(normalized)} | "
+            f"blank_lines_before="
+            f"{count_blank_lines(raw_text)} | "
+            f"blank_lines_after="
+            f"{count_blank_lines(normalized)}"
+        )
+
+    return normalized
+
+
+def normalize_media_caption_blocks(
+    blocks: Optional[List[Dict[str, Any]]],
+    *,
+    label: str
+) -> List[Dict[str, Any]]:
+
+    result: List[
+        Dict[str, Any]
+    ] = []
+
+    for index, block in enumerate(
+        blocks
+        or []
+    ):
+
+        normalized_text = (
+            normalize_media_caption_whitespace(
+                block.get(
+                    "text",
+                    ""
+                ),
+                label=(
+                    f"{label}_{index}"
+                )
+            )
+        )
+
+        if not normalized_text:
+            continue
+
+        rebuilt = dict(block)
+        rebuilt["text"] = normalized_text
+        result.append(rebuilt)
+
+    return result
+
+
+# =========================================================
 # COMPACT LONG TEXT
 # =========================================================
 
@@ -935,12 +1049,27 @@ def try_smart_telegram_media_summary(
 
         return None
 
-    main_text = normalize_text(
+    main_text = normalize_media_caption_whitespace(
         main_text
     )
 
-    branding = normalize_text(
-        branding
+    branding = normalize_media_caption_whitespace(
+        branding,
+        label="smart_branding"
+    )
+
+    blockquote_blocks = (
+        normalize_media_caption_blocks(
+            blockquote_blocks,
+            label="smart_blockquote"
+        )
+    )
+
+    expandable_blocks = (
+        normalize_media_caption_blocks(
+            expandable_blocks,
+            label="smart_expandable"
+        )
     )
 
     combined_blocks = (
@@ -2602,12 +2731,28 @@ def create_telegram_plan(
     branding: str
 ) -> Dict[str, Any]:
 
-    main_text = normalize_text(
-        main_text
+    main_text = normalize_media_caption_whitespace(
+        main_text,
+        label="main"
     )
 
-    branding = normalize_text(
-        branding
+    branding = normalize_media_caption_whitespace(
+        branding,
+        label="branding"
+    )
+
+    blockquote_blocks = (
+        normalize_media_caption_blocks(
+            blockquote_blocks,
+            label="blockquote"
+        )
+    )
+
+    expandable_blocks = (
+        normalize_media_caption_blocks(
+            expandable_blocks,
+            label="expandable"
+        )
     )
 
     plan = {
@@ -2728,7 +2873,7 @@ def create_telegram_plan(
             compact_entity_result = (
                 build_telegram_caption_entities(
                     main_text=(
-                        compact_main
+                        main_text
                     ),
                     blockquote_blocks=(
                         blockquote_blocks
@@ -3068,7 +3213,7 @@ def create_telegram_plan(
     if (
         normal_final
         and len(normal_final)
-        <= TELEGRAM_CAPTION_SAFE_LIMIT
+        <= TELEGRAM_CAPTION_LIMIT
     ):
 
         plan[
@@ -3095,7 +3240,7 @@ def create_telegram_plan(
     if (
         compact_final
         and len(compact_final)
-        <= TELEGRAM_CAPTION_SAFE_LIMIT
+        <= TELEGRAM_CAPTION_LIMIT
     ):
 
         plan[
@@ -3107,7 +3252,7 @@ def create_telegram_plan(
     smart_plan = (
         try_smart_telegram_media_summary(
             main_text=(
-                compact_main
+                main_text
             ),
             blockquote_blocks=[],
             expandable_blocks=[],
@@ -3115,7 +3260,7 @@ def create_telegram_plan(
                 branding
             ),
             caption_limit=(
-                TELEGRAM_CAPTION_SAFE_LIMIT
+                TELEGRAM_CAPTION_LIMIT
             )
         )
     )
@@ -3137,7 +3282,7 @@ def create_telegram_plan(
     )
 
     available = (
-        TELEGRAM_CAPTION_SAFE_LIMIT
+        TELEGRAM_CAPTION_LIMIT
         - branding_cost
     )
 
