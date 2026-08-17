@@ -582,9 +582,9 @@ def split_for_media(
 
     if len(compact_text) <= caption_limit:
 
-        result["media_caption"] = (
-            compact_text
-        )
+        result[
+            "media_caption"
+        ] = compact_text
 
         return result
 
@@ -1011,7 +1011,6 @@ def try_smart_telegram_media_summary(
         })
 
     if not source_parts:
-
         return None
 
     branding_cost = (
@@ -1050,7 +1049,6 @@ def try_smart_telegram_media_summary(
     )
 
     if available_text_capacity <= 0:
-
         return None
 
     total_source_text_length = sum(
@@ -1064,7 +1062,6 @@ def try_smart_telegram_media_summary(
     )
 
     if total_source_text_length <= 0:
-
         return None
 
     visible_source_length = (
@@ -1222,8 +1219,7 @@ def try_smart_telegram_media_summary(
 
             logger.info(
                 f"🛡️ Smart summary part preserved | "
-                f"kind="
-                f"{item['kind']} | "
+                f"kind={item['kind']} | "
                 f"length={source_length}"
             )
 
@@ -1246,7 +1242,6 @@ def try_smart_telegram_media_summary(
         else:
 
             if remaining_source_length <= 0:
-
                 return None
 
             proportional_target = int(
@@ -1804,7 +1799,6 @@ def fit_blockquotes_into_caption(
         )
 
         if position <= 0:
-
             position = available
 
         first_part = (
@@ -2990,6 +2984,62 @@ def create_bale_text_plan(
         branding
     )
 
+    # =====================================================
+    # FIRST TRY
+    #
+    # پیام کوتاه بدون Compact حفظ می‌شود.
+    # بنابراین 🔹 و ساختار اصلی خبر باقی می‌ماند.
+    # =====================================================
+
+    inline_blocks = (
+        build_inline_bale_blockquotes(
+            blockquote_blocks,
+            expandable_blocks
+        )
+    )
+
+    normal_parts: List[str] = []
+
+    if main_text:
+
+        normal_parts.append(
+            main_text
+        )
+
+    if inline_blocks:
+
+        normal_parts.append(
+            inline_blocks
+        )
+
+    normal_content = "\n\n".join(
+        normal_parts
+    )
+
+    normal_final = append_branding(
+        normal_content,
+        branding
+    )
+
+    if (
+        normal_final
+        and len(normal_final)
+        <= BALE_MESSAGE_LIMIT
+    ):
+
+        return {
+            "messages": [
+                normal_final
+            ],
+            "blockquote_messages": []
+        }
+
+    # =====================================================
+    # LONG TEXT
+    #
+    # فقط برای متن طولانی Compact فعال می‌شود.
+    # =====================================================
+
     compact_main = (
         compact_long_text(
             main_text
@@ -3030,8 +3080,8 @@ def create_bale_text_plan(
     # =====================================================
     # BLOCKQUOTES
     #
-    # هر blockquote جداگانه ساخته می‌شود تا علامت ▌
-    # در ابتدای خروجی بله حفظ شود.
+    # هر Blockquote جدا Split و دوباره ساخته می‌شود
+    # تا علامت ▌ حفظ شود.
     # =====================================================
 
     for block in _combined_blockquotes(
@@ -3053,8 +3103,7 @@ def create_bale_text_plan(
             block_text,
             max(
                 500,
-                content_limit
-                - 10
+                content_limit - 10
             )
         )
 
@@ -3071,6 +3120,10 @@ def create_bale_text_plan(
                 messages.append(
                     quote_message
                 )
+
+    # =====================================================
+    # BRANDING
+    # =====================================================
 
     final_messages = (
         brand_every_message(
