@@ -42,6 +42,10 @@ class FakeQuery:
         self._payload = payload
         return self
 
+    def delete(self):
+        self._op = "delete"
+        return self
+
     def _apply_filters(self, rows):
         filtered = rows
         for column, value in self._eq_filters:
@@ -83,6 +87,21 @@ class FakeQuery:
                     row.update(dict(self._payload))
                     updated.append(dict(row))
             return SimpleNamespace(data=updated)
+
+        if self._op == "delete":
+            remaining = []
+            deleted = []
+            for row in table:
+                row_matches = all(
+                    row.get(column) == value
+                    for column, value in self._eq_filters
+                )
+                if row_matches:
+                    deleted.append(dict(row))
+                else:
+                    remaining.append(row)
+            self.store[self.table_name] = remaining
+            return SimpleNamespace(data=deleted)
 
         raise RuntimeError(f"Unsupported operation: {self._op}")
 

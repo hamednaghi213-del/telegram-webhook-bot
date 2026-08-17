@@ -22,15 +22,16 @@ RETRY_BACKOFF: float = 2.0  # exponential backoff multiplier
 # Default Values
 DEFAULT_HASHTAG: str = "#دنیا_۲۴_نیوز"
 DEFAULT_CHANNEL_TAG: str = "@Donya24News"
-USER_STATUS_VALUES = {"active", "suspended", "removed"}
-WORKSPACE_STATUS_VALUES = {"active", "suspended", "removed"}
+COMMON_STATUS_VALUES = {"active", "suspended", "removed"}
+USER_STATUS_VALUES = COMMON_STATUS_VALUES
+WORKSPACE_STATUS_VALUES = COMMON_STATUS_VALUES
 WORKSPACE_MEMBER_ROLE_VALUES = {
     "owner",
     "manager",
     "publisher",
     "writer"
 }
-WORKSPACE_MEMBER_STATUS_VALUES = {"active", "suspended", "removed"}
+WORKSPACE_MEMBER_STATUS_VALUES = COMMON_STATUS_VALUES
 
 # =========================================================
 # VALIDATION
@@ -652,12 +653,28 @@ def create_workspace(
         raise RuntimeError("Failed to create workspace")
 
     workspace = result.data[0]
-    add_workspace_member(
-        workspace_id=workspace["id"],
-        user_id=owner_user_id,
-        role="owner",
-        status="active"
-    )
+    try:
+        add_workspace_member(
+            workspace_id=workspace["id"],
+            user_id=owner_user_id,
+            role="owner",
+            status="active"
+        )
+    except Exception:
+        try:
+            (
+                supabase
+                .table("workspaces")
+                .delete()
+                .eq("id", workspace["id"])
+                .execute()
+            )
+        except Exception as cleanup_error:
+            logger.exception(
+                "❌ Failed to cleanup orphan workspace after owner membership "
+                f"failure | workspace_id={workspace.get('id')} | error={cleanup_error}"
+            )
+        raise
     return workspace
 
 
