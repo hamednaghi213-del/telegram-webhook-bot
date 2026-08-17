@@ -16,6 +16,7 @@ from core.editorial_review import (
     can_regenerate_editorial_summary,
     parse_editorial_classification,
     reduce_overflow_at_safe_boundary,
+    reduce_valid_overflow_candidate,
     regenerate_editorial_summary,
     validate_editorial_candidate as editorial_validator,
 )
@@ -885,6 +886,90 @@ def test_overflow_reduction_is_revalidated():
         == result["candidate"]
         for value in validated_candidates
     )
+
+
+def test_overflow_reduction_falls_back_to_sentence_if_paragraph_is_invalid():
+
+    paragraph_block = (
+        "الف " * 125
+    ).strip()
+    sentence_block = (
+        " ".join(
+            [
+                "این",
+                "بخش",
+                "دوم",
+            ] * 35
+        )
+        + " پایان معتبر."
+    )
+    text = (
+        f"{paragraph_block}\n\n{sentence_block} "
+        + ("ادامه " * 80).strip()
+    ).strip()
+
+    validated_boundaries = []
+
+    def fake_validator(
+        original_text,
+        candidate_text,
+        target_length,
+        content_type
+    ):
+        if "\n\n" not in candidate_text:
+            validated_boundaries.append(
+                "paragraph"
+            )
+        elif candidate_text.endswith("."):
+            validated_boundaries.append(
+                "sentence"
+            )
+        else:
+            validated_boundaries.append(
+                "word"
+            )
+
+        if candidate_text.endswith("."):
+            return {
+                "valid":
+                    True,
+                "errors":
+                    [],
+            }
+
+        return {
+            "valid":
+                False,
+            "errors":
+                [
+                    "reduction_too_aggressive"
+                ],
+        }
+
+    with patch(
+        "core.editorial_review.validate_editorial_candidate",
+        side_effect=fake_validator
+    ):
+        reduced = reduce_valid_overflow_candidate(
+            original_text=text,
+            candidate_text=text,
+            validation={
+                "errors": [
+                    "summary_exceeds_target"
+                ]
+            },
+            target_length=950,
+            content_type=CONTENT_TYPE_OPINION_NOTE
+        )
+
+    assert reduced is not None
+    assert reduced["boundary"] == "sentence"
+    assert len(reduced["candidate"]) <= 950
+    assert len(reduced["candidate"]) > 900
+    assert validated_boundaries[:2] == [
+        "paragraph",
+        "sentence",
+    ]
 
 
 def test_semantic_validation_errors_are_not_bypassed_by_overflow_reduction():

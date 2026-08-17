@@ -1198,24 +1198,24 @@ def _cuts_word_middle(
     )
 
 
-def reduce_overflow_at_safe_boundary(
+def reduce_overflow_at_safe_boundaries(
     text: str,
     limit: int
-) -> Optional[Dict[str, str]]:
+) -> List[Dict[str, str]]:
 
     text = normalize_text(
         text
     )
 
     if not text:
-        return None
+        return []
 
     if (
         limit <= 0
         or len(text)
         <= limit
     ):
-        return None
+        return []
 
     def build_reduced(
         cut_index: int,
@@ -1255,6 +1255,8 @@ def reduce_overflow_at_safe_boundary(
                 boundary,
         }
 
+    candidates: List[Dict[str, str]] = []
+
     paragraph_index = -1
 
     for separator in (
@@ -1279,7 +1281,9 @@ def reduce_overflow_at_safe_boundary(
         )
 
         if reduced is not None:
-            return reduced
+            candidates.append(
+                reduced
+            )
 
     sentence_cut = -1
 
@@ -1303,8 +1307,16 @@ def reduce_overflow_at_safe_boundary(
             "sentence"
         )
 
-        if reduced is not None:
-            return reduced
+        if (
+            reduced is not None
+            and all(
+                item["text"] != reduced["text"]
+                for item in candidates
+            )
+        ):
+            candidates.append(
+                reduced
+            )
 
     whitespace_cut = -1
 
@@ -1327,10 +1339,39 @@ def reduce_overflow_at_safe_boundary(
             "word"
         )
 
-        if reduced is not None:
-            return reduced
+        if (
+            reduced is not None
+            and all(
+                item["text"] != reduced["text"]
+                for item in candidates
+            )
+        ):
+            candidates.append(
+                reduced
+            )
 
-    return None
+    if not candidates:
+        return []
+
+    return candidates
+
+
+def reduce_overflow_at_safe_boundary(
+    text: str,
+    limit: int
+) -> Optional[Dict[str, str]]:
+
+    reduced_candidates = (
+        reduce_overflow_at_safe_boundaries(
+            text=text,
+            limit=limit
+        )
+    )
+
+    if not reduced_candidates:
+        return None
+
+    return reduced_candidates[0]
 
 
 def reduce_valid_overflow_candidate(
@@ -1348,44 +1389,59 @@ def reduce_valid_overflow_candidate(
     ):
         return None
 
-    reduced = (
-        reduce_overflow_at_safe_boundary(
+    reduced_candidates: List[
+        Dict[str, Any]
+    ] = []
+
+    for reduced in (
+        reduce_overflow_at_safe_boundaries(
             text=candidate_text,
             limit=target_length
         )
-    )
+    ):
+        reduced_text = reduced[
+            "text"
+        ]
 
-    if reduced is None:
+        if any(
+            item[
+                "candidate"
+            ] == reduced_text
+            for item in reduced_candidates
+        ):
+            continue
+
+        reduced_validation = (
+            validate_editorial_candidate(
+                original_text=original_text,
+                candidate_text=reduced_text,
+                target_length=target_length,
+                content_type=content_type
+            )
+        )
+
+        if reduced_validation[
+            "valid"
+        ]:
+            reduced_candidates.append({
+                "candidate":
+                    reduced_text,
+                "validation":
+                    reduced_validation,
+                "boundary":
+                    reduced[
+                        "boundary"
+                    ],
+            })
+
+    if not reduced_candidates:
         return None
 
-    reduced_text = reduced[
-        "text"
-    ]
-
-    reduced_validation = (
-        validate_editorial_candidate(
-            original_text=original_text,
-            candidate_text=reduced_text,
-            target_length=target_length,
-            content_type=content_type
+    return (
+        select_best_reduced_overflow_candidate(
+            reduced_candidates
         )
     )
-
-    if not reduced_validation[
-        "valid"
-    ]:
-        return None
-
-    return {
-        "candidate":
-            reduced_text,
-        "validation":
-            reduced_validation,
-        "boundary":
-            reduced[
-                "boundary"
-            ],
-    }
 
 
 def select_best_reduced_overflow_candidate(
@@ -1400,18 +1456,18 @@ def select_best_reduced_overflow_candidate(
     return max(
         candidates,
         key=lambda item: (
+            len(
+                item.get(
+                    "candidate",
+                    ""
+                )
+            ),
             BOUNDARY_RANK.get(
                 item.get(
                     "boundary",
                     "word"
                 ),
                 0
-            ),
-            len(
-                item.get(
-                    "candidate",
-                    ""
-                )
             ),
         )
     )
