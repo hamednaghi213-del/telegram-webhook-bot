@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import patch
 
 import core.webhook_handler as webhook_handler
@@ -9,7 +8,6 @@ import core.webhook_handler as webhook_handler
 # =========================================================
 
 def test_detect_opinion_tag_without_space():
-
     content_type, text, removed = (
         webhook_handler.detect_editorial_admin_tag(
             "#یادداشت\n"
@@ -18,26 +16,13 @@ def test_detect_opinion_tag_without_space():
         )
     )
 
-    assert (
-        content_type
-        == "opinion_note"
-    )
-
-    assert (
-        text
-        == (
-            "عنوان یادداشت\n\n"
-            "متن اصلی یادداشت"
-        )
-    )
-
+    assert content_type == "opinion_note"
+    assert text == "عنوان یادداشت\n\nمتن اصلی یادداشت"
     assert removed > 0
-
     assert "#یادداشت" not in text
 
 
 def test_detect_opinion_tag_with_space():
-
     content_type, text, removed = (
         webhook_handler.detect_editorial_admin_tag(
             "# یادداشت\n"
@@ -46,26 +31,13 @@ def test_detect_opinion_tag_with_space():
         )
     )
 
-    assert (
-        content_type
-        == "opinion_note"
-    )
-
-    assert (
-        text
-        == (
-            "عنوان یادداشت\n\n"
-            "متن اصلی یادداشت"
-        )
-    )
-
+    assert content_type == "opinion_note"
+    assert text == "عنوان یادداشت\n\nمتن اصلی یادداشت"
     assert removed > 0
-
     assert "# یادداشت" not in text
 
 
 def test_detect_analysis_tag_without_space():
-
     content_type, text, removed = (
         webhook_handler.detect_editorial_admin_tag(
             "#تحلیل\n"
@@ -74,26 +46,13 @@ def test_detect_analysis_tag_without_space():
         )
     )
 
-    assert (
-        content_type
-        == "news_analysis"
-    )
-
-    assert (
-        text
-        == (
-            "عنوان تحلیل\n\n"
-            "متن اصلی تحلیل"
-        )
-    )
-
+    assert content_type == "news_analysis"
+    assert text == "عنوان تحلیل\n\nمتن اصلی تحلیل"
     assert removed > 0
-
     assert "#تحلیل" not in text
 
 
 def test_detect_analysis_tag_with_space():
-
     content_type, text, removed = (
         webhook_handler.detect_editorial_admin_tag(
             "# تحلیل\n"
@@ -102,30 +61,17 @@ def test_detect_analysis_tag_with_space():
         )
     )
 
-    assert (
-        content_type
-        == "news_analysis"
-    )
-
-    assert (
-        text
-        == (
-            "عنوان تحلیل\n\n"
-            "متن اصلی تحلیل"
-        )
-    )
-
+    assert content_type == "news_analysis"
+    assert text == "عنوان تحلیل\n\nمتن اصلی تحلیل"
     assert removed > 0
-
     assert "# تحلیل" not in text
 
 
 # =========================================================
-# DEFAULT = NEWS
+# DEFAULT POLICY = NORMAL NEWS
 # =========================================================
 
 def test_no_editorial_tag_is_normal_news():
-
     original = (
         "حامد نقی لو\n\n"
         "این یک پیام خبری عادی است و "
@@ -140,14 +86,11 @@ def test_no_editorial_tag_is_normal_news():
     )
 
     assert content_type is None
-
     assert text == original
-
     assert removed == 0
 
 
 def test_analytical_language_without_tag_is_still_normal_news():
-
     original = (
         "تحولات اخیر می‌تواند بر روند مذاکرات "
         "اثر بگذارد و پیامدهای سیاسی مهمی "
@@ -161,14 +104,11 @@ def test_analytical_language_without_tag_is_still_normal_news():
     )
 
     assert content_type is None
-
     assert text == original
-
     assert removed == 0
 
 
 def test_author_name_does_not_trigger_editorial_mode():
-
     original = (
         "علی رضایی\n\n"
         "تهران و واشینگتن در روزهای آینده "
@@ -182,14 +122,11 @@ def test_author_name_does_not_trigger_editorial_mode():
     )
 
     assert content_type is None
-
     assert text == original
-
     assert removed == 0
 
 
 def test_word_yaddasht_inside_body_does_not_trigger():
-
     original = (
         "این یک خبر عادی است.\n\n"
         "یک رسانه در یادداشتی نوشته است که "
@@ -203,14 +140,11 @@ def test_word_yaddasht_inside_body_does_not_trigger():
     )
 
     assert content_type is None
-
     assert text == original
-
     assert removed == 0
 
 
 def test_word_analysis_inside_body_does_not_trigger():
-
     original = (
         "خبر جدید منتشر شد.\n\n"
         "در ادامه این گزارش یک تحلیل کوتاه "
@@ -224,9 +158,7 @@ def test_word_analysis_inside_body_does_not_trigger():
     )
 
     assert content_type is None
-
     assert text == original
-
     assert removed == 0
 
 
@@ -235,7 +167,6 @@ def test_word_analysis_inside_body_does_not_trigger():
 # =========================================================
 
 def test_tag_after_normal_text_is_not_editorial():
-
     original = (
         "این یک خبر عادی است.\n\n"
         "#یادداشت\n"
@@ -249,14 +180,11 @@ def test_tag_after_normal_text_is_not_editorial():
     )
 
     assert content_type is None
-
     assert text == original
-
     assert removed == 0
 
 
 def test_empty_lines_before_tag_are_allowed():
-
     original = (
         "\n\n"
         "#یادداشت\n"
@@ -270,13 +198,8 @@ def test_empty_lines_before_tag_are_allowed():
         )
     )
 
-    assert (
-        content_type
-        == "opinion_note"
-    )
-
+    assert content_type == "opinion_note"
     assert text == "عنوان\n\nمتن"
-
     assert removed > 0
 
 
@@ -285,7 +208,6 @@ def test_empty_lines_before_tag_are_allowed():
 # =========================================================
 
 def test_normal_hashtag_is_not_editorial():
-
     original = (
         "#فوری\n"
         "خبر جدید منتشر شد."
@@ -298,14 +220,11 @@ def test_normal_hashtag_is_not_editorial():
     )
 
     assert content_type is None
-
     assert text == original
-
     assert removed == 0
 
 
 def test_donya24_hashtag_is_not_editorial():
-
     original = (
         "#دنیا_۲۴_نیوز\n"
         "خبر جدید منتشر شد."
@@ -318,9 +237,7 @@ def test_donya24_hashtag_is_not_editorial():
     )
 
     assert content_type is None
-
     assert text == original
-
     assert removed == 0
 
 
@@ -329,7 +246,6 @@ def test_donya24_hashtag_is_not_editorial():
 # =========================================================
 
 def test_entities_shift_after_editorial_tag():
-
     entities = [
         {
             "type": "bold",
@@ -346,20 +262,11 @@ def test_entities_shift_after_editorial_tag():
     )
 
     assert len(result) == 1
-
-    assert (
-        result[0]["offset"]
-        == 2
-    )
-
-    assert (
-        result[0]["length"]
-        == 5
-    )
+    assert result[0]["offset"] == 2
+    assert result[0]["length"] == 5
 
 
 def test_entity_inside_removed_tag_is_removed():
-
     entities = [
         {
             "type": "bold",
@@ -379,7 +286,6 @@ def test_entity_inside_removed_tag_is_removed():
 
 
 def test_entity_overlapping_removed_prefix_is_removed():
-
     entities = [
         {
             "type": "bold",
@@ -399,7 +305,6 @@ def test_entity_overlapping_removed_prefix_is_removed():
 
 
 def test_entities_unchanged_when_no_prefix_removed():
-
     entities = [
         {
             "type": "bold",
@@ -419,49 +324,32 @@ def test_entities_unchanged_when_no_prefix_removed():
 
 
 # =========================================================
-# EXPLICIT EDITORIAL CLASSIFICATION
+# EXPLICIT OPINION CLASSIFICATION
 # =========================================================
 
 def test_explicit_opinion_forces_opinion_classifier():
-
     def fake_analyzer(
         original_text,
         target_length=950,
         classifier=None,
         summarizer=None
     ):
-
         assert classifier is not None
 
-        result = classifier(
+        classification = classifier(
             original_text,
             "",
             64
         )
 
-        assert (
-            result
-            == "OPINION_NOTE"
-        )
+        assert classification == "OPINION_NOTE"
 
         class FakeResult:
-
-            content_type = (
-                "opinion_note"
-            )
-
+            content_type = "opinion_note"
             needs_approval = True
-
-            suggested_text = (
-                "نسخه پیشنهادی"
-            )
-
+            suggested_text = "نسخه پیشنهادی"
             summary_success = True
-
-            reason = (
-                "editorial_summary_ready"
-            )
-
+            reason = "editorial_summary_ready"
             metadata = {
                 "regeneration_count": 0
             }
@@ -469,26 +357,16 @@ def test_explicit_opinion_forces_opinion_classifier():
         return FakeResult()
 
     class FakeStructure:
-
         title = "عنوان"
         author = "نویسنده"
         body = "متن یادداشت"
-
         author_source = "header"
         author_confidence = "high"
 
     class FakePending:
-
         review_id = "test-review"
-
-        content_type = (
-            "opinion_note"
-        )
-
-        current_summary = (
-            "نسخه پیشنهادی"
-        )
-
+        content_type = "opinion_note"
+        current_summary = "نسخه پیشنهادی"
         regeneration_count = 0
 
     with patch(
@@ -518,9 +396,123 @@ def test_explicit_opinion_forces_opinion_classifier():
         "send_message",
         return_value=True
     ):
-
         result = (
-            webhook_handler
-            .try_queue_editorial_text_review(
+            webhook_handler.try_queue_editorial_text_review(
                 chat_id=1001,
-                text="متن یادداشت
+                text="متن یادداشت",
+                entities=[],
+                forced_content_type="opinion_note"
+            )
+        )
+
+    assert result is True
+
+
+# =========================================================
+# EXPLICIT ANALYSIS CLASSIFICATION
+# =========================================================
+
+def test_explicit_analysis_forces_analysis_classifier():
+    def fake_analyzer(
+        original_text,
+        target_length=950,
+        classifier=None,
+        summarizer=None
+    ):
+        assert classifier is not None
+
+        classification = classifier(
+            original_text,
+            "",
+            64
+        )
+
+        assert classification == "NEWS_ANALYSIS"
+
+        class FakeResult:
+            content_type = "news_analysis"
+            needs_approval = True
+            suggested_text = "نسخه پیشنهادی تحلیل"
+            summary_success = True
+            reason = "editorial_summary_ready"
+            metadata = {
+                "regeneration_count": 0
+            }
+
+        return FakeResult()
+
+    class FakeStructure:
+        title = "عنوان تحلیل"
+        author = ""
+        body = "متن تحلیل"
+        author_source = ""
+        author_confidence = ""
+
+    class FakePending:
+        review_id = "test-analysis-review"
+        content_type = "news_analysis"
+        current_summary = "نسخه پیشنهادی تحلیل"
+        regeneration_count = 0
+
+    with patch(
+        "core.editorial_review.analyze_editorial_content",
+        side_effect=fake_analyzer
+    ), patch(
+        "core.editorial_structure.extract_editorial_structure",
+        return_value=FakeStructure()
+    ), patch(
+        "core.editorial_pending.create_pending_review",
+        return_value=FakePending()
+    ), patch.object(
+        webhook_handler,
+        "prepare_text_content",
+        return_value={
+            "main_text": "متن تحلیل",
+            "blockquote_blocks": [],
+            "expandable_blocks": [],
+            "other_entities": []
+        }
+    ), patch.object(
+        webhook_handler,
+        "build_editorial_source_text",
+        return_value="متن تحلیل"
+    ), patch.object(
+        webhook_handler,
+        "send_message",
+        return_value=True
+    ):
+        result = (
+            webhook_handler.try_queue_editorial_text_review(
+                chat_id=1001,
+                text="متن تحلیل",
+                entities=[],
+                forced_content_type="news_analysis"
+            )
+        )
+
+    assert result is True
+
+
+# =========================================================
+# NO FORCED TYPE = NORMAL NEWS
+# =========================================================
+
+def test_without_forced_type_does_not_queue_editorial_review():
+    with patch.object(
+        webhook_handler,
+        "prepare_text_content"
+    ) as prepare_mock:
+        result = (
+            webhook_handler.try_queue_editorial_text_review(
+                chat_id=1001,
+                text=(
+                    "این یک خبر عادی است که ممکن است "
+                    "لحن تحلیلی هم داشته باشد."
+                ),
+                entities=[],
+                forced_content_type=None
+            )
+        )
+
+    assert result is False
+    prepare_mock.assert_not_called()
