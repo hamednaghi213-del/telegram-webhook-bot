@@ -1227,6 +1227,7 @@ def update_publication_destination(
     return updated_destination
 
 
+@with_retry
 def update_publication_destination_status(
     destination_id: int,
     status: str
@@ -1243,18 +1244,19 @@ def update_publication_destination_status(
     if not destination:
         return None
 
+    update_fields = {
+        "status": validated_status
+    }
     if validated_status != "active" and destination.get("is_default"):
-        update_publication_destination(
-            destination_id,
-            is_default=False
-        )
+        update_fields["is_default"] = False
 
     return update_publication_destination(
         destination_id,
-        status=validated_status
+        **update_fields
     )
 
 
+@with_retry
 def set_default_publication_destination(
     workspace_id: int,
     destination_id: int
@@ -1286,6 +1288,7 @@ def set_default_publication_destination(
             "updated_at": now
         })
         .eq("workspace_id", workspace_id)
+        .eq("status", "active")
         .execute()
     )
 
