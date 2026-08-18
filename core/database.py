@@ -616,6 +616,20 @@ def _first_row(result) -> Optional[Dict[str, Any]]:
 
 
 @with_retry
+def _delete_workspace_by_id(
+    workspace_id: int
+) -> None:
+    """حذف workspace برای rollback داخلی"""
+    (
+        supabase
+        .table("workspaces")
+        .delete()
+        .eq("id", workspace_id)
+        .execute()
+    )
+
+
+@with_retry
 def get_or_create_user_by_telegram_id(
     telegram_user_id: int,
     status: str = "active"
@@ -668,7 +682,6 @@ def get_or_create_user_by_telegram_id(
     )
 
 
-@with_retry
 def create_workspace(
     name: str,
     owner_user_id: int,
@@ -707,20 +720,18 @@ def create_workspace(
         )
 
     try:
-        owner_membership = add_workspace_member(
+        add_workspace_member(
             workspace_id=workspace["id"],
             user_id=owner_user_id,
             role="owner",
             status="active"
         )
     except Exception:
-        supabase.table("workspaces").delete().eq(
-            "id",
+        _delete_workspace_by_id(
             workspace["id"]
-        ).execute()
+        )
         raise
 
-    workspace["owner_membership"] = owner_membership
     return workspace
 
 
