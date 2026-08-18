@@ -512,6 +512,328 @@ def delete_tenant(user_id: int) -> bool:
 
 
 # =========================================================
+# PHASE 1 — WORKSPACE FOUNDATION HELPERS
+#
+# These functions are purely additive and operate on the
+# new users / workspaces / workspace_members tables.
+# They do NOT touch the existing tenants table or any
+# legacy routing / publication behaviour.
+# =========================================================
+
+# ---------------------------------------------------------
+# Users
+# ---------------------------------------------------------
+
+@with_retry
+def get_or_create_user_by_telegram_id(
+    telegram_user_id: int,
+    username: Optional[str] = None,
+    first_name: Optional[str] = None,
+    last_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Return the users row for telegram_user_id, creating it if absent.
+
+    Returns:
+        Dict with user record fields.
+    """
+    try:
+        result = (
+            supabase
+            .table("users")
+            .select("*")
+            .eq("telegram_user_id", telegram_user_id)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]
+
+        insert_data: Dict[str, Any] = {
+            "telegram_user_id": telegram_user_id,
+        }
+        if username is not None:
+            insert_data["username"] = username
+        if first_name is not None:
+            insert_data["first_name"] = first_name
+        if last_name is not None:
+            insert_data["last_name"] = last_name
+
+        created = (
+            supabase
+            .table("users")
+            .insert(insert_data)
+            .execute()
+        )
+        return created.data[0]
+
+    except Exception as e:
+        logger.exception(
+            f"❌ get_or_create_user_by_telegram_id({telegram_user_id}): {e}"
+        )
+        raise
+
+
+# ---------------------------------------------------------
+# Workspaces
+# ---------------------------------------------------------
+
+@with_retry
+def create_workspace(
+    name: str,
+    owner_user_id: int,
+) -> Dict[str, Any]:
+    """
+    Create a new workspace owned by owner_user_id (users.id).
+
+    Automatically adds the owner as a member with role='owner'.
+
+    Returns:
+        Dict with workspace record fields.
+    """
+    try:
+        ws = (
+            supabase
+            .table("workspaces")
+            .insert({"name": name, "owner_user_id": owner_user_id})
+            .execute()
+        )
+        workspace = ws.data[0]
+
+        # Auto-add owner as workspace member
+        supabase.table("workspace_members").insert({
+            "workspace_id": workspace["id"],
+            "user_id": owner_user_id,
+            "role": "owner",
+            "status": "active",
+        }).execute()
+
+        return workspace
+
+    except Exception as e:
+        logger.exception(f"❌ create_workspace({name!r}): {e}")
+        raise
+
+
+@with_retry
+def get_workspace(workspace_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Fetch a workspace by its primary key.
+
+    Returns:
+        Dict with workspace fields, or None if not found.
+    """
+    try:
+        result = (
+            supabase
+            .table("workspaces")
+            .select("*")
+            .eq("id", workspace_id)
+            .limit(1)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+
+    except Exception as e:
+        logger.exception(f"❌ get_workspace({workspace_id}): {e}")
+        raise
+
+
+@with_retry
+def list_user_workspaces(user_id: int) -> List[Dict[str, Any]]:
+    """
+    Return all workspaces where user_id has an active membership.
+
+    Args:
+        user_id: users.id (not telegram_user_id)
+
+    Returns:
+        List of workspace dicts.
+    """
+    try:
+        memberships = (
+            supabase
+            .table("workspace_members")
+            .select("workspace_id")
+            .eq("user_id", user_id)
+            .eq("status", "active")
+            .execute()
+        )
+        workspace_ids = [m["workspace_id"] for m in (memberships.data or [])]
+        if not workspace_ids:
+            return []
+
+        result = (
+            supabase
+            .table("workspaces")
+            .select("*")
+            .in_("id", workspace_ids)
+            .execute()
+        )
+        return result.data or []
+
+    except Exception as e:
+        logger.exception(f"❌ list_user_workspaces({user_id}): {e}")
+        raise
+
+
+# ---------------------------------------------------------
+# Workspace Members
+# ---------------------------------------------------------
+
+@with_retry
+def add_workspace_member(
+    workspace_id: int,
+    user_id: int,
+    role: str,
+) -> Dict[str, Any]:
+    """
+    Add user_id to workspace_id with the given role.
+
+    Raises an exception on duplicate (workspace_id, user_id).
+
+    Returns:
+        Dict with workspace_members record fields.
+    """
+    try:
+        result = (
+            supabase
+            .table("workspace_members")
+            .insert({
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "role": role,
+                "status": "active",
+            })
+            .execute()
+        )
+        return result.data[0]
+
+    except Exception as e:
+        logger.exception(
+            f"❌ add_workspace_member(ws={workspace_id}, user={user_id}): {e}"
+        )
+        raise
+
+
+@with_retry
+def get_workspace_member(
+    workspace_id: int,
+    user_id: int,
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch a single workspace_members row.
+
+    Returns:
+        Dict or None if not found.
+    """
+    try:
+        result = (
+            supabase
+            .table("workspace_members")
+            .select("*")
+            .eq("workspace_id", workspace_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+
+    except Exception as e:
+        logger.exception(
+            f"❌ get_workspace_member(ws={workspace_id}, user={user_id}): {e}"
+        )
+        raise
+
+
+@with_retry
+def list_workspace_members(
+    workspace_id: int,
+) -> List[Dict[str, Any]]:
+    """
+    Return all workspace_members rows for a workspace.
+
+    Returns:
+        List of workspace_members dicts.
+    """
+    try:
+        result = (
+            supabase
+            .table("workspace_members")
+            .select("*")
+            .eq("workspace_id", workspace_id)
+            .execute()
+        )
+        return result.data or []
+
+    except Exception as e:
+        logger.exception(f"❌ list_workspace_members({workspace_id}): {e}")
+        raise
+
+
+@with_retry
+def update_workspace_member_role(
+    workspace_id: int,
+    user_id: int,
+    new_role: str,
+) -> bool:
+    """
+    Change the role of an existing workspace member.
+
+    Returns:
+        True if a row was updated.
+    """
+    try:
+        result = (
+            supabase
+            .table("workspace_members")
+            .update({"role": new_role})
+            .eq("workspace_id", workspace_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return bool(result.data)
+
+    except Exception as e:
+        logger.exception(
+            f"❌ update_workspace_member_role(ws={workspace_id}, user={user_id}): {e}"
+        )
+        raise
+
+
+@with_retry
+def update_workspace_member_status(
+    workspace_id: int,
+    user_id: int,
+    new_status: str,
+) -> bool:
+    """
+    Change the status of an existing workspace member.
+
+    Valid statuses: active, suspended, removed
+
+    Returns:
+        True if a row was updated.
+    """
+    try:
+        result = (
+            supabase
+            .table("workspace_members")
+            .update({"status": new_status})
+            .eq("workspace_id", workspace_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return bool(result.data)
+
+    except Exception as e:
+        logger.exception(
+            f"❌ update_workspace_member_status(ws={workspace_id}, user={user_id}): {e}"
+        )
+        raise
+
+
+# =========================================================
 # BATCH OPERATIONS
 # =========================================================
 
