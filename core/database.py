@@ -706,12 +706,19 @@ def create_workspace(
             "Failed to create workspace"
         )
 
-    owner_membership = add_workspace_member(
-        workspace_id=workspace["id"],
-        user_id=owner_user_id,
-        role="owner",
-        status="active"
-    )
+    try:
+        owner_membership = add_workspace_member(
+            workspace_id=workspace["id"],
+            user_id=owner_user_id,
+            role="owner",
+            status="active"
+        )
+    except Exception:
+        supabase.table("workspaces").delete().eq(
+            "id",
+            workspace["id"]
+        ).execute()
+        raise
 
     workspace["owner_membership"] = owner_membership
     return workspace

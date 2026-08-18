@@ -296,7 +296,7 @@ def test_create_workspace_owner_and_memberships(database_module):
     assert owner_membership["status"] == "active"
     assert duplicate_owner["id"] == owner_membership["id"]
     assert second_member["role"] == "writer"
-    assert [member["user_id"] for member in members] == [
+    assert [row["user_id"] for row in members] == [
         owner["id"],
         member["id"],
     ]
@@ -400,7 +400,7 @@ def test_memberships_support_multiple_users_and_workspaces(database_module):
         "Desk One",
         "Desk Two",
     ]
-    assert [member["user_id"] for member in workspace_one_members] == [
+    assert [row["user_id"] for row in workspace_one_members] == [
         user_one["id"],
         user_two["id"],
         user_three["id"],
