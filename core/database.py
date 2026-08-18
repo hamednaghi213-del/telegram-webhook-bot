@@ -1372,3 +1372,125 @@ def get_default_publication_destination(
     )
 
     return _first_row(result)
+
+
+# =========================================================
+# PHASE 4A — WORKSPACE SETUP STATE
+# =========================================================
+
+def get_workspace_setup_state(
+    workspace_id: int
+) -> Optional[Dict[str, Any]]:
+    """Fetch the setup state for a workspace (one row, keyed by workspace_id)."""
+    result = (
+        supabase
+        .table("workspace_setup_state")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .limit(1)
+        .execute()
+    )
+    return _first_row(result)
+
+
+def upsert_workspace_setup_state(
+    workspace_id: int,
+    step: str,
+    current_step_key: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Create or update workspace setup state.  Safe to call repeatedly."""
+    payload: Dict[str, Any] = {
+        "workspace_id": workspace_id,
+        "step": step,
+        "current_step_key": current_step_key,
+        "updated_at": time.time(),
+    }
+    result = (
+        supabase
+        .table("workspace_setup_state")
+        .upsert(payload, on_conflict="workspace_id")
+        .execute()
+    )
+    return _first_row(result)
+
+
+# =========================================================
+# PHASE 4A — WORKSPACE BRANDING
+# =========================================================
+
+def get_workspace_branding(
+    workspace_id: int
+) -> Optional[Dict[str, Any]]:
+    """Fetch workspace branding record (media_name, hashtag, channel_tag)."""
+    result = (
+        supabase
+        .table("workspace_branding")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .limit(1)
+        .execute()
+    )
+    return _first_row(result)
+
+
+def upsert_workspace_branding(
+    workspace_id: int,
+    media_name: str,
+    hashtag: str,
+    channel_tag: str
+) -> Optional[Dict[str, Any]]:
+    """Create or update workspace branding.  Belongs to workspace, not user."""
+    payload: Dict[str, Any] = {
+        "workspace_id": workspace_id,
+        "media_name": (media_name or "").strip(),
+        "hashtag": (hashtag or "").strip(),
+        "channel_tag": (channel_tag or "").strip(),
+        "updated_at": time.time(),
+    }
+    result = (
+        supabase
+        .table("workspace_branding")
+        .upsert(payload, on_conflict="workspace_id")
+        .execute()
+    )
+    return _first_row(result)
+
+
+# =========================================================
+# PHASE 4A — DESTINATION VERIFICATION
+# =========================================================
+
+def get_destination_verification(
+    destination_id: int
+) -> Optional[Dict[str, Any]]:
+    """Fetch verification record for a publication destination."""
+    result = (
+        supabase
+        .table("destination_verification")
+        .select("*")
+        .eq("destination_id", destination_id)
+        .limit(1)
+        .execute()
+    )
+    return _first_row(result)
+
+
+def upsert_destination_verification(
+    destination_id: int,
+    verified: bool = False,
+    verification_note: str = ""
+) -> Optional[Dict[str, Any]]:
+    """Create or update destination verification record."""
+    payload: Dict[str, Any] = {
+        "destination_id": destination_id,
+        "verified": verified,
+        "verification_note": (verification_note or "").strip(),
+        "updated_at": time.time(),
+    }
+    result = (
+        supabase
+        .table("destination_verification")
+        .upsert(payload, on_conflict="destination_id")
+        .execute()
+    )
+    return _first_row(result)

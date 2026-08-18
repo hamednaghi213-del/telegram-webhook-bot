@@ -1,0 +1,691 @@
+"""
+Phase 4A — One-Time Workspace Setup Tests
+==========================================
+26 focused tests covering:
+  1-6   : Setup state lifecycle
+  7-8   : Workspace branding
+  9-11  : Destination registration
+  12-13 : Setup completion requirements
+  14-17 : Member / multi-workspace
+  18-20 : Legacy & Phase 1/2/3 regression
+  21-26 : Full command-handler integration
+"""
+
+import importlib
+import sys
+import types
+from copy import deepcopy
+from typing import Any, Dict, List, Optional
+
+
+# =========================================================
+# IN-MEMORY DATABASE (Phase 4A extended)
+# =========================================================
+
+class InMemoryDb4A:
+    """
+    In-memory database stub for Phase 4A tests.
+    Extends the Phase 3 stub with new setup/branding/verification tables.
+    """
+
+    def __init__(self):
+        self.users: List[Dict] = []
+        self.workspaces: List[Dict] = []
+        self.workspace_members: List[Dict] = []
+        self.workspace_setup_states: Dict[int, Dict] = {}
+        self.workspace_brandings: Dict[int, Dict] = {}
+        self.publication_destinations: List[Dict] = []
+        self.destination_verifications: Dict[int, Dict] = {}
+        self.tenants: Dict[int, Dict] = {}
+        self._next_id = 1
+
+    def _next(self):
+        val = self._next_id
+        self._next_id += 1
+        return val
+
+    # ── users ──────────────────────────────────────────
+    def get_user_by_telegram_id(self, telegram_user_id):
+        for u in self.users:
+            if u["telegram_user_id"] == telegram_user_id:
+                return u
+        return None
+
+    def get_or_create_user_by_telegram_id(self, telegram_user_id, status="active"):
+        user = self.get_user_by_telegram_id(telegram_user_id)
+        if user:
+            return user
+        user = {"id": self._next(), "telegram_user_id": telegram_user_id, "status": status}
+        self.users.append(user)
+        return user
+
+    # ── tenants (legacy) ───────────────────────────────
+    def get_tenant(self, user_id):
+        return self.tenants.get(user_id)
+
+    def save_tenant(self, user_id, bot_token, telegram_channel,
+                    bale_channel="", bale_token="", hashtag=None, channel_tag=None):
+        self.tenants[user_id] = {
+            "user_id": user_id, "bot_token": bot_token,
+            "telegram_channel": telegram_channel,
+            "bale_channel": bale_channel, "bale_token": bale_token,
+            "hashtag": hashtag, "channel_tag": channel_tag,
+        }
+        return True
+
+    def update_bale_settings(self, user_id, bale_channel, bale_token):
+        t = self.tenants.get(user_id)
+        if not t:
+            return False
+        t["bale_channel"] = bale_channel
+        t["bale_token"] = bale_token
+        return True
+
+    # ── workspaces ─────────────────────────────────────
+    def list_owned_workspaces(self, owner_user_id, include_inactive=False):
+        rows = [w for w in self.workspaces if w["owner_user_id"] == owner_user_id]
+        if not include_inactive:
+            rows = [w for w in rows if w.get("status") == "active"]
+        return sorted(rows, key=lambda x: x["id"])
+
+    def create_workspace(self, name, owner_user_id, status="active"):
+        ws = {"id": self._next(), "name": name, "owner_user_id": owner_user_id, "status": status}
+        self.workspaces.append(ws)
+        self.add_workspace_member(ws["id"], owner_user_id, role="owner", status="active")
+        return ws
+
+    def get_workspace(self, workspace_id):
+        for w in self.workspaces:
+            if w["id"] == workspace_id:
+                return w
+        return None
+
+    # ── workspace members ──────────────────────────────
+    def get_workspace_member(self, workspace_id, user_id):
+        for m in self.workspace_members:
+            if m["workspace_id"] == workspace_id and m["user_id"] == user_id:
+                return m
+        return None
+
+    def add_workspace_member(self, workspace_id, user_id, role="writer", status="active"):
+        existing = self.get_workspace_member(workspace_id, user_id)
+        if existing:
+            return existing
+        m = {"id": self._next(), "workspace_id": workspace_id, "user_id": user_id,
+             "role": role, "status": status}
+        self.workspace_members.append(m)
+        return m
+
+    def update_workspace_member_role(self, workspace_id, user_id, role):
+        m = self.get_workspace_member(workspace_id, user_id)
+        if m:
+            m["role"] = role
+        return m
+
+    def update_workspace_member_status(self, workspace_id, user_id, status):
+        m = self.get_workspace_member(workspace_id, user_id)
+        if m:
+            m["status"] = status
+        return m
+
+    def list_workspace_members(self, workspace_id, status_filter="active"):
+        rows = [m for m in self.workspace_members if m["workspace_id"] == workspace_id]
+        if status_filter:
+            rows = [m for m in rows if m.get("status") == status_filter]
+        return rows
+
+    # ── workspace setup state ──────────────────────────
+    def get_workspace_setup_state(self, workspace_id):
+        return self.workspace_setup_states.get(workspace_id)
+
+    def upsert_workspace_setup_state(self, workspace_id, step, current_step_key=None):
+        row = {
+            "workspace_id": workspace_id,
+            "step": step,
+            "current_step_key": current_step_key,
+        }
+        self.workspace_setup_states[workspace_id] = row
+        return deepcopy(row)
+
+    # ── workspace branding ─────────────────────────────
+    def get_workspace_branding(self, workspace_id):
+        return self.workspace_brandings.get(workspace_id)
+
+    def upsert_workspace_branding(self, workspace_id, media_name, hashtag, channel_tag):
+        row = {
+            "workspace_id": workspace_id,
+            "media_name": (media_name or "").strip(),
+            "hashtag": (hashtag or "").strip(),
+            "channel_tag": (channel_tag or "").strip(),
+        }
+        self.workspace_brandings[workspace_id] = row
+        return deepcopy(row)
+
+    # ── publication destinations ───────────────────────
+    def list_workspace_destinations(self, workspace_id, include_removed=False):
+        rows = [d for d in self.publication_destinations if d["workspace_id"] == workspace_id]
+        if not include_removed:
+            rows = [d for d in rows if d.get("status") != "removed"]
+        return sorted(rows, key=lambda x: x["id"])
+
+    def create_publication_destination(self, workspace_id, platform, destination_type,
+                                        name, external_id, status="active", is_default=False):
+        ws = self.get_workspace(workspace_id)
+        if not ws:
+            raise ValueError(f"Workspace not found: {workspace_id}")
+        # Duplicate check
+        for d in self.publication_destinations:
+            if (d["workspace_id"] == workspace_id
+                    and d["platform"] == platform
+                    and d["external_id"] == str(external_id).strip()
+                    and d.get("status") != "removed"):
+                return d
+        dest = {
+            "id": self._next(),
+            "workspace_id": workspace_id,
+            "platform": platform,
+            "destination_type": destination_type,
+            "name": name,
+            "external_id": str(external_id).strip(),
+            "status": status,
+            "is_default": is_default,
+        }
+        self.publication_destinations.append(dest)
+        return deepcopy(dest)
+
+    # ── destination verification ───────────────────────
+    def get_destination_verification(self, destination_id):
+        return self.destination_verifications.get(destination_id)
+
+    def upsert_destination_verification(self, destination_id, verified=False, verification_note=""):
+        row = {
+            "destination_id": destination_id,
+            "verified": verified,
+            "verification_note": (verification_note or "").strip(),
+        }
+        self.destination_verifications[destination_id] = row
+        return deepcopy(row)
+
+
+# =========================================================
+# LOADER HELPERS
+# =========================================================
+
+def _make_fake_db_module(db: InMemoryDb4A) -> types.ModuleType:
+    """Build a fake core.database module backed by db."""
+    mod = types.ModuleType("core.database")
+    mod.get_tenant = db.get_tenant
+    mod.save_tenant = db.save_tenant
+    mod.update_bale_settings = db.update_bale_settings
+    mod.get_user_by_telegram_id = db.get_user_by_telegram_id
+    mod.get_or_create_user_by_telegram_id = db.get_or_create_user_by_telegram_id
+    mod.create_workspace = db.create_workspace
+    mod.list_owned_workspaces = db.list_owned_workspaces
+    mod.get_workspace = db.get_workspace
+    mod.get_workspace_member = db.get_workspace_member
+    mod.add_workspace_member = db.add_workspace_member
+    mod.update_workspace_member_role = db.update_workspace_member_role
+    mod.update_workspace_member_status = db.update_workspace_member_status
+    mod.list_workspace_members = db.list_workspace_members
+    # Phase 4A additions
+    mod.get_workspace_setup_state = db.get_workspace_setup_state
+    mod.upsert_workspace_setup_state = db.upsert_workspace_setup_state
+    mod.get_workspace_branding = db.get_workspace_branding
+    mod.upsert_workspace_branding = db.upsert_workspace_branding
+    mod.list_workspace_destinations = db.list_workspace_destinations
+    mod.create_publication_destination = db.create_publication_destination
+    mod.get_destination_verification = db.get_destination_verification
+    mod.upsert_destination_verification = db.upsert_destination_verification
+    return mod
+
+
+def _load_modules(monkeypatch):
+    """Load workspace_setup and command_handler with the in-memory db wired in."""
+    db = InMemoryDb4A()
+    fake_db = _make_fake_db_module(db)
+
+    for mod_name in ["core.database", "core.workspace_setup", "core.command_handler"]:
+        sys.modules.pop(mod_name, None)
+
+    monkeypatch.setitem(sys.modules, "core.database", fake_db)
+
+    ws_mod = importlib.import_module("core.workspace_setup")
+    ws_mod = importlib.reload(ws_mod)
+
+    ch_mod = importlib.import_module("core.command_handler")
+    ch_mod = importlib.reload(ch_mod)
+
+    sent: List = []
+    monkeypatch.setattr(ch_mod, "send_message",
+                        lambda cid, txt, parse_mode=None: sent.append((cid, txt)) or True)
+    monkeypatch.setattr(ch_mod, "send_long_message",
+                        lambda cid, txt, max_len=4096: sent.append((cid, txt)) or True)
+
+    return ws_mod, ch_mod, db, sent
+
+
+# =========================================================
+# TESTS: SETUP STATE LIFECYCLE  (1-6)
+# =========================================================
+
+def test_01_new_workspace_begins_incomplete(monkeypatch):
+    """New workspace has no setup state → treated as not_started."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(1001)
+    ws = db.create_workspace("رسانه من", user["id"])
+
+    state = ws_mod.get_or_init_setup_state(ws["id"])
+    assert state["step"] == "not_started"
+    assert state["current_step_key"] is None
+
+
+def test_02_setup_enters_in_progress_on_start(monkeypatch):
+    """start_setup transitions state to in_progress at setup_channel."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(1002)
+    ws = db.create_workspace("رسانه من", user["id"])
+
+    state = ws_mod.start_setup(ws["id"])
+    assert state["step"] == "in_progress"
+    assert state["current_step_key"] == "setup_channel"
+
+
+def test_03_setup_state_persists_in_db(monkeypatch):
+    """After start_setup, state reads back correctly from db."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(1003)
+    ws = db.create_workspace("رسانه من", user["id"])
+
+    ws_mod.start_setup(ws["id"])
+    stored = db.get_workspace_setup_state(ws["id"])
+    assert stored is not None
+    assert stored["step"] == "in_progress"
+    assert stored["current_step_key"] == "setup_channel"
+
+
+def test_04_interrupted_setup_resumes_from_correct_step(monkeypatch):
+    """advance_to_step persists step; start_setup resumes it."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(1004)
+    ws = db.create_workspace("رسانه من", user["id"])
+
+    ws_mod.start_setup(ws["id"])
+    ws_mod.advance_to_step(ws["id"], "setup_branding")
+
+    # Simulate new session: call start_setup again
+    resumed = ws_mod.start_setup(ws["id"])
+    assert resumed["step"] == "in_progress"
+    assert resumed["current_step_key"] == "setup_branding"
+
+
+def test_05_repeated_start_does_not_restart_setup(monkeypatch):
+    """Calling start multiple times does not reset a completed setup."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(1005)
+    ws = db.create_workspace("رسانه من", user["id"])
+
+    db.upsert_workspace_setup_state(ws["id"], "completed", None)
+
+    # start_setup on completed workspace must leave it completed
+    state = ws_mod.start_setup(ws["id"])
+    assert state["step"] == "completed"
+
+
+def test_06_completed_setup_stays_completed(monkeypatch):
+    """complete_setup marks state as completed; subsequent calls are idempotent."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(1006)
+    ws = db.create_workspace("رسانه من", user["id"])
+
+    db.upsert_workspace_branding(ws["id"], "رسانه‌ام", "#هشتگ", "@تگ")
+    db.create_publication_destination(ws["id"], "telegram", "channel", "ch", "@testchan", "inactive")
+
+    ok, err = ws_mod.complete_setup(ws["id"], user["id"])
+    assert ok, f"Expected completion, got error: {err}"
+    assert ws_mod.is_setup_completed(ws["id"])
+
+    # Call again — still completed, no error
+    ok2, _ = ws_mod.complete_setup(ws["id"], user["id"])
+    assert ok2
+    assert ws_mod.is_setup_completed(ws["id"])
+
+
+# =========================================================
+# TESTS: WORKSPACE BRANDING  (7-8)
+# =========================================================
+
+def test_07_workspace_branding_stored_correctly(monkeypatch):
+    """save_workspace_branding writes media_name, hashtag, channel_tag."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(2001)
+    ws = db.create_workspace("رسانه من", user["id"])
+
+    branding = ws_mod.save_workspace_branding(ws["id"], "دنیا۲۴", "#دنیا_۲۴", "@Donya24News")
+    assert branding is not None
+    assert branding["media_name"] == "دنیا۲۴"
+    assert branding["hashtag"] == "#دنیا_۲۴"
+    assert branding["channel_tag"] == "@Donya24News"
+    assert branding["workspace_id"] == ws["id"]
+
+
+def test_08_branding_belongs_to_workspace_not_user(monkeypatch):
+    """Two users in different workspaces have independent branding."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    u1 = db.get_or_create_user_by_telegram_id(2002)
+    u2 = db.get_or_create_user_by_telegram_id(2003)
+    ws1 = db.create_workspace("رسانه ۱", u1["id"])
+    ws2 = db.create_workspace("رسانه ۲", u2["id"])
+
+    ws_mod.save_workspace_branding(ws1["id"], "برند ۱", "#h1", "@t1")
+    ws_mod.save_workspace_branding(ws2["id"], "برند ۲", "#h2", "@t2")
+
+    b1 = db.get_workspace_branding(ws1["id"])
+    b2 = db.get_workspace_branding(ws2["id"])
+    assert b1["media_name"] == "برند ۱"
+    assert b2["media_name"] == "برند ۲"
+    # Branding is keyed by workspace, not user
+    assert b1["workspace_id"] == ws1["id"]
+    assert b2["workspace_id"] == ws2["id"]
+
+
+# =========================================================
+# TESTS: DESTINATION REGISTRATION  (9-11)
+# =========================================================
+
+def test_09_two_destinations_added_in_same_setup(monkeypatch):
+    """Both channels can be registered in a single setup session."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(3001)
+    ws = db.create_workspace("رسانه من", user["id"])
+
+    d1, dup1 = ws_mod.register_channel_destination(ws["id"], "@Channel1", "کانال ۱")
+    d2, dup2 = ws_mod.register_channel_destination(ws["id"], "@Channel2", "کانال ۲")
+
+    assert not dup1 and d1 is not None
+    assert not dup2 and d2 is not None
+    all_dests = db.list_workspace_destinations(ws["id"])
+    assert len(all_dests) == 2
+
+
+def test_10_more_than_two_destinations_supported(monkeypatch):
+    """No hard cap: three or more channels can be added."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(3002)
+    ws = db.create_workspace("رسانه من", user["id"])
+
+    for i in range(5):
+        d, dup = ws_mod.register_channel_destination(ws["id"], f"@Chan{i}", f"کانال {i}")
+        assert not dup and d is not None
+
+    assert len(db.list_workspace_destinations(ws["id"])) == 5
+
+
+def test_11_duplicate_destination_protected(monkeypatch):
+    """Registering the same channel twice returns is_duplicate=True."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(3003)
+    ws = db.create_workspace("رسانه من", user["id"])
+
+    _, dup1 = ws_mod.register_channel_destination(ws["id"], "@SameChan", "کانال")
+    _, dup2 = ws_mod.register_channel_destination(ws["id"], "@SameChan", "کانال")
+    assert not dup1
+    assert dup2
+    assert len(db.list_workspace_destinations(ws["id"])) == 1
+
+
+# =========================================================
+# TESTS: SETUP COMPLETION REQUIREMENTS  (12-13)
+# =========================================================
+
+def test_12_setup_cannot_complete_without_valid_destination(monkeypatch):
+    """complete_setup fails when no destination is registered."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(4001)
+    ws = db.create_workspace("رسانه من", user["id"])
+    db.upsert_workspace_branding(ws["id"], "رسانه‌ام", "#h", "@t")
+
+    ok, reason = ws_mod.complete_setup(ws["id"], user["id"])
+    assert not ok
+    assert reason is not None
+
+
+def test_13_setup_cannot_complete_without_branding(monkeypatch):
+    """complete_setup fails when branding has no media_name."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(4002)
+    ws = db.create_workspace("رسانه من", user["id"])
+    db.create_publication_destination(ws["id"], "telegram", "channel", "ch", "@ch", "inactive")
+    # No branding stored at all
+
+    ok, reason = ws_mod.complete_setup(ws["id"], user["id"])
+    assert not ok
+    assert reason is not None
+
+
+# =========================================================
+# TESTS: MEMBER / MULTI-WORKSPACE  (14-17)
+# =========================================================
+
+def test_14_owner_remains_active_owner_after_setup(monkeypatch):
+    """Owner membership is preserved with role=owner, status=active."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(5001)
+    ws = db.create_workspace("رسانه من", user["id"])
+
+    db.upsert_workspace_branding(ws["id"], "رسانه", "#h", "@t")
+    db.create_publication_destination(ws["id"], "telegram", "channel", "c", "@c", "inactive")
+    ok, _ = ws_mod.complete_setup(ws["id"], user["id"])
+    assert ok
+
+    m = db.get_workspace_member(ws["id"], user["id"])
+    assert m["role"] == "owner"
+    assert m["status"] == "active"
+
+
+def test_15_second_member_can_be_added(monkeypatch):
+    """add_member_to_workspace adds a non-owner member successfully."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    owner = db.get_or_create_user_by_telegram_id(5002)
+    ws = db.create_workspace("رسانه من", owner["id"])
+
+    membership, err = ws_mod.add_member_to_workspace(ws["id"], 9999, "manager")
+    assert err is None
+    assert membership is not None
+    assert membership["role"] == "manager"
+
+
+def test_16_same_telegram_user_belongs_to_two_workspaces(monkeypatch):
+    """Admin B can be a member of both workspace A and workspace B."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    owner_a = db.get_or_create_user_by_telegram_id(5003)
+    owner_b = db.get_or_create_user_by_telegram_id(5004)
+    shared_admin_tg = 8888
+
+    ws_a = db.create_workspace("رسانه الف", owner_a["id"])
+    ws_b = db.create_workspace("رسانه ب", owner_b["id"])
+
+    m_a, err_a = ws_mod.add_member_to_workspace(ws_a["id"], shared_admin_tg, "manager")
+    m_b, err_b = ws_mod.add_member_to_workspace(ws_b["id"], shared_admin_tg, "publisher")
+
+    assert err_a is None and m_a is not None
+    assert err_b is None and m_b is not None
+
+    # Same Telegram user → same user row, but different memberships
+    shared_user = db.get_user_by_telegram_id(shared_admin_tg)
+    assert shared_user is not None
+    mem_a = db.get_workspace_member(ws_a["id"], shared_user["id"])
+    mem_b = db.get_workspace_member(ws_b["id"], shared_user["id"])
+    assert mem_a is not None
+    assert mem_b is not None
+    assert mem_a["id"] != mem_b["id"]   # different membership rows
+    assert len([u for u in db.users if u["telegram_user_id"] == shared_admin_tg]) == 1
+
+
+def test_17_member_role_is_workspace_specific(monkeypatch):
+    """The same user can have different roles in different workspaces."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    owner_a = db.get_or_create_user_by_telegram_id(5005)
+    owner_b = db.get_or_create_user_by_telegram_id(5006)
+    shared_tg = 7777
+
+    ws_a = db.create_workspace("رسانه الف", owner_a["id"])
+    ws_b = db.create_workspace("رسانه ب", owner_b["id"])
+
+    ws_mod.add_member_to_workspace(ws_a["id"], shared_tg, "writer")
+    ws_mod.add_member_to_workspace(ws_b["id"], shared_tg, "manager")
+
+    user = db.get_user_by_telegram_id(shared_tg)
+    assert db.get_workspace_member(ws_a["id"], user["id"])["role"] == "writer"
+    assert db.get_workspace_member(ws_b["id"], user["id"])["role"] == "manager"
+
+
+# =========================================================
+# TESTS: LEGACY PROTECTION + PHASE 1/2/3 REGRESSION  (18-20)
+# =========================================================
+
+def test_18_legacy_tenant_user_remains_unaffected(monkeypatch):
+    """A user with a legacy tenant record is never put through workspace setup."""
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    db.tenants[9001] = {"user_id": 9001, "telegram_channel": "@legacy"}
+
+    ch_mod.handle_start(9001)
+
+    assert any("register" in m[1].lower() or "استفاده کنید" in m[1] for m in sent)
+    assert len(db.workspaces) == 0
+    assert len(db.users) == 0
+
+
+def test_19_get_tenant_unchanged_for_legacy_user(monkeypatch):
+    """get_tenant continues to return the legacy record for legacy users."""
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    db.tenants[9002] = {"user_id": 9002, "telegram_channel": "@oldchannel"}
+
+    # handle_start for legacy user should NOT call get_or_create_user
+    ch_mod.handle_start(9002)
+
+    tenant = db.get_tenant(9002)
+    assert tenant is not None
+    assert tenant["telegram_channel"] == "@oldchannel"
+    # workspace table must be empty — legacy user was not onboarded
+    assert len(db.workspaces) == 0
+
+
+def test_20_phase1_and_phase2_workspace_member_helpers_unchanged(monkeypatch):
+    """Phase 1/2 workspace + member helpers work correctly in Phase 4A env."""
+    _, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(9003)
+    ws = db.create_workspace("رسانه تست", user["id"])
+    assert ws["name"] == "رسانه تست"
+
+    owner_mem = db.get_workspace_member(ws["id"], user["id"])
+    assert owner_mem["role"] == "owner"
+
+    # Update role and status
+    db.update_workspace_member_role(ws["id"], user["id"], "manager")
+    assert db.get_workspace_member(ws["id"], user["id"])["role"] == "manager"
+
+    db.update_workspace_member_status(ws["id"], user["id"], "suspended")
+    assert db.get_workspace_member(ws["id"], user["id"])["status"] == "suspended"
+
+
+# =========================================================
+# TESTS: COMMAND-HANDLER INTEGRATION  (21-26)
+# =========================================================
+
+def test_21_start_new_user_shows_setup_prompt(monkeypatch):
+    """/start for a brand-new workspace user shows /setup prompt."""
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(1001)
+
+    assert len(db.workspaces) == 1
+    last_msg = sent[-1][1]
+    assert "/setup" in last_msg
+
+
+def test_22_start_completed_setup_shows_ready_panel(monkeypatch):
+    """/start after completed setup shows the ready panel, not the wizard."""
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(1002)  # creates workspace + not_started state
+
+    user = db.get_user_by_telegram_id(1002)
+    ws = db.list_owned_workspaces(user["id"])[0]
+    db.upsert_workspace_setup_state(ws["id"], "completed", None)
+
+    sent.clear()
+    ch_mod.handle_start(1002)
+    last_msg = sent[-1][1]
+    assert "آماده" in last_msg or "/settings" in last_msg
+    assert "/setup" not in last_msg
+
+
+def test_23_repeated_start_does_not_duplicate_workspace(monkeypatch):
+    """/start called twice must not create duplicate workspaces/members."""
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+    ch_mod.handle_start(1003)
+    ch_mod.handle_start(1003)
+
+    assert len(db.workspaces) == 1
+    assert len(db.users) == 1
+    owner_mems = [m for m in db.workspace_members if m["role"] == "owner"]
+    assert len(owner_mems) == 1
+
+
+def test_24_addchannel_command_registers_unverified_destination(monkeypatch):
+    """/addchannel stores channel as inactive + creates verification record."""
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(2001)
+
+    ch_mod.handle_command("/addchannel @TestChannel", 2001)
+
+    dests = db.list_workspace_destinations(db.workspaces[0]["id"])
+    assert len(dests) == 1
+    dest = dests[0]
+    assert dest["external_id"] == "@TestChannel"
+    assert dest["status"] == "inactive"   # NOT active/ready for publication
+
+    verification = db.get_destination_verification(dest["id"])
+    assert verification is not None
+    assert verification["verified"] is False
+    assert "pending" in verification["verification_note"].lower()
+
+
+def test_25_setbranding_command_saves_workspace_branding(monkeypatch):
+    """/setbranding stores branding on the workspace, not the user."""
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(2002)
+
+    ch_mod.handle_command("/setbranding دنیا۲۴ #دنیا_۲۴ @Donya24News", 2002)
+
+    ws = db.workspaces[0]
+    branding = db.get_workspace_branding(ws["id"])
+    assert branding is not None
+    assert branding["media_name"] == "دنیا۲۴"
+    assert branding["hashtag"] == "#دنیا_۲۴"
+    assert branding["channel_tag"] == "@Donya24News"
+    assert branding["workspace_id"] == ws["id"]
+
+
+def test_26_finishsetup_requires_branding_and_destination(monkeypatch):
+    """/finishsetup fails gracefully when requirements are missing."""
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(2003)
+
+    # No branding, no channel — finish must fail
+    sent.clear()
+    ch_mod.handle_command("/finishsetup", 2003)
+    last_msg = sent[-1][1]
+    assert "❌" in last_msg
+
+    # Add channel but still no branding — still fails
+    ch_mod.handle_command("/addchannel @SomeChannel", 2003)
+    sent.clear()
+    ch_mod.handle_command("/finishsetup", 2003)
+    last_msg = sent[-1][1]
+    assert "❌" in last_msg
+
+    # Add branding — now finish should succeed
+    ch_mod.handle_command("/setbranding رسانه‌ام #test @test", 2003)
+    sent.clear()
+    ch_mod.handle_command("/finishsetup", 2003)
+    last_msg = sent[-1][1]
+    assert "🎉" in last_msg or "✅" in last_msg
