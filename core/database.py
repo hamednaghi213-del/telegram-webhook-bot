@@ -953,3 +953,376 @@ def update_workspace_member_status(
     )
 
     return _first_row(result)
+
+
+# =========================================================
+# PUBLICATION DESTINATIONS FOUNDATION
+# =========================================================
+
+
+PUBLICATION_DESTINATION_PLATFORMS = {
+    "telegram",
+    "bale"
+}
+
+PUBLICATION_DESTINATION_TYPES = {
+    "channel"
+}
+
+PUBLICATION_DESTINATION_STATUSES = {
+    "active",
+    "inactive",
+    "removed"
+}
+
+
+def _validate_destination_name(name: str) -> str:
+    normalized_name = (name or "").strip()
+    if not normalized_name:
+        raise ValueError("Publication destination name is required")
+    return normalized_name
+
+
+def _validate_external_id(external_id: str) -> str:
+    normalized_external_id = str(external_id or "").strip()
+    if not normalized_external_id:
+        raise ValueError("Publication destination external_id is required")
+    return normalized_external_id
+
+
+@with_retry
+def create_publication_destination(
+    workspace_id: int,
+    platform: str,
+    destination_type: str,
+    name: str,
+    external_id: str,
+    status: str = "active",
+    is_default: bool = False
+) -> Dict[str, Any]:
+    workspace = get_workspace(workspace_id)
+    if not workspace:
+        raise ValueError(f"Workspace not found: {workspace_id}")
+
+    validated_platform = _validate_enum(
+        platform,
+        PUBLICATION_DESTINATION_PLATFORMS,
+        "publication destination platform"
+    )
+    validated_destination_type = _validate_enum(
+        destination_type,
+        PUBLICATION_DESTINATION_TYPES,
+        "publication destination type"
+    )
+    validated_status = _validate_enum(
+        status,
+        PUBLICATION_DESTINATION_STATUSES,
+        "publication destination status"
+    )
+    validated_name = _validate_destination_name(name)
+    validated_external_id = _validate_external_id(external_id)
+
+    if is_default and validated_status != "active":
+        raise ValueError(
+            "Default publication destination must be active"
+        )
+
+    existing_result = (
+        supabase
+        .table("publication_destinations")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .eq("platform", validated_platform)
+        .eq("external_id", validated_external_id)
+        .execute()
+    )
+
+    existing_destination = next(
+        (
+            row for row in (existing_result.data or [])
+            if row.get("status") != "removed"
+        ),
+        None
+    )
+    if existing_destination:
+        if is_default and existing_destination.get("status") != "active":
+            raise ValueError(
+                "Default publication destination must be active"
+            )
+        if is_default and not existing_destination.get("is_default"):
+            set_default_publication_destination(
+                workspace_id,
+                existing_destination["id"]
+            )
+            return get_publication_destination(
+                existing_destination["id"]
+            ) or existing_destination
+        return existing_destination
+
+    now = time.time()
+    insert_result = (
+        supabase
+        .table("publication_destinations")
+        .insert({
+            "workspace_id": workspace_id,
+            "platform": validated_platform,
+            "destination_type": validated_destination_type,
+            "name": validated_name,
+            "external_id": validated_external_id,
+            "status": validated_status,
+            "is_default": bool(is_default),
+            "created_at": now,
+            "updated_at": now
+        })
+        .execute()
+    )
+
+    destination = _first_row(insert_result)
+    if not destination:
+        raise RuntimeError(
+            "Failed to create publication destination"
+        )
+
+    if is_default:
+        set_default_publication_destination(
+            workspace_id,
+            destination["id"]
+        )
+        destination = get_publication_destination(
+            destination["id"]
+        ) or destination
+
+    return destination
+
+
+@with_retry
+def get_publication_destination(
+    destination_id: int
+) -> Optional[Dict[str, Any]]:
+    result = (
+        supabase
+        .table("publication_destinations")
+        .select("*")
+        .eq("id", destination_id)
+        .limit(1)
+        .execute()
+    )
+
+    return _first_row(result)
+
+
+@with_retry
+def list_workspace_destinations(
+    workspace_id: int,
+    include_removed: bool = False
+) -> List[Dict[str, Any]]:
+    workspace = get_workspace(workspace_id)
+    if not workspace:
+        raise ValueError(f"Workspace not found: {workspace_id}")
+
+    destinations = (
+        supabase
+        .table("publication_destinations")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .execute()
+        .data
+        or []
+    )
+
+    if not include_removed:
+        destinations = [
+            destination
+            for destination in destinations
+            if destination.get("status") != "removed"
+        ]
+
+    return sorted(
+        destinations,
+        key=lambda item: item.get("id", 0)
+    )
+
+
+@with_retry
+def update_publication_destination(
+    destination_id: int,
+    **fields
+) -> Optional[Dict[str, Any]]:
+    existing_destination = get_publication_destination(
+        destination_id
+    )
+    if not existing_destination:
+        return None
+
+    update_data = {}
+
+    if "name" in fields:
+        update_data["name"] = _validate_destination_name(
+            fields["name"]
+        )
+
+    if "external_id" in fields:
+        update_data["external_id"] = _validate_external_id(
+            fields["external_id"]
+        )
+
+    if "platform" in fields:
+        update_data["platform"] = _validate_enum(
+            fields["platform"],
+            PUBLICATION_DESTINATION_PLATFORMS,
+            "publication destination platform"
+        )
+
+    if "destination_type" in fields:
+        update_data["destination_type"] = _validate_enum(
+            fields["destination_type"],
+            PUBLICATION_DESTINATION_TYPES,
+            "publication destination type"
+        )
+
+    if "status" in fields:
+        update_data["status"] = _validate_enum(
+            fields["status"],
+            PUBLICATION_DESTINATION_STATUSES,
+            "publication destination status"
+        )
+
+    if "is_default" in fields:
+        update_data["is_default"] = bool(fields["is_default"])
+
+    if (
+        update_data.get("is_default") is True
+        and update_data.get("status", existing_destination.get("status")) != "active"
+    ):
+        raise ValueError(
+            "Default publication destination must be active"
+        )
+
+    if not update_data:
+        return existing_destination
+
+    update_data["updated_at"] = time.time()
+    result = (
+        supabase
+        .table("publication_destinations")
+        .update(update_data)
+        .eq("id", destination_id)
+        .execute()
+    )
+
+    updated_destination = _first_row(result)
+    if (
+        updated_destination
+        and updated_destination.get("is_default")
+        and updated_destination.get("status") == "active"
+    ):
+        set_default_publication_destination(
+            updated_destination["workspace_id"],
+            updated_destination["id"]
+        )
+        return get_publication_destination(
+            updated_destination["id"]
+        ) or updated_destination
+
+    return updated_destination
+
+
+def update_publication_destination_status(
+    destination_id: int,
+    status: str
+) -> Optional[Dict[str, Any]]:
+    validated_status = _validate_enum(
+        status,
+        PUBLICATION_DESTINATION_STATUSES,
+        "publication destination status"
+    )
+
+    destination = get_publication_destination(
+        destination_id
+    )
+    if not destination:
+        return None
+
+    if validated_status != "active" and destination.get("is_default"):
+        update_publication_destination(
+            destination_id,
+            is_default=False
+        )
+
+    return update_publication_destination(
+        destination_id,
+        status=validated_status
+    )
+
+
+def set_default_publication_destination(
+    workspace_id: int,
+    destination_id: int
+) -> Dict[str, Any]:
+    workspace = get_workspace(workspace_id)
+    if not workspace:
+        raise ValueError(f"Workspace not found: {workspace_id}")
+
+    destination = get_publication_destination(destination_id)
+    if not destination:
+        raise ValueError(
+            f"Publication destination not found: {destination_id}"
+        )
+    if destination.get("workspace_id") != workspace_id:
+        raise ValueError(
+            "Destination does not belong to workspace"
+        )
+    if destination.get("status") != "active":
+        raise ValueError(
+            "Default publication destination must be active"
+        )
+
+    now = time.time()
+    (
+        supabase
+        .table("publication_destinations")
+        .update({
+            "is_default": False,
+            "updated_at": now
+        })
+        .eq("workspace_id", workspace_id)
+        .execute()
+    )
+
+    updated_result = (
+        supabase
+        .table("publication_destinations")
+        .update({
+            "is_default": True,
+            "updated_at": now
+        })
+        .eq("id", destination_id)
+        .eq("workspace_id", workspace_id)
+        .execute()
+    )
+
+    default_destination = _first_row(updated_result)
+    if default_destination:
+        return default_destination
+
+    raise RuntimeError(
+        "Failed to set default publication destination"
+    )
+
+
+@with_retry
+def get_default_publication_destination(
+    workspace_id: int
+) -> Optional[Dict[str, Any]]:
+    result = (
+        supabase
+        .table("publication_destinations")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .eq("status", "active")
+        .eq("is_default", True)
+        .limit(1)
+        .execute()
+    )
+
+    return _first_row(result)
