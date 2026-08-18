@@ -592,7 +592,7 @@ def test_19_get_tenant_unchanged_for_legacy_user(monkeypatch):
 def test_20_phase1_and_phase2_workspace_member_helpers_unchanged(monkeypatch):
     """Phase 1/2 workspace + member helpers work correctly in Phase 4A env."""
     _, _, db, _ = _load_modules(monkeypatch)
-    user = db.get_or_create_user_by_telegram_id(9003)
+    user = db.get_or_create_user_by_telegram_id(9103)
     ws = db.create_workspace("رسانه تست", user["id"])
     assert ws["name"] == "رسانه تست"
 
@@ -716,7 +716,7 @@ def test_26_finishsetup_requires_branding_and_destination(monkeypatch):
 
 def _setup_workspace_with_two_destinations(db, ws_mod):
     """Helper: create a workspace with two registered destinations."""
-    user = db.get_or_create_user_by_telegram_id(9001)
+    user = db.get_or_create_user_by_telegram_id(9101)
     ws = db.create_workspace("دو-کانال", user["id"])
     db.add_workspace_member(ws["id"], user["id"], "owner", "active")
     dest_a, _ = ws_mod.register_channel_destination(ws["id"], "@beneshaneh", "بی‌نشانه")
@@ -814,7 +814,7 @@ def test_32_updating_one_destination_branding_does_not_affect_another(monkeypatc
 def test_33_workspace_branding_remains_available_as_default(monkeypatch):
     """workspace_branding is still readable as a fallback when no destination branding exists."""
     ws_mod, _, db, _ = _load_modules(monkeypatch)
-    user = db.get_or_create_user_by_telegram_id(9002)
+    user = db.get_or_create_user_by_telegram_id(9102)
     ws = db.create_workspace("پیش‌فرض", user["id"])
 
     ws_mod.save_workspace_branding(ws["id"], "پیش‌فرض رسانه", "#ws_tag", "@ws_channel")
@@ -834,16 +834,16 @@ def test_34_legacy_tenant_branding_unchanged(monkeypatch):
     ws_mod, _, db, _ = _load_modules(monkeypatch)
 
     # Set up a legacy tenant
-    db.save_tenant(8001, "tok", "@legacy_ch", hashtag="#legacy", channel_tag="@leg")
+    db.save_tenant(8101, "tok", "@legacy_ch", hashtag="#legacy", channel_tag="@leg")
 
-    user = db.get_or_create_user_by_telegram_id(9003)
+    user = db.get_or_create_user_by_telegram_id(9103)
     ws = db.create_workspace("تست", user["id"])
     dest, _ = ws_mod.register_channel_destination(ws["id"], "@new_ch", "جدید")
     ws_mod.save_destination_branding(dest["id"], hashtag="#new_hash", channel_tag="@new_tag",
                                      custom_footer="Footer جدید", footer_enabled=True)
 
     # Legacy tenant must be unchanged
-    tenant = db.get_tenant(8001)
+    tenant = db.get_tenant(8101)
     assert tenant["hashtag"] == "#legacy"
     assert tenant["channel_tag"] == "@leg"
     assert tenant["bot_token"] == "tok"
@@ -852,7 +852,7 @@ def test_34_legacy_tenant_branding_unchanged(monkeypatch):
 def test_35_destination_branding_none_before_any_save(monkeypatch):
     """A freshly registered destination has no branding row until one is saved."""
     ws_mod, _, db, _ = _load_modules(monkeypatch)
-    user = db.get_or_create_user_by_telegram_id(9004)
+    user = db.get_or_create_user_by_telegram_id(9104)
     ws = db.create_workspace("خالی", user["id"])
     dest, _ = ws_mod.register_channel_destination(ws["id"], "@empty_ch", "خالی")
 
