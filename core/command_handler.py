@@ -306,8 +306,8 @@ def handle_start(chat_id: int) -> bool:
             )
             return True
 
-        onboarding_state = _get_onboarding_state(chat_id)
         onboarding_result = _ensure_onboarding_ready(chat_id)
+        onboarding_state = onboarding_result["state_before"]
 
         if onboarding_state == "not_started":
             text = (
@@ -341,8 +341,8 @@ def handle_start(chat_id: int) -> bool:
         )
         return True
 
-    except Exception as e:
-        logger.exception(f"❌ Error in handle_start: {e}")
+    except Exception:
+        logger.exception("❌ Error in handle_start")
         send_message(chat_id, "❌ خطا در راه‌اندازی اولیه حساب")
         return False
 
@@ -408,8 +408,8 @@ def handle_help(chat_id: int) -> bool:
         send_long_message(chat_id, text)
         return True
 
-    except Exception as e:
-        logger.exception(f"❌ Error in handle_help: {e}")
+    except Exception:
+        logger.exception("❌ Error in handle_help")
         send_message(chat_id, "❌ خطا در نمایش راهنما")
         return False
 
@@ -482,27 +482,44 @@ def _get_onboarding_state(chat_id: int) -> str:
 
 def _ensure_onboarding_ready(chat_id: int) -> Dict[str, Any]:
     """ایجاد/تکمیل idempotent onboarding برای کاربر جدید"""
-    user = get_or_create_user_by_telegram_id(
-        chat_id,
-        status="active"
-    )
+    user = get_user_by_telegram_id(chat_id)
+    if not user:
+        state_before = "not_started"
+        user = get_or_create_user_by_telegram_id(
+            chat_id,
+            status="active"
+        )
+    else:
+        state_before = "in_progress"
 
     owned_workspaces = list_owned_workspaces(
         user["id"],
         include_inactive=True
     )
     workspace = _select_primary_workspace(owned_workspaces)
+    membership = None
+    if workspace:
+        membership = get_workspace_member(
+            workspace["id"],
+            user["id"]
+        )
+        if (
+            membership
+            and membership.get("role") == "owner"
+            and membership.get("status") == "active"
+        ):
+            state_before = "completed"
+
     if not workspace:
         workspace = create_workspace(
             name=DEFAULT_WORKSPACE_NAME,
             owner_user_id=user["id"],
             status="active"
         )
-
-    membership = get_workspace_member(
-        workspace["id"],
-        user["id"]
-    )
+        membership = get_workspace_member(
+            workspace["id"],
+            user["id"]
+        )
     if not membership:
         membership = add_workspace_member(
             workspace_id=workspace["id"],
@@ -511,7 +528,7 @@ def _ensure_onboarding_ready(chat_id: int) -> Dict[str, Any]:
             status="active"
         )
 
-    if membership.get("role") != "owner":
+    if membership and membership.get("role") != "owner":
         membership = update_workspace_member_role(
             workspace["id"],
             user["id"],
@@ -531,6 +548,7 @@ def _ensure_onboarding_ready(chat_id: int) -> Dict[str, Any]:
         )
 
     return {
+        "state_before": state_before,
         "user": user,
         "workspace": workspace,
         "membership": membership
@@ -889,7 +907,9 @@ def handle_command(text: str, chat_id: int) -> bool:
         return handle_help(chat_id)
 
     if not normalized_text.startswith("/"):
-        logger.warning(f"Invalid command format: {text}")
+        logger.warning(
+            f"Invalid command format: {normalized_text}"
+        )
         return False
     
     try:
