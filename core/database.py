@@ -630,6 +630,23 @@ def _delete_workspace_by_id(
 
 
 @with_retry
+def get_user_by_telegram_id(
+    telegram_user_id: int
+) -> Optional[Dict[str, Any]]:
+    """دریافت کاربر بر اساس شناسه تلگرام"""
+    result = (
+        supabase
+        .table("users")
+        .select("*")
+        .eq("telegram_user_id", telegram_user_id)
+        .limit(1)
+        .execute()
+    )
+
+    return _first_row(result)
+
+
+@with_retry
 def get_or_create_user_by_telegram_id(
     telegram_user_id: int,
     status: str = "active"
@@ -798,6 +815,32 @@ def list_user_workspaces(
         workspace_data["membership_status"] = membership.get("status")
         workspaces.append(workspace_data)
 
+    return sorted(
+        workspaces,
+        key=lambda item: item.get("id", 0)
+    )
+
+
+@with_retry
+def list_owned_workspaces(
+    owner_user_id: int,
+    include_inactive: bool = False
+) -> List[Dict[str, Any]]:
+    """لیست workspaceهایی که کاربر مالک آن‌هاست"""
+    query = (
+        supabase
+        .table("workspaces")
+        .select("*")
+        .eq("owner_user_id", owner_user_id)
+    )
+
+    if not include_inactive:
+        query = query.eq(
+            "status",
+            "active"
+        )
+
+    workspaces = query.execute().data or []
     return sorted(
         workspaces,
         key=lambda item: item.get("id", 0)
