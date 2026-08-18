@@ -554,10 +554,12 @@ def handle_addchannel(args: str, chat_id: int) -> bool:
             send_message(
                 chat_id,
                 f"✅ کانال {external_id} ثبت شد.\n\n"
-                "⚠️ تأیید دسترسی ادمین در مرحله بعدی انجام می‌شود.\n\n"
+                "🔍 در حال بررسی دسترسی ادمین ربات...\n\n"
                 "کانال دیگری دارید؟ /addchannel @channel\n"
                 "وقتی تمام کانال‌ها اضافه شد: /nextsetupstep"
             )
+            # Phase 4B: Real Telegram verification
+            _verify_and_activate_channel(workspace["id"], dest, chat_id)
         else:
             send_message(chat_id, "❌ خطا در ثبت کانال. دوباره تلاش کنید.")
 
@@ -565,6 +567,116 @@ def handle_addchannel(args: str, chat_id: int) -> bool:
     except Exception:
         logger.exception("❌ Error in handle_addchannel")
         send_message(chat_id, "❌ خطا در افزودن کانال")
+        return False
+
+
+# =========================================================
+# PHASE 4B — REAL TELEGRAM CHANNEL VERIFICATION
+# =========================================================
+
+def _verify_and_activate_channel(
+    workspace_id: int,
+    dest: Dict[str, Any],
+    chat_id: int
+) -> None:
+    """Run real Telegram admin verification and activate destination if verified."""
+    try:
+        if not API_URL:
+            logger.warning(
+                "Skipping channel verification — API_URL not configured"
+            )
+            return
+
+        from core.telegram_verifier import verify_channel_admin
+        from core.database import (
+            upsert_destination_verification,
+            update_publication_destination_status,
+        )
+
+        external_id = dest["external_id"]
+        verified, note = verify_channel_admin(API_URL, external_id)
+
+        upsert_destination_verification(
+            dest["id"],
+            verified=verified,
+            verification_note=note,
+        )
+
+        if verified:
+            update_publication_destination_status(dest["id"], "active")
+            send_message(
+                chat_id,
+                f"✅ کانال با موفقیت متصل شد.\n\n"
+                f"کانال {external_id} آماده انتشار است."
+            )
+        else:
+            send_message(
+                chat_id,
+                f"⚠️ بررسی دسترسی ناموفق بود:\n{note}\n\n"
+                f"ابتدا ربات را به عنوان مدیر کانال اضافه کنید،\n"
+                f"سپس دوباره تلاش کنید:\n/verifychannel {external_id}"
+            )
+    except Exception:
+        logger.exception("Error in _verify_and_activate_channel")
+
+
+def handle_verifychannel(args: str, chat_id: int) -> bool:
+    """
+    /verifychannel @channel_id — بررسی مجدد دسترسی ادمین ربات در کانال.
+
+    اگر تأیید موفق باشد، کانال فعال (active) می‌شود.
+    """
+    if not _WORKSPACE_SETUP_ENABLED:
+        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
+        return True
+    try:
+        if not args:
+            send_message(
+                chat_id,
+                "❌ فرمت صحیح:\n/verifychannel @channel_id\n\n"
+                "مثال: /verifychannel @MyChannel"
+            )
+            return True
+
+        external_id = args.strip()
+        is_valid, err = validate_channel(external_id)
+        if not is_valid:
+            send_message(chat_id, err)
+            return True
+
+        user, workspace = _get_workspace_for_user(chat_id)
+        if not workspace:
+            send_message(
+                chat_id,
+                "❌ رسانه‌ای یافت نشد. ابتدا /start را بفرستید."
+            )
+            return True
+
+        from core.database import list_workspace_destinations
+
+        destinations = list_workspace_destinations(
+            workspace["id"],
+            include_removed=False
+        )
+        target = None
+        for destination in destinations:
+            if destination.get("external_id") == external_id:
+                target = destination
+                break
+
+        if not target:
+            send_message(
+                chat_id,
+                f"❌ کانال {external_id} در این رسانه ثبت نشده است.\n\n"
+                f"ابتدا آن را اضافه کنید:\n/addchannel {external_id}"
+            )
+            return True
+
+        _verify_and_activate_channel(workspace["id"], target, chat_id)
+        return True
+    except Exception:
+        logger.exception("❌ Error in handle_verifychannel")
+        send_message(chat_id, "❌ خطا در بررسی کانال")
         return False
 
 
@@ -827,7 +939,8 @@ def handle_settings(chat_id: int) -> bool:
             "🔧 برندینگ:\n"
             "/setbranding نام #هشتگ @تگ\n\n"
             "📡 کانال‌ها:\n"
-            "/addchannel @channel\n\n"
+            "/addchannel @channel\n"
+            "/verifychannel @channel\n\n"
             "👥 اعضا:\n"
             "/addmember TELEGRAM_ID نقش\n\n"
             "❓ راهنما:\n"
@@ -1431,6 +1544,7 @@ def handle_command(text: str, chat_id: int) -> bool:
             # Phase 4A setup wizard
             "setup": lambda: handle_setup(chat_id),
             "addchannel": lambda: handle_addchannel(args, chat_id),
+            "verifychannel": lambda: handle_verifychannel(args, chat_id),
             "nextsetupstep": lambda: handle_nextsetupstep(chat_id),
             "setbranding": lambda: handle_setbranding(args, chat_id),
             "addmember": lambda: handle_addmember(args, chat_id),
