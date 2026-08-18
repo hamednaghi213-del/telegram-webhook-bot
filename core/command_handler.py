@@ -6,7 +6,15 @@ from typing import Optional, Dict, Any, Tuple
 from core.database import (
     get_tenant,
     save_tenant,
-    update_bale_settings
+    update_bale_settings,
+    get_user_by_telegram_id,
+    get_or_create_user_by_telegram_id,
+    create_workspace,
+    list_owned_workspaces,
+    get_workspace_member,
+    add_workspace_member,
+    update_workspace_member_role,
+    update_workspace_member_status
 )
 
 logger = logging.getLogger(__name__)
@@ -24,6 +32,7 @@ TOKEN_MIN_LENGTH = 10
 TOKEN_MAX_LENGTH = 255
 CHANNEL_MIN_LENGTH = 6
 CHANNEL_MAX_LENGTH = 33
+DEFAULT_WORKSPACE_NAME = "رسانه من"
 
 
 # =========================================================
@@ -287,12 +296,55 @@ def handle_start(chat_id: int) -> bool:
     Returns:
         True اگر پردازش موفق باشد
     """
-    send_message(
-        chat_id,
-        "👋 به ربات خبری خوش آمدید.\n\n"
-        "برای شروع از /register استفاده کنید."
-    )
-    return True
+    try:
+        tenant = get_tenant(chat_id)
+        if tenant:
+            send_message(
+                chat_id,
+                "👋 به ربات خبری خوش آمدید.\n\n"
+                "برای شروع از /register استفاده کنید."
+            )
+            return True
+
+        onboarding_result = _ensure_onboarding_ready(chat_id)
+        onboarding_state = onboarding_result["state_before"]
+
+        if onboarding_state == "not_started":
+            text = (
+                "👋 به ربات مدیریت انتشار خوش آمدید.\n\n"
+                "حساب شما آماده شد ✅\n"
+                "حالا مقصد انتشار خود را اضافه کنید:\n"
+                "افزودن مقصد انتشار: /adddestination\n\n"
+                "برای راهنمای بیشتر: /help"
+            )
+        elif onboarding_state == "in_progress":
+            text = (
+                "✅ تنظیمات اولیه شما کامل شد.\n\n"
+                "حالا مقصد انتشار خود را اضافه کنید:\n"
+                "افزودن مقصد انتشار: /adddestination\n\n"
+                "اگر نیاز به راهنما دارید: /help"
+            )
+        else:
+            text = (
+                "✅ حساب شما آماده است.\n\n"
+                "برای ادامه تنظیم مقصد انتشار:\n"
+                "افزودن مقصد انتشار: /adddestination\n\n"
+                "برای راهنما: /help"
+            )
+
+        send_message(chat_id, text)
+        logger.info(
+            "✅ ONBOARDING READY | "
+            f"user={chat_id} | "
+            f"state_before={onboarding_state} | "
+            f"workspace_id={onboarding_result['workspace']['id']}"
+        )
+        return True
+
+    except Exception:
+        logger.exception("❌ Error in handle_start")
+        send_message(chat_id, "❌ خطا در راه‌اندازی اولیه حساب")
+        return False
 
 
 def handle_help(chat_id: int) -> bool:
@@ -305,23 +357,202 @@ def handle_help(chat_id: int) -> bool:
     Returns:
         True اگر پردازش موفق باشد
     """
+    try:
+        tenant = get_tenant(chat_id)
+        if tenant:
+            text = (
+                "📚 راهنمای ربات\n\n"
+                "/register\n"
+                "ثبت‌نام در ربات\n\n"
+                "/settelegram @channel\n"
+                "تنظیم کانال تلگرام\n\n"
+                "/setbale @channel\n"
+                "تنظیم کانال بله\n\n"
+                "/setbaletoken TOKEN\n"
+                "تنظیم توکن ربات بله\n\n"
+                "/status\n"
+                "مشاهده وضعیت تنظیمات\n\n"
+                "/help\n"
+                "نمایش راهنما"
+            )
+            send_long_message(chat_id, text)
+            return True
+
+        onboarding_state = _get_onboarding_state(chat_id)
+        if onboarding_state == "not_started":
+            text = (
+                "📚 راهنمای شروع\n\n"
+                "۱) /start را بفرستید تا حساب شما آماده شود.\n"
+                "۲) سپس مقصد انتشار را اضافه کنید.\n\n"
+                "برای تنظیم مقصد تلگرام:\n"
+                "/settelegram @channel"
+            )
+        elif onboarding_state == "in_progress":
+            text = (
+                "📚 راهنمای تکمیل تنظیمات\n\n"
+                "تنظیمات اولیه در حال تکمیل است.\n"
+                "یک بار /start را بفرستید.\n\n"
+                "بعد از آن مقصد انتشار را اضافه کنید:\n"
+                "/adddestination"
+            )
+        else:
+            text = (
+                "📚 راهنمای مقصد انتشار\n\n"
+                "مقصد انتشار خود را وصل کنید:\n"
+                "/settelegram @channel\n"
+                "/setbale @channel (اختیاری)\n"
+                "/setbaletoken TOKEN (اختیاری)\n\n"
+                "برای وضعیت فعلی: /status"
+            )
+
+        send_long_message(chat_id, text)
+        return True
+
+    except Exception:
+        logger.exception("❌ Error in handle_help")
+        send_message(chat_id, "❌ خطا در نمایش راهنما")
+        return False
+
+
+def handle_adddestination(chat_id: int) -> bool:
+    """راهنمای اولیه افزودن مقصد انتشار"""
     text = (
-        "📚 راهنمای ربات\n\n"
-        "/register\n"
-        "ثبت‌نام در ربات\n\n"
-        "/settelegram @channel\n"
-        "تنظیم کانال تلگرام\n\n"
+        "➕ افزودن مقصد انتشار\n\n"
+        "برای شروع، مقصد تلگرام را تنظیم کنید:\n"
+        "/settelegram @channel\n\n"
+        "در صورت نیاز می‌توانید مقصد بله را هم اضافه کنید:\n"
         "/setbale @channel\n"
-        "تنظیم کانال بله\n\n"
-        "/setbaletoken TOKEN\n"
-        "تنظیم توکن ربات بله\n\n"
-        "/status\n"
-        "مشاهده وضعیت تنظیمات\n\n"
-        "/help\n"
-        "نمایش راهنما"
+        "/setbaletoken TOKEN"
     )
     send_long_message(chat_id, text)
     return True
+
+
+def _select_primary_workspace(workspaces):
+    """انتخاب workspace اصلی برای onboarding"""
+    if not workspaces:
+        return None
+
+    active_workspaces = [
+        workspace
+        for workspace in workspaces
+        if workspace.get("status") == "active"
+    ]
+    candidates = active_workspaces or workspaces
+    return sorted(
+        candidates,
+        key=lambda item: item.get("id", 0)
+    )[0]
+
+
+def _get_onboarding_state(chat_id: int) -> str:
+    """
+    وضعیت onboarding کاربر:
+    - not_started
+    - in_progress
+    - completed
+    """
+    user = get_user_by_telegram_id(chat_id)
+    if not user:
+        return "not_started"
+
+    workspaces = list_owned_workspaces(
+        user["id"],
+        include_inactive=True
+    )
+    if not workspaces:
+        return "in_progress"
+
+    workspace = _select_primary_workspace(workspaces)
+    membership = get_workspace_member(
+        workspace["id"],
+        user["id"]
+    )
+    if not membership:
+        return "in_progress"
+
+    if (
+        membership.get("role") == "owner"
+        and membership.get("status") == "active"
+    ):
+        return "completed"
+
+    return "in_progress"
+
+
+def _ensure_onboarding_ready(chat_id: int) -> Dict[str, Any]:
+    """ایجاد/تکمیل idempotent onboarding برای کاربر جدید"""
+    user = get_user_by_telegram_id(chat_id)
+    if not user:
+        state_before = "not_started"
+        user = get_or_create_user_by_telegram_id(
+            chat_id,
+            status="active"
+        )
+    else:
+        state_before = "in_progress"
+
+    owned_workspaces = list_owned_workspaces(
+        user["id"],
+        include_inactive=True
+    )
+    workspace = _select_primary_workspace(owned_workspaces)
+    membership = None
+    if workspace:
+        membership = get_workspace_member(
+            workspace["id"],
+            user["id"]
+        )
+        if (
+            membership
+            and membership.get("role") == "owner"
+            and membership.get("status") == "active"
+        ):
+            state_before = "completed"
+
+    if not workspace:
+        workspace = create_workspace(
+            name=DEFAULT_WORKSPACE_NAME,
+            owner_user_id=user["id"],
+            status="active"
+        )
+        membership = get_workspace_member(
+            workspace["id"],
+            user["id"]
+        )
+    if not membership:
+        membership = add_workspace_member(
+            workspace_id=workspace["id"],
+            user_id=user["id"],
+            role="owner",
+            status="active"
+        )
+
+    if membership and membership.get("role") != "owner":
+        membership = update_workspace_member_role(
+            workspace["id"],
+            user["id"],
+            "owner"
+        )
+
+    if membership and membership.get("status") != "active":
+        membership = update_workspace_member_status(
+            workspace["id"],
+            user["id"],
+            "active"
+        )
+
+    if not membership:
+        raise RuntimeError(
+            "Failed to ensure owner membership for onboarding"
+        )
+
+    return {
+        "state_before": state_before,
+        "user": user,
+        "workspace": workspace,
+        "membership": membership
+    }
 
 
 def handle_register(chat_id: int) -> bool:
@@ -671,8 +902,14 @@ def handle_command(text: str, chat_id: int) -> bool:
     Returns:
         True اگر پردازش موفق باشد
     """
-    if not text or not text.strip().startswith("/"):
-        logger.warning(f"Invalid command format: {text}")
+    normalized_text = (text or "").strip()
+    if normalized_text == "راهنما":
+        return handle_help(chat_id)
+
+    if not normalized_text.startswith("/"):
+        logger.warning(
+            f"Invalid command format: {normalized_text}"
+        )
         return False
     
     try:
@@ -697,6 +934,7 @@ def handle_command(text: str, chat_id: int) -> bool:
             "setbale": lambda: handle_setbale(args, chat_id),
             "setbaletoken": lambda: handle_setbaletoken(args, chat_id),
             "status": lambda: handle_status(chat_id),
+            "adddestination": lambda: handle_adddestination(chat_id),
         }
         
         if command in commands:

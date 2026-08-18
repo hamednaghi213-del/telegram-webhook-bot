@@ -3721,7 +3721,10 @@ def handle_webhook() -> Tuple[
             or ""
         )
 
-        if command_text.startswith("/"):
+        if (
+            command_text.startswith("/")
+            or command_text.strip() == "راهنما"
+        ):
 
             try:
 
