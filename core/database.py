@@ -556,3 +556,400 @@ def batch_update_tenants(
     except Exception as e:
         logger.exception(f"❌ batch_update_tenants(): {e}")
         raise
+
+
+# =========================================================
+# MULTI-WORKSPACE FOUNDATION
+# =========================================================
+
+
+USER_STATUSES = {
+    "active",
+    "inactive"
+}
+
+WORKSPACE_STATUSES = {
+    "active",
+    "inactive"
+}
+
+WORKSPACE_MEMBER_ROLES = {
+    "owner",
+    "manager",
+    "publisher",
+    "writer"
+}
+
+WORKSPACE_MEMBER_STATUSES = {
+    "active",
+    "suspended",
+    "removed"
+}
+
+
+def _validate_enum(
+    value: str,
+    allowed_values,
+    field_name: str
+) -> str:
+    """اعتبارسنجی مقادیر enum-like برای جداول جدید"""
+    normalized_value = (
+        (value or "")
+        .strip()
+        .lower()
+    )
+
+    if normalized_value not in allowed_values:
+        raise ValueError(
+            f"Invalid {field_name}: {value}"
+        )
+
+    return normalized_value
+
+
+def _first_row(result) -> Optional[Dict[str, Any]]:
+    """اولین رکورد Supabase result را برمی‌گرداند"""
+    if result.data and len(result.data) > 0:
+        return result.data[0]
+
+    return None
+
+
+@with_retry
+def _delete_workspace_by_id(
+    workspace_id: int
+) -> None:
+    """حذف workspace برای rollback داخلی"""
+    (
+        supabase
+        .table("workspaces")
+        .delete()
+        .eq("id", workspace_id)
+        .execute()
+    )
+
+
+@with_retry
+def get_or_create_user_by_telegram_id(
+    telegram_user_id: int,
+    status: str = "active"
+) -> Dict[str, Any]:
+    """دریافت یا ایجاد کاربر بر اساس شناسه تلگرام"""
+    validated_status = _validate_enum(
+        status,
+        USER_STATUSES,
+        "user status"
+    )
+
+    logger.debug(
+        f"👤 Get or create user | telegram_user_id={telegram_user_id}"
+    )
+
+    existing_result = (
+        supabase
+        .table("users")
+        .select("*")
+        .eq("telegram_user_id", telegram_user_id)
+        .limit(1)
+        .execute()
+    )
+
+    existing_user = _first_row(existing_result)
+    if existing_user:
+        return existing_user
+
+    now = time.time()
+    user_data = {
+        "telegram_user_id": telegram_user_id,
+        "status": validated_status,
+        "created_at": now,
+        "updated_at": now
+    }
+
+    insert_result = (
+        supabase
+        .table("users")
+        .insert(user_data)
+        .execute()
+    )
+
+    created_user = _first_row(insert_result)
+    if created_user:
+        return created_user
+
+    raise RuntimeError(
+        "Failed to create user record"
+    )
+
+
+def create_workspace(
+    name: str,
+    owner_user_id: int,
+    status: str = "active"
+) -> Dict[str, Any]:
+    """ایجاد workspace جدید به همراه عضویت owner"""
+    if not (name or "").strip():
+        raise ValueError(
+            "Workspace name is required"
+        )
+
+    validated_status = _validate_enum(
+        status,
+        WORKSPACE_STATUSES,
+        "workspace status"
+    )
+
+    now = time.time()
+    workspace_result = (
+        supabase
+        .table("workspaces")
+        .insert({
+            "name": name.strip(),
+            "owner_user_id": owner_user_id,
+            "status": validated_status,
+            "created_at": now,
+            "updated_at": now
+        })
+        .execute()
+    )
+
+    workspace = _first_row(workspace_result)
+    if not workspace:
+        raise RuntimeError(
+            "Failed to create workspace"
+        )
+
+    try:
+        add_workspace_member(
+            workspace_id=workspace["id"],
+            user_id=owner_user_id,
+            role="owner",
+            status="active"
+        )
+    except Exception:
+        _delete_workspace_by_id(
+            workspace["id"]
+        )
+        raise
+
+    return workspace
+
+
+@with_retry
+def get_workspace(
+    workspace_id: int
+) -> Optional[Dict[str, Any]]:
+    """دریافت workspace بر اساس شناسه"""
+    result = (
+        supabase
+        .table("workspaces")
+        .select("*")
+        .eq("id", workspace_id)
+        .limit(1)
+        .execute()
+    )
+
+    return _first_row(result)
+
+
+@with_retry
+def list_user_workspaces(
+    user_id: int,
+    include_inactive: bool = False
+) -> List[Dict[str, Any]]:
+    """لیست workspaceهای کاربر"""
+    membership_query = (
+        supabase
+        .table("workspace_members")
+        .select("*")
+        .eq("user_id", user_id)
+    )
+
+    if not include_inactive:
+        membership_query = membership_query.eq(
+            "status",
+            "active"
+        )
+
+    memberships = (
+        membership_query
+        .execute()
+        .data
+        or []
+    )
+
+    workspaces = []
+    for membership in memberships:
+        workspace = get_workspace(
+            membership["workspace_id"]
+        )
+        if not workspace:
+            continue
+
+        if (
+            not include_inactive
+            and workspace.get("status") != "active"
+        ):
+            continue
+
+        workspace_data = dict(workspace)
+        workspace_data["membership_id"] = membership.get("id")
+        workspace_data["membership_role"] = membership.get("role")
+        workspace_data["membership_status"] = membership.get("status")
+        workspaces.append(workspace_data)
+
+    return sorted(
+        workspaces,
+        key=lambda item: item.get("id", 0)
+    )
+
+
+@with_retry
+def add_workspace_member(
+    workspace_id: int,
+    user_id: int,
+    role: str = "writer",
+    status: str = "active"
+) -> Dict[str, Any]:
+    """افزودن عضو به workspace با رفتار idempotent"""
+    validated_role = _validate_enum(
+        role,
+        WORKSPACE_MEMBER_ROLES,
+        "workspace member role"
+    )
+    validated_status = _validate_enum(
+        status,
+        WORKSPACE_MEMBER_STATUSES,
+        "workspace member status"
+    )
+
+    existing_membership = get_workspace_member(
+        workspace_id,
+        user_id
+    )
+    if existing_membership:
+        return existing_membership
+
+    now = time.time()
+    result = (
+        supabase
+        .table("workspace_members")
+        .insert({
+            "workspace_id": workspace_id,
+            "user_id": user_id,
+            "role": validated_role,
+            "status": validated_status,
+            "created_at": now,
+            "updated_at": now
+        })
+        .execute()
+    )
+
+    membership = _first_row(result)
+    if membership:
+        return membership
+
+    raise RuntimeError(
+        "Failed to create workspace membership"
+    )
+
+
+@with_retry
+def get_workspace_member(
+    workspace_id: int,
+    user_id: int
+) -> Optional[Dict[str, Any]]:
+    """دریافت membership بر اساس workspace و user"""
+    result = (
+        supabase
+        .table("workspace_members")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+
+    return _first_row(result)
+
+
+@with_retry
+def list_workspace_members(
+    workspace_id: int,
+    include_inactive: bool = False
+) -> List[Dict[str, Any]]:
+    """لیست اعضای workspace"""
+    query = (
+        supabase
+        .table("workspace_members")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+    )
+
+    if not include_inactive:
+        query = query.eq(
+            "status",
+            "active"
+        )
+
+    members = query.execute().data or []
+    return sorted(
+        members,
+        key=lambda item: item.get("id", 0)
+    )
+
+
+@with_retry
+def update_workspace_member_role(
+    workspace_id: int,
+    user_id: int,
+    role: str
+) -> Optional[Dict[str, Any]]:
+    """بروزرسانی نقش عضو workspace"""
+    validated_role = _validate_enum(
+        role,
+        WORKSPACE_MEMBER_ROLES,
+        "workspace member role"
+    )
+
+    result = (
+        supabase
+        .table("workspace_members")
+        .update({
+            "role": validated_role,
+            "updated_at": time.time()
+        })
+        .eq("workspace_id", workspace_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+
+    return _first_row(result)
+
+
+@with_retry
+def update_workspace_member_status(
+    workspace_id: int,
+    user_id: int,
+    status: str
+) -> Optional[Dict[str, Any]]:
+    """بروزرسانی وضعیت عضو workspace"""
+    validated_status = _validate_enum(
+        status,
+        WORKSPACE_MEMBER_STATUSES,
+        "workspace member status"
+    )
+
+    result = (
+        supabase
+        .table("workspace_members")
+        .update({
+            "status": validated_status,
+            "updated_at": time.time()
+        })
+        .eq("workspace_id", workspace_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+
+    return _first_row(result)
