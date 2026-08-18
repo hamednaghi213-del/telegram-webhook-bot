@@ -32,12 +32,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from core.database import (
     add_workspace_member,
     create_publication_destination,
+    get_destination_branding,
     get_destination_verification,
     get_or_create_user_by_telegram_id,
     get_workspace_branding,
     get_workspace_member,
     get_workspace_setup_state,
     list_workspace_destinations,
+    upsert_destination_branding,
     upsert_destination_verification,
     upsert_workspace_branding,
     upsert_workspace_setup_state,
@@ -172,6 +174,52 @@ def save_workspace_branding(
     logger.info(
         "Workspace branding saved | "
         f"workspace={workspace_id} media_name={media_name}"
+    )
+    return branding
+
+
+# =========================================================
+# DESTINATION BRANDING (per-channel override)
+# =========================================================
+
+def get_branding_for_destination(
+    destination_id: int,
+) -> Optional[Dict[str, Any]]:
+    """
+    Return the destination-level branding record for *destination_id*, or None.
+
+    Call site can fall back to workspace_branding when this returns None.
+    Does NOT modify any record.
+    """
+    return get_destination_branding(destination_id)
+
+
+def save_destination_branding(
+    destination_id: int,
+    hashtag: str = "",
+    channel_tag: str = "",
+    custom_footer: Optional[str] = None,
+    footer_enabled: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """
+    Create or update per-destination branding.
+
+    - destination_id must already exist in publication_destinations.
+    - custom_footer is optional; pass None to leave it unset.
+    - footer_enabled controls whether the footer text is applied.
+    - Does NOT touch workspace_branding or legacy tenant columns.
+    - Does NOT activate publication routing.
+    """
+    branding = upsert_destination_branding(
+        destination_id=destination_id,
+        hashtag=hashtag,
+        channel_tag=channel_tag,
+        custom_footer=custom_footer,
+        footer_enabled=footer_enabled,
+    )
+    logger.info(
+        "Destination branding saved | "
+        f"destination_id={destination_id} footer_enabled={footer_enabled}"
     )
     return branding
 

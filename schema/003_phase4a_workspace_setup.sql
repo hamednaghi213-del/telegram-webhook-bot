@@ -46,6 +46,30 @@ CREATE TABLE IF NOT EXISTS workspace_branding (
 );
 
 -- =========================================================
+-- DESTINATION BRANDING
+-- Per-destination branding: hashtag, channel_tag, optional custom_footer.
+-- Overrides workspace_branding for the specific channel.
+-- One row per destination; custom_footer is optional (may be NULL or empty).
+-- Does NOT replace or touch workspace_branding or legacy tenant branding.
+-- =========================================================
+
+CREATE TABLE IF NOT EXISTS destination_branding (
+    id BIGSERIAL PRIMARY KEY,
+    destination_id BIGINT NOT NULL
+        REFERENCES publication_destinations(id) ON DELETE CASCADE,
+    hashtag TEXT NOT NULL DEFAULT '',
+    channel_tag TEXT NOT NULL DEFAULT '',
+    custom_footer TEXT,
+    footer_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at DOUBLE PRECISION NOT NULL
+        DEFAULT EXTRACT(EPOCH FROM NOW()),
+    updated_at DOUBLE PRECISION NOT NULL
+        DEFAULT EXTRACT(EPOCH FROM NOW()),
+    CONSTRAINT destination_branding_destination_unique
+        UNIQUE (destination_id)
+);
+
+-- =========================================================
 -- DESTINATION VERIFICATION
 -- Tracks whether a publication destination has been verified
 -- (i.e. bot confirmed as admin of the Telegram channel).

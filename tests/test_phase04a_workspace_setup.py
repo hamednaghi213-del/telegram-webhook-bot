@@ -36,6 +36,7 @@ class InMemoryDb4A:
         self.workspace_brandings: Dict[int, Dict] = {}
         self.publication_destinations: List[Dict] = []
         self.destination_verifications: Dict[int, Dict] = {}
+        self.destination_brandings: Dict[int, Dict] = {}
         self.tenants: Dict[int, Dict] = {}
         self._next_id = 1
 
@@ -206,6 +207,22 @@ class InMemoryDb4A:
         self.destination_verifications[destination_id] = row
         return deepcopy(row)
 
+    # ── destination branding ────────────────────────────
+    def get_destination_branding(self, destination_id):
+        return self.destination_brandings.get(destination_id)
+
+    def upsert_destination_branding(self, destination_id, hashtag="", channel_tag="",
+                                     custom_footer=None, footer_enabled=False):
+        row = {
+            "destination_id": destination_id,
+            "hashtag": (hashtag or "").strip(),
+            "channel_tag": (channel_tag or "").strip(),
+            "custom_footer": custom_footer,
+            "footer_enabled": bool(footer_enabled),
+        }
+        self.destination_brandings[destination_id] = row
+        return deepcopy(row)
+
 
 # =========================================================
 # LOADER HELPERS
@@ -236,6 +253,8 @@ def _make_fake_db_module(db: InMemoryDb4A) -> types.ModuleType:
     mod.create_publication_destination = db.create_publication_destination
     mod.get_destination_verification = db.get_destination_verification
     mod.upsert_destination_verification = db.upsert_destination_verification
+    mod.get_destination_branding = db.get_destination_branding
+    mod.upsert_destination_branding = db.upsert_destination_branding
     return mod
 
 
@@ -689,3 +708,152 @@ def test_26_finishsetup_requires_branding_and_destination(monkeypatch):
     ch_mod.handle_command("/finishsetup", 2003)
     last_msg = sent[-1][1]
     assert "🎉" in last_msg or "✅" in last_msg
+
+
+# =========================================================
+# TESTS: DESTINATION BRANDING  (27-35)
+# =========================================================
+
+def _setup_workspace_with_two_destinations(db, ws_mod):
+    """Helper: create a workspace with two registered destinations."""
+    user = db.get_or_create_user_by_telegram_id(9001)
+    ws = db.create_workspace("دو-کانال", user["id"])
+    db.add_workspace_member(ws["id"], user["id"], "owner", "active")
+    dest_a, _ = ws_mod.register_channel_destination(ws["id"], "@beneshaneh", "بی‌نشانه")
+    dest_b, _ = ws_mod.register_channel_destination(ws["id"], "@farda_no", "فردای نو")
+    return ws, user, dest_a, dest_b
+
+
+def test_27_two_destinations_can_have_different_branding(monkeypatch):
+    """Two destinations in one workspace may have independent branding rows."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    ws, _user, dest_a, dest_b = _setup_workspace_with_two_destinations(db, ws_mod)
+
+    ws_mod.save_destination_branding(dest_a["id"], hashtag="#بی_نشانه", channel_tag="@beneshaneh")
+    ws_mod.save_destination_branding(dest_b["id"], hashtag="#فردای_نو", channel_tag="@farda_no")
+
+    brand_a = ws_mod.get_branding_for_destination(dest_a["id"])
+    brand_b = ws_mod.get_branding_for_destination(dest_b["id"])
+
+    assert brand_a is not None
+    assert brand_b is not None
+    assert brand_a["destination_id"] != brand_b["destination_id"]
+
+
+def test_28_different_hashtag_per_destination(monkeypatch):
+    """Each destination stores its own hashtag."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    ws, _user, dest_a, dest_b = _setup_workspace_with_two_destinations(db, ws_mod)
+
+    ws_mod.save_destination_branding(dest_a["id"], hashtag="#بی_نشانه")
+    ws_mod.save_destination_branding(dest_b["id"], hashtag="#فردای_نو")
+
+    assert ws_mod.get_branding_for_destination(dest_a["id"])["hashtag"] == "#بی_نشانه"
+    assert ws_mod.get_branding_for_destination(dest_b["id"])["hashtag"] == "#فردای_نو"
+
+
+def test_29_different_channel_tag_per_destination(monkeypatch):
+    """Each destination stores its own channel_tag."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    ws, _user, dest_a, dest_b = _setup_workspace_with_two_destinations(db, ws_mod)
+
+    ws_mod.save_destination_branding(dest_a["id"], channel_tag="@beneshaneh")
+    ws_mod.save_destination_branding(dest_b["id"], channel_tag="@farda_no")
+
+    assert ws_mod.get_branding_for_destination(dest_a["id"])["channel_tag"] == "@beneshaneh"
+    assert ws_mod.get_branding_for_destination(dest_b["id"])["channel_tag"] == "@farda_no"
+
+
+def test_30_different_custom_footer_per_destination(monkeypatch):
+    """Each destination can store a completely different custom footer text."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    ws, _user, dest_a, dest_b = _setup_workspace_with_two_destinations(db, ws_mod)
+
+    footer_a = "📌 بی‌نشانه | @beneshaneh"
+    footer_b = "🌅 فردای نو\n@farda_no\n#فردای_نو"
+
+    ws_mod.save_destination_branding(dest_a["id"], custom_footer=footer_a, footer_enabled=True)
+    ws_mod.save_destination_branding(dest_b["id"], custom_footer=footer_b, footer_enabled=True)
+
+    assert ws_mod.get_branding_for_destination(dest_a["id"])["custom_footer"] == footer_a
+    assert ws_mod.get_branding_for_destination(dest_b["id"])["custom_footer"] == footer_b
+
+
+def test_31_custom_footer_may_be_empty_or_disabled(monkeypatch):
+    """custom_footer is optional; footer_enabled=False is valid with no footer text."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    ws, _user, dest_a, dest_b = _setup_workspace_with_two_destinations(db, ws_mod)
+
+    ws_mod.save_destination_branding(dest_a["id"], custom_footer=None, footer_enabled=False)
+    ws_mod.save_destination_branding(dest_b["id"], custom_footer="", footer_enabled=False)
+
+    brand_a = ws_mod.get_branding_for_destination(dest_a["id"])
+    brand_b = ws_mod.get_branding_for_destination(dest_b["id"])
+
+    assert brand_a["custom_footer"] is None
+    assert brand_b["footer_enabled"] is False
+    assert brand_b["custom_footer"] == ""
+
+
+def test_32_updating_one_destination_branding_does_not_affect_another(monkeypatch):
+    """Updating branding for dest_a must not change dest_b's branding."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    ws, _user, dest_a, dest_b = _setup_workspace_with_two_destinations(db, ws_mod)
+
+    ws_mod.save_destination_branding(dest_a["id"], hashtag="#اول", channel_tag="@first")
+    ws_mod.save_destination_branding(dest_b["id"], hashtag="#دوم", channel_tag="@second")
+
+    # Update only dest_a
+    ws_mod.save_destination_branding(dest_a["id"], hashtag="#اول_ویرایش", channel_tag="@first_v2")
+
+    brand_b_after = ws_mod.get_branding_for_destination(dest_b["id"])
+    assert brand_b_after["hashtag"] == "#دوم"
+    assert brand_b_after["channel_tag"] == "@second"
+
+
+def test_33_workspace_branding_remains_available_as_default(monkeypatch):
+    """workspace_branding is still readable as a fallback when no destination branding exists."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(9002)
+    ws = db.create_workspace("پیش‌فرض", user["id"])
+
+    ws_mod.save_workspace_branding(ws["id"], "پیش‌فرض رسانه", "#ws_tag", "@ws_channel")
+
+    dest, _ = ws_mod.register_channel_destination(ws["id"], "@no_brand_ch", "بدون برند")
+    # No destination branding saved for this dest
+    dest_brand = ws_mod.get_branding_for_destination(dest["id"])
+    ws_brand = db.get_workspace_branding(ws["id"])
+
+    assert dest_brand is None
+    assert ws_brand is not None
+    assert ws_brand["hashtag"] == "#ws_tag"
+
+
+def test_34_legacy_tenant_branding_unchanged(monkeypatch):
+    """Destination branding operations do not touch legacy tenant rows."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+
+    # Set up a legacy tenant
+    db.save_tenant(8001, "tok", "@legacy_ch", hashtag="#legacy", channel_tag="@leg")
+
+    user = db.get_or_create_user_by_telegram_id(9003)
+    ws = db.create_workspace("تست", user["id"])
+    dest, _ = ws_mod.register_channel_destination(ws["id"], "@new_ch", "جدید")
+    ws_mod.save_destination_branding(dest["id"], hashtag="#new_hash", channel_tag="@new_tag",
+                                     custom_footer="Footer جدید", footer_enabled=True)
+
+    # Legacy tenant must be unchanged
+    tenant = db.get_tenant(8001)
+    assert tenant["hashtag"] == "#legacy"
+    assert tenant["channel_tag"] == "@leg"
+    assert tenant["bot_token"] == "tok"
+
+
+def test_35_destination_branding_none_before_any_save(monkeypatch):
+    """A freshly registered destination has no branding row until one is saved."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(9004)
+    ws = db.create_workspace("خالی", user["id"])
+    dest, _ = ws_mod.register_channel_destination(ws["id"], "@empty_ch", "خالی")
+
+    assert ws_mod.get_branding_for_destination(dest["id"]) is None

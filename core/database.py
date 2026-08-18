@@ -1494,3 +1494,54 @@ def upsert_destination_verification(
         .execute()
     )
     return _first_row(result)
+
+
+# =========================================================
+# PHASE 4A — DESTINATION BRANDING
+# =========================================================
+
+def get_destination_branding(
+    destination_id: int
+) -> Optional[Dict[str, Any]]:
+    """Fetch per-destination branding record (hashtag, channel_tag, custom_footer)."""
+    result = (
+        supabase
+        .table("destination_branding")
+        .select("*")
+        .eq("destination_id", destination_id)
+        .limit(1)
+        .execute()
+    )
+    return _first_row(result)
+
+
+def upsert_destination_branding(
+    destination_id: int,
+    hashtag: str = "",
+    channel_tag: str = "",
+    custom_footer: Optional[str] = None,
+    footer_enabled: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """
+    Create or update per-destination branding.
+
+    custom_footer is optional — pass None to leave it unset/cleared.
+    footer_enabled controls whether the footer is active regardless of
+    whether custom_footer has a value.
+    Does NOT touch workspace_branding or legacy tenant columns.
+    """
+    payload: Dict[str, Any] = {
+        "destination_id": destination_id,
+        "hashtag": (hashtag or "").strip(),
+        "channel_tag": (channel_tag or "").strip(),
+        "custom_footer": custom_footer,
+        "footer_enabled": bool(footer_enabled),
+        "updated_at": time.time(),
+    }
+    result = (
+        supabase
+        .table("destination_branding")
+        .upsert(payload, on_conflict="destination_id")
+        .execute()
+    )
+    return _first_row(result)
