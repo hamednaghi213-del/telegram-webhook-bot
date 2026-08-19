@@ -4,32 +4,32 @@ Uses getChatMember to confirm bot is administrator with post rights.
 """
 import logging
 import requests
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-_BOT_ID_CACHE: Optional[int] = None
+_BOT_ID_CACHE: Dict[str, int] = {}
 
 
 def reset_bot_id_cache() -> None:
     """Reset the cached bot ID (for testing)."""
-    global _BOT_ID_CACHE
-    _BOT_ID_CACHE = None
+    _BOT_ID_CACHE.clear()
 
 
 def get_bot_id(api_url: str) -> Optional[int]:
     """Return the bot's own Telegram user ID, cached after first call."""
-    global _BOT_ID_CACHE
-    if _BOT_ID_CACHE is not None:
-        return _BOT_ID_CACHE
+    cached_bot_id = _BOT_ID_CACHE.get(api_url)
+    if cached_bot_id is not None:
+        return cached_bot_id
     try:
         r = requests.get(f"{api_url}/getMe", timeout=10)
         if r.status_code == 200:
             data = r.json()
             if data.get("ok") and data.get("result", {}).get("id"):
-                _BOT_ID_CACHE = int(data["result"]["id"])
-                logger.info(f"Bot ID cached: {_BOT_ID_CACHE}")
-                return _BOT_ID_CACHE
+                bot_id = int(data["result"]["id"])
+                _BOT_ID_CACHE[api_url] = bot_id
+                logger.info(f"Bot ID cached: {bot_id}")
+                return bot_id
         logger.error(f"getMe failed: status={r.status_code}")
         return None
     except Exception as e:

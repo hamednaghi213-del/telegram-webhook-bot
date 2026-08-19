@@ -610,6 +610,8 @@ def _verify_and_activate_channel(
                 f"کانال {external_id} آماده انتشار است."
             )
         else:
+            # A destination that loses Telegram permissions must fail closed.
+            update_publication_destination_status(dest["id"], "inactive")
             send_message(
                 chat_id,
                 f"⚠️ بررسی دسترسی ناموفق بود:\n{note}\n\n"
