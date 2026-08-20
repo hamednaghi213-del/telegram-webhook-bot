@@ -1618,3 +1618,59 @@ def list_user_workspace_memberships(
             f"list_user_workspace_memberships failed | user={user_id} | {e}"
         )
         return []
+
+
+# =========================================================
+# PHASE 5 — ACTIVE WORKSPACE PREFERENCE
+# =========================================================
+
+@with_retry
+def get_active_workspace_preference(
+    user_id: int
+) -> Optional[Dict[str, Any]]:
+    """Return the user's persisted active-workspace preference, if any."""
+    result = (
+        supabase
+        .table("user_workspace_preferences")
+        .select("*")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return _first_row(result)
+
+
+@with_retry
+def set_active_workspace(
+    user_id: int,
+    workspace_id: int
+) -> Dict[str, Any]:
+    """Persist an active workspace only when membership and workspace are active."""
+    membership = get_workspace_member(workspace_id, user_id)
+    if not membership or membership.get("status") != "active":
+        raise ValueError("User is not an active member of this workspace")
+
+    workspace = get_workspace(workspace_id)
+    if not workspace or workspace.get("status") != "active":
+        raise ValueError("Workspace is not active")
+
+    now = time.time()
+    existing = get_active_workspace_preference(user_id)
+    payload = {
+        "user_id": user_id,
+        "active_workspace_id": workspace_id,
+        "updated_at": now,
+    }
+    if not existing:
+        payload["created_at"] = now
+
+    result = (
+        supabase
+        .table("user_workspace_preferences")
+        .upsert(payload, on_conflict="user_id")
+        .execute()
+    )
+    preference = _first_row(result)
+    if not preference:
+        raise RuntimeError("Failed to persist active workspace")
+    return preference

@@ -3640,7 +3640,7 @@ def handle_webhook() -> Tuple[
                     ""
                 )
                 or ""
-            ).startswith("wp:"):
+            ).startswith(("wp:", "ws:")):
 
                 try:
 

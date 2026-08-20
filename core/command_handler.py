@@ -37,6 +37,17 @@ try:
 except (ImportError, AttributeError):
     _WORKSPACE_SETUP_ENABLED = False
 
+# Phase 5 is additive and optional for older/fake database modules.
+try:
+    from core.database import (
+        get_active_workspace_preference,
+        list_user_workspaces,
+        set_active_workspace,
+    )
+    _ACTIVE_WORKSPACE_ENABLED: bool = True
+except (ImportError, AttributeError):
+    _ACTIVE_WORKSPACE_ENABLED = False
+
 logger = logging.getLogger(__name__)
 
 # =========================================================
@@ -239,6 +250,30 @@ def send_message(
         
     except Exception as e:
         logger.exception(f"❌ خطا در ارسال پیام: {e}")
+        return False
+
+
+def send_message_with_keyboard(
+    chat_id: int,
+    text: str,
+    keyboard: list
+) -> bool:
+    """Send a message with an inline keyboard."""
+    if not API_URL:
+        return False
+    try:
+        response = requests.post(
+            f"{API_URL}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": text,
+                "reply_markup": {"inline_keyboard": keyboard},
+            },
+            timeout=30,
+        )
+        return response.status_code == 200
+    except Exception:
+        logger.exception("Error sending inline keyboard")
         return False
 
 
@@ -452,11 +487,89 @@ def _get_workspace_for_user(chat_id: int):
     user = get_user_by_telegram_id(chat_id)
     if not user:
         return None, None
-    workspaces = list_owned_workspaces(user["id"], include_inactive=True)
+    if not _ACTIVE_WORKSPACE_ENABLED:
+        workspaces = list_owned_workspaces(user["id"], include_inactive=True)
+        if not workspaces:
+            return user, None
+        return user, _select_primary_workspace(workspaces)
+
+    workspaces = list_user_workspaces(user["id"], include_inactive=False)
     if not workspaces:
         return user, None
+    preference = get_active_workspace_preference(user["id"]) or {}
+    active_workspace_id = preference.get("active_workspace_id")
+    for workspace in workspaces:
+        if workspace.get("id") == active_workspace_id:
+            return user, workspace
     workspace = _select_primary_workspace(workspaces)
     return user, workspace
+
+
+def handle_workspaces(chat_id: int) -> bool:
+    """List accessible workspaces and allow the user to select the active one."""
+    if not _ACTIVE_WORKSPACE_ENABLED:
+        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
+        return True
+    try:
+        user = get_user_by_telegram_id(chat_id)
+        if not user:
+            send_message(chat_id, "❌ ابتدا /start را بفرستید.")
+            return True
+
+        workspaces = list_user_workspaces(user["id"], include_inactive=False)
+        if not workspaces:
+            send_message(chat_id, "❌ رسانه فعالی برای شما یافت نشد.")
+            return True
+
+        preference = get_active_workspace_preference(user["id"]) or {}
+        active_id = preference.get("active_workspace_id")
+        if len(workspaces) == 1 and active_id != workspaces[0]["id"]:
+            set_active_workspace(user["id"], workspaces[0]["id"])
+            active_id = workspaces[0]["id"]
+
+        from core.workspace_publisher import build_workspace_keyboard
+        keyboard = build_workspace_keyboard(workspaces, active_id)
+
+        send_message_with_keyboard(
+            chat_id,
+            "🏢 رسانه‌های شما\n\nرسانه فعال را انتخاب کنید:",
+            keyboard,
+        )
+        return True
+    except Exception:
+        logger.exception("Error listing workspaces")
+        send_message(chat_id, "❌ خطا در نمایش رسانه‌ها")
+        return False
+
+
+def handle_switchworkspace(args: str, chat_id: int) -> bool:
+    """Select an active workspace by numeric ID."""
+    if not _ACTIVE_WORKSPACE_ENABLED:
+        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
+        return True
+    value = (args or "").strip()
+    if not value:
+        return handle_workspaces(chat_id)
+    try:
+        workspace_id = int(value)
+        user = get_user_by_telegram_id(chat_id)
+        if not user:
+            send_message(chat_id, "❌ ابتدا /start را بفرستید.")
+            return True
+        set_active_workspace(user["id"], workspace_id)
+        send_message(chat_id, "✅ رسانه فعال با موفقیت تغییر کرد.")
+        return True
+    except (TypeError, ValueError):
+        send_message(
+            chat_id,
+            "❌ شناسه رسانه معتبر نیست یا به آن دسترسی ندارید.\n"
+            "برای مشاهده رسانه‌ها: /workspaces",
+        )
+        return True
+    except Exception:
+        logger.exception("Error switching workspace")
+        send_message(chat_id, "❌ خطا در تغییر رسانه فعال")
+        return False
 
 
 # =========================================================
@@ -938,6 +1051,8 @@ def handle_settings(chat_id: int) -> bool:
         send_message(
             chat_id,
             "📋 تنظیمات رسانه\n\n"
+            "🏢 تغییر رسانه فعال:\n"
+            "/workspaces\n\n"
             "🔧 برندینگ:\n"
             "/setbranding نام #هشتگ @تگ\n\n"
             "📡 کانال‌ها:\n"
@@ -1552,6 +1667,9 @@ def handle_command(text: str, chat_id: int) -> bool:
             "addmember": lambda: handle_addmember(args, chat_id),
             "finishsetup": lambda: handle_finishsetup(chat_id),
             "settings": lambda: handle_settings(chat_id),
+            # Phase 5 active-workspace selection
+            "workspaces": lambda: handle_workspaces(chat_id),
+            "switchworkspace": lambda: handle_switchworkspace(args, chat_id),
         }
         
         if command in commands:
