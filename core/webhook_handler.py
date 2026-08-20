@@ -3633,6 +3633,39 @@ def handle_webhook() -> Tuple[
             dict
         ):
 
+            # Workspace publication callbacks (Phase 4B)
+            if str(
+                callback_query.get(
+                    "data",
+                    ""
+                )
+                or ""
+            ).startswith("wp:"):
+
+                try:
+
+                    from core.workspace_publisher import (
+                        _handle_workspace_callback
+                    )
+
+                    _handle_workspace_callback(
+                        callback_query,
+                        req_id,
+                        API_URL
+                    )
+
+                except Exception as _wp_cb_err:
+
+                    logger.exception(
+                        f"[{req_id}] ❌ Workspace callback error | "
+                        f"{_wp_cb_err}"
+                    )
+
+                return {
+                    "ok": True,
+                    "callback_handled": True
+                }, 200
+
             handled = (
                 handle_editorial_callback(
                     callback_query,
@@ -3786,6 +3819,33 @@ def handle_webhook() -> Tuple[
                 "telegram_channel"
             )
         ):
+
+            # Phase 4B — workspace publication path for non-legacy users
+            try:
+
+                from core.workspace_publisher import (
+                    _try_workspace_publication
+                )
+
+                handled = _try_workspace_publication(
+                    chat_id,
+                    msg,
+                    req_id,
+                    API_URL
+                )
+
+                if handled:
+
+                    return {
+                        "ok": True
+                    }, 200
+
+            except Exception as _wp_err:
+
+                logger.exception(
+                    f"[{req_id}] ❌ Workspace publication error | "
+                    f"{_wp_err}"
+                )
 
             send_message(
                 chat_id,

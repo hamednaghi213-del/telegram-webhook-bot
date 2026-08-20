@@ -1545,3 +1545,76 @@ def upsert_destination_branding(
         .execute()
     )
     return _first_row(result)
+
+
+# =========================================================
+# PHASE 4B — PUBLISHABLE DESTINATIONS & MEMBERSHIPS
+# =========================================================
+
+def list_verified_active_destinations(
+    workspace_id: int
+) -> List[Dict[str, Any]]:
+    """
+    Return publication_destinations that are:
+    - status = 'active'
+    - platform = 'telegram'
+    - have a matching destination_verification with verified = True
+
+    Reuses existing helper functions — no new Supabase calls introduced beyond what
+    list_workspace_destinations and get_destination_verification already do.
+    """
+    try:
+        all_active = list_workspace_destinations(
+            workspace_id, include_removed=False
+        )
+        verified = []
+        for dest in all_active:
+            if dest.get("status") != "active":
+                continue
+            if dest.get("platform") != "telegram":
+                continue
+            verif = get_destination_verification(dest["id"])
+            if verif and verif.get("verified"):
+                verified.append(dest)
+        return verified
+    except Exception as e:
+        logger.exception(
+            f"list_verified_active_destinations failed | "
+            f"workspace={workspace_id} | {e}"
+        )
+        return []
+
+
+def list_user_workspace_memberships(
+    user_id: int
+) -> List[Dict[str, Any]]:
+    """
+    Return all workspaces where user has an active membership.
+    Returns list of workspace rows (joined from workspace_members + workspaces).
+    """
+    try:
+        result = (
+            supabase
+            .table("workspace_members")
+            .select(
+                "workspace_id, role, status, "
+                "workspaces(id, name, status, owner_user_id)"
+            )
+            .eq("user_id", user_id)
+            .eq("status", "active")
+            .execute()
+        )
+        rows = result.data or []
+        workspaces = []
+        for row in rows:
+            ws = row.get("workspaces")
+            if ws and ws.get("status") == "active":
+                ws = dict(ws)
+                ws["member_role"] = row.get("role")
+                workspaces.append(ws)
+        return workspaces
+    except Exception as e:
+        logger.exception(
+            f"list_user_workspace_memberships failed | user={user_id} | {e}"
+        )
+        return []
