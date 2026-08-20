@@ -50,6 +50,7 @@ from core.smart_summarizer import (
 from core.ai_summarizer_provider import (
     summarize_with_gemini
 )
+from core.release_readiness import parse_bool
 
 
 # =========================================================
@@ -76,9 +77,13 @@ if not TOKEN:
 
 
 SECRET_TOKEN = os.getenv(
-    "TELEGRAM_SECRET_TOKEN",
-    "my_secret_token_123"
+    "TELEGRAM_SECRET_TOKEN"
 )
+
+if not SECRET_TOKEN:
+    raise ValueError(
+        "❌ متغیر محیطی TELEGRAM_SECRET_TOKEN تنظیم نشده است."
+    )
 
 
 GEMINI_TEST_SECRET = os.getenv(
@@ -109,6 +114,12 @@ CHANNEL_TAG = os.getenv(
     "CHANNEL_TAG",
     "@Donya24News"
 )
+
+ENABLE_SELF_PING = parse_bool(
+    os.getenv("ENABLE_SELF_PING", "false")
+)
+
+APPLICATION_READY = False
 
 
 # =========================================================
@@ -197,6 +208,8 @@ logger = setup_logging()
 # =========================================================
 
 def initialize_modules():
+
+    global APPLICATION_READY
 
     logger.info(
         "🚀 شروع مقداردهی اولیه ماژول‌ها..."
@@ -295,6 +308,8 @@ def initialize_modules():
         "مقداردهی شدند."
     )
 
+    APPLICATION_READY = True
+
 
 # =========================================================
 # SELF PING
@@ -375,6 +390,20 @@ def health_check():
         "🤖 ربات خبری هوشمند - "
         "نسخه نهایی"
     )
+
+
+@app.route("/healthz", methods=["GET"])
+def liveness_check():
+    return jsonify({"ok": True, "status": "alive"}), 200
+
+
+@app.route("/readyz", methods=["GET"])
+def readiness_check():
+    status_code = 200 if APPLICATION_READY else 503
+    return jsonify({
+        "ok": APPLICATION_READY,
+        "status": "ready" if APPLICATION_READY else "starting",
+    }), status_code
 
 
 # =========================================================
@@ -549,7 +578,10 @@ def webhook():
 
 initialize_modules()
 
-start_self_ping()
+if ENABLE_SELF_PING:
+    start_self_ping()
+else:
+    logger.info("ℹ️ Self-ping disabled")
 
 
 # =========================================================
