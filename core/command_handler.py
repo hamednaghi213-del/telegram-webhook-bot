@@ -1,4 +1,5 @@
 import logging
+import os
 import requests
 import re
 from typing import Optional, Dict, Any, Tuple
@@ -71,6 +72,22 @@ try:
     _DESTINATION_MANAGEMENT_ENABLED: bool = True
 except (ImportError, AttributeError):
     _DESTINATION_MANAGEMENT_ENABLED = False
+
+# Phase 9 optional Bale destination using the platform-owned bot token.
+try:
+    from core.workspace_setup import register_bale_destination
+    from core.bale_verifier import verify_bale_channel_admin
+    from core.database import upsert_destination_verification
+    _BALE_WORKSPACE_ENABLED: bool = True
+except (ImportError, AttributeError):
+    _BALE_WORKSPACE_ENABLED = False
+
+try:
+    from core.database import update_workspace_branding_icons, get_workspace_branding
+    from core.publication_icons import extract_icons, normalize_icons
+    _PUBLICATION_ICONS_ENABLED: bool = True
+except (ImportError, AttributeError):
+    _PUBLICATION_ICONS_ENABLED = False
 
 logger = logging.getLogger(__name__)
 
@@ -475,8 +492,11 @@ def _setup_resume_message(current_step_key: str) -> str:
         return (
             "▶️ راه‌اندازی در حال انجام است.\n\n"
             "مرحله ۱: افزودن کانال\n"
-            "کانال تلگرام خود را وارد کنید:\n"
+            "کانال تلگرام خود را وارد کنید (الزامی):\n"
             "/addchannel @channel_id\n\n"
+            "کانال بله دارید؟ ربات مرکزی ما را مدیر کنید و بفرستید:\n"
+            "/addbale @bale_channel\n"
+            "اگر بله ندارید: /skipbale\n\n"
             "چند کانال دارید؟ همه را اضافه کنید.\n"
             "وقتی تمام کانال‌ها اضافه شد: /nextsetupstep\n\n"
             "❓ راهنما: /help"
@@ -964,6 +984,101 @@ def handle_setdestinationbranding(args: str, chat_id: int) -> bool:
         return False
 
 
+def _verify_and_activate_bale(dest: Dict[str, Any], chat_id: int) -> None:
+    token = os.getenv("BALE_BOT_TOKEN", "").strip()
+    verified, note = verify_bale_channel_admin(token, dest["external_id"])
+    upsert_destination_verification(
+        dest["id"], verified=verified, verification_note=note
+    )
+    update_publication_destination_status(
+        dest["id"], "active" if verified else "inactive"
+    )
+    if verified:
+        send_message(chat_id, f"✅ کانال بله {dest['external_id']} متصل شد.")
+    else:
+        send_message(
+            chat_id,
+            f"⚠️ اتصال بله کامل نشد: {note}\n"
+            "ثبت‌نام و انتشار تلگرام بدون اختلال ادامه دارد.",
+        )
+
+
+def handle_addbale(args: str, chat_id: int) -> bool:
+    """Register an optional Bale channel using the central Bale bot."""
+    if not _BALE_WORKSPACE_ENABLED:
+        send_message(chat_id, "❌ اتصال بله در حال حاضر فعال نیست.")
+        return True
+    external_id = (args or "").strip()
+    valid, error = validate_channel(external_id)
+    if not valid:
+        send_message(chat_id, error or "❌ فرمت صحیح: /addbale @channel")
+        return True
+    try:
+        user, workspace = _get_workspace_for_user(chat_id)
+        if not workspace:
+            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
+            return True
+        allowed, reason = _authorize_destination_manager(user, workspace)
+        if not allowed:
+            send_message(chat_id, f"❌ {reason}")
+            return True
+        destination, duplicate = register_bale_destination(
+            workspace["id"], external_id, external_id
+        )
+        if duplicate:
+            send_message(chat_id, "⚠️ این کانال بله قبلاً ثبت شده است.")
+            return True
+        _verify_and_activate_bale(destination, chat_id)
+        return True
+    except Exception:
+        logger.exception("Error adding Bale destination")
+        send_message(chat_id, "❌ خطا در افزودن بله؛ تلگرام فعال باقی می‌ماند.")
+        return False
+
+
+def handle_verifybale(args: str, chat_id: int) -> bool:
+    """Retry optional Bale verification without blocking Telegram."""
+    external_id = (args or "").strip()
+    if not external_id:
+        send_message(chat_id, "❌ فرمت صحیح: /verifybale @channel")
+        return True
+    try:
+        user, workspace = _get_workspace_for_user(chat_id)
+        if not workspace:
+            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
+            return True
+        allowed, reason = _authorize_destination_manager(user, workspace)
+        if not allowed:
+            send_message(chat_id, f"❌ {reason}")
+            return True
+        destination = next(
+            (
+                item for item in list_workspace_destinations(workspace["id"])
+                if item.get("platform") == "bale"
+                and item.get("external_id") == external_id
+            ),
+            None,
+        )
+        if not destination:
+            send_message(chat_id, "❌ ابتدا کانال بله را با /addbale ثبت کنید.")
+            return True
+        _verify_and_activate_bale(destination, chat_id)
+        return True
+    except Exception:
+        logger.exception("Error verifying Bale destination")
+        send_message(chat_id, "❌ خطا در تأیید بله؛ تلگرام فعال باقی می‌ماند.")
+        return False
+
+
+def handle_skipbale(chat_id: int) -> bool:
+    send_message(
+        chat_id,
+        "✅ بله فعلاً رد شد. ثبت‌نام تلگرام ادامه دارد.\n"
+        "بعداً می‌توانید از /addbale استفاده کنید.",
+    )
+    return True
+
+
 def handle_nextsetupstep(chat_id: int) -> bool:
     """
     /nextsetupstep — پیشروی به مرحله بعدی راه‌اندازی.
@@ -1350,6 +1465,8 @@ def handle_settings(chat_id: int) -> bool:
             "/destinations\n"
             "/addchannel @channel\n"
             "/verifychannel @channel\n"
+            "/addbale @channel (اختیاری)\n"
+            "/verifybale @channel\n"
             "/setdefaultdestination DESTINATION_ID\n"
             "/setdestinationbranding DESTINATION_ID #هشتگ @تگ\n"
             "/removedestination DESTINATION_ID\n\n"
@@ -1960,6 +2077,9 @@ def handle_command(text: str, chat_id: int) -> bool:
             "setup": lambda: handle_setup(chat_id),
             "addchannel": lambda: handle_addchannel(args, chat_id),
             "verifychannel": lambda: handle_verifychannel(args, chat_id),
+            "addbale": lambda: handle_addbale(args, chat_id),
+            "verifybale": lambda: handle_verifybale(args, chat_id),
+            "skipbale": lambda: handle_skipbale(chat_id),
             "destinations": lambda: handle_destinations(chat_id),
             "setdefaultdestination": lambda: handle_setdefaultdestination(args, chat_id),
             "setdestinationbranding": lambda: handle_setdestinationbranding(args, chat_id),

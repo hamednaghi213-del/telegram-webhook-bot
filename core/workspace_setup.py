@@ -28,6 +28,7 @@ Rules:
 
 import logging
 from typing import Any, Dict, List, Optional, Tuple
+from core.workspace_pairing import has_required_telegram_destination
 
 from core.database import (
     add_workspace_member,
@@ -147,6 +148,38 @@ def register_channel_destination(
             f"external_id={external_id}"
         )
     return dest, False
+
+
+def register_bale_destination(
+    workspace_id: int,
+    external_id: str,
+    name: Optional[str] = None,
+) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """Register an optional Bale destination using the central Bale bot."""
+    external_id = str(external_id).strip()
+    existing = list_workspace_destinations(workspace_id, include_removed=False)
+    for destination in existing:
+        if (
+            destination.get("platform") == "bale"
+            and destination.get("external_id") == external_id
+        ):
+            return destination, True
+    destination = create_publication_destination(
+        workspace_id=workspace_id,
+        platform="bale",
+        destination_type="channel",
+        name=(name or external_id).strip(),
+        external_id=external_id,
+        status="inactive",
+        is_default=False,
+    )
+    if destination:
+        upsert_destination_verification(
+            destination["id"],
+            verified=False,
+            verification_note="pending_bale_admin_verification",
+        )
+    return destination, False
 
 
 # =========================================================
@@ -291,8 +324,8 @@ def can_complete_setup(
         return False, "نام رسانه تنظیم نشده است. ابتدا برندینگ را تنظیم کنید"
 
     destinations = list_workspace_destinations(workspace_id, include_removed=False)
-    if not destinations:
-        return False, "حداقل یک کانال اضافه کنید"
+    if not has_required_telegram_destination(destinations):
+        return False, "حداقل یک کانال تلگرام اضافه کنید"
 
     return True, None
 
