@@ -3,6 +3,7 @@ Phase 4B — Workspace Publication Path
 Parallel to legacy tenant path. Used ONLY for workspace users (no legacy tenant).
 """
 import logging
+import os
 import requests
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -330,7 +331,33 @@ def publish_to_destinations(
             )
             caption = build_final_caption(content, branding)
 
-            if media_file_id and media_type:
+            if dest.get("platform") == "bale":
+                token = os.getenv("BALE_BOT_TOKEN", "").strip()
+                if not token:
+                    ok, err = False, "BALE_BOT_TOKEN is not configured"
+                else:
+                    from core.bale_forwarder import (
+                        send_document_to_bale,
+                        send_photo_to_bale,
+                        send_text_to_bale,
+                        send_video_to_bale,
+                    )
+                    if media_file_id and media_type == "photo":
+                        ok = send_photo_to_bale(
+                            channel_id, token, caption, media_file_id
+                        )
+                    elif media_file_id and media_type == "video":
+                        ok = send_video_to_bale(
+                            channel_id, token, caption, media_file_id
+                        )
+                    elif media_file_id:
+                        ok = send_document_to_bale(
+                            channel_id, token, caption, media_file_id
+                        )
+                    else:
+                        ok = send_text_to_bale(channel_id, token, caption)
+                    err = None if ok else "Bale publish failed"
+            elif media_file_id and media_type:
                 ok, err = _send_media_to_destination(
                     api_url, channel_id, media_file_id, media_type, caption
                 )
@@ -525,8 +552,13 @@ def _try_workspace_publication(
         if not content_text and not media_file_id:
             return False  # No publishable content
 
-        # If single destination, publish directly
-        if len(destinations) == 1:
+        platforms = {destination.get("platform") for destination in destinations}
+        paired_destinations = (
+            len(destinations) == 2 and platforms == {"telegram", "bale"}
+        )
+
+        # One Telegram+Bale pair publishes together without another prompt.
+        if len(destinations) == 1 or paired_destinations:
             result = publish_to_destinations(
                 api_url, destinations, content_text, media_file_id, media_type,
                 get_destination_branding, get_workspace_branding,
