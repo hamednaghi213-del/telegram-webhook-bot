@@ -325,9 +325,21 @@ def publish_to_destinations(
             branding = compose_destination_branding(
                 dest_id, workspace_id, get_dest_branding_fn, get_ws_branding_fn
             )
-            budget = compute_caption_budget(branding)
+            workspace_branding = get_ws_branding_fn(workspace_id) or {}
+            from core.publication_icons import apply_icons, normalize_icons
+            selected_icons = normalize_icons(
+                workspace_branding.get("publication_icons") or []
+            ) if workspace_branding.get("icons_enabled", False) else []
+            icon_prefix = " ".join(selected_icons)
+            icon_cost = len(icon_prefix) + 1 if icon_prefix else 0
+            budget = max(0, compute_caption_budget(branding) - icon_cost)
             content = fit_content_to_budget(
                 content_text or "", budget, is_editorial_finalized
+            )
+            content = apply_icons(
+                content,
+                selected_icons,
+                bool(selected_icons),
             )
             caption = build_final_caption(content, branding)
 

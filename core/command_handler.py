@@ -1177,6 +1177,12 @@ def handle_setbranding(args: str, chat_id: int) -> bool:
             channel_tag=channel_tag,
         )
 
+        extracted_icons = extract_icons(args) if _PUBLICATION_ICONS_ENABLED else []
+        if branding and extracted_icons:
+            update_workspace_branding_icons(
+                workspace["id"], extracted_icons, enabled=True
+            )
+
         if branding:
             send_message(
                 chat_id,
@@ -1184,6 +1190,7 @@ def handle_setbranding(args: str, chat_id: int) -> bool:
                 f"نام رسانه: {media_name}\n"
                 f"هشتگ: {hashtag or '(تنظیم نشده)'}\n"
                 f"تگ کانال: {channel_tag or '(تنظیم نشده)'}\n\n"
+                f"آیکون‌ها: {' '.join(extracted_icons) if extracted_icons else '(بدون آیکون)'}\n\n"
                 "برای ادامه: /nextsetupstep"
             )
         else:
@@ -1193,6 +1200,56 @@ def handle_setbranding(args: str, chat_id: int) -> bool:
     except Exception:
         logger.exception("❌ Error in handle_setbranding")
         send_message(chat_id, "❌ خطا در تنظیم برندینگ")
+        return False
+
+
+def handle_seticons(args: str, chat_id: int) -> bool:
+    """Replace the complete ordered icon list with any supplied Unicode icons."""
+    if not _PUBLICATION_ICONS_ENABLED:
+        send_message(chat_id, "❌ تنظیم آیکون در حال حاضر فعال نیست.")
+        return True
+    icons = normalize_icons((args or "").split())
+    if not icons:
+        send_message(chat_id, "❌ آیکونی پیدا نشد. مثال: /seticons 🟢 🔵")
+        return True
+    try:
+        user, workspace = _get_workspace_for_user(chat_id)
+        if not workspace:
+            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
+            return True
+        allowed, reason = _authorize_destination_manager(user, workspace)
+        if not allowed:
+            send_message(chat_id, f"❌ {reason}")
+            return True
+        update_workspace_branding_icons(workspace["id"], icons, enabled=True)
+        send_message(chat_id, f"✅ آیکون‌ها ذخیره شدند:\n{' '.join(icons)}")
+        return True
+    except Exception:
+        logger.exception("Error updating publication icons")
+        send_message(chat_id, "❌ خطا در ذخیره آیکون‌ها")
+        return False
+
+
+def handle_clearicons(chat_id: int) -> bool:
+    """Disable all publication icons for the active workspace."""
+    if not _PUBLICATION_ICONS_ENABLED:
+        send_message(chat_id, "❌ تنظیم آیکون در حال حاضر فعال نیست.")
+        return True
+    try:
+        user, workspace = _get_workspace_for_user(chat_id)
+        if not workspace:
+            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
+            return True
+        allowed, reason = _authorize_destination_manager(user, workspace)
+        if not allowed:
+            send_message(chat_id, f"❌ {reason}")
+            return True
+        update_workspace_branding_icons(workspace["id"], [], enabled=False)
+        send_message(chat_id, "✅ انتشار بدون آیکون تنظیم شد.")
+        return True
+    except Exception:
+        logger.exception("Error clearing publication icons")
+        send_message(chat_id, "❌ خطا در حذف آیکون‌ها")
         return False
 
 
@@ -1461,6 +1518,9 @@ def handle_settings(chat_id: int) -> bool:
             "/workspaces\n\n"
             "🔧 برندینگ:\n"
             "/setbranding نام #هشتگ @تگ\n\n"
+            "🎨 آیکون‌ها:\n"
+            "/seticons 🟢 🔵\n"
+            "/clearicons\n\n"
             "📡 کانال‌ها:\n"
             "/destinations\n"
             "/addchannel @channel\n"
@@ -2086,6 +2146,8 @@ def handle_command(text: str, chat_id: int) -> bool:
             "removedestination": lambda: handle_removedestination(args, chat_id),
             "nextsetupstep": lambda: handle_nextsetupstep(chat_id),
             "setbranding": lambda: handle_setbranding(args, chat_id),
+            "seticons": lambda: handle_seticons(args, chat_id),
+            "clearicons": lambda: handle_clearicons(chat_id),
             "addmember": lambda: handle_addmember(args, chat_id),
             "members": lambda: handle_members(chat_id),
             "setmemberrole": lambda: handle_setmemberrole(args, chat_id),

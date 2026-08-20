@@ -8,6 +8,7 @@ Phase 8 prepares the repository for release but does not perform deployment.
 - `TELEGRAM_SECRET_TOKEN` (random, private, and also supplied to Telegram when setting the webhook)
 - `SUPABASE_URL`
 - `SUPABASE_KEY`
+- `BALE_BOT_TOKEN` when optional Bale publishing is enabled
 - `GEMINI_API_KEY` when Gemini summarization is enabled
 - `ENABLE_SELF_PING=true` only when the hosting platform genuinely requires it
 - `SELF_PING_URL` when self-ping is enabled
@@ -22,6 +23,7 @@ Back up the production database, then apply the migrations exactly once in order
 2. `schema/002_phase2_publication_destinations.sql`
 3. `schema/003_phase4a_workspace_setup.sql`
 4. `schema/004_phase5_active_workspace.sql`
+5. `schema/005_phase10_publication_icons.sql`
 
 The migration files are additive and use `IF NOT EXISTS`, but a backup is still required.
 
