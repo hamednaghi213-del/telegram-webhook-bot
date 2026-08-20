@@ -1470,6 +1470,27 @@ def upsert_workspace_branding(
     return _first_row(result)
 
 
+@with_retry
+def update_workspace_branding_icons(
+    workspace_id: int,
+    icons: List[str],
+    enabled: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """Update the ordered Unicode icon list without changing other branding."""
+    result = (
+        supabase
+        .table("workspace_branding")
+        .update({
+            "publication_icons": list(icons or []),
+            "icons_enabled": bool(enabled and icons),
+            "updated_at": time.time(),
+        })
+        .eq("workspace_id", workspace_id)
+        .execute()
+    )
+    return _first_row(result)
+
+
 # =========================================================
 # PHASE 4A — DESTINATION VERIFICATION
 # =========================================================

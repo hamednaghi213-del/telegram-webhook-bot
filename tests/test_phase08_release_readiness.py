@@ -30,7 +30,7 @@ def test_self_ping_boolean_is_strict_and_defaults_off():
 def test_repository_migrations_are_contiguous():
     schema_dir = Path(__file__).resolve().parents[1] / "schema"
     migrations = validate_migration_sequence(schema_dir)
-    assert [item.name[:3] for item in migrations] == ["001", "002", "003", "004"]
+    assert [item.name[:3] for item in migrations] == ["001", "002", "003", "004", "005"]
 
 
 def test_migration_gap_is_rejected(tmp_path):
