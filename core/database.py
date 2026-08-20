@@ -647,6 +647,20 @@ def get_user_by_telegram_id(
 
 
 @with_retry
+def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
+    """دریافت کاربر workspace بر اساس شناسه داخلی"""
+    result = (
+        supabase
+        .table("users")
+        .select("*")
+        .eq("id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return _first_row(result)
+
+
+@with_retry
 def get_or_create_user_by_telegram_id(
     telegram_user_id: int,
     status: str = "active"

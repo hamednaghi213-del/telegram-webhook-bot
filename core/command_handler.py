@@ -48,6 +48,14 @@ try:
 except (ImportError, AttributeError):
     _ACTIVE_WORKSPACE_ENABLED = False
 
+# Phase 6 member management is optional for older/fake database modules.
+try:
+    from core.database import get_user_by_id, list_workspace_members
+    from core.workspace_members import authorize_member_action
+    _MEMBER_MANAGEMENT_ENABLED: bool = True
+except (ImportError, AttributeError):
+    _MEMBER_MANAGEMENT_ENABLED = False
+
 logger = logging.getLogger(__name__)
 
 # =========================================================
@@ -949,6 +957,15 @@ def handle_addmember(args: str, chat_id: int) -> bool:
             )
             return True
 
+        actor = get_workspace_member(workspace["id"], user["id"])
+        allowed, reason = authorize_member_action(
+            (actor or {}).get("role"),
+            requested_role=role,
+        ) if _MEMBER_MANAGEMENT_ENABLED else (True, "")
+        if not allowed:
+            send_message(chat_id, f"❌ {reason}")
+            return True
+
         membership, err = add_member_to_workspace(
             workspace["id"],
             target_telegram_id,
@@ -976,6 +993,113 @@ def handle_addmember(args: str, chat_id: int) -> bool:
     except Exception:
         logger.exception("❌ Error in handle_addmember")
         send_message(chat_id, "❌ خطا در افزودن عضو")
+        return False
+
+
+def handle_members(chat_id: int) -> bool:
+    """List members of the active workspace."""
+    if not _MEMBER_MANAGEMENT_ENABLED:
+        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
+        return True
+    try:
+        user, workspace = _get_workspace_for_user(chat_id)
+        if not workspace:
+            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
+            return True
+        actor = get_workspace_member(workspace["id"], user["id"])
+        if (actor or {}).get("role") not in {"owner", "manager"}:
+            send_message(chat_id, "❌ فقط مالک یا مدیر می‌تواند فهرست اعضا را ببیند.")
+            return True
+
+        lines = [f"👥 اعضای {workspace.get('name') or workspace['id']}"]
+        for member in list_workspace_members(workspace["id"], include_inactive=True):
+            member_user = get_user_by_id(member["user_id"]) or {}
+            telegram_id = member_user.get("telegram_user_id", member["user_id"])
+            lines.append(
+                f"• {telegram_id} — {member.get('role')} — {member.get('status')}"
+            )
+        send_long_message(chat_id, "\n".join(lines))
+        return True
+    except Exception:
+        logger.exception("Error listing workspace members")
+        send_message(chat_id, "❌ خطا در نمایش اعضا")
+        return False
+
+
+def _find_member_by_telegram_id(workspace_id: int, telegram_id: int):
+    target_user = get_user_by_telegram_id(telegram_id)
+    if not target_user:
+        return None, None
+    return target_user, get_workspace_member(workspace_id, target_user["id"])
+
+
+def handle_setmemberrole(args: str, chat_id: int) -> bool:
+    """Change a non-owner member role in the active workspace."""
+    if not _MEMBER_MANAGEMENT_ENABLED:
+        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
+        return True
+    parts = (args or "").split()
+    if len(parts) != 2 or not parts[0].isdigit():
+        send_message(chat_id, "❌ فرمت صحیح: /setmemberrole TELEGRAM_ID نقش")
+        return True
+    try:
+        telegram_id, role = int(parts[0]), parts[1].lower()
+        user, workspace = _get_workspace_for_user(chat_id)
+        if not workspace:
+            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
+            return True
+        actor = get_workspace_member(workspace["id"], user["id"])
+        target_user, target = _find_member_by_telegram_id(workspace["id"], telegram_id)
+        if not target:
+            send_message(chat_id, "❌ این کاربر عضو رسانه نیست.")
+            return True
+        allowed, reason = authorize_member_action(
+            (actor or {}).get("role"), target.get("role"), role
+        )
+        if not allowed:
+            send_message(chat_id, f"❌ {reason}")
+            return True
+        update_workspace_member_role(workspace["id"], target_user["id"], role)
+        send_message(chat_id, f"✅ نقش کاربر {telegram_id} به {role} تغییر کرد.")
+        return True
+    except Exception:
+        logger.exception("Error changing workspace member role")
+        send_message(chat_id, "❌ خطا در تغییر نقش عضو")
+        return False
+
+
+def handle_removemember(args: str, chat_id: int) -> bool:
+    """Soft-remove a non-owner member from the active workspace."""
+    if not _MEMBER_MANAGEMENT_ENABLED:
+        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
+        return True
+    value = (args or "").strip()
+    if not value.isdigit():
+        send_message(chat_id, "❌ فرمت صحیح: /removemember TELEGRAM_ID")
+        return True
+    try:
+        telegram_id = int(value)
+        user, workspace = _get_workspace_for_user(chat_id)
+        if not workspace:
+            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
+            return True
+        actor = get_workspace_member(workspace["id"], user["id"])
+        target_user, target = _find_member_by_telegram_id(workspace["id"], telegram_id)
+        if not target:
+            send_message(chat_id, "❌ این کاربر عضو رسانه نیست.")
+            return True
+        allowed, reason = authorize_member_action(
+            (actor or {}).get("role"), target.get("role")
+        )
+        if not allowed:
+            send_message(chat_id, f"❌ {reason}")
+            return True
+        update_workspace_member_status(workspace["id"], target_user["id"], "removed")
+        send_message(chat_id, f"✅ کاربر {telegram_id} از رسانه حذف شد.")
+        return True
+    except Exception:
+        logger.exception("Error removing workspace member")
+        send_message(chat_id, "❌ خطا در حذف عضو")
         return False
 
 
@@ -1059,7 +1183,10 @@ def handle_settings(chat_id: int) -> bool:
             "/addchannel @channel\n"
             "/verifychannel @channel\n\n"
             "👥 اعضا:\n"
-            "/addmember TELEGRAM_ID نقش\n\n"
+            "/members\n"
+            "/addmember TELEGRAM_ID نقش\n"
+            "/setmemberrole TELEGRAM_ID نقش\n"
+            "/removemember TELEGRAM_ID\n\n"
             "❓ راهنما:\n"
             "/help"
         )
@@ -1665,6 +1792,9 @@ def handle_command(text: str, chat_id: int) -> bool:
             "nextsetupstep": lambda: handle_nextsetupstep(chat_id),
             "setbranding": lambda: handle_setbranding(args, chat_id),
             "addmember": lambda: handle_addmember(args, chat_id),
+            "members": lambda: handle_members(chat_id),
+            "setmemberrole": lambda: handle_setmemberrole(args, chat_id),
+            "removemember": lambda: handle_removemember(args, chat_id),
             "finishsetup": lambda: handle_finishsetup(chat_id),
             "settings": lambda: handle_settings(chat_id),
             # Phase 5 active-workspace selection
