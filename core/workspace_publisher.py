@@ -167,6 +167,7 @@ def resolve_workspace_for_user(
     telegram_user_id: int,
     get_user_fn,
     list_workspaces_fn,
+    get_active_preference_fn=None,
 ) -> Tuple[Optional[Dict], Optional[str]]:
     """
     Resolve the current workspace for a telegram user.
@@ -185,8 +186,31 @@ def resolve_workspace_for_user(
     if len(workspaces) == 1:
         return workspaces[0], None
 
+    if get_active_preference_fn:
+        preference = get_active_preference_fn(user["id"]) or {}
+        active_workspace_id = preference.get("active_workspace_id")
+        for workspace in workspaces:
+            if workspace.get("id") == active_workspace_id:
+                return workspace, None
+
     # Multiple workspaces — cannot safely determine which one
     return None, "شما عضو چند رسانه هستید. لطفاً رسانه مورد نظر را انتخاب کنید."
+
+
+def build_workspace_keyboard(
+    workspaces: List[Dict],
+    active_workspace_id: Optional[int],
+) -> List[List[Dict]]:
+    """Build an inline keyboard for active-workspace selection."""
+    keyboard = []
+    for workspace in workspaces:
+        marker = "✅" if workspace.get("id") == active_workspace_id else "▫️"
+        role = workspace.get("membership_role") or workspace.get("member_role") or "member"
+        keyboard.append([{
+            "text": f"{marker} {workspace.get('name') or workspace['id']} ({role})",
+            "callback_data": f"ws:select:{workspace['id']}",
+        }])
+    return keyboard
 
 
 # =========================================================
@@ -433,6 +457,7 @@ def _try_workspace_publication(
             get_destination_branding,
             get_workspace_branding,
             get_workspace_member,
+            get_active_workspace_preference,
         )
 
         user = get_user_by_telegram_id(chat_id)
@@ -443,16 +468,19 @@ def _try_workspace_publication(
         if not workspaces:
             return False
 
-        if len(workspaces) > 1:
-            # Cannot safely determine workspace; ask user to choose
+        workspace, workspace_error = resolve_workspace_for_user(
+            chat_id,
+            lambda _telegram_id: user,
+            lambda _user_id: workspaces,
+            get_active_workspace_preference,
+        )
+        if not workspace:
             _ws_send_message(
                 api_url,
                 chat_id,
-                "شما عضو چند رسانه هستید. لطفاً ابتدا رسانه مورد نظر را انتخاب کنید.",
+                workspace_error or "رسانه فعالی یافت نشد.",
             )
             return True
-
-        workspace = workspaces[0]
         workspace_id = workspace["id"]
 
         # Check setup is completed
@@ -529,8 +557,10 @@ def _handle_workspace_callback(
 ) -> None:
     """Handle wp: callback queries for destination selection."""
     from core.database import (
+        get_user_by_telegram_id,
         get_destination_branding,
         get_workspace_branding,
+        set_active_workspace,
     )
 
     callback_data = callback_query.get("data", "") or ""
@@ -544,7 +574,20 @@ def _handle_workspace_callback(
     if len(parts) < 2:
         return
 
-    if len(parts) >= 3 and parts[1] == "toggle":
+    if callback_data.startswith("ws:select:") and len(parts) >= 3:
+        try:
+            workspace_id = int(parts[2])
+            user = get_user_by_telegram_id(chat_id)
+            if not user:
+                raise ValueError("user not found")
+            set_active_workspace(user["id"], workspace_id)
+        except (TypeError, ValueError):
+            _ws_answer_callback(api_url, callback_id, "انتخاب رسانه معتبر نیست")
+            return
+        _ws_answer_callback(api_url, callback_id, "رسانه فعال تغییر کرد")
+        _ws_send_message(api_url, chat_id, "✅ رسانه فعال با موفقیت تغییر کرد.")
+
+    elif len(parts) >= 3 and parts[1] == "toggle":
         try:
             dest_id = int(parts[2])
         except ValueError:
