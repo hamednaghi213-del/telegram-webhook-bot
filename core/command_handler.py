@@ -56,6 +56,22 @@ try:
 except (ImportError, AttributeError):
     _MEMBER_MANAGEMENT_ENABLED = False
 
+# Phase 7 destination lifecycle management.
+try:
+    from core.database import (
+        list_workspace_destinations,
+        set_default_publication_destination,
+        update_publication_destination_status,
+    )
+    from core.workspace_setup import save_destination_branding
+    from core.workspace_destinations import (
+        can_manage_destinations,
+        find_workspace_destination,
+    )
+    _DESTINATION_MANAGEMENT_ENABLED: bool = True
+except (ImportError, AttributeError):
+    _DESTINATION_MANAGEMENT_ENABLED = False
+
 logger = logging.getLogger(__name__)
 
 # =========================================================
@@ -513,6 +529,11 @@ def _get_workspace_for_user(chat_id: int):
     return user, workspace
 
 
+def _authorize_destination_manager(user: Dict, workspace: Dict):
+    member = get_workspace_member(workspace["id"], user["id"])
+    return can_manage_destinations((member or {}).get("role"))
+
+
 def handle_workspaces(chat_id: int) -> bool:
     """List accessible workspaces and allow the user to select the active one."""
     if not _ACTIVE_WORKSPACE_ENABLED:
@@ -658,6 +679,12 @@ def handle_addchannel(args: str, chat_id: int) -> bool:
             )
             return True
 
+        if _DESTINATION_MANAGEMENT_ENABLED:
+            allowed, reason = _authorize_destination_manager(user, workspace)
+            if not allowed:
+                send_message(chat_id, f"❌ {reason}")
+                return True
+
         dest, is_dup = register_channel_destination(
             workspace["id"],
             external_id=external_id,
@@ -775,6 +802,12 @@ def handle_verifychannel(args: str, chat_id: int) -> bool:
             )
             return True
 
+        if _DESTINATION_MANAGEMENT_ENABLED:
+            allowed, reason = _authorize_destination_manager(user, workspace)
+            if not allowed:
+                send_message(chat_id, f"❌ {reason}")
+                return True
+
         from core.database import list_workspace_destinations
 
         destinations = list_workspace_destinations(
@@ -800,6 +833,134 @@ def handle_verifychannel(args: str, chat_id: int) -> bool:
     except Exception:
         logger.exception("❌ Error in handle_verifychannel")
         send_message(chat_id, "❌ خطا در بررسی کانال")
+        return False
+
+
+def handle_destinations(chat_id: int) -> bool:
+    """List publication destinations for the active workspace."""
+    if not _DESTINATION_MANAGEMENT_ENABLED:
+        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
+        return True
+    try:
+        user, workspace = _get_workspace_for_user(chat_id)
+        if not workspace:
+            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
+            return True
+        destinations = list_workspace_destinations(workspace["id"])
+        if not destinations:
+            send_message(chat_id, "📡 هنوز مقصدی ثبت نشده است.\n/addchannel @channel")
+            return True
+        lines = [f"📡 مقصدهای {workspace.get('name') or workspace['id']}"]
+        for destination in destinations:
+            marker = "⭐" if destination.get("is_default") else "•"
+            lines.append(
+                f"{marker} {destination['id']} — {destination.get('external_id')} "
+                f"— {destination.get('status')}"
+            )
+        send_long_message(chat_id, "\n".join(lines))
+        return True
+    except Exception:
+        logger.exception("Error listing destinations")
+        send_message(chat_id, "❌ خطا در نمایش مقصدها")
+        return False
+
+
+def _destination_command_context(chat_id: int, destination_id: int):
+    user, workspace = _get_workspace_for_user(chat_id)
+    if not workspace:
+        return user, workspace, None, "رسانه‌ای یافت نشد."
+    allowed, reason = _authorize_destination_manager(user, workspace)
+    if not allowed:
+        return user, workspace, None, reason
+    destination = find_workspace_destination(
+        list_workspace_destinations(workspace["id"]), destination_id
+    )
+    if not destination:
+        return user, workspace, None, "مقصد در رسانه فعال شما یافت نشد."
+    return user, workspace, destination, ""
+
+
+def handle_setdefaultdestination(args: str, chat_id: int) -> bool:
+    """Set an active destination as the workspace default."""
+    value = (args or "").strip()
+    if not _DESTINATION_MANAGEMENT_ENABLED:
+        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
+        return True
+    if not value.isdigit():
+        send_message(chat_id, "❌ فرمت صحیح: /setdefaultdestination DESTINATION_ID")
+        return True
+    try:
+        _, workspace, destination, error = _destination_command_context(
+            chat_id, int(value)
+        )
+        if error:
+            send_message(chat_id, f"❌ {error}")
+            return True
+        if destination.get("status") != "active":
+            send_message(chat_id, "❌ فقط مقصد تأییدشده و فعال می‌تواند پیش‌فرض باشد.")
+            return True
+        set_default_publication_destination(workspace["id"], destination["id"])
+        send_message(chat_id, f"✅ مقصد {destination['external_id']} پیش‌فرض شد.")
+        return True
+    except Exception:
+        logger.exception("Error setting default destination")
+        send_message(chat_id, "❌ خطا در تعیین مقصد پیش‌فرض")
+        return False
+
+
+def handle_removedestination(args: str, chat_id: int) -> bool:
+    """Soft-remove a destination from the active workspace."""
+    value = (args or "").strip()
+    if not _DESTINATION_MANAGEMENT_ENABLED:
+        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
+        return True
+    if not value.isdigit():
+        send_message(chat_id, "❌ فرمت صحیح: /removedestination DESTINATION_ID")
+        return True
+    try:
+        _, _, destination, error = _destination_command_context(chat_id, int(value))
+        if error:
+            send_message(chat_id, f"❌ {error}")
+            return True
+        update_publication_destination_status(destination["id"], "removed")
+        send_message(chat_id, f"✅ مقصد {destination['external_id']} حذف شد.")
+        return True
+    except Exception:
+        logger.exception("Error removing destination")
+        send_message(chat_id, "❌ خطا در حذف مقصد")
+        return False
+
+
+def handle_setdestinationbranding(args: str, chat_id: int) -> bool:
+    """Set hashtag and channel tag overrides for one destination."""
+    parts = (args or "").split()
+    if not _DESTINATION_MANAGEMENT_ENABLED:
+        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
+        return True
+    if len(parts) < 1 or not parts[0].isdigit():
+        send_message(
+            chat_id,
+            "❌ فرمت صحیح: /setdestinationbranding DESTINATION_ID #هشتگ @تگ",
+        )
+        return True
+    try:
+        destination_id = int(parts[0])
+        hashtag = parts[1] if len(parts) > 1 else ""
+        channel_tag = parts[2] if len(parts) > 2 else ""
+        _, _, destination, error = _destination_command_context(
+            chat_id, destination_id
+        )
+        if error:
+            send_message(chat_id, f"❌ {error}")
+            return True
+        save_destination_branding(
+            destination["id"], hashtag=hashtag, channel_tag=channel_tag
+        )
+        send_message(chat_id, f"✅ برندینگ مقصد {destination['external_id']} ذخیره شد.")
+        return True
+    except Exception:
+        logger.exception("Error setting destination branding")
+        send_message(chat_id, "❌ خطا در تنظیم برندینگ مقصد")
         return False
 
 
@@ -887,6 +1048,12 @@ def handle_setbranding(args: str, chat_id: int) -> bool:
                 "❌ رسانه‌ای یافت نشد. ابتدا /start را بفرستید."
             )
             return True
+
+        if _DESTINATION_MANAGEMENT_ENABLED:
+            allowed, reason = _authorize_destination_manager(user, workspace)
+            if not allowed:
+                send_message(chat_id, f"❌ {reason}")
+                return True
 
         branding = save_workspace_branding(
             workspace["id"],
@@ -1180,8 +1347,12 @@ def handle_settings(chat_id: int) -> bool:
             "🔧 برندینگ:\n"
             "/setbranding نام #هشتگ @تگ\n\n"
             "📡 کانال‌ها:\n"
+            "/destinations\n"
             "/addchannel @channel\n"
-            "/verifychannel @channel\n\n"
+            "/verifychannel @channel\n"
+            "/setdefaultdestination DESTINATION_ID\n"
+            "/setdestinationbranding DESTINATION_ID #هشتگ @تگ\n"
+            "/removedestination DESTINATION_ID\n\n"
             "👥 اعضا:\n"
             "/members\n"
             "/addmember TELEGRAM_ID نقش\n"
@@ -1789,6 +1960,10 @@ def handle_command(text: str, chat_id: int) -> bool:
             "setup": lambda: handle_setup(chat_id),
             "addchannel": lambda: handle_addchannel(args, chat_id),
             "verifychannel": lambda: handle_verifychannel(args, chat_id),
+            "destinations": lambda: handle_destinations(chat_id),
+            "setdefaultdestination": lambda: handle_setdefaultdestination(args, chat_id),
+            "setdestinationbranding": lambda: handle_setdestinationbranding(args, chat_id),
+            "removedestination": lambda: handle_removedestination(args, chat_id),
             "nextsetupstep": lambda: handle_nextsetupstep(chat_id),
             "setbranding": lambda: handle_setbranding(args, chat_id),
             "addmember": lambda: handle_addmember(args, chat_id),
