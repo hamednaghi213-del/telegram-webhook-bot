@@ -4098,6 +4098,12 @@ def handle_webhook() -> Tuple[
 
         # =================================================
         # DOCUMENT / VOICE / AUDIO
+        #
+        # These media types must use the same publication planner as
+        # photos/videos. Telegram's Bot API rejects a reconstructed media
+        # caption longer than 1024 characters; the planner keeps the safe
+        # caption on the media and publishes the remainder as follow-up
+        # messages.
         # =================================================
 
         if (
@@ -4111,17 +4117,11 @@ def handle_webhook() -> Tuple[
         ):
 
             kwargs = {
-                "chat_id":
-                    chat_id,
-
-                "file_id":
-                    file_id,
-
-                "media_type":
-                    media_type,
-
-                "caption":
-                    caption
+                "chat_id": chat_id,
+                "file_id": file_id,
+                "media_type": media_type,
+                "caption": caption,
+                "caption_entities": caption_entities,
             }
 
             if forward_source.get(
@@ -4133,7 +4133,7 @@ def handle_webhook() -> Tuple[
                 ] = forward_source
 
             success = (
-                process_legacy_single_media(
+                process_single_photo_video(
                     **kwargs
                 )
             )

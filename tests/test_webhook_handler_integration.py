@@ -825,10 +825,10 @@ def test_single_video_webhook_path():
 
 # =========================================================
 # TEST 16
-# DOCUMENT LEGACY PATH
+# DOCUMENT PUBLICATION-PLAN PATH
 # =========================================================
 
-def test_document_uses_legacy_path():
+def test_document_uses_publication_plan_path():
 
     message = {
         "chat": {
@@ -837,7 +837,8 @@ def test_document_uses_legacy_path():
         "document": {
             "file_id": "doc_1"
         },
-        "caption": "DOC"
+        "caption": "DOC",
+        "caption_entities": []
     }
 
     fake_request = FakeRequest(
@@ -860,13 +861,15 @@ def test_document_uses_legacy_path():
         return_value=True
     ), patch.object(
         webhook_handler,
-        "process_legacy_single_media",
+        "process_single_photo_video",
         return_value=True
-    ) as mock_legacy:
+    ) as mock_single:
 
         webhook_handler.handle_webhook()
 
-    mock_legacy.assert_called_once()
+    mock_single.assert_called_once()
+    assert mock_single.call_args.kwargs["media_type"] == "document"
+    assert mock_single.call_args.kwargs["caption_entities"] == []
 
 
 # =========================================================
