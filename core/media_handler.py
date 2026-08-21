@@ -1384,31 +1384,19 @@ def send_single_media_to_channel(
 
         return False
 
-    if media_type == "photo":
+    endpoint_map = {
+        "photo": "sendPhoto",
+        "video": "sendVideo",
+        "document": "sendDocument",
+        "voice": "sendVoice",
+        "audio": "sendAudio"
+    }
 
-        endpoint = "sendPhoto"
+    endpoint = endpoint_map.get(
+        media_type
+    )
 
-        payload: Dict[str, Any] = {
-            "chat_id":
-                CHANNEL_ID,
-
-            "photo":
-                file_id
-        }
-
-    elif media_type == "video":
-
-        endpoint = "sendVideo"
-
-        payload = {
-            "chat_id":
-                CHANNEL_ID,
-
-            "video":
-                file_id
-        }
-
-    else:
+    if not endpoint:
 
         logger.error(
             f"❌ Unsupported media type | "
@@ -1416,6 +1404,11 @@ def send_single_media_to_channel(
         )
 
         return False
+
+    payload: Dict[str, Any] = {
+        "chat_id": CHANNEL_ID,
+        media_type: file_id
+    }
 
     if caption:
 

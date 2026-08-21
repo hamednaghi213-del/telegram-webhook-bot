@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from core import media_handler
 
@@ -419,6 +419,38 @@ def test_execute_telegram_plan_forwards_entities_to_single_media():
         caption_entities=(
             CAPTION_ENTITIES
         )
+    )
+
+
+def test_send_single_document_uses_telegram_document_endpoint():
+
+    response = Mock()
+    response.status_code = 200
+    response.json.return_value = {
+        "ok": True,
+        "result": {"message_id": 123}
+    }
+
+    with patch.object(
+        media_handler,
+        "telegram_post",
+        return_value=response
+    ) as mocked_post:
+
+        success = media_handler.send_single_media_to_channel(
+            "DOCUMENT_FILE_ID",
+            "document",
+            CAPTION
+        )
+
+    assert success is True
+    mocked_post.assert_called_once_with(
+        "sendDocument",
+        {
+            "chat_id": media_handler.CHANNEL_ID,
+            "document": "DOCUMENT_FILE_ID",
+            "caption": CAPTION
+        }
     )
 
 
