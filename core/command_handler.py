@@ -585,13 +585,18 @@ def handle_workspaces(chat_id: int) -> bool:
         send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
         return True
     try:
+        legacy_tenant = get_tenant(chat_id)
         user = get_user_by_telegram_id(chat_id)
+        if not user and legacy_tenant:
+            # Legacy tenants predate the users/workspaces tables.  Materialise
+            # only the user identity so /workspaces can show the legacy entry
+            # and offer an explicit, separate workspace creation action.
+            user = get_or_create_user_by_telegram_id(chat_id, status="active")
         if not user:
             send_message(chat_id, "❌ ابتدا /start را بفرستید.")
             return True
 
         workspaces = list_user_workspaces(user["id"], include_inactive=False)
-        legacy_tenant = get_tenant(chat_id)
         if not workspaces and not legacy_tenant:
             send_message(chat_id, "❌ رسانه فعالی برای شما یافت نشد.")
             return True
@@ -620,6 +625,11 @@ def handle_workspaces(chat_id: int) -> bool:
             include_legacy=bool(legacy_tenant),
             legacy_active=legacy_active,
         )
+        if legacy_tenant:
+            keyboard.append([{
+                "text": "➕ ایجاد رسانه جدید",
+                "callback_data": "setup:create_workspace",
+            }])
 
         send_message_with_keyboard(
             chat_id,
@@ -630,6 +640,60 @@ def handle_workspaces(chat_id: int) -> bool:
     except Exception:
         logger.exception("Error listing workspaces")
         send_message(chat_id, "❌ خطا در نمایش رسانه‌ها")
+        return False
+
+
+def handle_create_workspace(chat_id: int) -> bool:
+    """Create or resume a separate workspace for a legacy account owner."""
+    if not _WORKSPACE_SETUP_ENABLED:
+        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
+        return True
+    try:
+        legacy_tenant = get_tenant(chat_id)
+        user = get_user_by_telegram_id(chat_id)
+        if not user:
+            user = get_or_create_user_by_telegram_id(chat_id, status="active")
+
+        # Reuse an unfinished owner workspace.  This makes repeated callback
+        # delivery idempotent while never modifying or converting the legacy
+        # tenant row.
+        owned_workspaces = list_owned_workspaces(
+            user["id"], include_inactive=True
+        )
+        workspace = next(
+            (
+                item for item in owned_workspaces
+                if (get_workspace_setup_state(item["id"]) or {}).get("step")
+                != "completed"
+            ),
+            None,
+        )
+        created = workspace is None
+        if created:
+            workspace = create_workspace(
+                name="رسانه جدید",
+                owner_user_id=user["id"],
+                status="active",
+            )
+
+        set_active_workspace(user["id"], workspace["id"])
+        state = start_setup(workspace["id"])
+        current = state.get("current_step_key", "setup_channel")
+        prefix = (
+            "✅ رسانه جدید ساخته شد.\n\n"
+            if created
+            else "▶️ راه‌اندازی نیمه‌کاره ادامه پیدا می‌کند.\n\n"
+        )
+        send_message(chat_id, prefix + _setup_resume_message(current))
+        logger.info(
+            "Legacy workspace creation | "
+            f"user={chat_id} | workspace={workspace['id']} | "
+            f"created={created} | legacy={bool(legacy_tenant)}"
+        )
+        return True
+    except Exception:
+        logger.exception("Error creating workspace for legacy user")
+        send_message(chat_id, "❌ خطا در ایجاد رسانه جدید")
         return False
 
 

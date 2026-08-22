@@ -1026,6 +1026,47 @@ def test_26d_dual_user_status_follows_selected_media_context(monkeypatch):
     assert "@NewChannel" in sent[-1][1]
 
 
+def test_26e_legacy_user_can_open_workspaces_and_create_new_media(monkeypatch):
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    telegram_id = 2014
+    original_tenant = {
+        "user_id": telegram_id,
+        "telegram_channel": "@Donya24News",
+        "bale_channel": "@donya24_news",
+        "bale_token": "legacy-token",
+    }
+    db.tenants[telegram_id] = deepcopy(original_tenant)
+
+    assert db.get_user_by_telegram_id(telegram_id) is None
+    ch_mod.handle_workspaces(telegram_id)
+
+    user = db.get_user_by_telegram_id(telegram_id)
+    assert user is not None
+    keyboard = ch_mod._test_sent_keyboards[-1][1]
+    callbacks = {
+        button["callback_data"]
+        for row in keyboard
+        for button in row
+    }
+    assert "ws:legacy" in callbacks
+    assert "setup:create_workspace" in callbacks
+    assert "ابتدا /start" not in sent[-1][1]
+
+    ch_mod.handle_create_workspace(telegram_id)
+    assert len(db.workspaces) == 1
+    workspace = db.workspaces[0]
+    assert db.get_workspace_setup_state(workspace["id"])["step"] == "in_progress"
+    preference = db.get_active_workspace_preference(user["id"])
+    assert preference["active_workspace_id"] == workspace["id"]
+    assert preference["context_type"] == "workspace"
+
+    # Duplicate callback delivery resumes the unfinished workspace instead of
+    # creating another one, and legacy settings remain byte-for-byte intact.
+    ch_mod.handle_create_workspace(telegram_id)
+    assert len(db.workspaces) == 1
+    assert db.tenants[telegram_id] == original_tenant
+
+
 # =========================================================
 # TESTS: DESTINATION BRANDING  (27-35)
 # =========================================================

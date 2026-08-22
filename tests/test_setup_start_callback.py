@@ -115,8 +115,14 @@ def test_post_setup_callbacks_are_answered_and_explain_next_action(monkeypatch):
         lambda chat_id, text: messages.append((chat_id, text)) or True,
     )
 
+    create_calls = []
+    fake_command_handler = types.ModuleType("core.command_handler")
+    fake_command_handler.handle_create_workspace = (
+        lambda chat_id: create_calls.append(chat_id) or True
+    )
+    monkeypatch.setitem(sys.modules, "core.command_handler", fake_command_handler)
+
     expectations = {
-        "setup:add_media": "/addchannel @channel",
         "setup:done": "راه‌اندازی کامل شد",
         "setup:later": "/destinations",
     }
@@ -131,6 +137,16 @@ def test_post_setup_callbacks_are_answered_and_explain_next_action(monkeypatch):
         assert len(messages) == 1
         assert messages[0][0] == 101
         assert expected_text in messages[0][1]
+
+    for callback_data in ("setup:create_workspace", "setup:add_media"):
+        answers.clear()
+        assert webhook_handler.handle_setup_callback(
+            _callback(data=callback_data),
+            "setup-create-workspace",
+        ) is True
+        assert answers and answers[0][0] == "cb-1"
+
+    assert create_calls == [101, 101]
 
 
 def test_existing_callback_prefixes_are_not_claimed_by_setup_handler():
