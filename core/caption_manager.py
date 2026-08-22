@@ -25,6 +25,56 @@ from core.ai_summarizer_provider import (
 logger = logging.getLogger(__name__)
 
 
+PRESERVED_TELEGRAM_ENTITY_TYPES = {
+    "bold", "italic", "underline", "strikethrough", "spoiler",
+    "code", "pre", "text_link",
+}
+
+
+def _utf16_length(value: str) -> int:
+    return len((value or "").encode("utf-16-le")) // 2
+
+
+def remap_preserved_entities(
+    caption: str,
+    source_entities: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Remap source formatting after cleanup without restoring its branding."""
+    if not caption or not source_entities:
+        return []
+
+    result: List[Dict[str, Any]] = []
+    search_positions: Dict[str, int] = {}
+    for source in sorted(
+        source_entities,
+        key=lambda item: (int(item.get("offset", 0)), int(item.get("length", 0))),
+    ):
+        entity_type = str(source.get("type") or "")
+        entity_text = str(source.get("text") or "")
+        if entity_type not in PRESERVED_TELEGRAM_ENTITY_TYPES or not entity_text:
+            continue
+
+        python_offset = caption.find(
+            entity_text,
+            search_positions.get(entity_text, 0),
+        )
+        if python_offset < 0:
+            continue
+
+        mapped = {
+            "type": entity_type,
+            "offset": _utf16_length(caption[:python_offset]),
+            "length": _utf16_length(entity_text),
+        }
+        for key in ("url", "language"):
+            if source.get(key) is not None:
+                mapped[key] = source[key]
+        result.append(mapped)
+        search_positions[entity_text] = python_offset + len(entity_text)
+
+    return result
+
+
 # =========================================================
 # PLATFORM LIMITS
 # =========================================================
@@ -4108,6 +4158,20 @@ def analyze_content(
             branding
         )
     )
+
+    if (
+        plan.telegram.get("media_caption")
+        and not plan.telegram.get("media_parse_mode")
+    ):
+        preserved_entities = remap_preserved_entities(
+            plan.telegram["media_caption"],
+            other_entities,
+        )
+        if preserved_entities:
+            plan.telegram["media_caption_entities"] = (
+                list(plan.telegram.get("media_caption_entities") or [])
+                + preserved_entities
+            )
 
     telegram_caption = (
         plan.telegram[

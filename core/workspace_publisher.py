@@ -22,6 +22,57 @@ PUBLISH_ROLES = frozenset({"owner", "manager", "publisher"})
 _PENDING: Dict[int, Dict] = {}
 
 
+def _record_publication_message_link(**payload):
+    from core.database import create_publication_message_link
+    return create_publication_message_link(**payload)
+
+
+def sync_edited_channel_post_to_bale(edited_post: Dict[str, Any]) -> bool:
+    """Mirror a known Telegram destination edit to its paired Bale message."""
+    chat_id = (edited_post.get("chat") or {}).get("id")
+    message_id = edited_post.get("message_id")
+    if chat_id is None or message_id is None:
+        return False
+
+    from core.database import get_publication_message_link
+    link = get_publication_message_link(chat_id, message_id)
+    if not link:
+        logger.info(
+            f"Edited Telegram post has no Bale link | chat={chat_id} | message={message_id}"
+        )
+        return False
+
+    is_caption = link.get("content_kind") == "caption"
+    edited_text = (
+        edited_post.get("caption") if is_caption else edited_post.get("text")
+    )
+    if edited_text is None:
+        logger.warning(
+            f"Edited post content kind mismatch | chat={chat_id} | message={message_id}"
+        )
+        return False
+
+    token = os.getenv("BALE_BOT_TOKEN", "").strip()
+    if not token:
+        logger.error("BALE_BOT_TOKEN is not configured for edit sync")
+        return False
+
+    from core.bale_forwarder import edit_bale_message
+    ok = edit_bale_message(
+        link["bale_chat_id"],
+        token,
+        link["bale_message_id"],
+        edited_text,
+        is_caption=is_caption,
+    )
+    if ok:
+        logger.info(
+            f"Telegram edit mirrored to Bale | tg={chat_id}/{message_id} | "
+            f"bale={link['bale_chat_id']}/{link['bale_message_id']}"
+        )
+    return ok
+
+
 # =========================================================
 # DESTINATION BRANDING COMPOSITION
 # =========================================================
@@ -201,11 +252,23 @@ def resolve_workspace_for_user(
 def build_workspace_keyboard(
     workspaces: List[Dict],
     active_workspace_id: Optional[int],
+    include_legacy: bool = False,
+    legacy_active: bool = False,
 ) -> List[List[Dict]]:
     """Build an inline keyboard for active-workspace selection."""
     keyboard = []
+    if include_legacy:
+        legacy_marker = "✅" if legacy_active else "▫️"
+        keyboard.append([{
+            "text": f"{legacy_marker} رسانه قدیمی",
+            "callback_data": "ws:legacy",
+        }])
     for workspace in workspaces:
-        marker = "✅" if workspace.get("id") == active_workspace_id else "▫️"
+        marker = (
+            "✅"
+            if not legacy_active and workspace.get("id") == active_workspace_id
+            else "▫️"
+        )
         role = workspace.get("membership_role") or workspace.get("member_role") or "member"
         keyboard.append([{
             "text": f"{marker} {workspace.get('name') or workspace['id']} ({role})",
@@ -224,7 +287,7 @@ def _send_media_to_destination(
     file_id: str,
     media_type: str,
     caption: str,
-) -> Tuple[bool, str]:
+) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
     """Send a single media item to a Telegram channel. Returns (ok, error)."""
     endpoint_map = {
         "photo": "sendPhoto",
@@ -235,7 +298,7 @@ def _send_media_to_destination(
     }
     endpoint = endpoint_map.get(media_type)
     if not endpoint:
-        return False, f"نوع رسانه پشتیبانی نمی‌شود: {media_type}"
+        return False, f"نوع رسانه پشتیبانی نمی‌شود: {media_type}", None
 
     payload: Dict[str, Any] = {
         "chat_id": channel_id,
@@ -246,12 +309,13 @@ def _send_media_to_destination(
 
     try:
         r = requests.post(f"{api_url}/{endpoint}", json=payload, timeout=30)
-        if r.status_code == 200 and r.json().get("ok"):
-            return True, ""
+        data = r.json() or {}
+        if r.status_code == 200 and data.get("ok"):
+            return True, "", data.get("result") or {}
         err = _extract_error(r)
-        return False, err
+        return False, err, None
     except Exception as e:
-        return False, str(e)
+        return False, str(e), None
 
 
 def _send_text_to_destination(
@@ -259,19 +323,20 @@ def _send_text_to_destination(
     channel_id: str,
     text: str,
     parse_mode: Optional[str] = None,
-) -> Tuple[bool, str]:
+) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
     """Send a text message to a Telegram channel. Returns (ok, error)."""
     payload: Dict[str, Any] = {"chat_id": channel_id, "text": text}
     if parse_mode:
         payload["parse_mode"] = parse_mode
     try:
         r = requests.post(f"{api_url}/sendMessage", json=payload, timeout=30)
-        if r.status_code == 200 and r.json().get("ok"):
-            return True, ""
+        data = r.json() or {}
+        if r.status_code == 200 and data.get("ok"):
+            return True, "", data.get("result") or {}
         err = _extract_error(r)
-        return False, err
+        return False, err, None
     except Exception as e:
-        return False, str(e)
+        return False, str(e), None
 
 
 def _extract_error(response) -> str:
@@ -302,6 +367,7 @@ def publish_to_destinations(
     get_dest_branding_fn,
     get_ws_branding_fn,
     is_editorial_finalized: bool = False,
+    record_message_link_fn=None,
 ) -> Dict[str, Any]:
     """
     Publish content to a list of destinations.
@@ -314,6 +380,7 @@ def publish_to_destinations(
     success = 0
     failure = 0
     errors: List[str] = []
+    sent_messages: Dict[str, Dict[str, Any]] = {}
 
     for dest in destinations:
         dest_id = dest["id"]
@@ -326,20 +393,29 @@ def publish_to_destinations(
                 dest_id, workspace_id, get_dest_branding_fn, get_ws_branding_fn
             )
             workspace_branding = get_ws_branding_fn(workspace_id) or {}
-            from core.publication_icons import apply_icons, normalize_icons
+            from core.publication_icons import (
+                format_with_icons,
+                format_with_profile,
+                normalize_icons,
+            )
             selected_icons = normalize_icons(
                 workspace_branding.get("publication_icons") or []
             ) if workspace_branding.get("icons_enabled", False) else []
-            icon_prefix = " ".join(selected_icons)
-            icon_cost = len(icon_prefix) + 1 if icon_prefix else 0
-            budget = max(0, compute_caption_budget(branding) - icon_cost)
+            publication_profile = workspace_branding.get("publication_profile") or {}
+            if publication_profile:
+                content = format_with_profile(
+                    content_text or "", publication_profile, True
+                )
+            else:
+                content = format_with_icons(
+                    content_text or "",
+                    selected_icons,
+                    bool(selected_icons),
+                )
             content = fit_content_to_budget(
-                content_text or "", budget, is_editorial_finalized
-            )
-            content = apply_icons(
                 content,
-                selected_icons,
-                bool(selected_icons),
+                compute_caption_budget(branding),
+                is_editorial_finalized,
             )
             caption = build_final_caption(content, branding)
 
@@ -355,26 +431,59 @@ def publish_to_destinations(
                         send_video_to_bale,
                     )
                     if media_file_id and media_type == "photo":
-                        ok = send_photo_to_bale(
-                            channel_id, token, caption, media_file_id
-                        )
+                        sender = send_photo_to_bale
                     elif media_file_id and media_type == "video":
-                        ok = send_video_to_bale(
-                            channel_id, token, caption, media_file_id
-                        )
+                        sender = send_video_to_bale
                     elif media_file_id:
-                        ok = send_document_to_bale(
-                            channel_id, token, caption, media_file_id
-                        )
+                        sender = send_document_to_bale
                     else:
-                        ok = send_text_to_bale(channel_id, token, caption)
+                        sender = send_text_to_bale
+                    try:
+                        if media_file_id:
+                            bale_result = sender(
+                                channel_id, token, caption, media_file_id,
+                                return_result=True,
+                            )
+                        else:
+                            bale_result = sender(
+                                channel_id, token, caption, return_result=True
+                            )
+                    except TypeError:
+                        # Backward compatibility for injected/older senders.
+                        if media_file_id:
+                            bale_result = sender(channel_id, token, caption, media_file_id)
+                        else:
+                            bale_result = sender(channel_id, token, caption)
+                    if isinstance(bale_result, bool):
+                        bale_result = {"ok": bale_result, "message_id": None}
+                    ok = bool(bale_result.get("ok"))
+                    if ok:
+                        sent_messages["bale"] = {
+                            "destination_id": dest_id,
+                            "chat_id": channel_id,
+                            "message_id": bale_result.get("message_id"),
+                        }
                     err = None if ok else "Bale publish failed"
             elif media_file_id and media_type:
-                ok, err = _send_media_to_destination(
+                telegram_outcome = _send_media_to_destination(
                     api_url, channel_id, media_file_id, media_type, caption
                 )
+                ok, err = telegram_outcome[:2]
+                telegram_result = telegram_outcome[2] if len(telegram_outcome) > 2 else {}
             else:
-                ok, err = _send_text_to_destination(api_url, channel_id, caption)
+                telegram_outcome = _send_text_to_destination(
+                    api_url, channel_id, caption
+                )
+                ok, err = telegram_outcome[:2]
+                telegram_result = telegram_outcome[2] if len(telegram_outcome) > 2 else {}
+
+            if ok and dest.get("platform") == "telegram":
+                telegram_result = telegram_result or {}
+                sent_messages["telegram"] = {
+                    "destination_id": dest_id,
+                    "chat_id": (telegram_result.get("chat") or {}).get("id", channel_id),
+                    "message_id": telegram_result.get("message_id"),
+                }
 
             if ok:
                 success += 1
@@ -388,6 +497,27 @@ def publish_to_destinations(
             logger.exception(f"Exception publishing to dest {dest_id}: {e}")
             failure += 1
             errors.append(dest_name)
+
+    telegram_sent = sent_messages.get("telegram") or {}
+    bale_sent = sent_messages.get("bale") or {}
+    if (
+        record_message_link_fn
+        and telegram_sent.get("message_id") is not None
+        and bale_sent.get("message_id") is not None
+    ):
+        try:
+            record_message_link_fn(
+                workspace_id=destinations[0]["workspace_id"],
+                telegram_destination_id=telegram_sent["destination_id"],
+                telegram_chat_id=str(telegram_sent["chat_id"]),
+                telegram_message_id=int(telegram_sent["message_id"]),
+                bale_destination_id=bale_sent["destination_id"],
+                bale_chat_id=str(bale_sent["chat_id"]),
+                bale_message_id=int(bale_sent["message_id"]),
+                content_kind="caption" if media_file_id else "text",
+            )
+        except Exception as e:
+            logger.exception(f"Failed to record Telegram/Bale message link: {e}")
 
     return {"success": success, "failure": failure, "errors": errors}
 
@@ -574,6 +704,7 @@ def _try_workspace_publication(
             result = publish_to_destinations(
                 api_url, destinations, content_text, media_file_id, media_type,
                 get_destination_branding, get_workspace_branding,
+                record_message_link_fn=_record_publication_message_link,
             )
             _ws_send_message(api_url, chat_id, format_publish_result(result))
             return True
@@ -604,6 +735,7 @@ def _handle_workspace_callback(
         get_user_by_telegram_id,
         get_destination_branding,
         get_workspace_branding,
+        set_active_legacy_context,
         set_active_workspace,
     )
 
@@ -618,7 +750,22 @@ def _handle_workspace_callback(
     if len(parts) < 2:
         return
 
-    if callback_data.startswith("ws:select:") and len(parts) >= 3:
+    if callback_data == "ws:legacy":
+        try:
+            user = get_user_by_telegram_id(chat_id)
+            if not user:
+                raise ValueError("user not found")
+            from core.database import get_tenant
+            if not get_tenant(chat_id):
+                raise ValueError("legacy tenant not found")
+            set_active_legacy_context(user["id"])
+        except (TypeError, ValueError):
+            _ws_answer_callback(api_url, callback_id, "رسانه قدیمی معتبر نیست")
+            return
+        _ws_answer_callback(api_url, callback_id, "رسانه قدیمی فعال شد")
+        _ws_send_message(api_url, chat_id, "✅ رسانه قدیمی شما فعال شد.")
+
+    elif callback_data.startswith("ws:select:") and len(parts) >= 3:
         try:
             workspace_id = int(parts[2])
             user = get_user_by_telegram_id(chat_id)
@@ -671,6 +818,7 @@ def _handle_workspace_callback(
             pending["media_type"],
             get_destination_branding,
             get_workspace_branding,
+            record_message_link_fn=_record_publication_message_link,
         )
         _ws_send_message(api_url, chat_id, format_publish_result(result))
 

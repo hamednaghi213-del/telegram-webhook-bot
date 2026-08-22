@@ -94,3 +94,35 @@ def test_bale_only_cannot_complete_required_telegram_setup():
     assert has_required_telegram_destination([
         {"platform": "bale", "status": "active"}
     ]) is False
+
+
+def test_workspace_publication_replaces_source_icons_with_confirmed_style(monkeypatch):
+    captured = {}
+
+    def fake_send(_api_url, _channel_id, text):
+        captured["text"] = text
+        return True, None
+
+    monkeypatch.setattr(
+        "core.workspace_publisher._send_text_to_destination",
+        fake_send,
+    )
+    result = publish_to_destinations(
+        "https://telegram.test",
+        [{"id": 1, "workspace_id": 7, "platform": "telegram", "external_id": "@tg"}],
+        "🚨 تیتر منبع\n\n🎬 بند اول\n\n🔥 بند دوم",
+        None,
+        None,
+        lambda _id: {},
+        lambda _id: {
+            "hashtag": "#رسانه",
+            "channel_tag": "@media",
+            "publication_icons": ["🟢", "🔵"],
+            "icons_enabled": True,
+        },
+    )
+
+    assert result["success"] == 1
+    assert captured["text"] == (
+        "🟢 تیتر منبع\n\n🔵 بند اول\n\n🔵 بند دوم\n\n#رسانه\n@media"
+    )

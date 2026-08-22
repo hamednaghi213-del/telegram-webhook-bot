@@ -43,6 +43,7 @@ try:
     from core.database import (
         get_active_workspace_preference,
         list_user_workspaces,
+        set_active_legacy_context,
         set_active_workspace,
     )
     _ACTIVE_WORKSPACE_ENABLED: bool = True
@@ -83,7 +84,17 @@ except (ImportError, AttributeError):
     _BALE_WORKSPACE_ENABLED = False
 
 try:
-    from core.database import update_workspace_branding_icons, get_workspace_branding
+    from core.database import (
+        get_workspace_branding,
+        update_workspace_branding_icons,
+        update_workspace_branding_profile,
+        update_workspace_branding_sample,
+    )
+    from core.branding_sample import (
+        analyze_branding_sample,
+        build_branding_preview,
+        build_branding_preview_html,
+    )
     from core.publication_icons import extract_icons, normalize_icons
     _PUBLICATION_ICONS_ENABLED: bool = True
 except (ImportError, AttributeError):
@@ -510,9 +521,17 @@ def _setup_resume_message(current_step_key: str) -> str:
             "/setbranding دنیا۲۴ #دنیا_۲۴ @Donya24News\n\n"
             "❓ راهنما: /help"
         )
+    if current_step_key == "setup_branding_sample":
+        return (
+            "▶️ مرحله ۳: نمونه پیام برندینگ\n\n"
+            "یک پیام واقعی از قالب دلخواه رسانه بفرستید یا فوروارد کنید.\n"
+            "ربات متن، برندینگ و آیکون‌ها را به‌صورت پیش‌نمایش نشان می‌دهد.\n\n"
+            "پس از مشاهده، آن را تأیید کنید یا نمونه دیگری بفرستید.\n\n"
+            "❓ راهنما: /help"
+        )
     if current_step_key == "setup_member":
         return (
-            "▶️ مرحله ۳: افزودن عضو (اختیاری)\n\n"
+            "▶️ مرحله ۴: افزودن عضو (اختیاری)\n\n"
             "عضو جدید اضافه کنید:\n"
             "/addmember TELEGRAM_ID نقش\n\n"
             "نقش‌های مجاز: manager, publisher, writer\n\n"
@@ -541,6 +560,8 @@ def _get_workspace_for_user(chat_id: int):
     if not workspaces:
         return user, None
     preference = get_active_workspace_preference(user["id"]) or {}
+    if preference.get("context_type") == "legacy":
+        return user, None
     active_workspace_id = preference.get("active_workspace_id")
     for workspace in workspaces:
         if workspace.get("id") == active_workspace_id:
@@ -566,18 +587,35 @@ def handle_workspaces(chat_id: int) -> bool:
             return True
 
         workspaces = list_user_workspaces(user["id"], include_inactive=False)
-        if not workspaces:
+        legacy_tenant = get_tenant(chat_id)
+        if not workspaces and not legacy_tenant:
             send_message(chat_id, "❌ رسانه فعالی برای شما یافت نشد.")
             return True
 
         preference = get_active_workspace_preference(user["id"]) or {}
         active_id = preference.get("active_workspace_id")
-        if len(workspaces) == 1 and active_id != workspaces[0]["id"]:
+        legacy_active = bool(
+            legacy_tenant
+            and (
+                not preference
+                or preference.get("context_type") == "legacy"
+            )
+        )
+        if (
+            len(workspaces) == 1
+            and not legacy_tenant
+            and active_id != workspaces[0]["id"]
+        ):
             set_active_workspace(user["id"], workspaces[0]["id"])
             active_id = workspaces[0]["id"]
 
         from core.workspace_publisher import build_workspace_keyboard
-        keyboard = build_workspace_keyboard(workspaces, active_id)
+        keyboard = build_workspace_keyboard(
+            workspaces,
+            active_id,
+            include_legacy=bool(legacy_tenant),
+            legacy_active=legacy_active,
+        )
 
         send_message_with_keyboard(
             chat_id,
@@ -600,11 +638,18 @@ def handle_switchworkspace(args: str, chat_id: int) -> bool:
     if not value:
         return handle_workspaces(chat_id)
     try:
-        workspace_id = int(value)
         user = get_user_by_telegram_id(chat_id)
         if not user:
             send_message(chat_id, "❌ ابتدا /start را بفرستید.")
             return True
+        if value.lower() in {"legacy", "قدیمی", "دنیا24", "دنیا۲۴"}:
+            if not get_tenant(chat_id):
+                send_message(chat_id, "❌ حساب رسانه قدیمی برای شما یافت نشد.")
+                return True
+            set_active_legacy_context(user["id"])
+            send_message(chat_id, "✅ رسانه قدیمی شما فعال شد.")
+            return True
+        workspace_id = int(value)
         set_active_workspace(user["id"], workspace_id)
         send_message(chat_id, "✅ رسانه فعال با موفقیت تغییر کرد.")
         return True
@@ -984,7 +1029,7 @@ def handle_setdestinationbranding(args: str, chat_id: int) -> bool:
         return False
 
 
-def _verify_and_activate_bale(dest: Dict[str, Any], chat_id: int) -> None:
+def _verify_and_activate_bale(dest: Dict[str, Any], chat_id: int) -> bool:
     token = os.getenv("BALE_BOT_TOKEN", "").strip()
     verified, note = verify_bale_channel_admin(token, dest["external_id"])
     upsert_destination_verification(
@@ -1001,6 +1046,7 @@ def _verify_and_activate_bale(dest: Dict[str, Any], chat_id: int) -> None:
             f"⚠️ اتصال بله کامل نشد: {note}\n"
             "ثبت‌نام و انتشار تلگرام بدون اختلال ادامه دارد.",
         )
+    return bool(verified)
 
 
 def handle_addbale(args: str, chat_id: int) -> bool:
@@ -1109,8 +1155,22 @@ def handle_nextsetupstep(chat_id: int) -> bool:
             advance_to_step(workspace["id"], "setup_branding")
             send_message(chat_id, _setup_resume_message("setup_branding"))
         elif current == "setup_branding":
-            advance_to_step(workspace["id"], "setup_member")
-            send_message(chat_id, _setup_resume_message("setup_member"))
+            branding = get_workspace_branding(workspace["id"]) or {}
+            if not (branding.get("media_name") or "").strip():
+                send_message(chat_id, "❌ ابتدا برندینگ رسانه را با /setbranding ثبت کنید.")
+            else:
+                advance_to_step(workspace["id"], "setup_branding_sample")
+                send_message(chat_id, _setup_resume_message("setup_branding_sample"))
+        elif current == "setup_branding_sample":
+            if state.get("branding_sample_status") != "confirmed":
+                send_message(
+                    chat_id,
+                    "❌ ابتدا نمونه پیام را بفرستید و پیش‌نمایش را با "
+                    "/confirmbranding تأیید کنید."
+                )
+            else:
+                advance_to_step(workspace["id"], "setup_member")
+                send_message(chat_id, _setup_resume_message("setup_member"))
         else:
             send_message(
                 chat_id,
@@ -1177,21 +1237,21 @@ def handle_setbranding(args: str, chat_id: int) -> bool:
             channel_tag=channel_tag,
         )
 
-        extracted_icons = extract_icons(args) if _PUBLICATION_ICONS_ENABLED else []
-        if branding and extracted_icons:
-            update_workspace_branding_icons(
-                workspace["id"], extracted_icons, enabled=True
-            )
-
         if branding:
+            setup_state = get_or_init_setup_state(workspace["id"])
+            if setup_state.get("step") != "completed":
+                advance_to_step(workspace["id"], "setup_branding_sample")
+                update_workspace_branding_sample(
+                    workspace["id"], "", [], "not_started"
+                )
             send_message(
                 chat_id,
                 f"✅ برندینگ رسانه ذخیره شد:\n"
                 f"نام رسانه: {media_name}\n"
                 f"هشتگ: {hashtag or '(تنظیم نشده)'}\n"
                 f"تگ کانال: {channel_tag or '(تنظیم نشده)'}\n\n"
-                f"آیکون‌ها: {' '.join(extracted_icons) if extracted_icons else '(بدون آیکون)'}\n\n"
-                "برای ادامه: /nextsetupstep"
+                "حالا یک نمونه پیام واقعی از قالب دلخواهتان بفرستید یا فوروارد کنید.\n"
+                "قبل از ذخیره آیکون‌ها، پیش‌نمایش برای تأیید شما نمایش داده می‌شود."
             )
         else:
             send_message(chat_id, "❌ خطا در ذخیره برندینگ.")
@@ -1201,6 +1261,228 @@ def handle_setbranding(args: str, chat_id: int) -> bool:
         logger.exception("❌ Error in handle_setbranding")
         send_message(chat_id, "❌ خطا در تنظیم برندینگ")
         return False
+
+
+def handle_branding_sample_message(message: Dict[str, Any], chat_id: int) -> bool:
+    """Capture a non-command sample while onboarding is at sample confirmation."""
+    if not _PUBLICATION_ICONS_ENABLED:
+        return False
+    user, workspace = _get_workspace_for_user(chat_id)
+    if not workspace:
+        return False
+    if _DESTINATION_MANAGEMENT_ENABLED:
+        allowed, _ = _authorize_destination_manager(user, workspace)
+        if not allowed:
+            return False
+    state = get_or_init_setup_state(workspace["id"])
+    if state.get("current_step_key") != "setup_branding_sample":
+        return False
+
+    sample_text = (message.get("caption") or message.get("text") or "").strip()
+    if not sample_text:
+        send_message(
+            chat_id,
+            "❌ نمونه باید متن یا کپشن داشته باشد. لطفاً یک پیام متنی یا رسانه دارای کپشن بفرستید."
+        )
+        return True
+
+    branding = get_workspace_branding(workspace["id"]) or {}
+    sample_entities = list(
+        message.get("caption_entities")
+        or message.get("entities")
+        or []
+    )
+    analysis = analyze_branding_sample(sample_text, sample_entities)
+    icons = analysis["icons"]
+    bale_channel = analysis.get("bale_channel") or ""
+    bale_url = analysis.get("bale_url") or ""
+    bale_status = "pending" if bale_channel else "none"
+    update_workspace_branding_sample(
+        workspace["id"],
+        sample_text,
+        icons,
+        "pending_confirmation",
+        bale_url=bale_url,
+        bale_channel=bale_channel,
+        bale_status=bale_status,
+        profile=analysis["profile"],
+    )
+    preview = build_branding_preview_html(
+        sample_text,
+        icons,
+        branding,
+        analysis.get("bold_texts") or [],
+    )
+    send_message(chat_id, "👁 پیش‌نمایش خروجی پیشنهادی:")
+    if len(preview) <= 4000:
+        send_message(chat_id, preview or "(بدون متن)", parse_mode="HTML")
+    else:
+        # A registration sample can be longer than Telegram's message limit.
+        # Fall back to safely split plain text instead of losing the preview.
+        send_long_message(
+            chat_id,
+            build_branding_preview(sample_text, icons, branding) or "(بدون متن)",
+        )
+    details = (
+        "تمام آیکون‌های شناسایی‌شده: "
+        f"{' '.join(icons) if icons else '(بدون آیکون)'}\n"
+        "آیکون عنوان/بدنه: "
+        f"{' '.join(analysis['structural_icons']) if analysis['structural_icons'] else '(ندارد)'}\n"
+        "آیکون CTA: "
+        f"{' '.join(analysis['cta_icons']) if analysis['cta_icons'] else '(ندارد)'}\n"
+        f"هشتگ‌ها: {' '.join(analysis['hashtags']) if analysis['hashtags'] else '(ندارد)'}\n"
+        f"آیدی‌ها: {' '.join(analysis['mentions']) if analysis['mentions'] else '(ندارد)'}\n"
+        f"قالب Bold: {'شناسایی شد' if analysis.get('bold_texts') else 'وجود ندارد'}\n\n"
+    )
+    if bale_channel:
+        details += (
+            "🔗 کانال بله پیشنهادی شناسایی شد:\n"
+            f"{bale_channel}\n{bale_url}\n"
+            "برای اتصال و بررسی دسترسی ربات: /confirmbalesuggestion\n"
+            "برای نادیده‌گرفتن: /ignorebalesuggestion\n\n"
+        )
+    details += (
+        "اگر قالب خروجی درست است: /confirmbranding\n"
+        "برای فرستادن نمونه دیگر: /resamplebranding"
+    )
+    send_message(chat_id, details)
+    return True
+
+
+def handle_confirmbalesuggestion(chat_id: int) -> bool:
+    """Confirm, register and verify the Bale channel inferred from the sample."""
+    user, workspace = _get_workspace_for_user(chat_id)
+    if not workspace:
+        send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
+        return True
+    allowed, reason = _authorize_destination_manager(user, workspace)
+    if not allowed:
+        send_message(chat_id, f"❌ {reason}")
+        return True
+    state = get_or_init_setup_state(workspace["id"])
+    channel = (state.get("branding_sample_bale_channel") or "").strip()
+    if state.get("branding_sample_bale_status") != "pending" or not channel:
+        send_message(chat_id, "❌ پیشنهاد فعالی برای کانال بله وجود ندارد.")
+        return True
+    destination, duplicate = register_bale_destination(
+        workspace["id"], channel, channel
+    )
+    if duplicate:
+        existing = [
+            item for item in list_workspace_destinations(workspace["id"])
+            if item.get("platform") == "bale" and item.get("external_id") == channel
+        ]
+        destination = existing[0] if existing else destination
+    verified = bool(destination) and _verify_and_activate_bale(destination, chat_id)
+    update_workspace_branding_sample(
+        workspace["id"],
+        state.get("branding_sample_text") or "",
+        state.get("branding_sample_icons") or [],
+        state.get("branding_sample_status") or "pending_confirmation",
+        bale_url=state.get("branding_sample_bale_url") or "",
+        bale_channel=channel,
+        bale_status="connected" if verified else "pending",
+        profile=state.get("branding_sample_profile") or {},
+    )
+    return True
+
+
+def handle_ignorebalesuggestion(chat_id: int) -> bool:
+    """Ignore an inferred Bale channel without blocking Telegram onboarding."""
+    user, workspace = _get_workspace_for_user(chat_id)
+    if not workspace:
+        send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
+        return True
+    allowed, reason = _authorize_destination_manager(user, workspace)
+    if not allowed:
+        send_message(chat_id, f"❌ {reason}")
+        return True
+    state = get_or_init_setup_state(workspace["id"])
+    update_workspace_branding_sample(
+        workspace["id"],
+        state.get("branding_sample_text") or "",
+        state.get("branding_sample_icons") or [],
+        state.get("branding_sample_status") or "pending_confirmation",
+        bale_url=state.get("branding_sample_bale_url") or "",
+        bale_channel=state.get("branding_sample_bale_channel") or "",
+        bale_status="ignored",
+        profile=state.get("branding_sample_profile") or {},
+    )
+    send_message(chat_id, "✅ پیشنهاد کانال بله نادیده گرفته شد؛ ثبت‌نام تلگرام ادامه دارد.")
+    return True
+
+
+def handle_confirmbranding(chat_id: int) -> bool:
+    """Commit the pending sample icon profile only after explicit owner approval."""
+    user, workspace = _get_workspace_for_user(chat_id)
+    if not workspace:
+        send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
+        return True
+    if _DESTINATION_MANAGEMENT_ENABLED:
+        allowed, reason = _authorize_destination_manager(user, workspace)
+        if not allowed:
+            send_message(chat_id, f"❌ {reason}")
+            return True
+    state = get_or_init_setup_state(workspace["id"])
+    if (
+        state.get("current_step_key") != "setup_branding_sample"
+        or state.get("branding_sample_status") != "pending_confirmation"
+    ):
+        send_message(chat_id, "❌ ابتدا یک نمونه پیام برای پیش‌نمایش بفرستید.")
+        return True
+
+    icons = normalize_icons(state.get("branding_sample_icons") or [])
+    profile = state.get("branding_sample_profile") or {}
+    current_branding = get_workspace_branding(workspace["id"]) or {}
+    extracted_hashtags = profile.get("hashtags") or []
+    extracted_mentions = profile.get("mentions") or []
+    # Confirmation means the sample itself is authoritative for branding.
+    # Keep the separately supplied media name, but replace footer tokens when
+    # the sample contains them.
+    save_workspace_branding(
+        workspace["id"],
+        current_branding.get("media_name") or workspace.get("name") or "رسانه",
+        extracted_hashtags[0] if extracted_hashtags else current_branding.get("hashtag") or "",
+        extracted_mentions[0] if extracted_mentions else current_branding.get("channel_tag") or "",
+    )
+    update_workspace_branding_icons(workspace["id"], icons, enabled=bool(icons))
+    update_workspace_branding_profile(
+        workspace["id"], profile
+    )
+    update_workspace_branding_sample(
+        workspace["id"],
+        state.get("branding_sample_text") or "",
+        icons,
+        "confirmed",
+        profile=profile,
+    )
+    advance_to_step(workspace["id"], "setup_member")
+    send_message(
+        chat_id,
+        "✅ قالب برندینگ و آیکون‌ها تأیید و ذخیره شد.\n\n"
+        + _setup_resume_message("setup_member")
+    )
+    return True
+
+
+def handle_resamplebranding(chat_id: int) -> bool:
+    """Discard the pending preview and wait for another sample message."""
+    user, workspace = _get_workspace_for_user(chat_id)
+    if not workspace:
+        send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
+        return True
+    if _DESTINATION_MANAGEMENT_ENABLED:
+        allowed, reason = _authorize_destination_manager(user, workspace)
+        if not allowed:
+            send_message(chat_id, f"❌ {reason}")
+            return True
+    advance_to_step(workspace["id"], "setup_branding_sample")
+    update_workspace_branding_sample(
+        workspace["id"], "", [], "not_started",
+        bale_url="", bale_channel="", bale_status="none", profile={},
+    )
+    send_message(chat_id, _setup_resume_message("setup_branding_sample"))
+    return True
 
 
 def handle_seticons(args: str, chat_id: int) -> bool:
@@ -1515,28 +1797,29 @@ def handle_settings(chat_id: int) -> bool:
             chat_id,
             "📋 تنظیمات رسانه\n\n"
             "🏢 تغییر رسانه فعال:\n"
-            "/workspaces\n\n"
+            "<code>/workspaces</code>\n\n"
             "🔧 برندینگ:\n"
-            "/setbranding نام #هشتگ @تگ\n\n"
+            "<code>/setbranding نام #هشتگ @تگ</code>\n\n"
             "🎨 آیکون‌ها:\n"
-            "/seticons 🟢 🔵\n"
-            "/clearicons\n\n"
+            "<code>/seticons 🟢 🔵</code>\n"
+            "<code>/clearicons</code>\n\n"
             "📡 کانال‌ها:\n"
-            "/destinations\n"
-            "/addchannel @channel\n"
-            "/verifychannel @channel\n"
-            "/addbale @channel (اختیاری)\n"
-            "/verifybale @channel\n"
-            "/setdefaultdestination DESTINATION_ID\n"
-            "/setdestinationbranding DESTINATION_ID #هشتگ @تگ\n"
-            "/removedestination DESTINATION_ID\n\n"
+            "<code>/destinations</code>\n"
+            "<code>/addchannel @channel</code>\n"
+            "<code>/verifychannel @channel</code>\n"
+            "<code>/addbale @channel</code> (اختیاری)\n"
+            "<code>/verifybale @channel</code>\n"
+            "<code>/setdefaultdestination DESTINATION_ID</code>\n"
+            "<code>/setdestinationbranding DESTINATION_ID #هشتگ @تگ</code>\n"
+            "<code>/removedestination DESTINATION_ID</code>\n\n"
             "👥 اعضا:\n"
-            "/members\n"
-            "/addmember TELEGRAM_ID نقش\n"
-            "/setmemberrole TELEGRAM_ID نقش\n"
-            "/removemember TELEGRAM_ID\n\n"
+            "<code>/members</code>\n"
+            "<code>/addmember TELEGRAM_ID نقش</code>\n"
+            "<code>/setmemberrole TELEGRAM_ID نقش</code>\n"
+            "<code>/removemember TELEGRAM_ID</code>\n\n"
             "❓ راهنما:\n"
-            "/help"
+            "<code>/help</code>",
+            parse_mode="HTML",
         )
         return True
     except Exception:
@@ -2017,18 +2300,90 @@ def handle_setbaletoken(args: str, chat_id: int) -> bool:
 
 
 def handle_status(chat_id: int) -> bool:
-    """
-    پردازش دستور /status
-    
-    Args:
-        chat_id: شناسه کاربر
-        
-    Returns:
-        True اگر پردازش موفق باشد
-    """
+    """Show status for the user's selected legacy or workspace media context."""
     try:
         tenant = get_tenant(chat_id)
-        
+        user = get_user_by_telegram_id(chat_id)
+        workspaces = (
+            list_user_workspaces(user["id"], include_inactive=False)
+            if user and _ACTIVE_WORKSPACE_ENABLED
+            else []
+        )
+        preference = (
+            get_active_workspace_preference(user["id"]) or {}
+            if user and _ACTIVE_WORKSPACE_ENABLED
+            else {}
+        )
+
+        use_legacy = bool(
+            tenant
+            and (
+                not workspaces
+                or not preference
+                or preference.get("context_type") == "legacy"
+            )
+        )
+
+        if use_legacy:
+            telegram_channel = tenant.get("telegram_channel") or "تنظیم نشده"
+            bale_channel = tenant.get("bale_channel") or "تنظیم نشده"
+            bale_token_exists = bool(tenant.get("bale_token"))
+            status_text = (
+                "📊 وضعیت رسانه فعال: حساب قدیمی\n\n"
+                f"کانال تلگرام: {telegram_channel}\n"
+                f"کانال بله: {bale_channel}\n"
+                "توکن بله: "
+                f"{'✅ تنظیم شده' if bale_token_exists else '❌ تنظیم نشده'}\n\n"
+                "برای تغییر رسانه: /workspaces"
+            )
+            send_message(chat_id, status_text)
+            return True
+
+        active_workspace_id = preference.get("active_workspace_id")
+        active_workspace = next(
+            (
+                workspace for workspace in workspaces
+                if workspace.get("id") == active_workspace_id
+            ),
+            None,
+        )
+        if not active_workspace and len(workspaces) == 1 and not tenant:
+            active_workspace = workspaces[0]
+
+        if active_workspace:
+            try:
+                from core.database import list_workspace_destinations as list_dests
+                destinations = list_dests(
+                    active_workspace["id"], include_removed=False
+                )
+            except (ImportError, AttributeError):
+                destinations = []
+            destination_lines = [
+                f"• {item.get('platform', '?')}: "
+                f"{item.get('external_id') or item.get('name') or item.get('id')} "
+                f"({item.get('status', 'unknown')})"
+                for item in destinations
+            ]
+            status_text = (
+                "📊 وضعیت رسانه فعال\n\n"
+                f"نام رسانه: {active_workspace.get('name') or active_workspace['id']}\n"
+                f"شناسه رسانه: {active_workspace['id']}\n"
+                f"نقش شما: {active_workspace.get('membership_role') or 'member'}\n"
+                "مقصدها:\n"
+                + ("\n".join(destination_lines) if destination_lines else "• ثبت نشده")
+                + "\n\nبرای تغییر رسانه: /workspaces"
+            )
+            send_message(chat_id, status_text)
+            return True
+
+        if workspaces:
+            send_message(
+                chat_id,
+                "🏢 شما عضو چند رسانه هستید. ابتدا رسانه فعال را انتخاب کنید:\n"
+                "/workspaces",
+            )
+            return True
+
         if not tenant:
             send_message(
                 chat_id,
@@ -2037,27 +2392,6 @@ def handle_status(chat_id: int) -> bool:
             )
             return True
         
-        telegram_channel = (
-            tenant.get("telegram_channel") or "تنظیم نشده"
-        )
-        
-        bale_channel = (
-            tenant.get("bale_channel") or "تنظیم نشده"
-        )
-        
-        bale_token_exists = bool(
-            tenant.get("bale_token")
-        )
-        
-        status_text = (
-            "📊 وضعیت ربات\n\n"
-            f"کانال تلگرام: {telegram_channel}\n"
-            f"کانال بله: {bale_channel}\n"
-            f"توکن بله: "
-            f"{'✅ تنظیم شده' if bale_token_exists else '❌ تنظیم نشده'}"
-        )
-        
-        send_message(chat_id, status_text)
         return True
         
     except Exception as e:
@@ -2146,6 +2480,10 @@ def handle_command(text: str, chat_id: int) -> bool:
             "removedestination": lambda: handle_removedestination(args, chat_id),
             "nextsetupstep": lambda: handle_nextsetupstep(chat_id),
             "setbranding": lambda: handle_setbranding(args, chat_id),
+            "confirmbranding": lambda: handle_confirmbranding(chat_id),
+            "confirmbalesuggestion": lambda: handle_confirmbalesuggestion(chat_id),
+            "ignorebalesuggestion": lambda: handle_ignorebalesuggestion(chat_id),
+            "resamplebranding": lambda: handle_resamplebranding(chat_id),
             "seticons": lambda: handle_seticons(args, chat_id),
             "clearicons": lambda: handle_clearicons(chat_id),
             "addmember": lambda: handle_addmember(args, chat_id),

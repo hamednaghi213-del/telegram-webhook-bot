@@ -1428,6 +1428,47 @@ def upsert_workspace_setup_state(
     return _first_row(result)
 
 
+@with_retry
+def update_workspace_branding_sample(
+    workspace_id: int,
+    sample_text: str,
+    sample_icons: List[str],
+    status: str,
+    bale_url: Optional[str] = None,
+    bale_channel: Optional[str] = None,
+    bale_status: Optional[str] = None,
+    profile: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Persist a branding sample draft or its confirmation status."""
+    allowed_statuses = {"not_started", "pending_confirmation", "confirmed"}
+    if status not in allowed_statuses:
+        raise ValueError(f"Invalid branding sample status: {status}")
+    payload = {
+        "branding_sample_text": (sample_text or "").strip(),
+        "branding_sample_icons": list(sample_icons or []),
+        "branding_sample_status": status,
+        "updated_at": time.time(),
+    }
+    if bale_url is not None:
+        payload["branding_sample_bale_url"] = (bale_url or "").strip()
+    if bale_channel is not None:
+        payload["branding_sample_bale_channel"] = (bale_channel or "").strip()
+    if bale_status is not None:
+        if bale_status not in {"none", "pending", "connected", "ignored"}:
+            raise ValueError(f"Invalid Bale suggestion status: {bale_status}")
+        payload["branding_sample_bale_status"] = bale_status
+    if profile is not None:
+        payload["branding_sample_profile"] = dict(profile or {})
+    result = (
+        supabase
+        .table("workspace_setup_state")
+        .update(payload)
+        .eq("workspace_id", workspace_id)
+        .execute()
+    )
+    return _first_row(result)
+
+
 # =========================================================
 # PHASE 4A — WORKSPACE BRANDING
 # =========================================================
@@ -1620,6 +1661,51 @@ def list_verified_active_destinations(
         return []
 
 
+def create_publication_message_link(**payload) -> Optional[Dict[str, Any]]:
+    """Store the message IDs needed to mirror Telegram edits to Bale."""
+    payload = dict(payload)
+    payload["updated_at"] = time.time()
+    result = (
+        supabase.table("publication_message_links")
+        .upsert(payload, on_conflict="telegram_chat_id,telegram_message_id")
+        .execute()
+    )
+    return _first_row(result)
+
+
+@with_retry
+def update_workspace_branding_profile(
+    workspace_id: int,
+    profile: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Persist the complete confirmed sample pattern, not only a flat icon list."""
+    result = (
+        supabase.table("workspace_branding")
+        .update({
+            "publication_profile": dict(profile or {}),
+            "updated_at": time.time(),
+        })
+        .eq("workspace_id", workspace_id)
+        .execute()
+    )
+    return _first_row(result)
+
+
+def get_publication_message_link(
+    telegram_chat_id: Any,
+    telegram_message_id: int,
+) -> Optional[Dict[str, Any]]:
+    result = (
+        supabase.table("publication_message_links")
+        .select("*")
+        .eq("telegram_chat_id", str(telegram_chat_id))
+        .eq("telegram_message_id", int(telegram_message_id))
+        .limit(1)
+        .execute()
+    )
+    return _first_row(result)
+
+
 def list_user_workspace_memberships(
     user_id: int
 ) -> List[Dict[str, Any]]:
@@ -1694,6 +1780,7 @@ def set_active_workspace(
     payload = {
         "user_id": user_id,
         "active_workspace_id": workspace_id,
+        "context_type": "workspace",
         "updated_at": now,
     }
     if not existing:
@@ -1708,4 +1795,29 @@ def set_active_workspace(
     preference = _first_row(result)
     if not preference:
         raise RuntimeError("Failed to persist active workspace")
+    return preference
+
+
+@with_retry
+def set_active_legacy_context(user_id: int) -> Dict[str, Any]:
+    """Persist the legacy tenant as the user's active media context."""
+    existing = get_active_workspace_preference(user_id)
+    now = time.time()
+    payload: Dict[str, Any] = {
+        "user_id": user_id,
+        "active_workspace_id": None,
+        "context_type": "legacy",
+        "updated_at": now,
+    }
+    if not existing:
+        payload["created_at"] = now
+    result = (
+        supabase
+        .table("user_workspace_preferences")
+        .upsert(payload, on_conflict="user_id")
+        .execute()
+    )
+    preference = _first_row(result)
+    if not preference:
+        raise RuntimeError("Failed to persist legacy context")
     return preference

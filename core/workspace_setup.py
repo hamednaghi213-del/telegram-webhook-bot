@@ -7,12 +7,14 @@ Flow (owner perspective):
   /start  →  detect incomplete setup  →  /setup
   Step 1: register publication channel(s)  (/addchannel @id)
   Step 2: configure workspace branding     (/setbranding name hashtag tag)
-  Step 3: add member (optional)            (/addmember TELEGRAM_ID role)
-  Step 4: finish                           (/finishsetup)
+  Step 3: confirm a branding sample
+  Step 4: add member (optional)            (/addmember TELEGRAM_ID role)
+  Step 5: finish                           (/finishsetup)
 
 State machine (persisted in workspace_setup_state table):
   not_started  →  in_progress (step=setup_channel)
                →  in_progress (step=setup_branding)
+               →  in_progress (step=setup_branding_sample)
                →  in_progress (step=setup_member)
                →  completed
 
@@ -43,13 +45,19 @@ from core.database import (
     upsert_destination_branding,
     upsert_destination_verification,
     upsert_workspace_branding,
+    update_workspace_branding_sample,
     upsert_workspace_setup_state,
 )
 
 logger = logging.getLogger(__name__)
 
 # Ordered setup steps; member step is optional.
-SETUP_STEPS: List[str] = ["setup_channel", "setup_branding", "setup_member"]
+SETUP_STEPS: List[str] = [
+    "setup_channel",
+    "setup_branding",
+    "setup_branding_sample",
+    "setup_member",
+]
 
 # Roles assignable to non-owner members in the setup wizard.
 ASSIGNABLE_ROLES = {"manager", "publisher", "writer"}
@@ -313,7 +321,8 @@ def can_complete_setup(
     Requires:
     1. Active owner membership
     2. Workspace branding with at least a media_name
-    3. At least one registered destination
+    3. A confirmed branding sample
+    4. At least one registered destination
     """
     member = get_workspace_member(workspace_id, owner_user_id)
     if not member or member.get("role") != "owner" or member.get("status") != "active":
@@ -322,6 +331,10 @@ def can_complete_setup(
     branding = get_workspace_branding(workspace_id)
     if not branding or not (branding.get("media_name") or "").strip():
         return False, "نام رسانه تنظیم نشده است. ابتدا برندینگ را تنظیم کنید"
+
+    setup_state = get_workspace_setup_state(workspace_id) or {}
+    if setup_state.get("branding_sample_status") != "confirmed":
+        return False, "نمونه پیام برندینگ هنوز تأیید نشده است"
 
     destinations = list_workspace_destinations(workspace_id, include_removed=False)
     if not has_required_telegram_destination(destinations):
@@ -339,6 +352,9 @@ def complete_setup(
 
     Returns (success, error_message).
     """
+    if is_setup_completed(workspace_id):
+        return True, None
+
     ok, reason = can_complete_setup(workspace_id, owner_user_id)
     if not ok:
         return False, reason

@@ -20,6 +20,10 @@ fake_database.get_tenant = MagicMock(
         "telegram_channel": "@channel"
     }
 )
+fake_database.get_user_by_telegram_id = MagicMock(return_value={"id": 1})
+fake_database.get_active_workspace_preference = MagicMock(
+    return_value={"context_type": "legacy", "active_workspace_id": None}
+)
 
 
 # =========================================================
@@ -165,6 +169,13 @@ def setup_function():
 
     fake_database.get_tenant.return_value = {
         "telegram_channel": "@channel"
+    }
+    fake_database.get_user_by_telegram_id.reset_mock()
+    fake_database.get_user_by_telegram_id.return_value = {"id": 1}
+    fake_database.get_active_workspace_preference.reset_mock()
+    fake_database.get_active_workspace_preference.return_value = {
+        "context_type": "legacy",
+        "active_workspace_id": None,
     }
 
     fake_command_handler.handle_command.reset_mock()
@@ -910,6 +921,37 @@ def test_text_webhook_path():
         text="خبر متنی",
         entities=[]
     )
+
+
+def test_legacy_user_with_workspace_selection_routes_to_active_workspace():
+    fake_database.get_active_workspace_preference.return_value = {
+        "context_type": "workspace",
+        "active_workspace_id": 77,
+    }
+    fake_request = FakeRequest({"message": TEXT_MESSAGE})
+
+    with patch.object(
+        webhook_handler,
+        "request",
+        fake_request,
+    ), patch.object(
+        webhook_handler,
+        "validate_webhook_token",
+        return_value=True,
+    ), patch(
+        "core.workspace_publisher._try_workspace_publication",
+        return_value=True,
+    ) as workspace_publish, patch.object(
+        webhook_handler,
+        "process_text_message",
+        return_value=True,
+    ) as legacy_publish:
+        result, status = webhook_handler.handle_webhook()
+
+    assert status == 200
+    assert result == {"ok": True}
+    workspace_publish.assert_called_once()
+    legacy_publish.assert_not_called()
 
 
 # =========================================================

@@ -37,6 +37,7 @@ class InMemoryDb4A:
         self.publication_destinations: List[Dict] = []
         self.destination_verifications: Dict[int, Dict] = {}
         self.destination_brandings: Dict[int, Dict] = {}
+        self.user_workspace_preferences: Dict[int, Dict] = {}
         self.tenants: Dict[int, Dict] = {}
         self._next_id = 1
 
@@ -135,17 +136,87 @@ class InMemoryDb4A:
             rows = [m for m in rows if m.get("status") == status_filter]
         return rows
 
+    def list_user_workspaces(self, user_id, include_inactive=False):
+        rows = []
+        for member in self.workspace_members:
+            if member["user_id"] != user_id:
+                continue
+            if not include_inactive and member.get("status") != "active":
+                continue
+            workspace = self.get_workspace(member["workspace_id"])
+            if not workspace:
+                continue
+            if not include_inactive and workspace.get("status") != "active":
+                continue
+            row = deepcopy(workspace)
+            row["membership_role"] = member.get("role")
+            row["membership_status"] = member.get("status")
+            rows.append(row)
+        return sorted(rows, key=lambda item: item["id"])
+
+    def get_active_workspace_preference(self, user_id):
+        return deepcopy(self.user_workspace_preferences.get(user_id))
+
+    def set_active_workspace(self, user_id, workspace_id):
+        member = self.get_workspace_member(workspace_id, user_id)
+        if not member or member.get("status") != "active":
+            raise ValueError("User is not an active member")
+        row = {
+            "user_id": user_id,
+            "active_workspace_id": workspace_id,
+            "context_type": "workspace",
+        }
+        self.user_workspace_preferences[user_id] = row
+        return deepcopy(row)
+
+    def set_active_legacy_context(self, user_id):
+        row = {
+            "user_id": user_id,
+            "active_workspace_id": None,
+            "context_type": "legacy",
+        }
+        self.user_workspace_preferences[user_id] = row
+        return deepcopy(row)
+
     # ── workspace setup state ──────────────────────────
     def get_workspace_setup_state(self, workspace_id):
         return self.workspace_setup_states.get(workspace_id)
 
     def upsert_workspace_setup_state(self, workspace_id, step, current_step_key=None):
-        row = {
+        row = dict(self.workspace_setup_states.get(workspace_id) or {})
+        row.update({
             "workspace_id": workspace_id,
             "step": step,
             "current_step_key": current_step_key,
-        }
+        })
+        row.setdefault("branding_sample_text", "")
+        row.setdefault("branding_sample_icons", [])
+        row.setdefault("branding_sample_status", "not_started")
+        row.setdefault("branding_sample_bale_url", "")
+        row.setdefault("branding_sample_bale_channel", "")
+        row.setdefault("branding_sample_bale_status", "none")
+        row.setdefault("branding_sample_profile", {})
         self.workspace_setup_states[workspace_id] = row
+        return deepcopy(row)
+
+    def update_workspace_branding_sample(self, workspace_id, sample_text,
+                                         sample_icons, status, bale_url=None,
+                                         bale_channel=None, bale_status=None,
+                                         profile=None):
+        row = self.workspace_setup_states[workspace_id]
+        row.update({
+            "branding_sample_text": (sample_text or "").strip(),
+            "branding_sample_icons": list(sample_icons or []),
+            "branding_sample_status": status,
+        })
+        if bale_url is not None:
+            row["branding_sample_bale_url"] = (bale_url or "").strip()
+        if bale_channel is not None:
+            row["branding_sample_bale_channel"] = (bale_channel or "").strip()
+        if bale_status is not None:
+            row["branding_sample_bale_status"] = bale_status
+        if profile is not None:
+            row["branding_sample_profile"] = dict(profile or {})
         return deepcopy(row)
 
     # ── workspace branding ─────────────────────────────
@@ -153,13 +224,28 @@ class InMemoryDb4A:
         return self.workspace_brandings.get(workspace_id)
 
     def upsert_workspace_branding(self, workspace_id, media_name, hashtag, channel_tag):
-        row = {
+        row = dict(self.workspace_brandings.get(workspace_id) or {})
+        row.update({
             "workspace_id": workspace_id,
             "media_name": (media_name or "").strip(),
             "hashtag": (hashtag or "").strip(),
             "channel_tag": (channel_tag or "").strip(),
-        }
+        })
+        row.setdefault("publication_icons", [])
+        row.setdefault("icons_enabled", False)
+        row.setdefault("publication_profile", {})
         self.workspace_brandings[workspace_id] = row
+        return deepcopy(row)
+
+    def update_workspace_branding_icons(self, workspace_id, icons, enabled=True):
+        row = self.workspace_brandings[workspace_id]
+        row["publication_icons"] = list(icons or [])
+        row["icons_enabled"] = bool(enabled and icons)
+        return deepcopy(row)
+
+    def update_workspace_branding_profile(self, workspace_id, profile):
+        row = self.workspace_brandings[workspace_id]
+        row["publication_profile"] = dict(profile or {})
         return deepcopy(row)
 
     # ── publication destinations ───────────────────────
@@ -244,11 +330,18 @@ def _make_fake_db_module(db: InMemoryDb4A) -> types.ModuleType:
     mod.update_workspace_member_role = db.update_workspace_member_role
     mod.update_workspace_member_status = db.update_workspace_member_status
     mod.list_workspace_members = db.list_workspace_members
+    mod.list_user_workspaces = db.list_user_workspaces
+    mod.get_active_workspace_preference = db.get_active_workspace_preference
+    mod.set_active_workspace = db.set_active_workspace
+    mod.set_active_legacy_context = db.set_active_legacy_context
     # Phase 4A additions
     mod.get_workspace_setup_state = db.get_workspace_setup_state
     mod.upsert_workspace_setup_state = db.upsert_workspace_setup_state
+    mod.update_workspace_branding_sample = db.update_workspace_branding_sample
     mod.get_workspace_branding = db.get_workspace_branding
     mod.upsert_workspace_branding = db.upsert_workspace_branding
+    mod.update_workspace_branding_icons = db.update_workspace_branding_icons
+    mod.update_workspace_branding_profile = db.update_workspace_branding_profile
     mod.list_workspace_destinations = db.list_workspace_destinations
     mod.create_publication_destination = db.create_publication_destination
     mod.get_destination_verification = db.get_destination_verification
@@ -357,6 +450,8 @@ def test_06_completed_setup_stays_completed(monkeypatch):
     ws = db.create_workspace("رسانه من", user["id"])
 
     db.upsert_workspace_branding(ws["id"], "رسانه‌ام", "#هشتگ", "@تگ")
+    db.upsert_workspace_setup_state(ws["id"], "in_progress", "setup_member")
+    db.update_workspace_branding_sample(ws["id"], "نمونه", [], "confirmed")
     db.create_publication_destination(ws["id"], "telegram", "channel", "ch", "@testchan", "inactive")
 
     ok, err = ws_mod.complete_setup(ws["id"], user["id"])
@@ -492,6 +587,8 @@ def test_14_owner_remains_active_owner_after_setup(monkeypatch):
     ws = db.create_workspace("رسانه من", user["id"])
 
     db.upsert_workspace_branding(ws["id"], "رسانه", "#h", "@t")
+    db.upsert_workspace_setup_state(ws["id"], "in_progress", "setup_member")
+    db.update_workspace_branding_sample(ws["id"], "نمونه", [], "confirmed")
     db.create_publication_destination(ws["id"], "telegram", "channel", "c", "@c", "inactive")
     ok, _ = ws_mod.complete_setup(ws["id"], user["id"])
     assert ok
@@ -702,12 +799,128 @@ def test_26_finishsetup_requires_branding_and_destination(monkeypatch):
     last_msg = sent[-1][1]
     assert "❌" in last_msg
 
-    # Add branding — now finish should succeed
+    # Add branding, preview and confirm the required sample — now finish succeeds
     ch_mod.handle_command("/setbranding رسانه‌ام #test @test", 2003)
+    ch_mod.handle_branding_sample_message(
+        {"text": "🟢 تیتر نمونه\n\n🔵 متن نمونه"},
+        2003,
+    )
+    ch_mod.handle_command("/confirmbranding", 2003)
     sent.clear()
     ch_mod.handle_command("/finishsetup", 2003)
     last_msg = sent[-1][1]
     assert "🎉" in last_msg or "✅" in last_msg
+
+
+def test_26a_branding_sample_requires_preview_confirmation(monkeypatch):
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(2010)
+    ch_mod.handle_command("/setbranding آزمایش #آزمایش @TestChannel", 2010)
+
+    ws = db.workspaces[0]
+    assert db.get_workspace_setup_state(ws["id"])["current_step_key"] == (
+        "setup_branding_sample"
+    )
+
+    sent.clear()
+    handled = ch_mod.handle_branding_sample_message(
+        {"text": "🟢 تیتر نمونه\n\n🔵 متن نمونه\n\n@source | #old"},
+        2010,
+    )
+    assert handled is True
+    state = db.get_workspace_setup_state(ws["id"])
+    assert state["branding_sample_status"] == "pending_confirmation"
+    assert state["branding_sample_icons"] == ["🟢", "🔵"]
+    assert db.get_workspace_branding(ws["id"])["icons_enabled"] is False
+    assert any("#old" in message and "@source" in message for _, message in sent)
+    assert any("/confirmbranding" in message for _, message in sent)
+
+    ch_mod.handle_command("/confirmbranding", 2010)
+    state = db.get_workspace_setup_state(ws["id"])
+    branding = db.get_workspace_branding(ws["id"])
+    assert state["branding_sample_status"] == "confirmed"
+    assert state["current_step_key"] == "setup_member"
+    assert branding["publication_icons"] == ["🟢", "🔵"]
+    assert branding["icons_enabled"] is True
+    assert branding["hashtag"] == "#old"
+    assert branding["channel_tag"] == "@source"
+
+
+def test_26b_resample_discards_unconfirmed_preview(monkeypatch):
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+    ch_mod.handle_start(2011)
+    ch_mod.handle_command("/setbranding آزمایش #آزمایش @TestChannel", 2011)
+    ch_mod.handle_branding_sample_message({"text": "🔴 نمونه اول"}, 2011)
+    ch_mod.handle_command("/resamplebranding", 2011)
+
+    state = db.get_workspace_setup_state(db.workspaces[0]["id"])
+    assert state["current_step_key"] == "setup_branding_sample"
+    assert state["branding_sample_status"] == "not_started"
+    assert state["branding_sample_text"] == ""
+    assert state["branding_sample_icons"] == []
+
+
+def test_26c_sample_saves_hidden_bale_suggestion_without_blocking(monkeypatch):
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(2013)
+    ch_mod.handle_command("/setbranding فردای نو #فردای_نو @farda_nou", 2013)
+
+    title = "جانشین اینفانتینو از آسیا می‌آید؟"
+    cta = "📌 فردای‌نو را در بله دنبال کنید"
+    sample = f"🟩 {title}\n\n🔷 بند خبر.\n\n{cta}\n\n#قدیمی\n@old"
+    cta_start = sample.index(cta)
+    utf16 = lambda value: len(value.encode("utf-16-le")) // 2
+    handled = ch_mod.handle_branding_sample_message(
+        {
+            "text": sample,
+            "entities": [{
+                "type": "text_link",
+                "offset": utf16(sample[:cta_start]),
+                "length": utf16(cta),
+                "url": "https://ble.ir/farda_nou",
+            }],
+        },
+        2013,
+    )
+
+    assert handled is True
+    state = db.get_workspace_setup_state(db.workspaces[0]["id"])
+    assert state["branding_sample_icons"] == ["🟩", "🔷", "📌"]
+    assert state["branding_sample_profile"]["cta_icons"] == ["📌"]
+    assert state["branding_sample_bale_channel"] == "@farda_nou"
+    assert state["branding_sample_bale_status"] == "pending"
+    assert any("/confirmbalesuggestion" in message for _, message in sent)
+    preview_messages = [message for _, message in sent if "بند خبر" in message]
+    assert preview_messages
+    assert "📌" in preview_messages[0]
+    assert "در بله دنبال کنید" in preview_messages[0]
+    assert "@old" not in preview_messages[0]
+
+
+def test_26d_dual_user_status_follows_selected_media_context(monkeypatch):
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    telegram_id = 2012
+    db.tenants[telegram_id] = {
+        "user_id": telegram_id,
+        "telegram_channel": "@Donya24News",
+        "bale_channel": "",
+        "bale_token": "",
+    }
+    user = db.get_or_create_user_by_telegram_id(telegram_id)
+    workspace = db.create_workspace("رسانه جدید", user["id"])
+    db.create_publication_destination(
+        workspace["id"], "telegram", "channel", "جدید", "@NewChannel", "active"
+    )
+
+    db.set_active_legacy_context(user["id"])
+    ch_mod.handle_status(telegram_id)
+    assert "@Donya24News" in sent[-1][1]
+    assert "حساب قدیمی" in sent[-1][1]
+
+    db.set_active_workspace(user["id"], workspace["id"])
+    ch_mod.handle_status(telegram_id)
+    assert "رسانه جدید" in sent[-1][1]
+    assert "@NewChannel" in sent[-1][1]
 
 
 # =========================================================

@@ -1215,6 +1215,40 @@ def test_other_entities_preserved_in_metadata():
     )
 
 
+def test_source_bold_entity_is_remapped_to_media_caption():
+    title = "بن سلمان عازم فرانسه شد"
+    plan = analyze_content(
+        main_text=f"{title}\n\nمتن خبر",
+        other_entities=[{
+            "type": "bold",
+            "offset": 0,
+            "length": len(title),
+            "text": title,
+        }],
+        branding="#خبر\n@destination",
+    )
+
+    assert plan.telegram["media_caption_entities"] == [{
+        "type": "bold",
+        "offset": 0,
+        "length": len(title),
+    }]
+
+
+def test_source_custom_emoji_and_mention_are_not_reintroduced():
+    plan = analyze_content(
+        main_text="عنوان خبر",
+        other_entities=[
+            {"type": "custom_emoji", "offset": 0, "length": 2,
+             "text": "🆔", "custom_emoji_id": "123"},
+            {"type": "mention", "offset": 3, "length": 14,
+             "text": "@SourceChannel"},
+        ],
+    )
+
+    assert plan.telegram["media_caption_entities"] == []
+
+
 # =========================================================
 # TEST 18
 # NO NETWORK
@@ -2526,6 +2560,21 @@ def test_formatter_removes_source_icons_and_promotional_footer():
         "#عبدی_مدیا"
         not in result
     )
+
+
+def test_formatter_removes_icon_handle_when_forward_username_differs():
+    from core.formatter import format_news
+
+    result = format_news(
+        "عنوان خبر\n\nمتن خبر.\n\n🆔 @YjcNewsChannel",
+        source_title="باشگاه خبرنگاران جوان (P.A)",
+        source_username="different_forward_origin",
+    )
+
+    assert "عنوان خبر" in result
+    assert "متن خبر" in result
+    assert "🆔" not in result
+    assert "@YjcNewsChannel" not in result
 
     assert (
         "واتس‌اپ"

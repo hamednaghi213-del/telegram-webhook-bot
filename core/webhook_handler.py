@@ -3685,6 +3685,18 @@ def handle_webhook() -> Tuple[
         # MESSAGE
         # =================================================
 
+        edited_channel_post = data.get("edited_channel_post")
+        if isinstance(edited_channel_post, dict):
+            try:
+                from core.workspace_publisher import (
+                    sync_edited_channel_post_to_bale,
+                )
+                synced = sync_edited_channel_post_to_bale(edited_channel_post)
+                return {"ok": True, "edit_synced": bool(synced)}, 200
+            except Exception as e:
+                logger.exception(f"[{req_id}] ❌ Telegram/Bale edit sync failed | {e}")
+                return {"ok": True, "edit_synced": False}, 200
+
         msg = data.get(
             "message"
         )
@@ -3782,6 +3794,46 @@ def handle_webhook() -> Tuple[
             }, 200
 
         # =================================================
+        # BRANDING SAMPLE ONBOARDING
+        # =================================================
+
+        try:
+
+            from core.command_handler import (
+                handle_branding_sample_message
+            )
+
+            if handle_branding_sample_message(
+                msg,
+                chat_id
+            ):
+
+                return {
+                    "ok": True
+                }, 200
+
+        except (ImportError, AttributeError):
+
+            # Compatibility with isolated/legacy command-handler modules.
+            pass
+
+        except Exception as e:
+
+            logger.exception(
+                f"[{req_id}] ❌ Branding sample error | "
+                f"{e}"
+            )
+
+            send_message(
+                chat_id,
+                "❌ خطا در پردازش نمونه برندینگ. دوباره تلاش کنید."
+            )
+
+            return {
+                "ok": True
+            }, 200
+
+        # =================================================
         # TENANT
         # =================================================
 
@@ -3813,11 +3865,37 @@ def handle_webhook() -> Tuple[
                 "ok": True
             }, 200
 
+        workspace_context_active = False
+        if tenant:
+            try:
+                from core.database import (
+                    get_active_workspace_preference,
+                    get_user_by_telegram_id,
+                )
+
+                workspace_user = get_user_by_telegram_id(chat_id)
+                workspace_preference = (
+                    get_active_workspace_preference(workspace_user["id"]) or {}
+                    if workspace_user
+                    else {}
+                )
+                workspace_context_active = bool(
+                    workspace_preference.get("context_type") == "workspace"
+                    and workspace_preference.get("active_workspace_id")
+                )
+            except (ImportError, AttributeError):
+                workspace_context_active = False
+            except Exception as e:
+                logger.exception(
+                    f"[{req_id}] ❌ Active media context lookup failed | {e}"
+                )
+
         if (
             not tenant
             or not tenant.get(
                 "telegram_channel"
             )
+            or workspace_context_active
         ):
 
             # Phase 4B — workspace publication path for non-legacy users
@@ -3836,6 +3914,16 @@ def handle_webhook() -> Tuple[
 
                 if handled:
 
+                    return {
+                        "ok": True
+                    }, 200
+
+                if workspace_context_active:
+                    send_message(
+                        chat_id,
+                        "❌ انتشار در رسانه فعال انجام نشد. "
+                        "وضعیت رسانه را با /status بررسی کنید."
+                    )
                     return {
                         "ok": True
                     }, 200

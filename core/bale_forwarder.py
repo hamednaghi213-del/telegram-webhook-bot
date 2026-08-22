@@ -16,6 +16,38 @@ logger = logging.getLogger(__name__)
 BALE_API_BASE = "https://tapi.bale.ai/bot"
 
 
+def _send_result(response, return_result=False):
+    try:
+        data = response.json() or {}
+    except Exception:
+        data = {}
+    ok = response.status_code == 200 and data.get("ok", True) is not False
+    message_id = (data.get("result") or {}).get("message_id") if ok else None
+    if return_result:
+        return {"ok": ok, "message_id": message_id, "response": data}
+    return ok
+
+
+def _failed_result(return_result=False):
+    return {"ok": False, "message_id": None} if return_result else False
+
+
+def edit_bale_message(channel, token, message_id, text, is_caption=False):
+    """Edit an already published Bale text or media caption."""
+    method = "editMessageCaption" if is_caption else "editMessageText"
+    field = "caption" if is_caption else "text"
+    try:
+        response = requests.post(
+            f"{BALE_API_BASE}{token}/{method}",
+            json={"chat_id": channel, "message_id": message_id, field: text or ""},
+            timeout=120,
+        )
+        return bool(_send_result(response))
+    except Exception as e:
+        logger.exception(f"❌ Bale edit failed | method={method} | {e}")
+        return False
+
+
 # =========================================================
 # MAIN ENTRY
 # =========================================================
@@ -147,7 +179,8 @@ def send_to_bale_for_user(
 def send_text_to_bale(
     channel,
     token,
-    text
+    text,
+    return_result=False
 ):
     """
     ارسال پیام متنی به بله
@@ -182,7 +215,7 @@ def send_text_to_bale(
                 "به بله ارسال شد."
             )
 
-            return True
+            return _send_result(response, return_result)
 
         logger.error(
             f"❌ خطا در ارسال متن به بله | "
@@ -190,7 +223,7 @@ def send_text_to_bale(
             f"response={response.text}"
         )
 
-        return False
+        return _failed_result(return_result)
 
     except Exception as e:
 
@@ -199,7 +232,7 @@ def send_text_to_bale(
             f"send_text_to_bale: {e}"
         )
 
-        return False
+        return _failed_result(return_result)
 
 
 # =========================================================
@@ -373,7 +406,8 @@ def send_photo_to_bale(
     channel,
     token,
     caption,
-    file_id
+    file_id,
+    return_result=False
 ):
     """
     دانلود عکس از تلگرام
@@ -388,7 +422,7 @@ def send_photo_to_bale(
 
     if file_content is None:
 
-        return False
+        return _failed_result(return_result)
 
     try:
 
@@ -431,7 +465,7 @@ def send_photo_to_bale(
                 "به بله ارسال شد."
             )
 
-            return True
+            return _send_result(response, return_result)
 
         logger.error(
             f"❌ خطا در ارسال عکس به بله | "
@@ -439,7 +473,7 @@ def send_photo_to_bale(
             f"response={response.text}"
         )
 
-        return False
+        return _failed_result(return_result)
 
     except Exception as e:
 
@@ -448,7 +482,7 @@ def send_photo_to_bale(
             f"send_photo_to_bale: {e}"
         )
 
-        return False
+        return _failed_result(return_result)
 
 
 # =========================================================
@@ -459,7 +493,8 @@ def send_video_to_bale(
     channel,
     token,
     caption,
-    file_id
+    file_id,
+    return_result=False
 ):
     """
     دانلود ویدئو از تلگرام
@@ -474,7 +509,7 @@ def send_video_to_bale(
 
     if file_content is None:
 
-        return False
+        return _failed_result(return_result)
 
     try:
 
@@ -517,7 +552,7 @@ def send_video_to_bale(
                 "به بله ارسال شد."
             )
 
-            return True
+            return _send_result(response, return_result)
 
         logger.error(
             f"❌ خطا در ارسال ویدئو به بله | "
@@ -525,7 +560,7 @@ def send_video_to_bale(
             f"response={response.text}"
         )
 
-        return False
+        return _failed_result(return_result)
 
     except Exception as e:
 
@@ -534,7 +569,7 @@ def send_video_to_bale(
             f"send_video_to_bale: {e}"
         )
 
-        return False
+        return _failed_result(return_result)
 
 
 # =========================================================
@@ -545,7 +580,8 @@ def send_document_to_bale(
     channel,
     token,
     caption,
-    file_id
+    file_id,
+    return_result=False
 ):
     """
     ارسال فایل به بله
@@ -559,7 +595,7 @@ def send_document_to_bale(
 
     if file_content is None:
 
-        return False
+        return _failed_result(return_result)
 
     try:
 
@@ -603,7 +639,7 @@ def send_document_to_bale(
                 "به بله ارسال شد."
             )
 
-            return True
+            return _send_result(response, return_result)
 
         logger.error(
             f"❌ خطا در ارسال فایل به بله | "
@@ -611,7 +647,7 @@ def send_document_to_bale(
             f"response={response.text}"
         )
 
-        return False
+        return _failed_result(return_result)
 
     except Exception as e:
 
@@ -620,7 +656,7 @@ def send_document_to_bale(
             f"send_document_to_bale: {e}"
         )
 
-        return False
+        return _failed_result(return_result)
 
 
 # =========================================================

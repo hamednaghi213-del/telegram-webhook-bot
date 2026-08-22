@@ -276,6 +276,18 @@ def is_source_line(
         normalized_line.lower()
     )
 
+    # A trailing line explicitly introduced by a source/contact icon and
+    # containing a Telegram handle is a channel signature even when Telegram
+    # does not expose (or exposes a different) forward-source username.
+    # Example: "🆔 @YjcNewsChannel".
+    stripped_without_invisible = normalize_invisible_characters(stripped)
+    has_source_icon = any(
+        stripped_without_invisible.startswith(icon)
+        for icon in SOURCE_ICONS
+    )
+    if has_source_icon and re.search(r"@[A-Za-z0-9_]{5,}", normalized_line):
+        return True
+
     normalized_source_username = (
         normalize_username(
             source_username

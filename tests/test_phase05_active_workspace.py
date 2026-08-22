@@ -50,3 +50,18 @@ def test_workspace_keyboard_marks_active_workspace():
     assert keyboard[0][0]["callback_data"] == "ws:select:10"
     assert keyboard[0][0]["text"].startswith("▫️")
     assert keyboard[1][0]["text"].startswith("✅")
+
+
+def test_workspace_keyboard_can_include_legacy_media_context():
+    keyboard = workspace_publisher.build_workspace_keyboard(
+        WORKSPACES,
+        None,
+        include_legacy=True,
+        legacy_active=True,
+    )
+
+    assert keyboard[0][0] == {
+        "text": "✅ رسانه قدیمی",
+        "callback_data": "ws:legacy",
+    }
+    assert keyboard[1][0]["text"].startswith("▫️")
