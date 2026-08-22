@@ -804,6 +804,39 @@ def test_23c_setup_command_does_not_reset_completed_workspace(monkeypatch):
     assert "قبلاً کامل شده" in sent[-1][1]
 
 
+def test_23d_workspace_help_explains_complete_new_user_flow(monkeypatch):
+    _, ch_mod, _, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(1007)
+
+    sent.clear()
+    assert ch_mod.handle_command("/help", 1007) is True
+    help_text = sent[-1][1]
+    assert "راهنمای کامل کاربر جدید" in help_text
+    assert "🚀 شروع راه‌اندازی" in help_text
+    assert "/addchannel @channel" in help_text
+    assert "/skipbale" in help_text
+    assert "/confirmbranding" in help_text
+    assert "/addmember TELEGRAM_ID manager" in help_text
+    assert "/workspaces" in help_text
+    assert "/register" in help_text
+
+
+def test_23e_workspace_help_reports_saved_setup_step(monkeypatch):
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(1008)
+    workspace_id = db.workspaces[0]["id"]
+    db.upsert_workspace_setup_state(
+        workspace_id,
+        "in_progress",
+        "setup_branding_sample",
+    )
+
+    sent.clear()
+    assert ch_mod.handle_command("/help", 1008) is True
+    assert "ارسال و تأیید نمونه پیام" in sent[-1][1]
+    assert "برای ادامه از همان مرحله: /setup" in sent[-1][1]
+
+
 def test_24_addchannel_command_registers_unverified_destination(monkeypatch):
     """/addchannel stores channel as inactive + creates verification record."""
     _, ch_mod, db, sent = _load_modules(monkeypatch)
