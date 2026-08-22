@@ -3593,6 +3593,7 @@ def handle_setup_callback(
 
     valid_actions = {
         "setup:start",
+        "setup:create_workspace",
         "setup:add_media",
         "setup:done",
         "setup:later",
@@ -3605,18 +3606,11 @@ def handle_setup_callback(
         answer_callback_query(callback_id, "کاربر قابل تشخیص نیست.")
         return True
 
-    if callback_data == "setup:add_media":
-        answer_callback_query(callback_id, "افزودن رسانه دیگر")
-        send_message(
-            int(user_id),
-            "➕ افزودن رسانه دیگر\n\n"
-            "۱) ربات را در کانال جدید مدیر کنید.\n"
-            "۲) شناسه کانال را به این شکل بفرستید:\n"
-            "/addchannel @channel\n\n"
-            "پس از ثبت و تأیید کانال، برندینگ مخصوص همان "
-            "رسانه را تنظیم کنید.\n"
-            "برای مشاهده همه مقصدها: /destinations",
-        )
+    if callback_data in {"setup:create_workspace", "setup:add_media"}:
+        answer_callback_query(callback_id, "در حال آماده‌سازی رسانه جدید...")
+        from core.command_handler import handle_create_workspace
+
+        handle_create_workspace(int(user_id))
         return True
 
     if callback_data == "setup:done":
