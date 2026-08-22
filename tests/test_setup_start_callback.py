@@ -101,6 +101,38 @@ def test_unknown_setup_callback_is_answered_without_starting_setup(monkeypatch):
     assert answers == [("cb-1", "دستور راه‌اندازی نامعتبر است.")]
 
 
+def test_post_setup_callbacks_are_answered_and_explain_next_action(monkeypatch):
+    answers = []
+    messages = []
+    monkeypatch.setattr(
+        webhook_handler,
+        "answer_callback_query",
+        lambda callback_id, text="": answers.append((callback_id, text)) or True,
+    )
+    monkeypatch.setattr(
+        webhook_handler,
+        "send_message",
+        lambda chat_id, text: messages.append((chat_id, text)) or True,
+    )
+
+    expectations = {
+        "setup:add_media": "/addchannel @channel",
+        "setup:done": "راه‌اندازی کامل شد",
+        "setup:later": "/destinations",
+    }
+    for callback_data, expected_text in expectations.items():
+        answers.clear()
+        messages.clear()
+        assert webhook_handler.handle_setup_callback(
+            _callback(data=callback_data),
+            "setup-post-action",
+        ) is True
+        assert answers and answers[0][0] == "cb-1"
+        assert len(messages) == 1
+        assert messages[0][0] == 101
+        assert expected_text in messages[0][1]
+
+
 def test_existing_callback_prefixes_are_not_claimed_by_setup_handler():
     for callback_data in (
         "ws:select:1",

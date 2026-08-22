@@ -3591,12 +3591,54 @@ def handle_setup_callback(
     callback_id = str(callback_query.get("id", "") or "")
     user_id = (callback_query.get("from", {}) or {}).get("id")
 
-    if callback_data != "setup:start":
+    valid_actions = {
+        "setup:start",
+        "setup:add_media",
+        "setup:done",
+        "setup:later",
+    }
+    if callback_data not in valid_actions:
         answer_callback_query(callback_id, "دستور راه‌اندازی نامعتبر است.")
         return True
 
     if user_id is None:
         answer_callback_query(callback_id, "کاربر قابل تشخیص نیست.")
+        return True
+
+    if callback_data == "setup:add_media":
+        answer_callback_query(callback_id, "افزودن رسانه دیگر")
+        send_message(
+            int(user_id),
+            "➕ افزودن رسانه دیگر\n\n"
+            "۱) ربات را در کانال جدید مدیر کنید.\n"
+            "۲) شناسه کانال را به این شکل بفرستید:\n"
+            "/addchannel @channel\n\n"
+            "پس از ثبت و تأیید کانال، برندینگ مخصوص همان "
+            "رسانه را تنظیم کنید.\n"
+            "برای مشاهده همه مقصدها: /destinations",
+        )
+        return True
+
+    if callback_data == "setup:done":
+        answer_callback_query(callback_id, "راه‌اندازی کامل شد.")
+        send_message(
+            int(user_id),
+            "✅ راه‌اندازی کامل شد.\n\n"
+            "اکنون می‌توانید پیام خود را برای انتشار به ربات بفرستید.\n"
+            "تنظیمات: /settings | راهنما: /help",
+        )
+        return True
+
+    if callback_data == "setup:later":
+        answer_callback_query(callback_id, "می‌توانید بعداً اضافه کنید.")
+        send_message(
+            int(user_id),
+            "🕒 مشکلی نیست.\n\n"
+            "هر زمان خواستید رسانه دیگری اضافه کنید:\n"
+            "/addchannel @channel\n\n"
+            "مقصدهای فعلی: /destinations\n"
+            "راهنمای کامل: /help",
+        )
         return True
 
     # Stop Telegram's button loading state before running database-backed setup.

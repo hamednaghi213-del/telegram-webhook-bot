@@ -1758,13 +1758,30 @@ def handle_finishsetup(chat_id: int) -> bool:
 
         ok, reason = complete_setup(workspace["id"], user["id"])
         if ok:
-            send_message(
+            send_message_with_keyboard(
                 chat_id,
                 "🎉 رسانه شما راه‌اندازی شد!\n\n"
                 "✅ تنظیمات: /settings\n"
                 "❓ راهنما: /help\n\n"
                 "⚠️ نکته: کانال‌های ثبت‌شده تا تأیید دسترسی ادمین\n"
-                "غیرفعال هستند. (Phase 4B)"
+                "غیرفعال هستند. (Phase 4B)\n\n"
+                "آیا اکنون می‌خواهید رسانه دیگری اضافه کنید؟",
+                [
+                    [{
+                        "text": "➕ افزودن رسانه دیگر",
+                        "callback_data": "setup:add_media",
+                    }],
+                    [
+                        {
+                            "text": "✅ پایان راه‌اندازی",
+                            "callback_data": "setup:done",
+                        },
+                        {
+                            "text": "🕒 بعداً اضافه می‌کنم",
+                            "callback_data": "setup:later",
+                        },
+                    ],
+                ],
             )
         else:
             send_message(

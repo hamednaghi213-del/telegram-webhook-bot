@@ -901,6 +901,18 @@ def test_26_finishsetup_requires_branding_and_destination(monkeypatch):
     ch_mod.handle_command("/finishsetup", 2003)
     last_msg = sent[-1][1]
     assert "🎉" in last_msg or "✅" in last_msg
+    assert "آیا اکنون می‌خواهید رسانه دیگری" in last_msg
+    keyboard = ch_mod._test_sent_keyboards[-1][1]
+    callback_values = {
+        button["callback_data"]
+        for row in keyboard
+        for button in row
+    }
+    assert callback_values == {
+        "setup:add_media",
+        "setup:done",
+        "setup:later",
+    }
 
 
 def test_26a_branding_sample_requires_preview_confirmation(monkeypatch):
