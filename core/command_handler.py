@@ -439,12 +439,16 @@ def handle_start(chat_id: int) -> bool:
                 send_message(chat_id, _setup_resume_message(current))
             else:
                 # not_started → prompt owner to begin
-                send_message(
+                send_message_with_keyboard(
                     chat_id,
                     "👋 به رسانه‌ساز خوش آمدید!\n\n"
                     "برای شروع راه‌اندازی رسانه خود:\n"
                     "▶️ /setup\n\n"
-                    "❓ راهنما: /help"
+                    "❓ راهنما: /help",
+                    [[{
+                        "text": "🚀 شروع راه‌اندازی",
+                        "callback_data": "setup:start",
+                    }]],
                 )
             logger.info(
                 "✅ START (4A) | "
@@ -1754,13 +1758,30 @@ def handle_finishsetup(chat_id: int) -> bool:
 
         ok, reason = complete_setup(workspace["id"], user["id"])
         if ok:
-            send_message(
+            send_message_with_keyboard(
                 chat_id,
                 "🎉 رسانه شما راه‌اندازی شد!\n\n"
                 "✅ تنظیمات: /settings\n"
                 "❓ راهنما: /help\n\n"
                 "⚠️ نکته: کانال‌های ثبت‌شده تا تأیید دسترسی ادمین\n"
-                "غیرفعال هستند. (Phase 4B)"
+                "غیرفعال هستند. (Phase 4B)\n\n"
+                "آیا اکنون می‌خواهید رسانه دیگری اضافه کنید؟",
+                [
+                    [{
+                        "text": "➕ افزودن رسانه دیگر",
+                        "callback_data": "setup:add_media",
+                    }],
+                    [
+                        {
+                            "text": "✅ پایان راه‌اندازی",
+                            "callback_data": "setup:done",
+                        },
+                        {
+                            "text": "🕒 بعداً اضافه می‌کنم",
+                            "callback_data": "setup:later",
+                        },
+                    ],
+                ],
             )
         else:
             send_message(
@@ -1858,6 +1879,107 @@ def handle_help(chat_id: int) -> bool:
             )
             send_long_message(chat_id, text)
             return True
+
+        # Workspace onboarding has its own complete, state-aware guide. Keep
+        # the legacy help below unchanged for compatibility with older setups.
+        if _WORKSPACE_SETUP_ENABLED:
+            _, workspace = _get_workspace_for_user(chat_id)
+            if workspace:
+                setup_state = get_or_init_setup_state(workspace["id"])
+                setup_step = setup_state.get("step", "not_started")
+                current_step = setup_state.get("current_step_key")
+
+                if setup_step == "completed":
+                    state_text = "✅ وضعیت: راه‌اندازی این رسانه کامل شده است."
+                elif setup_step == "in_progress":
+                    step_names = {
+                        "setup_channel": "افزودن و تأیید کانال‌ها",
+                        "setup_branding": "ثبت برندینگ رسانه",
+                        "setup_branding_sample": "ارسال و تأیید نمونه پیام",
+                        "setup_member": "افزودن اعضا یا پایان راه‌اندازی",
+                    }
+                    state_text = (
+                        "▶️ وضعیت: راه‌اندازی نیمه‌کاره است.\n"
+                        f"مرحله فعلی: {step_names.get(current_step, 'ادامه راه‌اندازی')}\n"
+                        "برای ادامه از همان مرحله: /setup"
+                    )
+                else:
+                    state_text = (
+                        "🆕 وضعیت: راه‌اندازی هنوز شروع نشده است.\n"
+                        "دکمه «🚀 شروع راه‌اندازی» را بزنید یا /setup را بفرستید."
+                    )
+
+                text = (
+                    "📚 راهنمای کامل کاربر جدید\n\n"
+                    f"{state_text}\n\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "۱) شروع و ادامه راه‌اندازی\n\n"
+                    "/start — ساخت حساب، نمایش وضعیت و دکمه شروع\n"
+                    "/setup — شروع یا ادامه از مرحله ذخیره‌شده\n"
+                    "/status — مشاهده رسانه و تنظیمات فعال\n\n"
+                    "اطلاعات راه‌اندازی نیمه‌کاره با /setup پاک نمی‌شود و رسانه "
+                    "تکمیل‌شده نیز از ابتدا ساخته نخواهد شد.\n\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "۲) اتصال کانال تلگرام\n\n"
+                    "ابتدا ربات را در کانال تلگرام Admin کنید. سپس:\n"
+                    "/addchannel @channel — افزودن کانال تلگرام\n"
+                    "/verifychannel @channel — بررسی دسترسی ادمین ربات\n"
+                    "/destinations — نمایش مقصدهای ثبت‌شده\n"
+                    "/nextsetupstep — رفتن به مرحله بعد پس از افزودن کانال‌ها\n\n"
+                    "برای چند کانال، /addchannel را برای هر کانال تکرار کنید.\n\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "۳) اتصال اختیاری بله\n\n"
+                    "اگر کانال بله دارید، ربات مرکزی بله را Admin کنید و سپس:\n"
+                    "/addbale @channel — افزودن کانال بله\n"
+                    "/verifybale @channel — بررسی دسترسی ربات در بله\n"
+                    "/skipbale — ادامه بدون کانال بله\n\n"
+                    "نداشتن بله مانع ثبت‌نام یا انتشار تلگرام نیست و کاربر جدید "
+                    "نیازی به ساخت یا ارسال توکن جداگانه بله ندارد.\n\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "۴) برندینگ و نمونه پیام\n\n"
+                    "/setbranding نام_رسانه #هشتگ @تگ — ثبت اطلاعات اولیه\n\n"
+                    "سپس یک پیام واقعی از قالب رسانه ارسال یا Forward کنید. ربات "
+                    "آیکون‌ها، عنوان، بندها، CTA، هشتگ، آیدی، لینک بله و قالب‌های "
+                    "قابل تشخیص را استخراج و پیش‌نمایش می‌کند.\n\n"
+                    "/confirmbranding — تأیید پیش‌نمایش و ذخیره قالب\n"
+                    "/resamplebranding — رد پیش‌نمایش و ارسال نمونه دیگر\n"
+                    "/confirmbalesuggestion — تأیید کانال بله استخراج‌شده\n"
+                    "/ignorebalesuggestion — نادیده‌گرفتن پیشنهاد بله\n"
+                    "/seticons 🟢 🔵 — تغییر دستی فهرست آیکون‌ها\n"
+                    "/clearicons — انتشار بدون آیکون‌های قالب\n\n"
+                    "هیچ نمونه‌ای بدون تأیید کاربر نهایی نمی‌شود.\n\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "۵) اعضا و نقش‌ها\n\n"
+                    "/addmember TELEGRAM_ID manager — افزودن مدیر رسانه\n"
+                    "/addmember TELEGRAM_ID publisher — افزودن ناشر\n"
+                    "/addmember TELEGRAM_ID writer — افزودن نویسنده\n"
+                    "/members — مشاهده اعضای Workspace\n"
+                    "/setmemberrole TELEGRAM_ID role — تغییر نقش\n"
+                    "/removemember TELEGRAM_ID — حذف عضو\n\n"
+                    "Admin کردن فرد در کانال تلگرام به‌تنهایی او را عضو Workspace "
+                    "نمی‌کند؛ مالک باید /addmember را نیز اجرا کند.\n\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "۶) پایان راه‌اندازی و استفاده روزانه\n\n"
+                    "/finishsetup — تکمیل راه‌اندازی پس از کانال و برندینگ\n"
+                    "/workspaces — نمایش و انتخاب رسانه‌های در دسترس\n"
+                    "/switchworkspace ID — انتخاب رسانه با شناسه\n"
+                    "/settings — تنظیمات رسانه فعال\n"
+                    "/setdefaultdestination ID — تعیین مقصد پیش‌فرض\n"
+                    "/setdestinationbranding ID #هشتگ @تگ — برندینگ مقصد\n"
+                    "/removedestination ID — حذف مقصد\n\n"
+                    "برای انتشار، ابتدا Workspace درست را با /workspaces انتخاب "
+                    "کنید و سپس پیام خبر را برای ربات بفرستید یا Forward کنید.\n\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "۷) نکات مهم\n\n"
+                    "• دستور /register برای سازگاری مسیر قدیمی باقی مانده است؛ "
+                    "کاربر جدید باید از /start و /setup استفاده کند.\n"
+                    "• برای نمایش Workspace به یک همکار، علاوه بر دسترسی کانال باید "
+                    "او را با /addmember اضافه کنید.\n"
+                    "• اگر چند رسانه دارید، قبل از انتشار رسانه فعال را کنترل کنید.\n"
+                    "• برای مشاهده دوباره همین راهنما: /help"
+                )
+                send_long_message(chat_id, text)
+                return True
 
         onboarding_state = _get_onboarding_state(chat_id)
         if onboarding_state == "not_started":

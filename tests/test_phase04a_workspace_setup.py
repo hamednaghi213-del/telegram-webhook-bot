@@ -368,10 +368,21 @@ def _load_modules(monkeypatch):
     ch_mod = importlib.reload(ch_mod)
 
     sent: List = []
+    sent_keyboards: List = []
     monkeypatch.setattr(ch_mod, "send_message",
                         lambda cid, txt, parse_mode=None: sent.append((cid, txt)) or True)
     monkeypatch.setattr(ch_mod, "send_long_message",
                         lambda cid, txt, max_len=4096: sent.append((cid, txt)) or True)
+    monkeypatch.setattr(
+        ch_mod,
+        "send_message_with_keyboard",
+        lambda cid, txt, keyboard: (
+            sent.append((cid, txt)),
+            sent_keyboards.append((cid, keyboard)),
+            True,
+        )[-1],
+    )
+    ch_mod._test_sent_keyboards = sent_keyboards
 
     return ws_mod, ch_mod, db, sent
 
@@ -716,6 +727,12 @@ def test_21_start_new_user_shows_setup_prompt(monkeypatch):
     assert len(db.workspaces) == 1
     last_msg = sent[-1][1]
     assert "/setup" in last_msg
+    assert ch_mod._test_sent_keyboards == [
+        (1001, [[{
+            "text": "🚀 شروع راه‌اندازی",
+            "callback_data": "setup:start",
+        }]])
+    ]
 
 
 def test_22_start_completed_setup_shows_ready_panel(monkeypatch):
@@ -744,6 +761,80 @@ def test_23_repeated_start_does_not_duplicate_workspace(monkeypatch):
     assert len(db.users) == 1
     owner_mems = [m for m in db.workspace_members if m["role"] == "owner"]
     assert len(owner_mems) == 1
+
+
+def test_23a_setup_command_starts_new_user_at_first_step(monkeypatch):
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+    ch_mod.handle_start(1004)
+
+    assert ch_mod.handle_command("/setup", 1004) is True
+    state = db.get_workspace_setup_state(db.workspaces[0]["id"])
+    assert state["step"] == "in_progress"
+    assert state["current_step_key"] == "setup_channel"
+
+
+def test_23b_setup_command_resumes_saved_step(monkeypatch):
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(1005)
+    workspace_id = db.workspaces[0]["id"]
+    db.upsert_workspace_setup_state(
+        workspace_id,
+        "in_progress",
+        "setup_branding",
+    )
+
+    sent.clear()
+    assert ch_mod.handle_command("/setup", 1005) is True
+    state = db.get_workspace_setup_state(workspace_id)
+    assert state["current_step_key"] == "setup_branding"
+    assert "مرحله ۲" in sent[-1][1]
+
+
+def test_23c_setup_command_does_not_reset_completed_workspace(monkeypatch):
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(1006)
+    workspace_id = db.workspaces[0]["id"]
+    db.upsert_workspace_setup_state(workspace_id, "completed", None)
+
+    sent.clear()
+    assert ch_mod.handle_command("/setup", 1006) is True
+    state = db.get_workspace_setup_state(workspace_id)
+    assert state["step"] == "completed"
+    assert state["current_step_key"] is None
+    assert "قبلاً کامل شده" in sent[-1][1]
+
+
+def test_23d_workspace_help_explains_complete_new_user_flow(monkeypatch):
+    _, ch_mod, _, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(1007)
+
+    sent.clear()
+    assert ch_mod.handle_command("/help", 1007) is True
+    help_text = sent[-1][1]
+    assert "راهنمای کامل کاربر جدید" in help_text
+    assert "🚀 شروع راه‌اندازی" in help_text
+    assert "/addchannel @channel" in help_text
+    assert "/skipbale" in help_text
+    assert "/confirmbranding" in help_text
+    assert "/addmember TELEGRAM_ID manager" in help_text
+    assert "/workspaces" in help_text
+    assert "/register" in help_text
+
+
+def test_23e_workspace_help_reports_saved_setup_step(monkeypatch):
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(1008)
+    workspace_id = db.workspaces[0]["id"]
+    db.upsert_workspace_setup_state(
+        workspace_id,
+        "in_progress",
+        "setup_branding_sample",
+    )
+
+    sent.clear()
+    assert ch_mod.handle_command("/help", 1008) is True
+    assert "ارسال و تأیید نمونه پیام" in sent[-1][1]
+    assert "برای ادامه از همان مرحله: /setup" in sent[-1][1]
 
 
 def test_24_addchannel_command_registers_unverified_destination(monkeypatch):
@@ -810,6 +901,18 @@ def test_26_finishsetup_requires_branding_and_destination(monkeypatch):
     ch_mod.handle_command("/finishsetup", 2003)
     last_msg = sent[-1][1]
     assert "🎉" in last_msg or "✅" in last_msg
+    assert "آیا اکنون می‌خواهید رسانه دیگری" in last_msg
+    keyboard = ch_mod._test_sent_keyboards[-1][1]
+    callback_values = {
+        button["callback_data"]
+        for row in keyboard
+        for button in row
+    }
+    assert callback_values == {
+        "setup:add_media",
+        "setup:done",
+        "setup:later",
+    }
 
 
 def test_26a_branding_sample_requires_preview_confirmation(monkeypatch):

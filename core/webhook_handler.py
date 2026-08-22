@@ -3576,6 +3576,91 @@ def handle_editorial_callback(
 
 
 # =========================================================
+# SETUP CALLBACK HANDLER
+# =========================================================
+
+def handle_setup_callback(
+    callback_query: Dict[str, Any],
+    req_id: str,
+) -> bool:
+    """Route setup callbacks to the existing /setup implementation."""
+    callback_data = str(callback_query.get("data", "") or "")
+    if not callback_data.startswith("setup:"):
+        return False
+
+    callback_id = str(callback_query.get("id", "") or "")
+    user_id = (callback_query.get("from", {}) or {}).get("id")
+
+    valid_actions = {
+        "setup:start",
+        "setup:add_media",
+        "setup:done",
+        "setup:later",
+    }
+    if callback_data not in valid_actions:
+        answer_callback_query(callback_id, "دستور راه‌اندازی نامعتبر است.")
+        return True
+
+    if user_id is None:
+        answer_callback_query(callback_id, "کاربر قابل تشخیص نیست.")
+        return True
+
+    if callback_data == "setup:add_media":
+        answer_callback_query(callback_id, "افزودن رسانه دیگر")
+        send_message(
+            int(user_id),
+            "➕ افزودن رسانه دیگر\n\n"
+            "۱) ربات را در کانال جدید مدیر کنید.\n"
+            "۲) شناسه کانال را به این شکل بفرستید:\n"
+            "/addchannel @channel\n\n"
+            "پس از ثبت و تأیید کانال، برندینگ مخصوص همان "
+            "رسانه را تنظیم کنید.\n"
+            "برای مشاهده همه مقصدها: /destinations",
+        )
+        return True
+
+    if callback_data == "setup:done":
+        answer_callback_query(callback_id, "راه‌اندازی کامل شد.")
+        send_message(
+            int(user_id),
+            "✅ راه‌اندازی کامل شد.\n\n"
+            "اکنون می‌توانید پیام خود را برای انتشار به ربات بفرستید.\n"
+            "تنظیمات: /settings | راهنما: /help",
+        )
+        return True
+
+    if callback_data == "setup:later":
+        answer_callback_query(callback_id, "می‌توانید بعداً اضافه کنید.")
+        send_message(
+            int(user_id),
+            "🕒 مشکلی نیست.\n\n"
+            "هر زمان خواستید رسانه دیگری اضافه کنید:\n"
+            "/addchannel @channel\n\n"
+            "مقصدهای فعلی: /destinations\n"
+            "راهنمای کامل: /help",
+        )
+        return True
+
+    # Stop Telegram's button loading state before running database-backed setup.
+    answer_callback_query(callback_id, "در حال شروع راه‌اندازی...")
+
+    try:
+        from core.command_handler import handle_setup
+
+        handle_setup(int(user_id))
+    except Exception as exc:
+        logger.exception(
+            f"[{req_id}] ❌ Setup callback error | {exc}"
+        )
+        send_message(
+            int(user_id),
+            "❌ خطا در راه‌اندازی. لطفاً دستور /setup را ارسال کنید.",
+        )
+
+    return True
+
+
+# =========================================================
 # WEBHOOK HANDLER
 # =========================================================
 
@@ -3632,6 +3717,22 @@ def handle_webhook() -> Tuple[
             callback_query,
             dict
         ):
+
+            # New-user setup callback. Keep this before workspace/editorial
+            # routing so setup:start is always acknowledged and handled.
+            if str(
+                callback_query.get("data", "") or ""
+            ).startswith("setup:"):
+
+                handled = handle_setup_callback(
+                    callback_query,
+                    req_id,
+                )
+
+                return {
+                    "ok": True,
+                    "callback_handled": bool(handled),
+                }, 200
 
             # Workspace publication callbacks (Phase 4B)
             if str(
