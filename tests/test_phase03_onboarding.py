@@ -173,6 +173,11 @@ def _load_command_handler(monkeypatch):
         "send_long_message",
         lambda chat_id, text, max_len=4096: sent_messages.append((chat_id, text)) or True,
     )
+    monkeypatch.setattr(
+        command_handler,
+        "send_message_with_keyboard",
+        lambda chat_id, text, keyboard: sent_messages.append((chat_id, text)) or True,
+    )
     return command_handler, db, sent_messages
 
 
@@ -189,6 +194,14 @@ def test_start_new_user_creates_user_workspace_and_owner(monkeypatch):
     assert owner["role"] == "owner"
     assert owner["status"] == "active"
     assert "افزودن مقصد انتشار" in sent[-1][1]
+
+
+def test_register_text_command_remains_available(monkeypatch):
+    command_handler, db, sent = _load_command_handler(monkeypatch)
+
+    assert command_handler.handle_command("/register", 1009) is True
+    assert db.get_tenant(1009) is not None
+    assert "ثبت‌نام شما با موفقیت انجام شد" in sent[-1][1]
 
 
 def test_start_is_idempotent_and_does_not_duplicate_workspace(monkeypatch):

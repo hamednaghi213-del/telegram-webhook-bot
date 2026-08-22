@@ -368,10 +368,21 @@ def _load_modules(monkeypatch):
     ch_mod = importlib.reload(ch_mod)
 
     sent: List = []
+    sent_keyboards: List = []
     monkeypatch.setattr(ch_mod, "send_message",
                         lambda cid, txt, parse_mode=None: sent.append((cid, txt)) or True)
     monkeypatch.setattr(ch_mod, "send_long_message",
                         lambda cid, txt, max_len=4096: sent.append((cid, txt)) or True)
+    monkeypatch.setattr(
+        ch_mod,
+        "send_message_with_keyboard",
+        lambda cid, txt, keyboard: (
+            sent.append((cid, txt)),
+            sent_keyboards.append((cid, keyboard)),
+            True,
+        )[-1],
+    )
+    ch_mod._test_sent_keyboards = sent_keyboards
 
     return ws_mod, ch_mod, db, sent
 
@@ -716,6 +727,12 @@ def test_21_start_new_user_shows_setup_prompt(monkeypatch):
     assert len(db.workspaces) == 1
     last_msg = sent[-1][1]
     assert "/setup" in last_msg
+    assert ch_mod._test_sent_keyboards == [
+        (1001, [[{
+            "text": "🚀 شروع راه‌اندازی",
+            "callback_data": "setup:start",
+        }]])
+    ]
 
 
 def test_22_start_completed_setup_shows_ready_panel(monkeypatch):
@@ -744,6 +761,47 @@ def test_23_repeated_start_does_not_duplicate_workspace(monkeypatch):
     assert len(db.users) == 1
     owner_mems = [m for m in db.workspace_members if m["role"] == "owner"]
     assert len(owner_mems) == 1
+
+
+def test_23a_setup_command_starts_new_user_at_first_step(monkeypatch):
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+    ch_mod.handle_start(1004)
+
+    assert ch_mod.handle_command("/setup", 1004) is True
+    state = db.get_workspace_setup_state(db.workspaces[0]["id"])
+    assert state["step"] == "in_progress"
+    assert state["current_step_key"] == "setup_channel"
+
+
+def test_23b_setup_command_resumes_saved_step(monkeypatch):
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(1005)
+    workspace_id = db.workspaces[0]["id"]
+    db.upsert_workspace_setup_state(
+        workspace_id,
+        "in_progress",
+        "setup_branding",
+    )
+
+    sent.clear()
+    assert ch_mod.handle_command("/setup", 1005) is True
+    state = db.get_workspace_setup_state(workspace_id)
+    assert state["current_step_key"] == "setup_branding"
+    assert "مرحله ۲" in sent[-1][1]
+
+
+def test_23c_setup_command_does_not_reset_completed_workspace(monkeypatch):
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(1006)
+    workspace_id = db.workspaces[0]["id"]
+    db.upsert_workspace_setup_state(workspace_id, "completed", None)
+
+    sent.clear()
+    assert ch_mod.handle_command("/setup", 1006) is True
+    state = db.get_workspace_setup_state(workspace_id)
+    assert state["step"] == "completed"
+    assert state["current_step_key"] is None
+    assert "قبلاً کامل شده" in sent[-1][1]
 
 
 def test_24_addchannel_command_registers_unverified_destination(monkeypatch):

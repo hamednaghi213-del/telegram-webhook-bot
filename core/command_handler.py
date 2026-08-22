@@ -439,12 +439,16 @@ def handle_start(chat_id: int) -> bool:
                 send_message(chat_id, _setup_resume_message(current))
             else:
                 # not_started → prompt owner to begin
-                send_message(
+                send_message_with_keyboard(
                     chat_id,
                     "👋 به رسانه‌ساز خوش آمدید!\n\n"
                     "برای شروع راه‌اندازی رسانه خود:\n"
                     "▶️ /setup\n\n"
-                    "❓ راهنما: /help"
+                    "❓ راهنما: /help",
+                    [[{
+                        "text": "🚀 شروع راه‌اندازی",
+                        "callback_data": "setup:start",
+                    }]],
                 )
             logger.info(
                 "✅ START (4A) | "

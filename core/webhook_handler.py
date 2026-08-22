@@ -3576,6 +3576,49 @@ def handle_editorial_callback(
 
 
 # =========================================================
+# SETUP CALLBACK HANDLER
+# =========================================================
+
+def handle_setup_callback(
+    callback_query: Dict[str, Any],
+    req_id: str,
+) -> bool:
+    """Route setup callbacks to the existing /setup implementation."""
+    callback_data = str(callback_query.get("data", "") or "")
+    if not callback_data.startswith("setup:"):
+        return False
+
+    callback_id = str(callback_query.get("id", "") or "")
+    user_id = (callback_query.get("from", {}) or {}).get("id")
+
+    if callback_data != "setup:start":
+        answer_callback_query(callback_id, "دستور راه‌اندازی نامعتبر است.")
+        return True
+
+    if user_id is None:
+        answer_callback_query(callback_id, "کاربر قابل تشخیص نیست.")
+        return True
+
+    # Stop Telegram's button loading state before running database-backed setup.
+    answer_callback_query(callback_id, "در حال شروع راه‌اندازی...")
+
+    try:
+        from core.command_handler import handle_setup
+
+        handle_setup(int(user_id))
+    except Exception as exc:
+        logger.exception(
+            f"[{req_id}] ❌ Setup callback error | {exc}"
+        )
+        send_message(
+            int(user_id),
+            "❌ خطا در راه‌اندازی. لطفاً دستور /setup را ارسال کنید.",
+        )
+
+    return True
+
+
+# =========================================================
 # WEBHOOK HANDLER
 # =========================================================
 
@@ -3632,6 +3675,22 @@ def handle_webhook() -> Tuple[
             callback_query,
             dict
         ):
+
+            # New-user setup callback. Keep this before workspace/editorial
+            # routing so setup:start is always acknowledged and handled.
+            if str(
+                callback_query.get("data", "") or ""
+            ).startswith("setup:"):
+
+                handled = handle_setup_callback(
+                    callback_query,
+                    req_id,
+                )
+
+                return {
+                    "ok": True,
+                    "callback_handled": bool(handled),
+                }, 200
 
             # Workspace publication callbacks (Phase 4B)
             if str(
