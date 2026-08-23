@@ -31,7 +31,8 @@ def test_repository_migrations_are_contiguous():
     schema_dir = Path(__file__).resolve().parents[1] / "schema"
     migrations = validate_migration_sequence(schema_dir)
     assert [item.name[:3] for item in migrations] == [
-        "001", "002", "003", "004", "005", "006", "007", "008", "009", "010"
+        "001", "002", "003", "004", "005", "006", "007", "008", "009",
+        "010", "011",
     ]
 
 

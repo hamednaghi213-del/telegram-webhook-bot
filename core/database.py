@@ -1781,10 +1781,12 @@ def set_active_workspace(
         "user_id": user_id,
         "active_workspace_id": workspace_id,
         "context_type": "workspace",
+        # PostgreSQL validates NOT NULL columns on the proposed INSERT row
+        # before resolving ON CONFLICT.  Therefore an upsert must include
+        # created_at even when this user already has a preference row.
+        "created_at": (existing or {}).get("created_at") or now,
         "updated_at": now,
     }
-    if not existing:
-        payload["created_at"] = now
 
     result = (
         supabase
@@ -1807,10 +1809,11 @@ def set_active_legacy_context(user_id: int) -> Dict[str, Any]:
         "user_id": user_id,
         "active_workspace_id": None,
         "context_type": "legacy",
+        # Keep the original creation timestamp while still supplying the
+        # required column for PostgREST's INSERT ... ON CONFLICT statement.
+        "created_at": (existing or {}).get("created_at") or now,
         "updated_at": now,
     }
-    if not existing:
-        payload["created_at"] = now
     result = (
         supabase
         .table("user_workspace_preferences")
