@@ -3961,11 +3961,14 @@ def handle_webhook() -> Tuple[
             }, 200
 
         workspace_context_active = False
+        workspace_targets_selected = False
+        legacy_target_selected = bool(tenant and tenant.get("telegram_channel"))
         if tenant:
             try:
                 from core.database import (
                     get_active_workspace_preference,
                     get_user_by_telegram_id,
+                    list_selected_workspace_ids,
                 )
 
                 workspace_user = get_user_by_telegram_id(chat_id)
@@ -3978,6 +3981,18 @@ def handle_webhook() -> Tuple[
                     workspace_preference.get("context_type") == "workspace"
                     and workspace_preference.get("active_workspace_id")
                 )
+                workspace_targets_selected = bool(
+                    workspace_user
+                    and list_selected_workspace_ids(workspace_user["id"])
+                )
+                legacy_target_selected = bool(
+                    tenant.get("telegram_channel")
+                    and (
+                        workspace_preference.get("legacy_selected")
+                        if "legacy_selected" in workspace_preference
+                        else workspace_preference.get("context_type") == "legacy"
+                    )
+                )
             except (ImportError, AttributeError):
                 workspace_context_active = False
             except Exception as e:
@@ -3985,13 +4000,7 @@ def handle_webhook() -> Tuple[
                     f"[{req_id}] ❌ Active media context lookup failed | {e}"
                 )
 
-        if (
-            not tenant
-            or not tenant.get(
-                "telegram_channel"
-            )
-            or workspace_context_active
-        ):
+        if not tenant or workspace_targets_selected or workspace_context_active:
 
             # Phase 4B — workspace publication path for non-legacy users
             try:
@@ -4007,13 +4016,20 @@ def handle_webhook() -> Tuple[
                     API_URL
                 )
 
-                if handled:
+                if handled and not legacy_target_selected:
 
                     return {
                         "ok": True
                     }, 200
 
-                if workspace_context_active:
+                if handled and legacy_target_selected:
+                    logger.info(
+                        "[%s] ✅ Workspace targets published; continuing to "
+                        "selected legacy target",
+                        req_id,
+                    )
+
+                if workspace_context_active and not legacy_target_selected:
                     send_message(
                         chat_id,
                         "❌ انتشار در رسانه فعال انجام نشد. "
@@ -4030,17 +4046,18 @@ def handle_webhook() -> Tuple[
                     f"{_wp_err}"
                 )
 
-            send_message(
-                chat_id,
-                (
-                    "❌ ابتدا با /register ثبت‌نام "
-                    "و کانال را تنظیم کنید."
+            if not legacy_target_selected:
+                send_message(
+                    chat_id,
+                    (
+                        "❌ ابتدا با /register ثبت‌نام "
+                        "و کانال را تنظیم کنید."
+                    )
                 )
-            )
 
-            return {
-                "ok": True
-            }, 200
+                return {
+                    "ok": True
+                }, 200
 
         # =================================================
         # ADMIN INSTRUCTION TEXT GATE

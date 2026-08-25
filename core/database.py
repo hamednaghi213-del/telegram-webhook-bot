@@ -1772,6 +1772,24 @@ def list_selected_workspace_ids(user_id: int) -> List[int]:
 
 
 @with_retry
+def set_legacy_workspace_selected(user_id: int, selected: bool) -> Dict[str, Any]:
+    """Persist whether the legacy tenant is a publication target."""
+    existing = get_active_workspace_preference(user_id)
+    if not existing:
+        raise ValueError("Workspace preference does not exist")
+    result = (
+        supabase.table("user_workspace_preferences")
+        .update({"legacy_selected": bool(selected), "updated_at": time.time()})
+        .eq("user_id", user_id)
+        .execute()
+    )
+    preference = _first_row(result)
+    if not preference:
+        raise RuntimeError("Failed to persist legacy publication selection")
+    return preference
+
+
+@with_retry
 def select_workspace(user_id: int, workspace_id: int) -> Dict[str, Any]:
     """Add an active membership to the simultaneous publication set."""
     preference = set_active_workspace(user_id, workspace_id)
@@ -1845,6 +1863,7 @@ def set_active_legacy_context(user_id: int) -> Dict[str, Any]:
         "user_id": user_id,
         "active_workspace_id": None,
         "context_type": "legacy",
+        "legacy_selected": True,
         # Keep the original creation timestamp while still supplying the
         # required column for PostgREST's INSERT ... ON CONFLICT statement.
         "created_at": (existing or {}).get("created_at") or now,
