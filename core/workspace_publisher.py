@@ -775,6 +775,7 @@ def _handle_workspace_callback(
         select_workspace,
         deselect_workspace,
         list_user_workspace_memberships,
+        get_workspace_setup_state,
     )
 
     callback_data = callback_query.get("data", "") or ""
@@ -848,6 +849,7 @@ def _handle_workspace_callback(
         _ws_send_message(api_url, chat_id, "✅ رسانه فعال با موفقیت تغییر کرد.")
 
     elif callback_data.startswith("ws:toggle:") and len(parts) >= 3:
+        resume_incomplete_setup = False
         try:
             workspace_id = int(parts[2])
             user = get_user_by_telegram_id(chat_id)
@@ -860,6 +862,8 @@ def _handle_workspace_callback(
                 if "legacy_selected" in preference
                 else preference.get("context_type") == "legacy"
             )
+            setup_state = get_workspace_setup_state(workspace_id) or {}
+            setup_incomplete = setup_state.get("step") != "completed"
             if workspace_id in selected_ids:
                 if not (
                     preference.get("context_type") == "workspace"
@@ -867,6 +871,12 @@ def _handle_workspace_callback(
                 ):
                     set_active_workspace(user["id"], workspace_id)
                     text = "رسانه برای مدیریت و تکمیل راه‌اندازی فعال شد"
+                    resume_incomplete_setup = setup_incomplete
+                elif setup_incomplete:
+                    # An active but unfinished workspace must resume its
+                    # persisted wizard, not be interpreted as deselection.
+                    text = "راه‌اندازی رسانه از مرحله ذخیره‌شده ادامه پیدا می‌کند"
+                    resume_incomplete_setup = True
                 elif len(selected_ids) == 1 and not legacy_selected:
                     _ws_answer_callback(
                         api_url, callback_id, "حداقل یک رسانه باید انتخاب بماند"
@@ -878,6 +888,7 @@ def _handle_workspace_callback(
             else:
                 select_workspace(user["id"], workspace_id)
                 text = "رسانه به انتشار هم‌زمان اضافه شد"
+                resume_incomplete_setup = setup_incomplete
         except (TypeError, ValueError):
             _ws_answer_callback(api_url, callback_id, "انتخاب رسانه معتبر نیست")
             return
@@ -899,6 +910,11 @@ def _handle_workspace_callback(
         )
         _ws_edit_message_keyboard(api_url, callback_query, keyboard)
         _ws_send_message(api_url, chat_id, f"✅ {text}.")
+        if resume_incomplete_setup:
+            # Delegate to the existing resumable setup flow; do not duplicate
+            # or reset onboarding state here.
+            from core.command_handler import handle_setup
+            handle_setup(chat_id)
 
     elif len(parts) >= 3 and parts[1] == "toggle":
         try:

@@ -688,14 +688,16 @@ def handle_create_workspace(chat_id: int) -> bool:
             )
 
         select_selected(user["id"], workspace["id"])
-        state = start_setup(workspace["id"])
-        current = state.get("current_step_key", "setup_channel")
+        start_setup(workspace["id"])
         prefix = (
-            "✅ رسانه جدید ساخته شد.\n\n"
+            "✅ رسانه جدید ساخته شد. راه‌اندازی مرحله‌به‌مرحله آغاز می‌شود."
             if created
-            else "▶️ راه‌اندازی نیمه‌کاره ادامه پیدا می‌کند.\n\n"
+            else "▶️ راه‌اندازی نیمه‌کاره از مرحله ذخیره‌شده ادامه پیدا می‌کند."
         )
-        send_message(chat_id, prefix + _setup_resume_message(current))
+        send_message(chat_id, prefix)
+        # Reuse the exact setup command flow so new and legacy users receive
+        # the same resumable wizard without duplicating onboarding logic.
+        handle_setup(chat_id)
         logger.info(
             "Legacy workspace creation | "
             f"user={chat_id} | workspace={workspace['id']} | "
