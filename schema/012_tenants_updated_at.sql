@@ -1,0 +1,16 @@
+BEGIN;
+
+ALTER TABLE tenants
+    ADD COLUMN IF NOT EXISTS updated_at DOUBLE PRECISION;
+
+UPDATE tenants
+SET updated_at = EXTRACT(EPOCH FROM NOW())
+WHERE updated_at IS NULL;
+
+ALTER TABLE tenants
+    ALTER COLUMN updated_at SET DEFAULT EXTRACT(EPOCH FROM NOW()),
+    ALTER COLUMN updated_at SET NOT NULL;
+
+NOTIFY pgrst, 'reload schema';
+
+COMMIT;
