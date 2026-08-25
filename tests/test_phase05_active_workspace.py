@@ -163,6 +163,7 @@ def test_workspace_toggle_adds_workspace_and_answers_callback(monkeypatch):
     fake_database.select_workspace = lambda _user_id, workspace_id: selected.add(workspace_id)
     fake_database.deselect_workspace = lambda _user_id, workspace_id: selected.remove(workspace_id)
     fake_database.list_user_workspace_memberships = lambda _user_id: WORKSPACES
+    fake_database.get_workspace_setup_state = lambda _workspace_id: {"step": "completed"}
     fake_database.get_tenant = lambda _chat_id: None
     monkeypatch.setitem(sys.modules, "core.database", fake_database)
     monkeypatch.setattr(workspace_publisher, "_ws_answer_callback", lambda *args: answers.append(args))
@@ -200,6 +201,7 @@ def test_workspace_toggle_does_not_remove_last_selection(monkeypatch):
     fake_database.select_workspace = lambda _user_id, workspace_id: selected.add(workspace_id)
     fake_database.deselect_workspace = lambda _user_id, workspace_id: selected.remove(workspace_id)
     fake_database.list_user_workspace_memberships = lambda _user_id: WORKSPACES
+    fake_database.get_workspace_setup_state = lambda _workspace_id: {"step": "completed"}
     monkeypatch.setitem(sys.modules, "core.database", fake_database)
     monkeypatch.setattr(workspace_publisher, "_ws_answer_callback", lambda *args: answers.append(args))
 
@@ -261,6 +263,7 @@ def test_selected_workspace_in_legacy_context_is_activated_not_removed(monkeypat
     fake_database.select_workspace = lambda _user_id, workspace_id: selected.add(workspace_id)
     fake_database.deselect_workspace = lambda _user_id, workspace_id: selected.remove(workspace_id)
     fake_database.list_user_workspace_memberships = lambda _user_id: WORKSPACES
+    fake_database.get_workspace_setup_state = lambda _workspace_id: {"step": "completed"}
     fake_database.get_tenant = lambda _chat_id: {"telegram_channel": "@old"}
     monkeypatch.setitem(sys.modules, "core.database", fake_database)
     monkeypatch.setattr(workspace_publisher, "_ws_answer_callback", lambda *args: answers.append(args))
@@ -276,6 +279,45 @@ def test_selected_workspace_in_legacy_context_is_activated_not_removed(monkeypat
     assert selected == {20}
     assert active == [20]
     assert "تکمیل راه‌اندازی" in answers[-1][-1]
+
+
+def test_active_incomplete_workspace_resumes_existing_setup(monkeypatch):
+    selected = {20}
+    resumed = []
+    fake_database = types.ModuleType("core.database")
+    fake_database.get_user_by_telegram_id = lambda _chat_id: {"id": 1}
+    fake_database.get_destination_branding = lambda _dest_id: None
+    fake_database.get_workspace_branding = lambda _workspace_id: None
+    fake_database.set_active_legacy_context = lambda _user_id: None
+    fake_database.set_legacy_workspace_selected = lambda _user_id, _selected: None
+    fake_database.set_active_workspace = lambda _user_id, _workspace_id: None
+    fake_database.get_active_workspace_preference = lambda _user_id: {
+        "context_type": "workspace", "active_workspace_id": 20,
+        "legacy_selected": True,
+    }
+    fake_database.list_selected_workspace_ids = lambda _user_id: sorted(selected)
+    fake_database.select_workspace = lambda _user_id, workspace_id: selected.add(workspace_id)
+    fake_database.deselect_workspace = lambda _user_id, workspace_id: selected.remove(workspace_id)
+    fake_database.list_user_workspace_memberships = lambda _user_id: WORKSPACES
+    fake_database.get_workspace_setup_state = lambda _workspace_id: {
+        "step": "in_progress", "current_step_key": "setup_branding_sample",
+    }
+    fake_database.get_tenant = lambda _chat_id: {"telegram_channel": "@old"}
+    fake_command_handler = types.ModuleType("core.command_handler")
+    fake_command_handler.handle_setup = lambda chat_id: resumed.append(chat_id)
+    monkeypatch.setitem(sys.modules, "core.database", fake_database)
+    monkeypatch.setitem(sys.modules, "core.command_handler", fake_command_handler)
+    monkeypatch.setattr(workspace_publisher, "_ws_answer_callback", lambda *args: None)
+    monkeypatch.setattr(workspace_publisher, "_ws_edit_message_keyboard", lambda *args: None)
+    monkeypatch.setattr(workspace_publisher, "_ws_send_message", lambda *args: None)
+
+    workspace_publisher._handle_workspace_callback(
+        {"id": "cb", "data": "ws:toggle:20", "from": {"id": 100}},
+        "req", "https://api.test",
+    )
+
+    assert selected == {20}
+    assert resumed == [100]
 
 
 def test_existing_preference_upserts_always_include_original_created_at(
