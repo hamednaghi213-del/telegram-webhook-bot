@@ -154,6 +154,11 @@ def test_workspace_toggle_adds_workspace_and_answers_callback(monkeypatch):
     fake_database.get_workspace_branding = lambda _workspace_id: None
     fake_database.set_active_legacy_context = lambda _user_id: None
     fake_database.set_active_workspace = lambda _user_id, _workspace_id: None
+    fake_database.set_legacy_workspace_selected = lambda _user_id, _selected: None
+    fake_database.get_active_workspace_preference = lambda _user_id: {
+        "context_type": "workspace", "active_workspace_id": 10,
+        "legacy_selected": False,
+    }
     fake_database.list_selected_workspace_ids = lambda _user_id: sorted(selected)
     fake_database.select_workspace = lambda _user_id, workspace_id: selected.add(workspace_id)
     fake_database.deselect_workspace = lambda _user_id, workspace_id: selected.remove(workspace_id)
@@ -186,6 +191,11 @@ def test_workspace_toggle_does_not_remove_last_selection(monkeypatch):
     fake_database.get_workspace_branding = lambda _workspace_id: None
     fake_database.set_active_legacy_context = lambda _user_id: None
     fake_database.set_active_workspace = lambda _user_id, _workspace_id: None
+    fake_database.set_legacy_workspace_selected = lambda _user_id, _selected: None
+    fake_database.get_active_workspace_preference = lambda _user_id: {
+        "context_type": "workspace", "active_workspace_id": 10,
+        "legacy_selected": False,
+    }
     fake_database.list_selected_workspace_ids = lambda _user_id: sorted(selected)
     fake_database.select_workspace = lambda _user_id, workspace_id: selected.add(workspace_id)
     fake_database.deselect_workspace = lambda _user_id, workspace_id: selected.remove(workspace_id)
@@ -216,6 +226,56 @@ def test_workspace_keyboard_can_include_legacy_media_context():
         "callback_data": "ws:legacy",
     }
     assert keyboard[1][0]["text"].startswith("▫️")
+
+
+def test_legacy_and_workspace_can_both_show_selected():
+    keyboard = workspace_publisher.build_workspace_keyboard(
+        WORKSPACES,
+        None,
+        selected_workspace_ids=[20],
+        include_legacy=True,
+        legacy_active=True,
+    )
+
+    assert keyboard[0][0]["text"].startswith("✅")
+    assert keyboard[1][0]["text"].startswith("▫️")
+    assert keyboard[2][0]["text"].startswith("✅")
+
+
+def test_selected_workspace_in_legacy_context_is_activated_not_removed(monkeypatch):
+    selected = {20}
+    active = []
+    answers = []
+    fake_database = types.ModuleType("core.database")
+    fake_database.get_user_by_telegram_id = lambda _chat_id: {"id": 1}
+    fake_database.get_destination_branding = lambda _dest_id: None
+    fake_database.get_workspace_branding = lambda _workspace_id: None
+    fake_database.set_active_legacy_context = lambda _user_id: None
+    fake_database.set_legacy_workspace_selected = lambda _user_id, _selected: None
+    fake_database.set_active_workspace = lambda user_id, workspace_id: active.append(workspace_id)
+    fake_database.get_active_workspace_preference = lambda _user_id: (
+        {"context_type": "workspace", "active_workspace_id": active[-1], "legacy_selected": True}
+        if active else {"context_type": "legacy", "active_workspace_id": None, "legacy_selected": True}
+    )
+    fake_database.list_selected_workspace_ids = lambda _user_id: sorted(selected)
+    fake_database.select_workspace = lambda _user_id, workspace_id: selected.add(workspace_id)
+    fake_database.deselect_workspace = lambda _user_id, workspace_id: selected.remove(workspace_id)
+    fake_database.list_user_workspace_memberships = lambda _user_id: WORKSPACES
+    fake_database.get_tenant = lambda _chat_id: {"telegram_channel": "@old"}
+    monkeypatch.setitem(sys.modules, "core.database", fake_database)
+    monkeypatch.setattr(workspace_publisher, "_ws_answer_callback", lambda *args: answers.append(args))
+    monkeypatch.setattr(workspace_publisher, "_ws_edit_message_keyboard", lambda *args: None)
+    monkeypatch.setattr(workspace_publisher, "_ws_send_message", lambda *args: None)
+
+    workspace_publisher._handle_workspace_callback(
+        {"id": "cb", "data": "ws:toggle:20", "from": {"id": 100}},
+        "req",
+        "https://api.test",
+    )
+
+    assert selected == {20}
+    assert active == [20]
+    assert "تکمیل راه‌اندازی" in answers[-1][-1]
 
 
 def test_existing_preference_upserts_always_include_original_created_at(

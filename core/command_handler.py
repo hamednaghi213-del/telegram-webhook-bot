@@ -613,8 +613,9 @@ def handle_workspaces(chat_id: int) -> bool:
         legacy_active = bool(
             legacy_tenant
             and (
-                not preference
-                or preference.get("context_type") == "legacy"
+                preference.get("legacy_selected")
+                if "legacy_selected" in preference
+                else (not preference or preference.get("context_type") == "legacy")
             )
         )
         if (

@@ -297,11 +297,7 @@ def build_workspace_keyboard(
             "callback_data": "ws:legacy",
         }])
     for workspace in workspaces:
-        marker = (
-            "✅"
-            if not legacy_active and workspace.get("id") in selected_ids
-            else "▫️"
-        )
+        marker = "✅" if workspace.get("id") in selected_ids else "▫️"
         role = workspace.get("membership_role") or workspace.get("member_role") or "member"
         keyboard.append([{
             "text": f"{marker} {workspace.get('name') or workspace['id']} ({role})",
@@ -773,6 +769,8 @@ def _handle_workspace_callback(
         get_workspace_branding,
         set_active_legacy_context,
         set_active_workspace,
+        set_legacy_workspace_selected,
+        get_active_workspace_preference,
         list_selected_workspace_ids,
         select_workspace,
         deselect_workspace,
@@ -798,12 +796,43 @@ def _handle_workspace_callback(
             from core.database import get_tenant
             if not get_tenant(chat_id):
                 raise ValueError("legacy tenant not found")
-            set_active_legacy_context(user["id"])
+            preference = get_active_workspace_preference(user["id"]) or {}
+            selected_ids = set(list_selected_workspace_ids(user["id"]))
+            legacy_selected = bool(
+                preference.get("legacy_selected")
+                if "legacy_selected" in preference
+                else preference.get("context_type") == "legacy"
+            )
+            if legacy_selected and preference.get("context_type") == "legacy":
+                if not selected_ids:
+                    _ws_answer_callback(
+                        api_url, callback_id, "حداقل یک رسانه باید انتخاب بماند"
+                    )
+                    return
+                set_legacy_workspace_selected(user["id"], False)
+                text = "رسانه قدیمی از انتشار هم‌زمان حذف شد"
+            else:
+                set_active_legacy_context(user["id"])
+                text = (
+                    "رسانه قدیمی برای مدیریت فعال شد"
+                    if legacy_selected
+                    else "رسانه قدیمی به انتشار هم‌زمان اضافه شد"
+                )
         except (TypeError, ValueError):
             _ws_answer_callback(api_url, callback_id, "رسانه قدیمی معتبر نیست")
             return
-        _ws_answer_callback(api_url, callback_id, "رسانه قدیمی فعال شد")
-        _ws_send_message(api_url, chat_id, "✅ رسانه قدیمی شما فعال شد.")
+        _ws_answer_callback(api_url, callback_id, text)
+        preference = get_active_workspace_preference(user["id"]) or {}
+        workspaces = list_user_workspace_memberships(user["id"])
+        keyboard = build_workspace_keyboard(
+            workspaces,
+            preference.get("active_workspace_id"),
+            selected_workspace_ids=list_selected_workspace_ids(user["id"]),
+            include_legacy=True,
+            legacy_active=bool(preference.get("legacy_selected")),
+        )
+        _ws_edit_message_keyboard(api_url, callback_query, keyboard)
+        _ws_send_message(api_url, chat_id, f"✅ {text}.")
 
     elif callback_data.startswith("ws:select:") and len(parts) >= 3:
         try:
@@ -825,14 +854,27 @@ def _handle_workspace_callback(
             if not user:
                 raise ValueError("user not found")
             selected_ids = set(list_selected_workspace_ids(user["id"]))
+            preference = get_active_workspace_preference(user["id"]) or {}
+            legacy_selected = bool(
+                preference.get("legacy_selected")
+                if "legacy_selected" in preference
+                else preference.get("context_type") == "legacy"
+            )
             if workspace_id in selected_ids:
-                if len(selected_ids) == 1:
+                if not (
+                    preference.get("context_type") == "workspace"
+                    and preference.get("active_workspace_id") == workspace_id
+                ):
+                    set_active_workspace(user["id"], workspace_id)
+                    text = "رسانه برای مدیریت و تکمیل راه‌اندازی فعال شد"
+                elif len(selected_ids) == 1 and not legacy_selected:
                     _ws_answer_callback(
                         api_url, callback_id, "حداقل یک رسانه باید انتخاب بماند"
                     )
                     return
-                deselect_workspace(user["id"], workspace_id)
-                text = "رسانه از انتشار هم‌زمان حذف شد"
+                else:
+                    deselect_workspace(user["id"], workspace_id)
+                    text = "رسانه از انتشار هم‌زمان حذف شد"
             else:
                 select_workspace(user["id"], workspace_id)
                 text = "رسانه به انتشار هم‌زمان اضافه شد"
@@ -843,11 +885,17 @@ def _handle_workspace_callback(
         selected_ids = list_selected_workspace_ids(user["id"])
         workspaces = list_user_workspace_memberships(user["id"])
         from core.database import get_tenant
+        preference = get_active_workspace_preference(user["id"]) or {}
         keyboard = build_workspace_keyboard(
             workspaces,
-            workspace_id,
+            preference.get("active_workspace_id"),
             selected_workspace_ids=selected_ids,
             include_legacy=bool(get_tenant(chat_id)),
+            legacy_active=bool(
+                preference.get("legacy_selected")
+                if "legacy_selected" in preference
+                else preference.get("context_type") == "legacy"
+            ),
         )
         _ws_edit_message_keyboard(api_url, callback_query, keyboard)
         _ws_send_message(api_url, chat_id, f"✅ {text}.")
