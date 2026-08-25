@@ -249,14 +249,47 @@ def resolve_workspace_for_user(
     return None, "شما عضو چند رسانه هستید. لطفاً رسانه مورد نظر را انتخاب کنید."
 
 
+def resolve_workspaces_for_user(
+    telegram_user_id: int,
+    get_user_fn,
+    list_workspaces_fn,
+    get_active_preference_fn=None,
+    list_selected_ids_fn=None,
+) -> Tuple[List[Dict], Optional[str]]:
+    """Resolve every workspace selected for simultaneous publication."""
+    user = get_user_fn(telegram_user_id)
+    if not user:
+        return [], None
+    workspaces = list_workspaces_fn(user["id"])
+    if not workspaces:
+        return [], None
+    if len(workspaces) == 1:
+        return workspaces, None
+    selected_ids = set(
+        list_selected_ids_fn(user["id"]) or []
+    ) if list_selected_ids_fn else set()
+    if not selected_ids and get_active_preference_fn:
+        preference = get_active_preference_fn(user["id"]) or {}
+        if preference.get("context_type") != "legacy":
+            selected_ids.add(preference.get("active_workspace_id"))
+    selected = [ws for ws in workspaces if ws.get("id") in selected_ids]
+    if selected:
+        return selected, None
+    return [], "شما عضو چند رسانه هستید. لطفاً حداقل یک رسانه را انتخاب کنید."
+
+
 def build_workspace_keyboard(
     workspaces: List[Dict],
     active_workspace_id: Optional[int],
+    selected_workspace_ids: Optional[List[int]] = None,
     include_legacy: bool = False,
     legacy_active: bool = False,
 ) -> List[List[Dict]]:
-    """Build an inline keyboard for active-workspace selection."""
+    """Build an inline keyboard for simultaneous workspace selection."""
     keyboard = []
+    selected_ids = set(selected_workspace_ids or [])
+    if not selected_ids and active_workspace_id is not None and not legacy_active:
+        selected_ids.add(active_workspace_id)
     if include_legacy:
         legacy_marker = "✅" if legacy_active else "▫️"
         keyboard.append([{
@@ -266,13 +299,13 @@ def build_workspace_keyboard(
     for workspace in workspaces:
         marker = (
             "✅"
-            if not legacy_active and workspace.get("id") == active_workspace_id
+            if not legacy_active and workspace.get("id") in selected_ids
             else "▫️"
         )
         role = workspace.get("membership_role") or workspace.get("member_role") or "member"
         keyboard.append([{
             "text": f"{marker} {workspace.get('name') or workspace['id']} ({role})",
-            "callback_data": f"ws:select:{workspace['id']}",
+            "callback_data": f"ws:toggle:{workspace['id']}",
         }])
     return keyboard
 
@@ -627,6 +660,7 @@ def _try_workspace_publication(
             get_workspace_branding,
             get_workspace_member,
             get_active_workspace_preference,
+            list_selected_workspace_ids,
         )
 
         user = get_user_by_telegram_id(chat_id)
@@ -637,36 +671,38 @@ def _try_workspace_publication(
         if not workspaces:
             return False
 
-        workspace, workspace_error = resolve_workspace_for_user(
+        selected_workspaces, workspace_error = resolve_workspaces_for_user(
             chat_id,
             lambda _telegram_id: user,
             lambda _user_id: workspaces,
             get_active_workspace_preference,
+            list_selected_workspace_ids,
         )
-        if not workspace:
+        if not selected_workspaces:
             _ws_send_message(
                 api_url,
                 chat_id,
                 workspace_error or "رسانه فعالی یافت نشد.",
             )
             return True
-        workspace_id = workspace["id"]
-
-        # Check setup is completed
-        setup_state = get_workspace_setup_state(workspace_id)
-        if not setup_state or setup_state.get("step") != "completed":
-            return False  # Setup not done, fall through to legacy "register" message
-
-        # Check member permission
-        allowed, err = check_publish_permission(
-            workspace_id, user["id"], get_workspace_member
-        )
-        if not allowed:
-            _ws_send_message(api_url, chat_id, f"❌ {err}")
-            return True
-
-        # Get verified active destinations
-        destinations = list_verified_active_destinations(workspace_id)
+        destinations = []
+        for workspace in selected_workspaces:
+            workspace_id = workspace["id"]
+            setup_state = get_workspace_setup_state(workspace_id)
+            if not setup_state or setup_state.get("step") != "completed":
+                _ws_send_message(
+                    api_url, chat_id,
+                    f"❌ راه‌اندازی رسانه «{workspace.get('name')}» کامل نیست.",
+                )
+                return True
+            allowed, err = check_publish_permission(
+                workspace_id, user["id"], get_workspace_member
+            )
+            if not allowed:
+                _ws_send_message(api_url, chat_id, f"❌ {workspace.get('name')}: {err}")
+                return True
+            destinations.extend(list_verified_active_destinations(workspace_id))
+        destinations = list({dest["id"]: dest for dest in destinations}.values())
         if not destinations:
             _ws_send_message(
                 api_url,
@@ -700,7 +736,7 @@ def _try_workspace_publication(
         )
 
         # One Telegram+Bale pair publishes together without another prompt.
-        if len(destinations) == 1 or paired_destinations:
+        if len(selected_workspaces) > 1 or len(destinations) == 1 or paired_destinations:
             result = publish_to_destinations(
                 api_url, destinations, content_text, media_file_id, media_type,
                 get_destination_branding, get_workspace_branding,
@@ -737,6 +773,10 @@ def _handle_workspace_callback(
         get_workspace_branding,
         set_active_legacy_context,
         set_active_workspace,
+        list_selected_workspace_ids,
+        select_workspace,
+        deselect_workspace,
+        list_user_workspace_memberships,
     )
 
     callback_data = callback_query.get("data", "") or ""
@@ -771,12 +811,46 @@ def _handle_workspace_callback(
             user = get_user_by_telegram_id(chat_id)
             if not user:
                 raise ValueError("user not found")
-            set_active_workspace(user["id"], workspace_id)
+            select_workspace(user["id"], workspace_id)
         except (TypeError, ValueError):
             _ws_answer_callback(api_url, callback_id, "انتخاب رسانه معتبر نیست")
             return
         _ws_answer_callback(api_url, callback_id, "رسانه فعال تغییر کرد")
         _ws_send_message(api_url, chat_id, "✅ رسانه فعال با موفقیت تغییر کرد.")
+
+    elif callback_data.startswith("ws:toggle:") and len(parts) >= 3:
+        try:
+            workspace_id = int(parts[2])
+            user = get_user_by_telegram_id(chat_id)
+            if not user:
+                raise ValueError("user not found")
+            selected_ids = set(list_selected_workspace_ids(user["id"]))
+            if workspace_id in selected_ids:
+                if len(selected_ids) == 1:
+                    _ws_answer_callback(
+                        api_url, callback_id, "حداقل یک رسانه باید انتخاب بماند"
+                    )
+                    return
+                deselect_workspace(user["id"], workspace_id)
+                text = "رسانه از انتشار هم‌زمان حذف شد"
+            else:
+                select_workspace(user["id"], workspace_id)
+                text = "رسانه به انتشار هم‌زمان اضافه شد"
+        except (TypeError, ValueError):
+            _ws_answer_callback(api_url, callback_id, "انتخاب رسانه معتبر نیست")
+            return
+        _ws_answer_callback(api_url, callback_id, text)
+        selected_ids = list_selected_workspace_ids(user["id"])
+        workspaces = list_user_workspace_memberships(user["id"])
+        from core.database import get_tenant
+        keyboard = build_workspace_keyboard(
+            workspaces,
+            workspace_id,
+            selected_workspace_ids=selected_ids,
+            include_legacy=bool(get_tenant(chat_id)),
+        )
+        _ws_edit_message_keyboard(api_url, callback_query, keyboard)
+        _ws_send_message(api_url, chat_id, f"✅ {text}.")
 
     elif len(parts) >= 3 and parts[1] == "toggle":
         try:

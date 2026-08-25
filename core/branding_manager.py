@@ -1,4 +1,5 @@
 import logging
+import os
 
 from core.database import (
     get_tenant,
@@ -46,7 +47,8 @@ def get_branding(user_id):
         ),
 
         "bale_token": (
-            tenant.get("bale_token")
+            os.getenv("BALE_BOT_TOKEN", "").strip()
+            or tenant.get("bale_token")
             or ""
         )
     }

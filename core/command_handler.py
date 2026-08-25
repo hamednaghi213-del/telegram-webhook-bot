@@ -1,4 +1,5 @@
 import logging
+import importlib
 import os
 import requests
 import re
@@ -603,6 +604,12 @@ def handle_workspaces(chat_id: int) -> bool:
 
         preference = get_active_workspace_preference(user["id"]) or {}
         active_id = preference.get("active_workspace_id")
+        database_module = importlib.import_module("core.database")
+        list_selected = getattr(database_module, "list_selected_workspace_ids", None)
+        select_selected = getattr(database_module, "select_workspace", set_active_workspace)
+        selected_ids = list_selected(user["id"]) if list_selected else (
+            [active_id] if active_id is not None else []
+        )
         legacy_active = bool(
             legacy_tenant
             and (
@@ -615,13 +622,14 @@ def handle_workspaces(chat_id: int) -> bool:
             and not legacy_tenant
             and active_id != workspaces[0]["id"]
         ):
-            set_active_workspace(user["id"], workspaces[0]["id"])
+            select_selected(user["id"], workspaces[0]["id"])
             active_id = workspaces[0]["id"]
 
         from core.workspace_publisher import build_workspace_keyboard
         keyboard = build_workspace_keyboard(
             workspaces,
             active_id,
+            selected_workspace_ids=selected_ids,
             include_legacy=bool(legacy_tenant),
             legacy_active=legacy_active,
         )
@@ -633,7 +641,7 @@ def handle_workspaces(chat_id: int) -> bool:
 
         send_message_with_keyboard(
             chat_id,
-            "🏢 رسانه‌های شما\n\nرسانه فعال را انتخاب کنید:",
+            "🏢 رسانه‌های شما\n\nیک یا چند رسانه را برای انتشار هم‌زمان انتخاب کنید:",
             keyboard,
         )
         return True
@@ -649,6 +657,8 @@ def handle_create_workspace(chat_id: int) -> bool:
         send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
         return True
     try:
+        database_module = importlib.import_module("core.database")
+        select_selected = getattr(database_module, "select_workspace", set_active_workspace)
         legacy_tenant = get_tenant(chat_id)
         user = get_user_by_telegram_id(chat_id)
         if not user:
@@ -676,7 +686,7 @@ def handle_create_workspace(chat_id: int) -> bool:
                 status="active",
             )
 
-        set_active_workspace(user["id"], workspace["id"])
+        select_selected(user["id"], workspace["id"])
         state = start_setup(workspace["id"])
         current = state.get("current_step_key", "setup_channel")
         prefix = (
@@ -703,6 +713,8 @@ def handle_switchworkspace(args: str, chat_id: int) -> bool:
         send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
         return True
     value = (args or "").strip()
+    database_module = importlib.import_module("core.database")
+    select_selected = getattr(database_module, "select_workspace", set_active_workspace)
     if not value:
         return handle_workspaces(chat_id)
     try:
@@ -718,7 +730,7 @@ def handle_switchworkspace(args: str, chat_id: int) -> bool:
             send_message(chat_id, "✅ رسانه قدیمی شما فعال شد.")
             return True
         workspace_id = int(value)
-        set_active_workspace(user["id"], workspace_id)
+        select_selected(user["id"], workspace_id)
         send_message(chat_id, "✅ رسانه فعال با موفقیت تغییر کرد.")
         return True
     except (TypeError, ValueError):

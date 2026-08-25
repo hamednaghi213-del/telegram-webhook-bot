@@ -100,9 +100,107 @@ def test_stale_preference_requires_new_selection():
 def test_workspace_keyboard_marks_active_workspace():
     keyboard = workspace_publisher.build_workspace_keyboard(WORKSPACES, 20)
 
-    assert keyboard[0][0]["callback_data"] == "ws:select:10"
+    assert keyboard[0][0]["callback_data"] == "ws:toggle:10"
     assert keyboard[0][0]["text"].startswith("▫️")
     assert keyboard[1][0]["text"].startswith("✅")
+
+
+def test_workspace_keyboard_marks_multiple_selected_workspaces():
+    keyboard = workspace_publisher.build_workspace_keyboard(
+        WORKSPACES, 10, selected_workspace_ids=[10, 20]
+    )
+
+    assert all(row[0]["text"].startswith("✅") for row in keyboard)
+    assert [row[0]["callback_data"] for row in keyboard] == [
+        "ws:toggle:10",
+        "ws:toggle:20",
+    ]
+
+
+def test_multiple_workspaces_resolve_all_selected_memberships():
+    workspaces, error = workspace_publisher.resolve_workspaces_for_user(
+        100,
+        lambda _telegram_id: {"id": 1},
+        lambda _user_id: WORKSPACES,
+        lambda _user_id: {"active_workspace_id": 10, "context_type": "workspace"},
+        lambda _user_id: [10, 20],
+    )
+
+    assert [workspace["id"] for workspace in workspaces] == [10, 20]
+    assert error is None
+
+
+def test_multiple_workspaces_fall_back_to_legacy_active_preference():
+    workspaces, error = workspace_publisher.resolve_workspaces_for_user(
+        100,
+        lambda _telegram_id: {"id": 1},
+        lambda _user_id: WORKSPACES,
+        lambda _user_id: {"active_workspace_id": 20, "context_type": "workspace"},
+        lambda _user_id: [],
+    )
+
+    assert [workspace["id"] for workspace in workspaces] == [20]
+    assert error is None
+
+
+def test_workspace_toggle_adds_workspace_and_answers_callback(monkeypatch):
+    selected = {10}
+    answers = []
+    edits = []
+    messages = []
+    fake_database = types.ModuleType("core.database")
+    fake_database.get_user_by_telegram_id = lambda _chat_id: {"id": 1}
+    fake_database.get_destination_branding = lambda _dest_id: None
+    fake_database.get_workspace_branding = lambda _workspace_id: None
+    fake_database.set_active_legacy_context = lambda _user_id: None
+    fake_database.set_active_workspace = lambda _user_id, _workspace_id: None
+    fake_database.list_selected_workspace_ids = lambda _user_id: sorted(selected)
+    fake_database.select_workspace = lambda _user_id, workspace_id: selected.add(workspace_id)
+    fake_database.deselect_workspace = lambda _user_id, workspace_id: selected.remove(workspace_id)
+    fake_database.list_user_workspace_memberships = lambda _user_id: WORKSPACES
+    fake_database.get_tenant = lambda _chat_id: None
+    monkeypatch.setitem(sys.modules, "core.database", fake_database)
+    monkeypatch.setattr(workspace_publisher, "_ws_answer_callback", lambda *args: answers.append(args))
+    monkeypatch.setattr(workspace_publisher, "_ws_edit_message_keyboard", lambda *args: edits.append(args))
+    monkeypatch.setattr(workspace_publisher, "_ws_send_message", lambda *args: messages.append(args))
+
+    workspace_publisher._handle_workspace_callback(
+        {"id": "cb", "data": "ws:toggle:20", "from": {"id": 100}},
+        "req",
+        "https://api.test",
+    )
+
+    assert selected == {10, 20}
+    assert answers and "اضافه شد" in answers[-1][-1]
+    assert edits
+    assert all(row[0]["text"].startswith("✅") for row in edits[-1][-1])
+    assert messages
+
+
+def test_workspace_toggle_does_not_remove_last_selection(monkeypatch):
+    selected = {10}
+    answers = []
+    fake_database = types.ModuleType("core.database")
+    fake_database.get_user_by_telegram_id = lambda _chat_id: {"id": 1}
+    fake_database.get_destination_branding = lambda _dest_id: None
+    fake_database.get_workspace_branding = lambda _workspace_id: None
+    fake_database.set_active_legacy_context = lambda _user_id: None
+    fake_database.set_active_workspace = lambda _user_id, _workspace_id: None
+    fake_database.list_selected_workspace_ids = lambda _user_id: sorted(selected)
+    fake_database.select_workspace = lambda _user_id, workspace_id: selected.add(workspace_id)
+    fake_database.deselect_workspace = lambda _user_id, workspace_id: selected.remove(workspace_id)
+    fake_database.list_user_workspace_memberships = lambda _user_id: WORKSPACES
+    monkeypatch.setitem(sys.modules, "core.database", fake_database)
+    monkeypatch.setattr(workspace_publisher, "_ws_answer_callback", lambda *args: answers.append(args))
+
+    workspace_publisher._handle_workspace_callback(
+        {"id": "cb", "data": "ws:toggle:10", "from": {"id": 100}},
+        "req",
+        "https://api.test",
+    )
+
+    assert selected == {10}
+    assert "حداقل یک رسانه" in answers[-1][-1]
 
 
 def test_workspace_keyboard_can_include_legacy_media_context():

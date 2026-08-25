@@ -1762,6 +1762,42 @@ def get_active_workspace_preference(
 
 
 @with_retry
+def list_selected_workspace_ids(user_id: int) -> List[int]:
+    """Return the user's explicitly selected workspace IDs."""
+    result = (
+        supabase.table("user_selected_workspaces")
+        .select("workspace_id").eq("user_id", user_id).execute()
+    )
+    return [int(row["workspace_id"]) for row in (result.data or [])]
+
+
+@with_retry
+def select_workspace(user_id: int, workspace_id: int) -> Dict[str, Any]:
+    """Add an active membership to the simultaneous publication set."""
+    preference = set_active_workspace(user_id, workspace_id)
+    result = (
+        supabase.table("user_selected_workspaces")
+        .upsert(
+            {"user_id": user_id, "workspace_id": workspace_id},
+            on_conflict="user_id,workspace_id",
+        ).execute()
+    )
+    if not _first_row(result):
+        raise RuntimeError("Failed to select workspace")
+    return preference
+
+
+@with_retry
+def deselect_workspace(user_id: int, workspace_id: int) -> None:
+    """Remove a workspace from the simultaneous publication set."""
+    result = (
+        supabase.table("user_selected_workspaces").delete()
+        .eq("user_id", user_id).eq("workspace_id", workspace_id).execute()
+    )
+    return result.data
+
+
+@with_retry
 def set_active_workspace(
     user_id: int,
     workspace_id: int
