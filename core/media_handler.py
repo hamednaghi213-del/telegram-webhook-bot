@@ -2774,6 +2774,8 @@ def process_media_group(
             ),
         )
         if shared_result.get("ok"):
+            timer_to_cancel = None
+            should_schedule = False
             with group_lock:
                 live_group = pending_groups.get(group_key)
                 if live_group:
@@ -2797,16 +2799,19 @@ def process_media_group(
                         live_group["recovery_started_at"] = time.time()
                         live_group["attempt_count"] = 0
                         live_group["last_error"] = None
+                        should_schedule = True
                     else:
                         live_group["state"] = "published"
-            with group_lock:
-                should_remove = bool(
-                    pending_groups.get(group_key)
-                    and pending_groups[group_key].get("state") == "published"
-                    and not pending_groups[group_key].get("files")
-                )
-            if should_remove:
-                remove_pending_group(media_group_id, chat_id)
+                        # Keep the empty check and removal in one critical
+                        # section so a newly arriving member cannot be popped.
+                        pending_groups.pop(group_key, None)
+                        timer_to_cancel = group_timers.pop(group_key, None)
+            if timer_to_cancel:
+                try:
+                    timer_to_cancel.cancel()
+                except Exception:
+                    pass
+            if not should_schedule:
                 logger.info(f"🧹 Media Group cleaned after success | group={media_group_id}")
             else:
                 schedule_processing(

@@ -596,3 +596,17 @@ def test_legacy_bale_album_ids_reach_delivery_result(monkeypatch):
     assert result["ok"] is True
     assert delivery.primary_message_id == 701
     assert delivery.message_ids == (701, 702)
+
+
+def test_successful_group_cleanup_has_no_out_of_lock_remove_gap(monkeypatch):
+    _add("atomic-cleanup", 2)
+    monkeypatch.setattr(
+        publication_engine, "_send_media_target",
+        lambda *_a, **_k: {"ok": True, "message_id": 801},
+    )
+    monkeypatch.setattr(
+        media_handler, "remove_pending_group",
+        lambda *_a, **_k: pytest.fail("cleanup must be atomic under group_lock"),
+    )
+    assert media_handler.process_media_group("atomic-cleanup", 9) is True
+    assert (9, "atomic-cleanup") not in media_handler.pending_groups
