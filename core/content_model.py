@@ -93,6 +93,7 @@ class DeliveryResult:
     destination_id: Optional[int]
     destination_chat_id: str
     primary_message_id: Optional[int] = None
+    message_ids: Tuple[int, ...] = field(default_factory=tuple)
     blockquote_message_ids: Tuple[int, ...] = field(default_factory=tuple)
     followup_message_ids: Tuple[int, ...] = field(default_factory=tuple)
     status: str = "pending"

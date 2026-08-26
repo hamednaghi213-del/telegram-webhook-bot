@@ -184,6 +184,22 @@ def setup_function():
     fake_command_handler.handle_command.reset_mock()
 
 
+def test_workspace_context_database_failure_is_handled_executably():
+    fake_request = FakeRequest({"message": TEXT_MESSAGE})
+    fake_database.get_active_workspace_preference.side_effect = RuntimeError("temporary db error")
+    try:
+        with patch.object(webhook_handler, "request", fake_request), patch.object(
+            webhook_handler, "validate_webhook_token", return_value=True
+        ), patch.object(webhook_handler, "send_message", return_value=True), patch.object(
+            webhook_handler, "try_queue_editorial_text_review", return_value=False
+        ), patch.object(webhook_handler, "publish_prepared_text", return_value=True):
+            result, status = webhook_handler.handle_webhook()
+    finally:
+        fake_database.get_active_workspace_preference.side_effect = None
+    assert status == 200
+    assert result["ok"] is True
+
+
 # =========================================================
 # TEST 01
 # GET MESSAGE TEXT FROM CAPTION

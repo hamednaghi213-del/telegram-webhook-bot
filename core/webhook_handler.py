@@ -3341,6 +3341,18 @@ def handle_editorial_callback(
 
         if action == "original":
 
+            media_group_id = metadata.get("media_group_id")
+            editorial_lease = None
+            publication_files = metadata.get("files", [])
+            publication_source_key = metadata.get("source_key") or f"editorial:{review_id}:original"
+            if media_group_id:
+                from core.media_handler import lease_editorial_group_for_publication
+                editorial_lease = lease_editorial_group_for_publication(
+                    str(media_group_id), user_id, publication_files
+                )
+                publication_files = editorial_lease["files"]
+                publication_source_key = editorial_lease["source_key"]
+
             success = (
                 publish_prepared_text(
                     chat_id=user_id,
@@ -3370,16 +3382,22 @@ def handle_editorial_callback(
                         )
                     ),
                     editorial_finalized=True,
-                    source_key=metadata.get("source_key") or f"editorial:{review_id}:original",
-                    files=metadata.get("files", []),
+                    source_key=publication_source_key,
+                    files=publication_files,
                 )
             )
 
-            if success:
+            if editorial_lease is not None:
+                from core.media_handler import finish_editorial_group_publication
+                finish_editorial_group_publication(
+                    str(media_group_id), user_id, editorial_lease, bool(success),
+                    approved_text=(
+                        metadata.get("main_text", review.original_text)
+                        or review.original_text
+                    ),
+                )
 
-                if metadata.get("media_group_id"):
-                    from core.media_handler import remove_pending_group
-                    remove_pending_group(metadata["media_group_id"], user_id)
+            if success:
 
                 mark_original_published(
                     review_id=review_id,
@@ -3429,6 +3447,18 @@ def handle_editorial_callback(
                 )
             )
 
+            media_group_id = metadata.get("media_group_id")
+            editorial_lease = None
+            publication_files = metadata.get("files", [])
+            publication_source_key = metadata.get("source_key") or f"editorial:{review_id}:summary"
+            if media_group_id:
+                from core.media_handler import lease_editorial_group_for_publication
+                editorial_lease = lease_editorial_group_for_publication(
+                    str(media_group_id), user_id, publication_files
+                )
+                publication_files = editorial_lease["files"]
+                publication_source_key = editorial_lease["source_key"]
+
             success = (
                 publish_prepared_text(
                     chat_id=user_id,
@@ -3439,16 +3469,19 @@ def handle_editorial_callback(
                     expandable_blocks=[],
                     other_entities=[],
                     editorial_finalized=True,
-                    source_key=metadata.get("source_key") or f"editorial:{review_id}:summary",
-                    files=metadata.get("files", []),
+                    source_key=publication_source_key,
+                    files=publication_files,
                 )
             )
 
-            if success:
+            if editorial_lease is not None:
+                from core.media_handler import finish_editorial_group_publication
+                finish_editorial_group_publication(
+                    str(media_group_id), user_id, editorial_lease, bool(success),
+                    approved_text=final_summary,
+                )
 
-                if metadata.get("media_group_id"):
-                    from core.media_handler import remove_pending_group
-                    remove_pending_group(metadata["media_group_id"], user_id)
+            if success:
 
                 mark_summary_published(
                     review_id=review_id,

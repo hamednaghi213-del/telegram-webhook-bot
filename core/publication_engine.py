@@ -86,6 +86,7 @@ def _normalize_executor_result(outcome: Any) -> ExecutorResult:
         return outcome
     ok = _outcome_ok(outcome)
     message_id = _message_id_from_outcome(outcome)
+    message_ids = _message_ids_from_outcome(outcome)
     status_code = None
     error = None
     raw = outcome
@@ -95,8 +96,30 @@ def _normalize_executor_result(outcome: Any) -> ExecutorResult:
         error = candidate.get("error") or candidate.get("description")
     if isinstance(outcome, tuple) and len(outcome) > 1 and not ok:
         error = str(outcome[1] or error or "executor failed")
-    return ExecutorResult(ok, message_id, (message_id,) if message_id is not None else (),
+    return ExecutorResult(ok, message_id, message_ids,
                           status_code, error, raw)
+
+
+def _message_ids_from_outcome(outcome: Any) -> Tuple[int, ...]:
+    if isinstance(outcome, ExecutorResult):
+        return outcome.message_ids
+    candidate = outcome[2] if isinstance(outcome, tuple) and len(outcome) > 2 else outcome
+    values: Any = None
+    if isinstance(candidate, dict):
+        values = candidate.get("message_ids")
+        if values is None and isinstance(candidate.get("result"), list):
+            values = [
+                item.get("message_id") for item in candidate["result"]
+                if isinstance(item, dict)
+            ]
+    normalized = tuple(
+        int(value) for value in (values or ())
+        if isinstance(value, int) and not isinstance(value, bool)
+    )
+    if normalized:
+        return normalized
+    primary = _message_id_from_outcome(outcome)
+    return (primary,) if primary is not None else ()
 
 
 def _send_text_target(
@@ -454,6 +477,7 @@ def publish_prepared_content(
                 target.external_id, status="succeeded", attempt=state.attempt,
                 idempotency_key=f"{source_key}:{identity}",
                 primary_message_id=state.message_ids.get("primary"),
+                message_ids=state.all_message_ids.get("primary", ()),
                 followup_message_ids=tuple(value for key, value in sorted(state.message_ids.items()) if key.startswith("followup:")),
                 blockquote_message_ids=tuple(value for key, value in sorted(state.message_ids.items()) if key.startswith("blockquote:")),
             ))
@@ -521,6 +545,7 @@ def publish_prepared_content(
                     break
                 store.part_succeeded(
                     source_key, identity, part_name, _message_id_from_outcome(outcome),
+                    _message_ids_from_outcome(outcome),
                     _chat_id_from_outcome(outcome),
                 )
             if error is None:
@@ -530,6 +555,7 @@ def publish_prepared_content(
                 target.platform, target.workspace_id, target.destination_id,
                 final.message_chat_ids.get("primary", target.external_id),
                 primary_message_id=final.message_ids.get("primary"),
+                message_ids=final.all_message_ids.get("primary", ()),
                 followup_message_ids=tuple(value for key, value in sorted(final.message_ids.items()) if key.startswith("followup:")),
                 blockquote_message_ids=tuple(value for key, value in sorted(final.message_ids.items()) if key.startswith("blockquote:")),
                 status=final.status, error=final.error, attempt=final.attempt,

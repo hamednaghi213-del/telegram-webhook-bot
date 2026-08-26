@@ -399,3 +399,158 @@ def test_editorial_album_full_flow_from_aggregator_to_executor(monkeypatch):
     assert len(queued[0]["media_files"]) == 2
     assert sent == []
     assert media_handler.pending_groups[(9, "editorial-flow")]["state"] == "editorial_pending"
+
+
+def _approve_editorial_album(monkeypatch, group, publish, metadata_files=None):
+    from core import editorial_pending, webhook_handler
+    with media_handler.group_lock:
+        files = list(
+            metadata_files
+            if metadata_files is not None
+            else media_handler.pending_groups[(9, group)]["files"]
+        )
+        media_handler.pending_groups[(9, group)]["state"] = "editorial_pending"
+    review = editorial_pending.create_pending_review(
+        user_id=9,
+        content_type="opinion_note",
+        original_text="تیتر\nمتن نهایی",
+        current_summary="خلاصه",
+        metadata={
+            "media_group_id": group,
+            "files": files,
+            "main_text": "تیتر\nمتن نهایی",
+            "source_key": f"tg:9:album:{group}:generation:1",
+        },
+    )
+    monkeypatch.setattr(webhook_handler, "publish_prepared_text", publish)
+    monkeypatch.setattr(webhook_handler, "answer_callback_query", lambda *_a, **_k: True)
+    monkeypatch.setattr(webhook_handler, "send_message", lambda *_a, **_k: True)
+    assert webhook_handler.handle_editorial_callback(
+        {"id": "cb", "data": f"ed:original:{review.review_id}", "from": {"id": 9}},
+        "req",
+    ) is True
+
+
+def test_late_member_during_editorial_pending_is_included_on_approval(monkeypatch):
+    _add("editorial-late", 2)
+    with media_handler.group_lock:
+        media_handler.pending_groups[(9, "editorial-late")]["state"] = "editorial_pending"
+        stale_files = list(media_handler.pending_groups[(9, "editorial-late")]["files"])
+    _add("editorial-late", 1, 3)
+    published = []
+    _approve_editorial_album(
+        monkeypatch,
+        "editorial-late",
+        lambda **kwargs: published.append(
+            [item["message_id"] for item in kwargs["files"]]
+        ) or True,
+        metadata_files=stale_files,
+    )
+    assert published == [[1, 2, 3]]
+    assert (9, "editorial-late") not in media_handler.pending_groups
+
+
+def test_late_member_during_approved_album_publish_reaches_recovery_generation(monkeypatch):
+    _add("editorial-race", 2)
+    calls = []
+
+    def approved_publish(**kwargs):
+        calls.append((kwargs["source_key"], [item["message_id"] for item in kwargs["files"]]))
+        _add("editorial-race", 1, 3)
+        return True
+
+    _approve_editorial_album(monkeypatch, "editorial-race", approved_publish)
+    group = media_handler.pending_groups[(9, "editorial-race")]
+    assert [item["message_id"] for item in group["files"]] == [3]
+    assert group["delivery_generation"] == 2
+    group["recovery_started_at"] = time.time() - media_handler.MEDIA_GROUP_RECOVERY_WINDOW_SECONDS - 1
+    monkeypatch.setattr(
+        publication_engine,
+        "_send_media_target",
+        lambda _c, _a, _t, files, _p: calls.append(
+            (media_handler.pending_groups[(9, "editorial-race")]["delivery_generation"],
+             [item["message_id"] for item in files])
+        ) or {"ok": True, "message_id": 300},
+    )
+    assert media_handler.process_media_group("editorial-race", 9) is True
+    assert calls == [
+        ("tg:9:album:editorial-race:generation:1", [1, 2]),
+        (2, [3]),
+    ]
+    assert (9, "editorial-race") not in media_handler.pending_groups
+
+
+def test_bale_media_group_array_result_preserves_all_message_ids(monkeypatch):
+    from core import bale_forwarder
+
+    class Response:
+        status_code = 200
+        text = "ok"
+        def json(self):
+            return {"ok": True, "result": [{"message_id": 401}, {"message_id": 402}]}
+
+    monkeypatch.setenv("ENABLE_BALE", "true")
+    monkeypatch.setattr(
+        bale_forwarder, "download_file_from_telegram",
+        lambda file_id: (b"data", f"{file_id}.jpg"),
+    )
+    monkeypatch.setattr(bale_forwarder.requests, "post", lambda *_a, **_k: Response())
+    result = bale_forwarder.send_media_group_to_bale(
+        9,
+        [{"type": "photo", "file_id": "a"}, {"type": "photo", "file_id": "b"}],
+        "caption",
+        bale_channel="@bale",
+        bale_token="token",
+        return_result=True,
+    )
+    assert result["ok"] is True
+    assert result["message_id"] == 401
+    assert result["message_ids"] == [401, 402]
+
+
+def test_bale_album_ids_reach_delivery_result_and_success_is_not_failed(monkeypatch):
+    monkeypatch.setenv("BALE_BOT_TOKEN", "token")
+    from core import bale_forwarder
+    monkeypatch.setattr(
+        bale_forwarder, "send_media_group_to_bale",
+        lambda *_a, **_k: {
+            "ok": True, "message_id": 501, "message_ids": [501, 502],
+            "status_code": 200,
+        },
+    )
+    target = PublicationTarget("bale", "workspace", "bale", "@bale", 10, 20)
+    result = publication_engine.publish_prepared_content(
+        9, "api",
+        PreparedContent(
+            main_text="x", source_key="bale-album",
+            files=[{"type": "photo", "file_id": "a"}, {"type": "photo", "file_id": "b"}],
+        ),
+        [target],
+        InMemoryPublicationStateStore(),
+    )
+    delivery = result["results"][0]
+    assert result["ok"] is True
+    assert delivery.status == "succeeded"
+    assert delivery.primary_message_id == 501
+    assert delivery.message_ids == (501, 502)
+
+
+def test_retry_does_not_repeat_successful_telegram_or_bale_destination(monkeypatch):
+    store = InMemoryPublicationStateStore()
+    telegram = PublicationTarget("tg", "workspace", "telegram", "@tg", 1, 1)
+    bale = PublicationTarget("bale", "workspace", "bale", "@bale", 2, 2)
+    calls = {"telegram": 0, "bale": 0}
+
+    def sender(_chat, _api, target, _plan):
+        calls[target.platform] += 1
+        if target.platform == "bale" and calls["bale"] == 1:
+            return {"ok": False, "error": "temporary"}
+        return {"ok": True, "message_id": 600 + calls[target.platform]}
+
+    monkeypatch.setattr(publication_engine, "_send_text_target", sender)
+    prepared = PreparedContent(main_text="x", source_key="mixed-retry")
+    first = publication_engine.publish_prepared_content(9, "api", prepared, [telegram, bale], store)
+    second = publication_engine.publish_prepared_content(9, "api", prepared, [telegram, bale], store)
+    assert first["ok"] is False
+    assert second["ok"] is True
+    assert calls == {"telegram": 1, "bale": 2}

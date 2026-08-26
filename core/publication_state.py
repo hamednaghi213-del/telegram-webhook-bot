@@ -31,6 +31,7 @@ class DeliveryState:
     status: str = "pending"
     completed_parts: Set[str] = field(default_factory=set)
     message_ids: Dict[str, int] = field(default_factory=dict)
+    all_message_ids: Dict[str, Tuple[int, ...]] = field(default_factory=dict)
     message_chat_ids: Dict[str, str] = field(default_factory=dict)
     error: Optional[str] = None
 
@@ -55,6 +56,7 @@ class PublicationStateStore(ABC):
     @abstractmethod
     def part_succeeded(self, source_key: str, target_identity: str, part: str,
                        message_id: Optional[int] = None,
+                       message_ids: Optional[Tuple[int, ...]] = None,
                        destination_chat_id: Optional[str] = None) -> None: ...
 
     @abstractmethod
@@ -134,12 +136,19 @@ class InMemoryPublicationStateStore(PublicationStateStore):
 
     def part_succeeded(self, source_key: str, target_identity: str, part: str,
                        message_id: Optional[int] = None,
+                       message_ids: Optional[Tuple[int, ...]] = None,
                        destination_chat_id: Optional[str] = None) -> None:
         with self._lock:
             state = self.claim_destination(source_key, target_identity)
             state.completed_parts.add(part)
             if message_id is not None:
                 state.message_ids[part] = int(message_id)
+            normalized_ids = tuple(
+                int(value) for value in (message_ids or ())
+                if isinstance(value, int) and not isinstance(value, bool)
+            )
+            if normalized_ids:
+                state.all_message_ids[part] = normalized_ids
             if destination_chat_id is not None:
                 state.message_chat_ids[part] = str(destination_chat_id)
 

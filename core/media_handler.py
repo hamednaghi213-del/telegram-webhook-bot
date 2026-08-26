@@ -685,7 +685,6 @@ def remove_pending_group(
                     timer.cancel()
                 except Exception:
                     pass
-
             return
 
         keys_to_remove = [
@@ -716,6 +715,94 @@ def remove_pending_group(
                     timer.cancel()
                 except Exception:
                     pass
+
+
+def lease_editorial_group_for_publication(
+    media_group_id: str,
+    chat_id: int,
+    fallback_files: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Lease the latest editorial album generation for an approved publish."""
+    group_key = (chat_id, str(media_group_id))
+    with group_lock:
+        group = pending_groups.get(group_key)
+        if not group:
+            files = list(fallback_files or [])
+            return {
+                "files": files, "generation": None, "delivery_generation": 1,
+                "source_key": f"tg:{chat_id}:album:{media_group_id}:generation:1",
+                "managed": False,
+            }
+        files = list(group.get("files", []) or [])[:TELEGRAM_MEDIA_GROUP_MAX_ITEMS]
+        generation = int(group.get("generation", 0) or 0)
+        delivery_generation = int(group.get("delivery_generation", 1) or 1)
+        group["is_processing"] = True
+        group["state"] = "publishing"
+        group["leased_generation"] = generation
+        return {
+            "files": files, "generation": generation,
+            "delivery_generation": delivery_generation,
+            "source_key": f"tg:{chat_id}:album:{media_group_id}:generation:{delivery_generation}",
+            "managed": True,
+        }
+
+
+def finish_editorial_group_publication(
+    media_group_id: str,
+    chat_id: int,
+    lease: Dict[str, Any],
+    success: bool,
+    approved_text: Optional[str] = None,
+) -> None:
+    """Complete only the leased editorial batch and retain every late member."""
+    if not lease.get("managed"):
+        return
+    group_key = (chat_id, str(media_group_id))
+    should_remove = False
+    should_schedule = False
+    with group_lock:
+        group = pending_groups.get(group_key)
+        if not group:
+            return
+        group["editorial_finalized"] = True
+        if approved_text is not None:
+            group["editorial_approved_text"] = str(approved_text)
+        if not success:
+            group["is_processing"] = False
+            group["state"] = "editorial_pending"
+            group["last_error"] = "approved editorial publication failed"
+        else:
+            snapshot_ids = {
+                item.get("message_id") if item.get("message_id") is not None
+                else ("file", item.get("file_id"))
+                for item in lease.get("files", [])
+            }
+            group["files"] = [
+                item for item in group.get("files", [])
+                if (
+                    item.get("message_id") if item.get("message_id") is not None
+                    else ("file", item.get("file_id"))
+                ) not in snapshot_ids
+            ]
+            group["published_generation"] = lease.get("generation")
+            group["is_processing"] = False
+            if group["files"]:
+                group["state"] = "retry_pending"
+                group["delivery_generation"] = int(lease.get("delivery_generation", 1)) + 1
+                group["recovery_started_at"] = time.time()
+                group["attempt_count"] = 0
+                group["last_error"] = None
+                should_schedule = True
+            else:
+                group["state"] = "published"
+                should_remove = True
+    if should_remove:
+        remove_pending_group(str(media_group_id), chat_id)
+    elif should_schedule:
+        schedule_processing(
+            str(media_group_id), chat_id,
+            delay=MEDIA_GROUP_INCOMPLETE_RETRY_DELAY,
+        )
 
 
 # =========================================================
@@ -2517,6 +2604,10 @@ def process_media_group(
             or {}
         )
 
+        editorial_finalized = bool(group.get("editorial_finalized", False))
+        if editorial_finalized:
+            raw_main_text = str(group.get("editorial_approved_text", raw_main_text) or "")
+
     logger.info(
         f"📦 Media Group snapshot | "
         f"files={len(files)} | "
@@ -2532,7 +2623,7 @@ def process_media_group(
 
         formatted_main_text = ""
         forced_content_type = None
-        if raw_main_text:
+        if raw_main_text and not editorial_finalized:
             try:
                 from core.webhook_handler import detect_editorial_admin_tag
                 forced_content_type, raw_main_text, _removed = detect_editorial_admin_tag(
@@ -2666,6 +2757,7 @@ def process_media_group(
                 expandable_blocks=expandable_blocks,
                 other_entities=other_entities,
                 files=files,
+                editorial_finalized=editorial_finalized,
                 source_key=f"tg:{chat_id}:album:{media_group_id}:generation:{delivery_generation}",
             ),
         )

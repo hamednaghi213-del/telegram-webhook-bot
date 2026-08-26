@@ -22,9 +22,27 @@ def _send_result(response, return_result=False):
     except Exception:
         data = {}
     ok = response.status_code == 200 and data.get("ok", True) is not False
-    message_id = (data.get("result") or {}).get("message_id") if ok else None
+    payload_result = data.get("result")
+    message_ids = []
+    if ok and isinstance(payload_result, dict):
+        candidate = payload_result.get("message_id")
+        if candidate is not None:
+            message_ids.append(candidate)
+    elif ok and isinstance(payload_result, list):
+        message_ids = [
+            item.get("message_id")
+            for item in payload_result
+            if isinstance(item, dict) and item.get("message_id") is not None
+        ]
+    message_id = message_ids[0] if message_ids else None
     if return_result:
-        return {"ok": ok, "message_id": message_id, "response": data}
+        return {
+            "ok": ok,
+            "message_id": message_id,
+            "message_ids": message_ids,
+            "status_code": response.status_code,
+            "response": data,
+        }
     return ok
 
 
@@ -964,16 +982,7 @@ def send_media_group_to_bale(
             )
 
             if return_result:
-                result = _send_result(response, True)
-                try:
-                    payload = response.json() or {}
-                    items = payload.get("result") or []
-                    if isinstance(items, list) and items:
-                        result["message_id"] = items[0].get("message_id")
-                        result["message_ids"] = [item.get("message_id") for item in items if item.get("message_id") is not None]
-                except Exception:
-                    pass
-                return result
+                return _send_result(response, True)
             return True
 
         logger.error(
