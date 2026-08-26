@@ -25,8 +25,19 @@ class IncomingContentEnvelope:
         return f"tg:{self.chat_id}:message:{self.message_id}"
 
 
+def deep_freeze(value: Any) -> Any:
+    """Recursively detach and freeze values received from Telegram/DB payloads."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(deep_freeze(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(deep_freeze(item) for item in value)
+    return value
+
+
 def _freeze_mapping(value: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
-    return MappingProxyType(dict(value or {}))
+    return deep_freeze(dict(value or {}))
 
 
 def _freeze_mapping_sequence(values) -> Tuple[Mapping[str, Any], ...]:
@@ -60,6 +71,19 @@ class PublicationTarget:
     workspace_id: Optional[int] = None
     destination_id: Optional[int] = None
     destination: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "destination", _freeze_mapping(self.destination))
+
+
+@dataclass(frozen=True)
+class ExecutorResult:
+    success: bool
+    primary_message_id: Optional[int] = None
+    message_ids: Tuple[int, ...] = field(default_factory=tuple)
+    status_code: Optional[int] = None
+    error: Optional[str] = None
+    raw_result: Any = None
 
 
 @dataclass(frozen=True)

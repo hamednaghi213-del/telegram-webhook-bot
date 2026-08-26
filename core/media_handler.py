@@ -134,6 +134,8 @@ TELEGRAM_READ_TIMEOUT = 60
 MEDIA_GROUP_DELAY = 2.5
 MEDIA_GROUP_MIN_WAIT = 1.5
 MEDIA_GROUP_INCOMPLETE_RETRY_DELAY = 1.0
+MEDIA_GROUP_RECOVERY_WINDOW_SECONDS = 15.0
+MEDIA_GROUP_MAX_RETRIES = 5
 
 
 # =========================================================
@@ -428,6 +430,18 @@ def add_to_pending_group(
                     "collecting",
 
                 "leased_generation":
+                    None,
+
+                "delivery_generation":
+                    1,
+
+                "recovery_started_at":
+                    time.time(),
+
+                "attempt_count":
+                    0,
+
+                "last_error":
                     None,
             }
 
@@ -1856,8 +1870,9 @@ def send_album_to_bale(
     files: List[
         Dict[str, str]
     ],
-    caption: str = ""
-) -> bool:
+    caption: str = "",
+    return_result: bool = False,
+):
 
     if not files:
 
@@ -1877,7 +1892,8 @@ def send_album_to_bale(
             send_media_group_to_bale(
                 user_id,
                 files,
-                caption
+                caption,
+                return_result=return_result,
             )
         )
 
@@ -2138,7 +2154,8 @@ def execute_telegram_plan(
                 )
             )
 
-    if not media_success:
+    media_ok = bool(media_success.get("ok")) if isinstance(media_success, dict) else bool(media_success)
+    if not media_ok:
 
         logger.error(
             "❌ Telegram media execution failed"
@@ -2270,8 +2287,9 @@ def execute_bale_plan(
     files: List[
         Dict[str, str]
     ],
-    plan: Dict[str, Any]
-) -> bool:
+    plan: Dict[str, Any],
+    return_result: bool = False,
+):
 
     media_caption = (
         plan.get(
@@ -2317,11 +2335,13 @@ def execute_bale_plan(
         send_album_to_bale(
             user_id,
             files,
-            media_caption
+            media_caption,
+            return_result=return_result,
         )
     )
 
-    if not media_success:
+    media_ok = bool(media_success.get("ok")) if isinstance(media_success, dict) else bool(media_success)
+    if not media_ok:
 
         logger.warning(
             "⚠️ Bale media execution failed"
@@ -2421,7 +2441,7 @@ def process_media_group(
             )
             return False
 
-        files = list(
+        all_files = list(
             group.get(
                 "files",
                 []
@@ -2429,20 +2449,27 @@ def process_media_group(
             or []
         )
 
+        recovery_age = time.time() - float(group.get("recovery_started_at", group.get("last_update", time.time())))
+        allow_single = len(all_files) == 1 and recovery_age >= MEDIA_GROUP_RECOVERY_WINDOW_SECONDS
+
         if (
-            len(files)
+            len(all_files)
             < TELEGRAM_MEDIA_GROUP_MIN_ITEMS
+            and not allow_single
         ):
 
             logger.warning(
                 f"⏳ Media Group incomplete | "
                 f"group={media_group_id} | "
-                f"files={len(files)} | "
+                f"files={len(all_files)} | "
                 f"minimum="
                 f"{TELEGRAM_MEDIA_GROUP_MIN_ITEMS}"
             )
 
             return False
+
+        files = all_files[:TELEGRAM_MEDIA_GROUP_MAX_ITEMS]
+        delivery_generation = int(group.get("delivery_generation", 1) or 1)
 
         group["is_processing"] = True
         group["state"] = "leased"
@@ -2617,7 +2644,7 @@ def process_media_group(
                 forward_source=forward_source or None,
                 forced_content_type=forced_content_type,
                 media_files=files,
-                source_key=f"tg:{chat_id}:album:{media_group_id}",
+                source_key=f"tg:{chat_id}:album:{media_group_id}:generation:{delivery_generation}",
                 media_group_id=media_group_id,
             )
             if queued:
@@ -2638,7 +2665,7 @@ def process_media_group(
                 expandable_blocks=expandable_blocks,
                 other_entities=other_entities,
                 files=files,
-                source_key=f"tg:{chat_id}:album:{media_group_id}",
+                source_key=f"tg:{chat_id}:album:{media_group_id}:generation:{delivery_generation}",
             ),
         )
         if shared_result.get("ok"):
@@ -2661,6 +2688,10 @@ def process_media_group(
                     if live_group["files"]:
                         live_group["state"] = "retry_pending"
                         live_group["is_processing"] = False
+                        live_group["delivery_generation"] = delivery_generation + 1
+                        live_group["recovery_started_at"] = time.time()
+                        live_group["attempt_count"] = 0
+                        live_group["last_error"] = None
                     else:
                         live_group["state"] = "published"
             with group_lock:
@@ -2679,6 +2710,13 @@ def process_media_group(
                 )
             return True
         logger.error("❌ Shared Media Group publication failed | group=%s", media_group_id)
+        with group_lock:
+            live_group = pending_groups.get(group_key)
+            if live_group:
+                live_group["attempt_count"] = int(live_group.get("attempt_count", 0) or 0) + 1
+                live_group["last_error"] = "shared publication failed"
+                if live_group["attempt_count"] >= MEDIA_GROUP_MAX_RETRIES:
+                    live_group["state"] = "failed_terminal"
         return False
 
         branding = (
@@ -2810,6 +2848,13 @@ def process_media_group(
             f"{e}"
         )
 
+        with group_lock:
+            live_group = pending_groups.get(group_key)
+            if live_group:
+                live_group["attempt_count"] = int(live_group.get("attempt_count", 0) or 0) + 1
+                live_group["last_error"] = str(e)
+                if live_group["attempt_count"] >= MEDIA_GROUP_MAX_RETRIES:
+                    live_group["state"] = "failed_terminal"
         return False
 
     finally:
@@ -2823,9 +2868,9 @@ def process_media_group(
                     live_group["is_processing"] = False
                 else:
                     live_group["is_processing"] = False
-                    if live_group.get("state") != "published":
+                    if live_group.get("state") not in {"published", "failed_terminal"}:
                         live_group["state"] = "retry_pending"
-                    retry_required = True
+                    retry_required = live_group.get("state") != "failed_terminal"
         if retry_required:
             schedule_processing(
                 media_group_id,
@@ -3052,10 +3097,14 @@ def _scheduled_process(
 
         return
 
-    if (
-        file_count
-        < TELEGRAM_MEDIA_GROUP_MIN_ITEMS
-    ):
+    if file_count < TELEGRAM_MEDIA_GROUP_MIN_ITEMS:
+        with group_lock:
+            current = pending_groups.get(group_key) or {}
+            recovery_age = time.time() - float(current.get("recovery_started_at", last_update) or last_update)
+        if file_count == 1 and recovery_age >= MEDIA_GROUP_RECOVERY_WINDOW_SECONDS:
+            logger.info("♻️ Single late media reached recovery deadline | group=%s", media_group_id)
+            process_media_group(media_group_id, chat_id, expected_generation=int(current.get("generation", 0) or 0))
+            return
 
         logger.warning(
             f"⏳ Media Group waiting for more items | "
@@ -3069,7 +3118,8 @@ def _scheduled_process(
             media_group_id,
             chat_id,
             delay=(
-                MEDIA_GROUP_INCOMPLETE_RETRY_DELAY
+                min(MEDIA_GROUP_INCOMPLETE_RETRY_DELAY,
+                    max(0.1, MEDIA_GROUP_RECOVERY_WINDOW_SECONDS - recovery_age))
             )
         )
 
@@ -3221,4 +3271,4 @@ def handle_media_group_message(
         delay=MEDIA_GROUP_DELAY
     )
 
-    return True
+    return media_success if return_result else True

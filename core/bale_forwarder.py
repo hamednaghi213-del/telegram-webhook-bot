@@ -56,7 +56,8 @@ def send_to_bale_for_user(
     user_id,
     text,
     file_id=None,
-    media_type=None
+    media_type=None,
+    return_result=False,
 ):
     """
     ارسال متن یا رسانه به کانال بله کاربر
@@ -82,7 +83,7 @@ def send_to_bale_for_user(
             "ℹ️ ارسال به بله غیرفعال است."
         )
 
-        return True
+        return {"ok": True, "message_id": None, "disabled": True} if return_result else True
 
     # -----------------------------------------------------
     # دریافت Branding
@@ -101,7 +102,7 @@ def send_to_bale_for_user(
             f"برای user={user_id}: {e}"
         )
 
-        return False
+        return _failed_result(return_result)
 
     bale_channel = branding.get(
         "bale_channel",
@@ -120,7 +121,7 @@ def send_to_bale_for_user(
             f"user={user_id} کامل نیست."
         )
 
-        return False
+        return _failed_result(return_result)
 
     # -----------------------------------------------------
     # متن
@@ -131,7 +132,8 @@ def send_to_bale_for_user(
         return send_text_to_bale(
             bale_channel,
             bale_token,
-            text or ""
+            text or "",
+            return_result=return_result,
         )
 
     # -----------------------------------------------------
@@ -144,7 +146,8 @@ def send_to_bale_for_user(
             bale_channel,
             bale_token,
             text or "",
-            file_id
+            file_id,
+            return_result=return_result,
         )
 
     # -----------------------------------------------------
@@ -157,7 +160,8 @@ def send_to_bale_for_user(
             bale_channel,
             bale_token,
             text or "",
-            file_id
+            file_id,
+            return_result=return_result,
         )
 
     # -----------------------------------------------------
@@ -168,7 +172,8 @@ def send_to_bale_for_user(
         bale_channel,
         bale_token,
         text or "",
-        file_id
+        file_id,
+        return_result=return_result,
     )
 
 
@@ -669,6 +674,7 @@ def send_media_group_to_bale(
     caption="",
     bale_channel=None,
     bale_token=None,
+    return_result=False,
 ):
     """
     ارسال آلبوم واقعی به بله
@@ -706,7 +712,7 @@ def send_media_group_to_bale(
             "غیرفعال است."
         )
 
-        return True
+        return {"ok": True, "message_id": None, "disabled": True} if return_result else True
 
     if not files:
 
@@ -900,7 +906,8 @@ def send_media_group_to_bale(
                 bale_channel,
                 bale_token,
                 caption,
-                files[0]["file_id"]
+                files[0]["file_id"],
+                return_result=return_result,
             )
 
         if media["type"] == "video":
@@ -909,7 +916,8 @@ def send_media_group_to_bale(
                 bale_channel,
                 bale_token,
                 caption,
-                files[0]["file_id"]
+                files[0]["file_id"],
+                return_result=return_result,
             )
 
         return False
@@ -955,6 +963,17 @@ def send_media_group_to_bale(
                 f"با موفقیت به بله ارسال شد."
             )
 
+            if return_result:
+                result = _send_result(response, True)
+                try:
+                    payload = response.json() or {}
+                    items = payload.get("result") or []
+                    if isinstance(items, list) and items:
+                        result["message_id"] = items[0].get("message_id")
+                        result["message_ids"] = [item.get("message_id") for item in items if item.get("message_id") is not None]
+                except Exception:
+                    pass
+                return result
             return True
 
         logger.error(

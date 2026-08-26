@@ -7,16 +7,24 @@ algorithm.
 
 import logging
 import os
+import inspect
 from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.content_model import DeliveryResult, PreparedContent, PublicationTarget
+from core.content_model import DeliveryResult, ExecutorResult, PreparedContent, PublicationTarget
 from core.publication_state import DEFAULT_PUBLICATION_STATE_STORE, PublicationStateStore
 from core.target_resolver import canonical_target_identity, resolve_publication_targets
 
 logger = logging.getLogger(__name__)
 
 _state_store: PublicationStateStore = DEFAULT_PUBLICATION_STATE_STORE
+
+
+def _supports_return_result(sender) -> bool:
+    try:
+        return "return_result" in inspect.signature(sender).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def reset_local_idempotency_state() -> None:
@@ -73,12 +81,30 @@ def _target_content_and_branding(
     return content, branding
 
 
+def _normalize_executor_result(outcome: Any) -> ExecutorResult:
+    if isinstance(outcome, ExecutorResult):
+        return outcome
+    ok = _outcome_ok(outcome)
+    message_id = _message_id_from_outcome(outcome)
+    status_code = None
+    error = None
+    raw = outcome
+    candidate = outcome[2] if isinstance(outcome, tuple) and len(outcome) > 2 else outcome
+    if isinstance(candidate, dict):
+        status_code = candidate.get("status_code")
+        error = candidate.get("error") or candidate.get("description")
+    if isinstance(outcome, tuple) and len(outcome) > 1 and not ok:
+        error = str(outcome[1] or error or "executor failed")
+    return ExecutorResult(ok, message_id, (message_id,) if message_id is not None else (),
+                          status_code, error, raw)
+
+
 def _send_text_target(
     chat_id: int,
     api_url: str,
     target: PublicationTarget,
     plan: Dict[str, Any],
-) -> bool:
+):
     messages = list(plan.get("messages") or [])
     modes = list(plan.get("message_parse_modes") or [])
     blockquotes = list(plan.get("blockquote_messages") or [])
@@ -86,15 +112,31 @@ def _send_text_target(
         if target.kind == "legacy":
             from core.webhook_handler import send_to_channel
             for index, message in enumerate(messages):
-                if message and not send_to_channel(
-                    message,
-                    parse_mode=modes[index] if index < len(modes) else None,
-                ):
-                    return False
+                if message:
+                    if _supports_return_result(send_to_channel):
+                        outcome = send_to_channel(
+                            message,
+                            parse_mode=modes[index] if index < len(modes) else None,
+                            return_result=True,
+                        )
+                    else:
+                        outcome = send_to_channel(
+                            message,
+                            parse_mode=modes[index] if index < len(modes) else None,
+                        )
+                    if not _outcome_ok(outcome):
+                        return _normalize_executor_result(outcome)
+                    last_outcome = outcome
             for message in blockquotes:
-                if message and not send_to_channel(message, parse_mode="HTML"):
-                    return False
-            return True
+                if message:
+                    if _supports_return_result(send_to_channel):
+                        outcome = send_to_channel(message, parse_mode="HTML", return_result=True)
+                    else:
+                        outcome = send_to_channel(message, parse_mode="HTML")
+                    if not _outcome_ok(outcome):
+                        return _normalize_executor_result(outcome)
+                    last_outcome = outcome
+            return _normalize_executor_result(locals().get("last_outcome", True))
         from core.workspace_publisher import _send_text_to_destination
         last_outcome: Any = True
         for index, message in enumerate(messages):
@@ -116,19 +158,33 @@ def _send_text_target(
                 )
                 if not _outcome_ok(outcome):
                     return outcome
-        return last_outcome
+        return _normalize_executor_result(last_outcome)
 
     if target.kind == "legacy":
         from core.bale_forwarder import send_to_bale_for_user
-        outcomes = [send_to_bale_for_user(chat_id, message) for message in messages + blockquotes if message]
-        return outcomes[-1] if outcomes and all(_outcome_ok(item) for item in outcomes) else False
+        outcomes = []
+        for message in messages + blockquotes:
+            if not message:
+                continue
+            if _supports_return_result(send_to_bale_for_user):
+                outcomes.append(send_to_bale_for_user(chat_id, message, return_result=True))
+            else:
+                outcomes.append(send_to_bale_for_user(chat_id, message))
+        return _normalize_executor_result(outcomes[-1] if outcomes and all(_outcome_ok(item) for item in outcomes) else False)
 
     token = os.getenv("BALE_BOT_TOKEN", "").strip()
     if not token:
         return False
     from core.bale_forwarder import send_text_to_bale
-    outcomes = [send_text_to_bale(target.external_id, token, message) for message in messages + blockquotes if message]
-    return outcomes[-1] if outcomes and all(_outcome_ok(item) for item in outcomes) else False
+    outcomes = []
+    for message in messages + blockquotes:
+        if not message:
+            continue
+        if _supports_return_result(send_text_to_bale):
+            outcomes.append(send_text_to_bale(target.external_id, token, message, return_result=True))
+        else:
+            outcomes.append(send_text_to_bale(target.external_id, token, message))
+    return _normalize_executor_result(outcomes[-1] if outcomes and all(_outcome_ok(item) for item in outcomes) else False)
 
 
 def _send_media_target(
@@ -141,7 +197,12 @@ def _send_media_target(
     if target.platform == "telegram":
         from core.media_handler import execute_telegram_plan
         if target.kind == "legacy":
-            return execute_telegram_plan(files, plan)
+            ok = execute_telegram_plan(files, plan)
+            from core.media_handler import get_last_media_message_id
+            message_id = get_last_media_message_id()
+            return ExecutorResult(bool(ok), message_id,
+                                  (message_id,) if message_id is not None else (),
+                                  raw_result=ok)
         if len(files) == 1:
             from core.workspace_publisher import _send_media_to_destination
             item = files[0]
@@ -152,16 +213,21 @@ def _send_media_target(
                 item.get("type"),
                 plan.get("media_caption", "") or "",
             )
-        return execute_telegram_plan(
+        ok = execute_telegram_plan(
             files,
             plan,
             channel_id=target.external_id,
             api_url=api_url,
         )
+        from core.media_handler import get_last_media_message_id
+        message_id = get_last_media_message_id()
+        return ExecutorResult(bool(ok), message_id,
+                              (message_id,) if message_id is not None else (),
+                              raw_result=ok)
 
     if target.kind == "legacy":
         from core.media_handler import execute_bale_plan
-        return execute_bale_plan(chat_id, files, plan)
+        return _normalize_executor_result(execute_bale_plan(chat_id, files, plan, return_result=True))
 
     from core.bale_forwarder import (
         send_document_to_bale,
@@ -181,6 +247,7 @@ def _send_media_target(
             caption,
             bale_channel=target.external_id,
             bale_token=token,
+            return_result=True,
         )
     else:
         item = files[0]
@@ -191,16 +258,18 @@ def _send_media_target(
             "voice": send_document_to_bale,
             "audio": send_document_to_bale,
         }.get(item.get("type"))
-        ok = bool(sender and sender(target.external_id, token, caption, item.get("file_id")))
-    if not ok:
-        return False
+        ok = sender(target.external_id, token, caption, item.get("file_id"), return_result=True) if sender else False
+    if not _outcome_ok(ok):
+        return _normalize_executor_result(ok)
     for message in list(plan.get("followup_messages") or []) + list(plan.get("blockquote_messages") or []):
         if message and send_text_to_bale(target.external_id, token, message) is False:
             return False
-    return True
+    return _normalize_executor_result(ok)
 
 
 def _message_id_from_outcome(outcome: Any) -> Optional[int]:
+    if isinstance(outcome, ExecutorResult):
+        return outcome.primary_message_id
     if isinstance(outcome, dict):
         value = outcome.get("message_id")
         if value is None and isinstance(outcome.get("result"), dict):
@@ -212,6 +281,8 @@ def _message_id_from_outcome(outcome: Any) -> Optional[int]:
 
 
 def _chat_id_from_outcome(outcome: Any) -> Optional[str]:
+    if isinstance(outcome, ExecutorResult):
+        return _chat_id_from_outcome(outcome.raw_result)
     if isinstance(outcome, tuple) and len(outcome) > 2:
         return _chat_id_from_outcome(outcome[2])
     if isinstance(outcome, dict):
@@ -223,6 +294,8 @@ def _chat_id_from_outcome(outcome: Any) -> Optional[str]:
 
 
 def _outcome_ok(outcome: Any) -> bool:
+    if isinstance(outcome, ExecutorResult):
+        return outcome.success
     if isinstance(outcome, tuple):
         return bool(outcome[0])
     if isinstance(outcome, dict):
@@ -358,6 +431,7 @@ def publish_prepared_content(
     analyzed = _shared_content_analysis(prepared)
     source_key = analyzed.source_key or f"ephemeral:{id(analyzed)}"
     store.claim_source(source_key)
+    store.mark_source(source_key, "sending")
     results: List[DeliveryResult] = []
     plan_cache: Dict[Tuple[Any, ...], Any] = {}
     target_content_cache: Dict[Tuple[Any, ...], Tuple[str, str]] = {}
@@ -470,8 +544,11 @@ def publish_prepared_content(
                 attempt=final.attempt if final else 0,
                 idempotency_key=f"{source_key}:{identity}",
             ))
+    all_succeeded = bool(results) and all(item.status == "succeeded" for item in results)
+    any_succeeded = any(item.status == "succeeded" for item in results)
+    store.mark_source(source_key, "succeeded" if all_succeeded else ("partial" if any_succeeded else "failed"))
     return {
-        "ok": bool(results) and all(item.status == "succeeded" for item in results),
+        "ok": all_succeeded,
         "results": results,
         "errors": resolution_errors,
     }

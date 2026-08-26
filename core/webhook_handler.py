@@ -1060,8 +1060,9 @@ def answer_callback_query(
 
 def send_to_channel(
     text: str,
-    parse_mode: Optional[str] = None
-) -> bool:
+    parse_mode: Optional[str] = None,
+    return_result: bool = False,
+):
 
     if not API_URL or not CHANNEL_ID:
 
@@ -1095,6 +1096,17 @@ def send_to_channel(
 
         if response.status_code == 200:
 
+            try:
+                data = response.json() or {}
+            except Exception:
+                data = {}
+            if return_result:
+                return {
+                    "ok": True,
+                    "message_id": (data.get("result") or {}).get("message_id"),
+                    "status_code": response.status_code,
+                    "response": data,
+                }
             return True
 
         logger.error(
@@ -1103,7 +1115,8 @@ def send_to_channel(
             f"response={response.text[:1000]}"
         )
 
-        return False
+        return {"ok": False, "message_id": None, "status_code": response.status_code,
+                "error": response.text[:1000]} if return_result else False
 
     except Exception as e:
 
@@ -1112,7 +1125,7 @@ def send_to_channel(
             f"{e}"
         )
 
-        return False
+        return {"ok": False, "message_id": None, "error": str(e)} if return_result else False
 
 
 # =========================================================
@@ -3309,6 +3322,11 @@ def handle_editorial_callback(
                 user_id=user_id
             )
 
+            media_group_id = metadata.get("media_group_id")
+            if media_group_id:
+                from core.media_handler import remove_pending_group
+                remove_pending_group(str(media_group_id), user_id)
+
             answer_callback_query(
                 callback_id,
                 "لغو شد."
@@ -4099,10 +4117,10 @@ def handle_webhook() -> Tuple[
             logger.exception(
                 f"[{req_id}] ❌ Active media context lookup failed | {e}"
             )
-
-            if metadata.get("media_group_id"):
-                from core.media_handler import remove_pending_group
-                remove_pending_group(metadata["media_group_id"], user_id)
+            # No message/editorial metadata exists in this scope.  A transient
+            # context lookup failure must not delete an unrelated media group.
+            workspace_targets_selected = False
+            workspace_context_active = False
 
         # Workspace publication no longer happens here.  Raw updates must
         # first pass the editorial/media-group/content pipeline.  Legacy and

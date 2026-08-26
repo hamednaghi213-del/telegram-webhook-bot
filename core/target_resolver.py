@@ -12,22 +12,17 @@ def _normalise_external_id(value) -> str:
 
 def canonical_target_identity(target: PublicationTarget) -> str:
     """Return a stable, network-free physical destination identity."""
-    destination = dict(target.destination or {})
-    verified_chat_id = (
-        destination.get("verified_chat_id")
-        or destination.get("numeric_chat_id")
-        or destination.get("verified_numeric_chat_id")
-    )
-    if verified_chat_id not in (None, ""):
-        identity = f"chat:{str(verified_chat_id).strip()}"
+    # The current destination_verification schema records only verification
+    # status/note/timestamps, not Telegram's numeric chat id.  Do not accept a
+    # synthetic dictionary key as verified identity.  Until the additive
+    # persistence proposal is approved, deduplicate by normalized external id.
+    username = _normalise_external_id(target.external_id)
+    if username:
+        identity = f"external:{username}"
+    elif target.destination_id is not None:
+        identity = f"destination:{target.destination_id}"
     else:
-        username = _normalise_external_id(target.external_id)
-        if username:
-            identity = f"external:{username}"
-        elif target.destination_id is not None:
-            identity = f"destination:{target.destination_id}"
-        else:
-            identity = f"target:{target.key}"
+        identity = f"target:{target.key}"
     return f"{target.platform.strip().lower()}:{identity}"
 
 

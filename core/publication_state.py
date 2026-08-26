@@ -11,6 +11,17 @@ import threading
 from typing import Dict, Optional, Set, Tuple
 
 
+SOURCE_STATUSES = {"pending", "sending", "partial", "succeeded", "failed", "failed_terminal"}
+
+
+@dataclass
+class SourceState:
+    source_key: str
+    status: str = "pending"
+    attempt: int = 0
+    error: Optional[str] = None
+
+
 @dataclass
 class DeliveryState:
     source_key: str
@@ -26,6 +37,13 @@ class DeliveryState:
 class PublicationStateStore(ABC):
     @abstractmethod
     def claim_source(self, source_key: str) -> bool: ...
+
+    @abstractmethod
+    def get_source(self, source_key: str) -> Optional[SourceState]: ...
+
+    @abstractmethod
+    def mark_source(self, source_key: str, status: str,
+                    error: Optional[str] = None) -> None: ...
 
     @abstractmethod
     def claim_destination(self, source_key: str, target_identity: str) -> DeliveryState: ...
@@ -60,14 +78,31 @@ class PublicationStateStore(ABC):
 class InMemoryPublicationStateStore(PublicationStateStore):
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._sources: Set[str] = set()
+        self._sources: Dict[str, SourceState] = {}
         self._deliveries: Dict[Tuple[str, str], DeliveryState] = {}
 
     def claim_source(self, source_key: str) -> bool:
         with self._lock:
             first = source_key not in self._sources
-            self._sources.add(source_key)
+            if first:
+                self._sources[source_key] = SourceState(source_key=source_key)
             return first
+
+    def get_source(self, source_key: str) -> Optional[SourceState]:
+        with self._lock:
+            return self._sources.get(source_key)
+
+    def mark_source(self, source_key: str, status: str,
+                    error: Optional[str] = None) -> None:
+        if status not in SOURCE_STATUSES:
+            raise ValueError(f"invalid source status: {status}")
+        with self._lock:
+            self.claim_source(source_key)
+            state = self._sources[source_key]
+            if status == "sending" and state.status != "sending":
+                state.attempt += 1
+            state.status = status
+            state.error = error
 
     def claim_destination(self, source_key: str, target_identity: str) -> DeliveryState:
         with self._lock:

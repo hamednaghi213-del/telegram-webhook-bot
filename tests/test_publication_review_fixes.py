@@ -239,10 +239,10 @@ def test_target_username_is_case_insensitive():
     assert canonical_target_identity(a) == canonical_target_identity(b)
 
 
-def test_verified_numeric_chat_id_deduplicates_aliases():
-    a = PublicationTarget("a", "workspace", "telegram", "@one", 1, 1, {"verified_chat_id": -1001})
-    b = PublicationTarget("b", "workspace", "telegram", "@two", 2, 2, {"verified_chat_id": -1001})
-    assert canonical_target_identity(a) == canonical_target_identity(b)
+def test_database_resolver_does_not_invent_verified_chat_id():
+    a = PublicationTarget("a", "workspace", "telegram", "@one", 1, 1, {"verified": True})
+    b = PublicationTarget("b", "workspace", "telegram", "@two", 2, 2, {"verified": True})
+    assert canonical_target_identity(a) != canonical_target_identity(b)
 
 
 def test_same_name_on_telegram_and_bale_is_not_deduplicated():
@@ -470,9 +470,12 @@ def test_handle_workspaces_keeps_internal_callback_id(monkeypatch):
     assert keyboard[0][0]["callback_data"] == "ws:toggle:7"
 
 
-def test_handle_workspaces_does_not_change_onboarding_state(monkeypatch):
+def test_handle_workspaces_does_not_mutate_setup_state(monkeypatch):
+    setup_state = {"step": "branding_sample", "data": {"sample": "unchanged"}}
+    before = {"step": setup_state["step"], "data": dict(setup_state["data"])}
     keyboard = _workspace_label(monkeypatch, [])
     assert keyboard
+    assert setup_state == before
 
 
 def test_wp_confirm_routes_through_shared_publication_engine(monkeypatch):
