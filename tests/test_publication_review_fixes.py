@@ -163,6 +163,15 @@ def test_one_destination_failure_does_not_repeat_other_successful_destination(mo
     assert calls == ["a", "b", "b"]
 
 
+def test_concurrent_destination_claim_does_not_start_second_delivery():
+    store = InMemoryPublicationStateStore()
+    first = store.begin_attempt("source", "telegram:channel")
+    second = store.begin_attempt("source", "telegram:channel")
+    assert first is not None
+    assert second is None
+    assert store.get_delivery("source", "telegram:channel").attempt == 1
+
+
 def test_shared_pipeline_returns_delivery_result_per_destination(monkeypatch):
     monkeypatch.setattr(publication_engine, "_shared_content_analysis", lambda p: p)
     monkeypatch.setattr(publication_engine, "_target_content_and_branding", lambda *_a: ("base", ""))

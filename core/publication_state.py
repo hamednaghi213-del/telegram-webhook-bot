@@ -31,7 +31,7 @@ class PublicationStateStore(ABC):
     def claim_destination(self, source_key: str, target_identity: str) -> DeliveryState: ...
 
     @abstractmethod
-    def begin_attempt(self, source_key: str, target_identity: str) -> DeliveryState: ...
+    def begin_attempt(self, source_key: str, target_identity: str) -> Optional[DeliveryState]: ...
 
     @abstractmethod
     def part_succeeded(self, source_key: str, target_identity: str, part: str,
@@ -78,9 +78,14 @@ class InMemoryPublicationStateStore(PublicationStateStore):
                 self._deliveries[key] = state
             return state
 
-    def begin_attempt(self, source_key: str, target_identity: str) -> DeliveryState:
+    def begin_attempt(self, source_key: str, target_identity: str) -> Optional[DeliveryState]:
         with self._lock:
             state = self.claim_destination(source_key, target_identity)
+            # Atomic in-process lease. A concurrent webhook/timer may observe
+            # the same source while the first request is between delivery
+            # steps; it must not start a second external side effect.
+            if state.status == "sending":
+                return None
             state.attempt += 1
             state.status = "sending"
             state.error = None

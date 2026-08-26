@@ -385,6 +385,14 @@ def publish_prepared_content(
             ))
             continue
         state = store.begin_attempt(source_key, identity)
+        if state is None:
+            results.append(DeliveryResult(
+                target.platform, target.workspace_id, target.destination_id,
+                target.external_id, status="sending",
+                error="delivery already claimed by another in-process worker",
+                idempotency_key=f"{source_key}:{identity}",
+            ))
+            continue
         try:
             from core.caption_manager import analyze_content, suppress_smart_summary
             # A legacy Telegram+Bale pair shares the same semantic/branding
