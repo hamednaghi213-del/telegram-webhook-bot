@@ -452,7 +452,7 @@ def publish_prepared_content(
     targets = list(unique_targets.values())
 
     analyzed = _shared_content_analysis(prepared)
-    source_key = analyzed.source_key or f"ephemeral:{id(analyzed)}"
+    source_key = analyzed.publication_identity
     store.claim_source(source_key)
     store.mark_source(source_key, "sending")
     results: List[DeliveryResult] = []

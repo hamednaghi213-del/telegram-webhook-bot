@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Optional, Tuple
+from uuid import uuid4
 
 
 @dataclass(frozen=True)
@@ -54,12 +55,18 @@ class PreparedContent:
     files: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
     editorial_finalized: bool = False
     source_key: str = ""
+    publication_id: str = field(default_factory=lambda: uuid4().hex)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "blockquote_blocks", _freeze_mapping_sequence(self.blockquote_blocks))
         object.__setattr__(self, "expandable_blocks", _freeze_mapping_sequence(self.expandable_blocks))
         object.__setattr__(self, "other_entities", _freeze_mapping_sequence(self.other_entities))
         object.__setattr__(self, "files", _freeze_mapping_sequence(self.files))
+
+    @property
+    def publication_identity(self) -> str:
+        """Stable identity for this immutable instance and all of its retries."""
+        return self.source_key or f"ephemeral:{self.publication_id}"
 
 
 @dataclass(frozen=True)
