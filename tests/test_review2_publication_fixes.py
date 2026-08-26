@@ -238,6 +238,25 @@ def test_source_state_only_succeeds_after_blocking_deliveries(monkeypatch):
     assert store.get_source("s").status == "partial"
 
 
+def test_retry_over_limit_becomes_failed_terminal():
+    store = InMemoryPublicationStateStore()
+    for number in range(5):
+        assert store.begin_attempt("source", "target") is not None
+        store.mark_failed("source", "target", f"failure-{number}")
+    assert store.begin_attempt("source", "target") is None
+    assert store.get_delivery("source", "target").status == "failed_terminal"
+
+
+def test_stale_failed_terminal_group_is_cleaned(monkeypatch):
+    _add("dead", 1)
+    with media_handler.group_lock:
+        group = media_handler.pending_groups[(9, "dead")]
+        group["state"] = "failed_terminal"
+        group["last_update"] = time.time() - media_handler.MAX_GROUP_AGE_SECONDS - 1
+    media_handler.cleanup_old_groups()
+    assert (9, "dead") not in media_handler.pending_groups
+
+
 def test_source_cleanup_is_idempotent():
     text = "متن اصلی\n\n🔷 #N\n🔷 @mahdaviatakhbar"
     once = remove_source_signature(text, source_username="mahdaviatakhbar")

@@ -460,10 +460,13 @@ def publish_prepared_content(
             continue
         state = store.begin_attempt(source_key, identity)
         if state is None:
+            current = store.get_delivery(source_key, identity)
+            terminal = bool(current and current.status == "failed_terminal")
             results.append(DeliveryResult(
                 target.platform, target.workspace_id, target.destination_id,
-                target.external_id, status="sending",
-                error="delivery already claimed by another in-process worker",
+                target.external_id, status="failed_terminal" if terminal else "sending",
+                error=(current.error if terminal else "delivery already claimed by another in-process worker"),
+                attempt=current.attempt if current else 0,
                 idempotency_key=f"{source_key}:{identity}",
             ))
             continue
@@ -546,7 +549,10 @@ def publish_prepared_content(
             ))
     all_succeeded = bool(results) and all(item.status == "succeeded" for item in results)
     any_succeeded = any(item.status == "succeeded" for item in results)
-    store.mark_source(source_key, "succeeded" if all_succeeded else ("partial" if any_succeeded else "failed"))
+    all_terminal = bool(results) and all(item.status == "failed_terminal" for item in results)
+    store.mark_source(source_key, "succeeded" if all_succeeded else (
+        "partial" if any_succeeded else ("failed_terminal" if all_terminal else "failed")
+    ))
     return {
         "ok": all_succeeded,
         "results": results,

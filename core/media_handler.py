@@ -245,13 +245,14 @@ def cleanup_old_groups() -> None:
             )
 
             protected = group.get("state") in {"leased", "publishing", "retry_pending", "editorial_pending"}
+            terminal = group.get("state") == "failed_terminal"
             has_unpublished = bool(group.get("files"))
             if (
                 age_seconds
                 > MAX_GROUP_AGE_SECONDS
                 and not protected
                 and not group.get("is_processing")
-                and not has_unpublished
+                and (not has_unpublished or terminal)
             ):
 
                 groups_to_remove.append(
@@ -273,7 +274,7 @@ def cleanup_old_groups() -> None:
                 item for item in pending_groups.items()
                 if item[1].get("state") not in {"leased", "publishing", "retry_pending", "editorial_pending"}
                 and not item[1].get("is_processing")
-                and not item[1].get("files")
+                and (not item[1].get("files") or item[1].get("state") == "failed_terminal")
             ]
             sorted_groups = sorted(
                 removable_groups,

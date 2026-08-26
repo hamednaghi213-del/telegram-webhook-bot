@@ -12,6 +12,7 @@ from typing import Dict, Optional, Set, Tuple
 
 
 SOURCE_STATUSES = {"pending", "sending", "partial", "succeeded", "failed", "failed_terminal"}
+MAX_DELIVERY_ATTEMPTS = 5
 
 
 @dataclass
@@ -120,6 +121,11 @@ class InMemoryPublicationStateStore(PublicationStateStore):
             # the same source while the first request is between delivery
             # steps; it must not start a second external side effect.
             if state.status == "sending":
+                return None
+            if state.status == "failed_terminal" or (
+                state.status == "failed" and state.attempt >= MAX_DELIVERY_ATTEMPTS
+            ):
+                state.status = "failed_terminal"
                 return None
             state.attempt += 1
             state.status = "sending"
