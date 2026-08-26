@@ -1341,10 +1341,33 @@ def publish_prepared_text(
     other_entities: Optional[
         List[Dict[str, Any]]
     ] = None,
-    editorial_finalized: bool = False
+    editorial_finalized: bool = False,
+    neutral_text: Optional[str] = None,
+    source_key: str = "",
 ) -> bool:
 
     try:
+
+        from core.content_model import PreparedContent
+        from core.publication_engine import publish_prepared_content
+
+        shared_result = publish_prepared_content(
+            chat_id,
+            API_URL,
+            PreparedContent(
+                main_text=main_text,
+                neutral_text=neutral_text or main_text,
+                blockquote_blocks=list(blockquote_blocks or []),
+                expandable_blocks=list(expandable_blocks or []),
+                other_entities=list(other_entities or []),
+                editorial_finalized=editorial_finalized,
+                source_key=source_key,
+            ),
+        )
+        return bool(shared_result.get("ok"))
+
+        # Kept below temporarily as a source-compatible reference during the
+        # refactor; execution is owned by the shared publication engine above.
 
         from core.caption_manager import (
             analyze_content
@@ -1579,7 +1602,8 @@ def process_single_photo_video(
     ],
     forward_source: Optional[
         Dict[str, Any]
-    ] = None
+    ] = None,
+    source_key: str = "",
 ) -> bool:
 
     try:
@@ -1646,6 +1670,7 @@ def process_single_photo_video(
         )
 
         formatted_main_text = ""
+        neutral_main_text = main_text
 
         if main_text:
 
@@ -1669,6 +1694,34 @@ def process_single_photo_video(
                 formatted_main_text = (
                     main_text
                 )
+
+        try:
+            from core.formatter import remove_source_signature
+            neutral_main_text = remove_source_signature(
+                main_text,
+                source_title=(forward_source or {}).get("source_title"),
+                source_username=(forward_source or {}).get("source_username"),
+            )
+        except Exception:
+            neutral_main_text = main_text
+
+        from core.content_model import PreparedContent
+        from core.publication_engine import publish_prepared_content
+
+        shared_result = publish_prepared_content(
+            chat_id,
+            API_URL,
+            PreparedContent(
+                main_text=formatted_main_text,
+                neutral_text=neutral_main_text,
+                blockquote_blocks=blockquote_blocks,
+                expandable_blocks=expandable_blocks,
+                other_entities=other_entities,
+                files=[{"type": media_type, "file_id": file_id}],
+                source_key=source_key,
+            ),
+        )
+        return bool(shared_result.get("ok"))
 
         branding = (
             build_branding_for_user(
@@ -1927,6 +1980,7 @@ def prepare_text_content(
     )
 
     formatted_main_text = ""
+    neutral_main_text = main_text
 
     if main_text:
 
@@ -1951,9 +2005,22 @@ def prepare_text_content(
                 main_text
             )
 
+    try:
+        from core.formatter import remove_source_signature
+        neutral_main_text = remove_source_signature(
+            main_text,
+            source_title=(forward_source or {}).get("source_title"),
+            source_username=(forward_source or {}).get("source_username"),
+        )
+    except Exception:
+        neutral_main_text = main_text
+
     return {
         "main_text":
             formatted_main_text,
+
+        "neutral_text":
+            neutral_main_text,
 
         "blockquote_blocks":
             blockquote_blocks,
@@ -1978,7 +2045,8 @@ def process_text_message(
     ],
     forward_source: Optional[
         Dict[str, Any]
-    ] = None
+    ] = None,
+    source_key: str = "",
 ) -> bool:
 
     try:
@@ -2012,7 +2080,9 @@ def process_text_message(
                 prepared[
                     "other_entities"
                 ]
-            )
+            ),
+            neutral_text=prepared.get("neutral_text"),
+            source_key=source_key,
         )
 
     except Exception as e:
@@ -3270,6 +3340,7 @@ def handle_editorial_callback(
                         )
                     ),
                     editorial_finalized=True
+                    ,source_key=f"editorial:{review_id}:original"
                 )
             )
 
@@ -3333,6 +3404,7 @@ def handle_editorial_callback(
                     expandable_blocks=[],
                     other_entities=[],
                     editorial_finalized=True
+                    ,source_key=f"editorial:{review_id}:summary"
                 )
             )
 
@@ -3818,6 +3890,12 @@ def handle_webhook() -> Tuple[
                 "ok": True
             }, 200
 
+        incoming_source_key = (
+            f"tg:update:{data.get('update_id')}"
+            if data.get("update_id") is not None
+            else f"tg:{chat_id}:message:{msg.get('message_id')}"
+        )
+
         # =================================================
         # DIAGNOSTICS
         # =================================================
@@ -3963,8 +4041,7 @@ def handle_webhook() -> Tuple[
         workspace_context_active = False
         workspace_targets_selected = False
         legacy_target_selected = bool(tenant and tenant.get("telegram_channel"))
-        if tenant:
-            try:
+        try:
                 from core.database import (
                     get_active_workspace_preference,
                     get_user_by_telegram_id,
@@ -3986,78 +4063,31 @@ def handle_webhook() -> Tuple[
                     and list_selected_workspace_ids(workspace_user["id"])
                 )
                 legacy_target_selected = bool(
-                    tenant.get("telegram_channel")
+                    tenant
+                    and tenant.get("telegram_channel")
                     and (
                         workspace_preference.get("legacy_selected")
                         if "legacy_selected" in workspace_preference
                         else workspace_preference.get("context_type") == "legacy"
                     )
                 )
-            except (ImportError, AttributeError):
-                workspace_context_active = False
-            except Exception as e:
-                logger.exception(
-                    f"[{req_id}] ❌ Active media context lookup failed | {e}"
-                )
+        except (ImportError, AttributeError):
+            workspace_context_active = False
+        except Exception as e:
+            logger.exception(
+                f"[{req_id}] ❌ Active media context lookup failed | {e}"
+            )
 
-        if not tenant or workspace_targets_selected or workspace_context_active:
-
-            # Phase 4B — workspace publication path for non-legacy users
-            try:
-
-                from core.workspace_publisher import (
-                    _try_workspace_publication
-                )
-
-                handled = _try_workspace_publication(
-                    chat_id,
-                    msg,
-                    req_id,
-                    API_URL
-                )
-
-                if handled and not legacy_target_selected:
-
-                    return {
-                        "ok": True
-                    }, 200
-
-                if handled and legacy_target_selected:
-                    logger.info(
-                        "[%s] ✅ Workspace targets published; continuing to "
-                        "selected legacy target",
-                        req_id,
-                    )
-
-                if workspace_context_active and not legacy_target_selected:
-                    send_message(
-                        chat_id,
-                        "❌ انتشار در رسانه فعال انجام نشد. "
-                        "وضعیت رسانه را با /status بررسی کنید."
-                    )
-                    return {
-                        "ok": True
-                    }, 200
-
-            except Exception as _wp_err:
-
-                logger.exception(
-                    f"[{req_id}] ❌ Workspace publication error | "
-                    f"{_wp_err}"
-                )
-
-            if not legacy_target_selected:
-                send_message(
-                    chat_id,
-                    (
-                        "❌ ابتدا با /register ثبت‌نام "
-                        "و کانال را تنظیم کنید."
-                    )
-                )
-
-                return {
-                    "ok": True
-                }, 200
+        # Workspace publication no longer happens here.  Raw updates must
+        # first pass the editorial/media-group/content pipeline.  Legacy and
+        # Workspace destinations are resolved together only after a single
+        # PreparedContent has been produced.
+        if not tenant and not (workspace_targets_selected or workspace_context_active):
+            send_message(
+                chat_id,
+                "❌ ابتدا با /register ثبت‌نام و کانال را تنظیم کنید."
+            )
+            return {"ok": True}, 200
 
         # =================================================
         # ADMIN INSTRUCTION TEXT GATE
@@ -4255,7 +4285,8 @@ def handle_webhook() -> Tuple[
                     caption,
 
                 "caption_entities":
-                    caption_entities
+                    caption_entities,
+                "source_key": incoming_source_key,
             }
 
             if forward_source.get(
@@ -4322,6 +4353,7 @@ def handle_webhook() -> Tuple[
                 "media_type": media_type,
                 "caption": caption,
                 "caption_entities": caption_entities,
+                "source_key": incoming_source_key,
             }
 
             if forward_source.get(
@@ -4475,7 +4507,8 @@ def handle_webhook() -> Tuple[
                     publication_text,
 
                 "entities":
-                    publication_entities
+                    publication_entities,
+                "source_key": incoming_source_key,
             }
 
             if forward_source.get(

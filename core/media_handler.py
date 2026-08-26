@@ -91,6 +91,15 @@ group_timers: Dict[
 group_lock = threading.RLock()
 
 
+def _destination_kwargs(channel_id=None, api_url=None) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {}
+    if channel_id is not None:
+        kwargs["channel_id"] = channel_id
+    if api_url is not None:
+        kwargs["api_url"] = api_url
+    return kwargs
+
+
 # =========================================================
 # RESOURCE LIMITS
 # =========================================================
@@ -340,7 +349,8 @@ def add_to_pending_group(
     ] = None,
     forward_source: Optional[
         Dict[str, Any]
-    ] = None
+    ] = None,
+    message_id: Optional[int] = None,
 ) -> None:
 
     group_key = (
@@ -394,6 +404,12 @@ def add_to_pending_group(
                 "is_processing":
                     False,
 
+                "generation":
+                    0,
+
+                "published_generation":
+                    None,
+
                 "timer_generation":
                     0
             }
@@ -433,9 +449,14 @@ def add_to_pending_group(
             )
 
         already_exists = any(
-            item.get(
-                "file_id"
-            ) == file_id
+            (
+                message_id is not None
+                and item.get("message_id") == message_id
+            )
+            or (
+                message_id is None
+                and item.get("file_id") == file_id
+            )
 
             for item
             in group["files"]
@@ -448,8 +469,27 @@ def add_to_pending_group(
                     media_type,
 
                 "file_id":
-                    file_id
+                    file_id,
+
+                "message_id":
+                    message_id,
             })
+
+            group["files"].sort(
+                key=lambda item: (
+                    item.get("message_id") is None,
+                    item.get("message_id") or 0,
+                )
+            )
+
+            group["generation"] = int(group.get("generation", 0) or 0) + 1
+            # A late member invalidates an uncommitted snapshot.  The active
+            # processor re-checks this generation immediately before send.
+            if group.get("is_processing"):
+                logger.info(
+                    f"🔄 Media Group snapshot invalidated | "
+                    f"group={media_group_id} | generation={group['generation']}"
+                )
 
             logger.info(
                 f"📸 Media added | "
@@ -652,10 +692,13 @@ def remove_pending_group(
 
 def telegram_post(
     endpoint: str,
-    payload: Dict[str, Any]
+    payload: Dict[str, Any],
+    api_url: Optional[str] = None,
 ) -> Optional[requests.Response]:
 
-    if not API_URL:
+    effective_api_url = (api_url or API_URL or "").rstrip("/")
+
+    if not effective_api_url:
 
         logger.error(
             "❌ API_URL is not configured"
@@ -664,7 +707,7 @@ def telegram_post(
         return None
 
     url = (
-        f"{API_URL}/{endpoint}"
+        f"{effective_api_url}/{endpoint}"
     )
 
     request_started = (
@@ -1268,13 +1311,17 @@ def extract_media_group_message_id(
 def send_text_to_channel(
     text: str,
     parse_mode: Optional[str] = None,
-    reply_to_message_id: Optional[int] = None
+    reply_to_message_id: Optional[int] = None,
+    channel_id: Optional[str] = None,
+    api_url: Optional[str] = None,
 ) -> bool:
 
     if not text:
         return True
 
-    if not CHANNEL_ID:
+    effective_channel_id = channel_id or CHANNEL_ID
+
+    if not effective_channel_id:
 
         logger.error(
             "❌ CHANNEL_ID not configured"
@@ -1284,7 +1331,7 @@ def send_text_to_channel(
 
     payload: Dict[str, Any] = {
         "chat_id":
-            CHANNEL_ID,
+            effective_channel_id,
 
         "text":
             text
@@ -1319,9 +1366,10 @@ def send_text_to_channel(
             f"reply_to={reply_to_message_id}"
         )
 
-    response = telegram_post(
-        "sendMessage",
-        payload
+    response = (
+        telegram_post("sendMessage", payload, api_url=api_url)
+        if api_url is not None
+        else telegram_post("sendMessage", payload)
     )
 
     success = telegram_response_ok(
@@ -1353,14 +1401,19 @@ def send_single_media_to_channel(
     parse_mode: Optional[str] = None,
     caption_entities: Optional[
         List[Dict[str, Any]]
-    ] = None
+    ] = None,
+    channel_id: Optional[str] = None,
+    api_url: Optional[str] = None,
 ) -> bool:
 
     set_last_media_message_id(
         None
     )
 
-    if not API_URL:
+    effective_api_url = api_url or API_URL
+    effective_channel_id = channel_id or CHANNEL_ID
+
+    if not effective_api_url:
 
         logger.error(
             "❌ API_URL not configured"
@@ -1368,7 +1421,7 @@ def send_single_media_to_channel(
 
         return False
 
-    if not CHANNEL_ID:
+    if not effective_channel_id:
 
         logger.error(
             "❌ CHANNEL_ID not configured"
@@ -1406,7 +1459,7 @@ def send_single_media_to_channel(
         return False
 
     payload: Dict[str, Any] = {
-        "chat_id": CHANNEL_ID,
+        "chat_id": effective_channel_id,
         media_type: file_id
     }
 
@@ -1428,9 +1481,10 @@ def send_single_media_to_channel(
                 "parse_mode"
             ] = parse_mode
 
-    response = telegram_post(
-        endpoint,
-        payload
+    response = (
+        telegram_post(endpoint, payload, api_url=effective_api_url)
+        if api_url is not None
+        else telegram_post(endpoint, payload)
     )
 
     if telegram_response_ok(
@@ -1481,7 +1535,9 @@ def send_media_group_to_channel(
     parse_mode: Optional[str] = None,
     caption_entities: Optional[
         List[Dict[str, Any]]
-    ] = None
+    ] = None,
+    channel_id: Optional[str] = None,
+    api_url: Optional[str] = None,
 ) -> bool:
 
     set_last_media_message_id(
@@ -1507,7 +1563,10 @@ def send_media_group_to_channel(
 
         return False
 
-    if not API_URL:
+    effective_api_url = api_url or API_URL
+    effective_channel_id = channel_id or CHANNEL_ID
+
+    if not effective_api_url:
 
         logger.error(
             "❌ API_URL not configured"
@@ -1515,7 +1574,7 @@ def send_media_group_to_channel(
 
         return False
 
-    if not CHANNEL_ID:
+    if not effective_channel_id:
 
         logger.error(
             "❌ CHANNEL_ID not configured"
@@ -1620,15 +1679,16 @@ def send_media_group_to_channel(
 
     payload = {
         "chat_id":
-            CHANNEL_ID,
+            effective_channel_id,
 
         "media":
             media_group
     }
 
-    response = telegram_post(
-        "sendMediaGroup",
-        payload
+    response = (
+        telegram_post("sendMediaGroup", payload, api_url=effective_api_url)
+        if api_url is not None
+        else telegram_post("sendMediaGroup", payload)
     )
 
     if telegram_response_ok(
@@ -1890,7 +1950,9 @@ def execute_telegram_plan(
     files: List[
         Dict[str, str]
     ],
-    plan: Dict[str, Any]
+    plan: Dict[str, Any],
+    channel_id: Optional[str] = None,
+    api_url: Optional[str] = None,
 ) -> bool:
 
     media_caption = (
@@ -1981,7 +2043,8 @@ def execute_telegram_plan(
                     media_caption,
                     caption_entities=(
                         media_caption_entities
-                    )
+                    ),
+                    **_destination_kwargs(channel_id, api_url),
                 )
             )
 
@@ -1998,7 +2061,8 @@ def execute_telegram_plan(
                     media_caption,
                     parse_mode=(
                         media_parse_mode
-                    )
+                    ),
+                    **_destination_kwargs(channel_id, api_url),
                 )
             )
 
@@ -2012,7 +2076,8 @@ def execute_telegram_plan(
                     file.get(
                         "type"
                     ),
-                    media_caption
+                    media_caption,
+                    **_destination_kwargs(channel_id, api_url),
                 )
             )
 
@@ -2026,7 +2091,8 @@ def execute_telegram_plan(
                     media_caption,
                     caption_entities=(
                         media_caption_entities
-                    )
+                    ),
+                    **_destination_kwargs(channel_id, api_url),
                 )
             )
 
@@ -2038,7 +2104,8 @@ def execute_telegram_plan(
                     media_caption,
                     parse_mode=(
                         media_parse_mode
-                    )
+                    ),
+                    **_destination_kwargs(channel_id, api_url),
                 )
             )
 
@@ -2047,7 +2114,8 @@ def execute_telegram_plan(
             media_success = (
                 send_media_group_to_channel(
                     files,
-                    media_caption
+                    media_caption,
+                    **_destination_kwargs(channel_id, api_url),
                 )
             )
 
@@ -2090,7 +2158,8 @@ def execute_telegram_plan(
                     parse_mode="HTML",
                     reply_to_message_id=(
                         media_message_id
-                    )
+                    ),
+                    **_destination_kwargs(channel_id, api_url),
                 )
             )
 
@@ -2105,7 +2174,8 @@ def execute_telegram_plan(
             success = (
                 send_text_to_channel(
                     html_message,
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    **_destination_kwargs(channel_id, api_url),
                 )
             )
 
@@ -2133,7 +2203,8 @@ def execute_telegram_plan(
                     message,
                     reply_to_message_id=(
                         media_message_id
-                    )
+                    ),
+                    **_destination_kwargs(channel_id, api_url),
                 )
             )
 
@@ -2147,7 +2218,8 @@ def execute_telegram_plan(
 
             success = (
                 send_text_to_channel(
-                    message
+                    message,
+                    **_destination_kwargs(channel_id, api_url),
                 )
             )
 
@@ -2279,7 +2351,8 @@ def execute_bale_plan(
 
 def process_media_group(
     media_group_id: str,
-    chat_id: int
+    chat_id: int,
+    expected_generation: Optional[int] = None,
 ) -> bool:
 
     group_key = (
@@ -2320,6 +2393,15 @@ def process_media_group(
 
             return False
 
+        current_generation = int(group.get("generation", 0) or 0)
+        if expected_generation is not None and expected_generation != current_generation:
+            logger.info(
+                f"🛑 Media Group generation changed before snapshot | "
+                f"group={media_group_id} | expected={expected_generation} | "
+                f"current={current_generation}"
+            )
+            return False
+
         files = list(
             group.get(
                 "files",
@@ -2343,9 +2425,8 @@ def process_media_group(
 
             return False
 
-        group[
-            "is_processing"
-        ] = True
+        group["is_processing"] = True
+        snapshot_generation = current_generation
 
         raw_main_text = (
             group.get(
@@ -2468,6 +2549,58 @@ def process_media_group(
                     raw_main_text
                 )
 
+        from core.content_model import PreparedContent
+        from core.publication_engine import publish_prepared_content
+
+        neutral_main_text = raw_main_text
+        try:
+            from core.formatter import remove_source_signature
+            neutral_main_text = remove_source_signature(
+                raw_main_text,
+                source_title=forward_source.get("source_title"),
+                source_username=forward_source.get("source_username"),
+            )
+        except Exception:
+            neutral_main_text = raw_main_text
+
+        with group_lock:
+            live_group = pending_groups.get(group_key)
+            live_generation = int((live_group or {}).get("generation", -1) or -1)
+            if not live_group or live_generation != snapshot_generation:
+                if live_group:
+                    live_group["is_processing"] = False
+                logger.info(
+                    f"🛑 Media Group send postponed for late member | "
+                    f"group={media_group_id} | snapshot={snapshot_generation} | "
+                    f"current={live_generation}"
+                )
+                schedule_processing(media_group_id, chat_id, delay=MEDIA_GROUP_DELAY)
+                return False
+
+        shared_result = publish_prepared_content(
+            chat_id,
+            API_URL,
+            PreparedContent(
+                main_text=formatted_main_text,
+                neutral_text=neutral_main_text,
+                blockquote_blocks=blockquote_blocks,
+                expandable_blocks=expandable_blocks,
+                other_entities=other_entities,
+                files=files,
+                source_key=f"tg:{chat_id}:album:{media_group_id}",
+            ),
+        )
+        if shared_result.get("ok"):
+            with group_lock:
+                live_group = pending_groups.get(group_key)
+                if live_group:
+                    live_group["published_generation"] = snapshot_generation
+            remove_pending_group(media_group_id, chat_id)
+            logger.info(f"🧹 Media Group cleaned after success | group={media_group_id}")
+            return True
+        logger.error("❌ Shared Media Group publication failed | group=%s", media_group_id)
+        return False
+
         branding = (
             build_branding_for_user(
                 chat_id
@@ -2523,6 +2656,21 @@ def process_media_group(
             "📤 Step 1/2 | Execute Telegram Plan"
         )
 
+        # No network side effect is allowed from a stale snapshot.
+        with group_lock:
+            live_group = pending_groups.get(group_key)
+            live_generation = int((live_group or {}).get("generation", -1) or -1)
+            if not live_group or live_generation != snapshot_generation:
+                if live_group:
+                    live_group["is_processing"] = False
+                logger.info(
+                    f"🛑 Media Group send postponed for late member | "
+                    f"group={media_group_id} | snapshot={snapshot_generation} | "
+                    f"current={live_generation}"
+                )
+                schedule_processing(media_group_id, chat_id, delay=MEDIA_GROUP_DELAY)
+                return False
+
         telegram_success = (
             execute_telegram_plan(
                 files,
@@ -2566,6 +2714,12 @@ def process_media_group(
                 "⚠️ Telegram succeeded but Bale failed"
             )
 
+        with group_lock:
+            live_group = pending_groups.get(group_key)
+            if live_group:
+                live_group["published_generation"] = snapshot_generation
+        remove_pending_group(media_group_id, chat_id)
+        logger.info(f"🧹 Media Group cleaned after success | group={media_group_id}")
         return True
 
     except Exception as e:
@@ -2579,16 +2733,20 @@ def process_media_group(
         return False
 
     finally:
-
-        remove_pending_group(
-            media_group_id,
-            chat_id
-        )
-
-        logger.info(
-            f"🧹 Media Group cleaned | "
-            f"group={media_group_id}"
-        )
+        # Keep failed/stale groups for retry.  Successful groups are removed
+        # explicitly only after every configured publication step completes.
+        retry_required = False
+        with group_lock:
+            live_group = pending_groups.get(group_key)
+            if live_group:
+                live_group["is_processing"] = False
+                retry_required = True
+        if retry_required:
+            schedule_processing(
+                media_group_id,
+                chat_id,
+                delay=MEDIA_GROUP_INCOMPLETE_RETRY_DELAY,
+            )
 
 
 # =========================================================
@@ -2838,7 +2996,8 @@ def _scheduled_process(
 
     process_media_group(
         media_group_id,
-        chat_id
+        chat_id,
+        expected_generation=current_generation,
     )
 
 
@@ -2952,7 +3111,8 @@ def handle_media_group_message(
             caption_entities,
             forward_source=(
                 forward_source
-            )
+            ),
+            message_id=message.get("message_id"),
         )
 
     else:
@@ -2963,7 +3123,8 @@ def handle_media_group_message(
             file_id,
             media_type,
             caption,
-            caption_entities
+            caption_entities,
+            message_id=message.get("message_id"),
         )
 
     schedule_processing(

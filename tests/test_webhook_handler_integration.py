@@ -922,7 +922,8 @@ def test_text_webhook_path():
     mock_text.assert_called_once_with(
         chat_id=1001,
         text="خبر متنی",
-        entities=[]
+        entities=[],
+        source_key="tg:1001:message:4",
     )
 
 
@@ -955,8 +956,8 @@ def test_legacy_user_with_workspace_selection_routes_to_active_workspace():
 
     assert status == 200
     assert result == {"ok": True}
-    workspace_publish.assert_called_once()
-    legacy_publish.assert_not_called()
+    workspace_publish.assert_not_called()
+    legacy_publish.assert_called_once()
 
 
 def test_selected_legacy_and_workspace_targets_both_publish():
@@ -981,9 +982,10 @@ def test_selected_legacy_and_workspace_targets_both_publish():
 
     assert status == 200
     assert result == {"ok": True}
-    workspace_publish.assert_called_once()
+    workspace_publish.assert_not_called()
     legacy_publish.assert_called_once_with(
-        chat_id=1001, text="خبر متنی", entities=[]
+        chat_id=1001, text="خبر متنی", entities=[],
+        source_key="tg:1001:message:4",
     )
 
 

@@ -908,7 +908,8 @@ def test_text_webhook_path():
     mock_text.assert_called_once_with(
         chat_id=1001,
         text="خبر متنی",
-        entities=[]
+        entities=[],
+        source_key="tg:1001:message:4",
     )
 
 

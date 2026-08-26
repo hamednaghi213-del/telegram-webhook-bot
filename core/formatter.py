@@ -424,6 +424,16 @@ def remove_source_signature(
                         or is_suspicious_footer_fragment(
                             candidate
                         )
+                        or (
+                            neighbor < index
+                            and bool(
+                                re.fullmatch(
+                                    r"[\s\W_]*(?:#[\w\u0600-\u06ff]+|@[A-Za-z0-9_]{5,})[\s\W_]*",
+                                    normalize_invisible_characters(candidate),
+                                    flags=re.UNICODE,
+                                )
+                            )
+                        )
                     ):
                         removable_indexes.add(
                             neighbor

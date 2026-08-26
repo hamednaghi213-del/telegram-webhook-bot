@@ -666,7 +666,9 @@ def send_document_to_bale(
 def send_media_group_to_bale(
     user_id,
     files,
-    caption=""
+    caption="",
+    bale_channel=None,
+    bale_token=None,
 ):
     """
     ارسال آلبوم واقعی به بله
@@ -718,30 +720,16 @@ def send_media_group_to_bale(
     # Branding
     # -----------------------------------------------------
 
-    try:
-
-        branding = get_branding(
-            user_id
-        )
-
-    except Exception as e:
-
-        logger.exception(
-            f"❌ خطا در دریافت branding "
-            f"برای Media Group: {e}"
-        )
-
-        return False
-
-    bale_channel = branding.get(
-        "bale_channel",
-        ""
-    )
-
-    bale_token = branding.get(
-        "bale_token",
-        ""
-    )
+    if not bale_channel or not bale_token:
+        try:
+            branding = get_branding(user_id)
+        except Exception as e:
+            logger.exception(
+                f"❌ خطا در دریافت branding برای Media Group: {e}"
+            )
+            return False
+        bale_channel = bale_channel or branding.get("bale_channel", "")
+        bale_token = bale_token or branding.get("bale_token", "")
 
     if not bale_channel or not bale_token:
 

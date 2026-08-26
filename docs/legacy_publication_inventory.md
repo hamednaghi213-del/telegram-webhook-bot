@@ -1,0 +1,40 @@
+# Legacy publication capability inventory
+
+Baseline: `633429e` on `main`. Runtime: Gunicorn `gthread`, one worker, two threads.
+
+| Capability | Trigger/current behaviour | Entry and dependencies | Storage/config | Existing protection | Shared-engine connection / risk |
+|---|---|---|---|---|---|
+| Normal news | Text without a control tag; logs `NORMAL-NEWS-POLICY` | `webhook_handler.handle_webhook` → `process_text_message` → `prepare_text_content` | tenant/workspace target settings | webhook, formatter and caption tests | Produces one `PreparedContent`; medium risk |
+| `#یادداشت` | First non-empty line is `#یادداشت` or `# یادداشت`; tag removed | `detect_editorial_admin_tag` → `try_queue_editorial_text_review` → `editorial_structure.extract_editorial_structure` | editorial pending record and feature flag | explicit-tag, structure, review, pending and webhook tests | Approval now calls shared `publish_prepared_text`; high risk protected by existing suite |
+| `#تحلیل` | First non-empty line is `#تحلیل` or `# تحلیل` | Same editorial path with `news_analysis` | editorial pending | explicit-tag and review tests | Same shared final publication; high risk |
+| Editorial classification | Types: normal, analysis, opinion, sensitive, uncertain | `editorial_review.analyze_editorial_content` | AI provider/config | editorial review tests | Runs before target resolution, once per source |
+| Title/author/body extraction | Extracts explicit and inferred note/analysis structure | `editorial_structure.extract_editorial_structure` | pending metadata | editorial structure tests | Stored in the one pending review; destination formatting happens later |
+| Editorial pending guard | Waiting instruction consumes the next text before normal-news routing | `get_waiting_admin_instruction_review` → `process_admin_instruction_message` | pending review store | admin-instruction E2E and webhook tests | Remains before shared publication; high risk |
+| Approve original/summary | `ed:original`, `ed:summary` | `handle_editorial_callback` → `publish_prepared_text` | review id/status | editorial controls tests | Stable review id becomes idempotency key |
+| Regenerate/edit/cancel | Editorial callbacks and free-form admin instruction | `handle_editorial_callback`, `process_admin_instruction_message` | pending metadata/regeneration count | editorial instruction/review tests | No destination fan-out until final decision |
+| Smart Summary | Adaptive summarisation and validation by content type | `caption_manager.analyze_content` → `smart_summarizer` / AI provider | smart policy/env and tenant settings | smart summarizer and caption tests | Same function is invoked per destination PublicationPlan |
+| Source cleanup | Tail/source-title/source-username aware removal | `formatter.remove_source_signature`, `format_news` | forward-origin metadata | formatter/source tests plus requested `#N/@mahdaviatakhbar` case | Neutral cleaned text feeds Workspace profiles; Legacy keeps established formatting; medium risk |
+| Formatter | Title/body icons, bullets, whitespace and source handling | `formatter.format_news` / `webhook_handler.format_with_source` | Legacy formatter globals | formatter and webhook characterization | Existing function retained; Workspace profile is applied after neutral cleanup |
+| Destination format profile | Confirmed sample profile/icons | `publication_icons.format_with_profile` / `format_with_icons` | `workspace_branding` | phase 9 branding tests | Applied only after shared base content |
+| Entity parsing | Bold, italic, links, mentions, hashtags, custom emoji | `content_entities.parse_telegram_entities` | Telegram entities | entity integration tests | Runs once before target fan-out |
+| UTF-16 offsets | Telegram UTF-16 → Python and reverse conversion | `content_entities`, `telegram_caption_entities` | none | dedicated UTF-16/entity tests | Existing algorithms unchanged |
+| Blockquote / expandable | Extracted from entities; caption or follow-up representation | entity parser → Caption Manager | none | caption/entity/webhook tests | Shared PreparedContent fields, per-platform plan |
+| Caption limits/follow-up | Caption budget, split, reply chain, document fallback guard | `caption_manager.analyze_content`, `media_handler.execute_telegram_plan` | platform limits | caption, PDF/document and reply tests | Existing planner/executor retained |
+| Photo/video/document/audio/voice | Single-media PublicationPlan | `process_single_photo_video` → shared engine → existing executors | selected targets | media integration/PDF tests | One prepared item, destination-specific plan |
+| Media Group | 2–10 photos/videos; caption on first item | `handle_media_group_message` → pending store → `process_media_group` | in-memory (one Gunicorn worker) | existing album tests plus 2/3/10 and race tests | Aggregates before routing; message-id dedup/order and generation guard; high risk |
+| Telegram executor | Text, single media, true `sendMediaGroup`, replies | `media_handler.send_*` / `execute_telegram_plan` | bot API URL and destination id | payload/entity/media tests | Optional destination arguments preserve Legacy defaults |
+| Bale executor | Text/photo/video/document and real media group | `bale_forwarder`, `execute_bale_plan` | Legacy tenant token or platform token | Bale pairing/media tests | Optional destination channel/token; Legacy adapter unchanged |
+| Target selection | Legacy selection plus one/many selected Workspaces | `target_resolver.resolve_publication_targets` | tenants, users, memberships, preferences, selected workspaces, destinations, setup state | shared-engine/Workspace tests | Resolves after PreparedContent; physical channel dedup |
+| Branding | Legacy tenant or destination/workspace branding | `build_branding_for_user`, `compose_destination_branding` | tenants, workspace/destination branding | branding/icon tests | Per target only; no channel name hardcoded in shared core |
+| Message link/edit sync | Telegram/Bale pair used for edit mirroring | `workspace_publisher.sync_edited_channel_post_to_bale`, database link functions | `publication_message_links` | phase 11 tests | Existing pair remains; full per-destination outcome persistence needs an approved schema extension |
+| Idempotency | Album member dedup and process-local source/target claim | media group store, `publication_engine._claim` | in-memory in one worker | new duplicate/retry tests | Protects duplicate webhook/timer in current process; restart-durable ledger needs approved schema extension |
+| Retry/error/fallback | DB retries, retained failed album state, no unsafe single fallback | database retry wrapper, media handlers and planners | retry env/config | error/fallback tests and new retained-state test | Failed target claim released; album state removed only after success |
+| Workspace UI labels | Real verified/default Telegram, then Bale, then Workspace name | `command_handler.handle_workspaces` → `build_workspace_keyboard` | destinations/tenant | new label tests | Callback remains internal Workspace id; low risk |
+
+## Commands and control triggers
+
+Publication-related commands and callbacks remain in `command_handler.py`, `webhook_handler.py`, and `workspace_publisher.py`. Onboarding commands/callbacks (`/start`, `/setup`, `/register`, `setup:*`) were not changed. Workspace selection remains `/workspaces` with `ws:*`; destination compatibility callbacks remain `wp:*`; editorial uses `ed:*`. Only `#یادداشت` and `#تحلیل` are explicit first-line editorial control tags. Other hashtags and mentions are ordinary content unless the established tail/source cleaner classifies them as source branding.
+
+## Known persistence decision
+
+The deployed configuration has one worker, so the strengthened in-memory album coordinator is safe for the current process model. Durable idempotency across process restarts and a normalized result row for every destination require a future additive schema migration. No schema or migration was changed by this refactor.

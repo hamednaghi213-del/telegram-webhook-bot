@@ -627,12 +627,51 @@ def handle_workspaces(chat_id: int) -> bool:
             active_id = workspaces[0]["id"]
 
         from core.workspace_publisher import build_workspace_keyboard
+        list_verified_active_destinations = getattr(
+            database_module,
+            "list_verified_active_destinations",
+            lambda _workspace_id: [],
+        )
+
+        display_workspaces = []
+        for workspace in workspaces:
+            display_workspace = dict(workspace)
+            destinations = list_verified_active_destinations(workspace["id"]) or []
+            destinations = sorted(
+                destinations,
+                key=lambda item: (
+                    not bool(item.get("is_default")),
+                    item.get("platform") != "telegram",
+                    item.get("id") or 0,
+                ),
+            )
+            primary = next(
+                (item for item in destinations if item.get("platform") == "telegram"),
+                None,
+            ) or next(
+                (item for item in destinations if item.get("platform") == "bale"),
+                None,
+            )
+            display_workspace["display_label"] = (
+                (primary or {}).get("external_id")
+                or workspace.get("name")
+                or f"رسانه {workspace['id']}"
+            )
+            display_workspace["display_platforms"] = sorted({
+                str(item.get("platform") or "") for item in destinations if item.get("platform")
+            })
+            display_workspaces.append(display_workspace)
         keyboard = build_workspace_keyboard(
-            workspaces,
+            display_workspaces,
             active_id,
             selected_workspace_ids=selected_ids,
             include_legacy=bool(legacy_tenant),
             legacy_active=legacy_active,
+            legacy_label=(
+                (legacy_tenant or {}).get("telegram_channel")
+                or (legacy_tenant or {}).get("bale_channel")
+                or "رسانه قدیمی"
+            ),
         )
         if legacy_tenant:
             keyboard.append([{

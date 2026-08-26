@@ -284,6 +284,7 @@ def build_workspace_keyboard(
     selected_workspace_ids: Optional[List[int]] = None,
     include_legacy: bool = False,
     legacy_active: bool = False,
+    legacy_label: Optional[str] = None,
 ) -> List[List[Dict]]:
     """Build an inline keyboard for simultaneous workspace selection."""
     keyboard = []
@@ -293,14 +294,17 @@ def build_workspace_keyboard(
     if include_legacy:
         legacy_marker = "✅" if legacy_active else "▫️"
         keyboard.append([{
-            "text": f"{legacy_marker} رسانه قدیمی",
+            "text": f"{legacy_marker} {legacy_label or 'رسانه قدیمی'}",
             "callback_data": "ws:legacy",
         }])
     for workspace in workspaces:
         marker = "✅" if workspace.get("id") in selected_ids else "▫️"
         role = workspace.get("membership_role") or workspace.get("member_role") or "member"
+        display_label = workspace.get("display_label") or workspace.get("name") or workspace["id"]
+        platforms = workspace.get("display_platforms") or []
+        platform_suffix = f" — {'/'.join(platforms)}" if len(platforms) > 1 else ""
         keyboard.append([{
-            "text": f"{marker} {workspace.get('name') or workspace['id']} ({role})",
+            "text": f"{marker} {display_label}{platform_suffix} ({role})",
             "callback_data": f"ws:toggle:{workspace['id']}",
         }])
     return keyboard
