@@ -554,3 +554,45 @@ def test_retry_does_not_repeat_successful_telegram_or_bale_destination(monkeypat
     assert first["ok"] is False
     assert second["ok"] is True
     assert calls == {"telegram": 1, "bale": 2}
+
+
+def test_failed_editorial_batch_keeps_late_members_for_next_generation():
+    _add("editorial-partial", 2)
+    first = media_handler.lease_editorial_group_for_publication("editorial-partial", 9)
+    _add("editorial-partial", 1, 3)
+    media_handler.finish_editorial_group_publication(
+        "editorial-partial", 9, first, False, approved_text="متن تأییدشده"
+    )
+    retry = media_handler.lease_editorial_group_for_publication("editorial-partial", 9)
+    assert retry["source_key"].endswith("generation:1")
+    assert [item["message_id"] for item in retry["files"]] == [1, 2]
+    media_handler.finish_editorial_group_publication(
+        "editorial-partial", 9, retry, True, approved_text="متن تأییدشده"
+    )
+    recovery = media_handler.lease_editorial_group_for_publication("editorial-partial", 9)
+    assert recovery["source_key"].endswith("generation:2")
+    assert [item["message_id"] for item in recovery["files"]] == [3]
+
+
+def test_legacy_bale_album_ids_reach_delivery_result(monkeypatch):
+    monkeypatch.setattr(
+        media_handler, "send_album_to_bale",
+        lambda *_a, **_k: {
+            "ok": True, "message_id": 701, "message_ids": [701, 702],
+            "status_code": 200,
+        },
+    )
+    target = PublicationTarget("legacy-bale", "legacy", "bale", "@bale")
+    result = publication_engine.publish_prepared_content(
+        9, "api",
+        PreparedContent(
+            main_text="x", source_key="legacy-bale-album",
+            files=[{"type": "photo", "file_id": "a"}, {"type": "photo", "file_id": "b"}],
+        ),
+        [target],
+        InMemoryPublicationStateStore(),
+    )
+    delivery = result["results"][0]
+    assert result["ok"] is True
+    assert delivery.primary_message_id == 701
+    assert delivery.message_ids == (701, 702)

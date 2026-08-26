@@ -733,7 +733,10 @@ def lease_editorial_group_for_publication(
                 "source_key": f"tg:{chat_id}:album:{media_group_id}:generation:1",
                 "managed": False,
             }
-        files = list(group.get("files", []) or [])[:TELEGRAM_MEDIA_GROUP_MAX_ITEMS]
+        retry_files = group.get("editorial_retry_files")
+        files = list(
+            retry_files if retry_files is not None else (group.get("files", []) or [])
+        )[:TELEGRAM_MEDIA_GROUP_MAX_ITEMS]
         generation = int(group.get("generation", 0) or 0)
         delivery_generation = int(group.get("delivery_generation", 1) or 1)
         group["is_processing"] = True
@@ -760,6 +763,7 @@ def finish_editorial_group_publication(
     group_key = (chat_id, str(media_group_id))
     should_remove = False
     should_schedule = False
+    timer_to_cancel = None
     with group_lock:
         group = pending_groups.get(group_key)
         if not group:
@@ -771,7 +775,9 @@ def finish_editorial_group_publication(
             group["is_processing"] = False
             group["state"] = "editorial_pending"
             group["last_error"] = "approved editorial publication failed"
+            group["editorial_retry_files"] = list(lease.get("files", []))
         else:
+            group.pop("editorial_retry_files", None)
             snapshot_ids = {
                 item.get("message_id") if item.get("message_id") is not None
                 else ("file", item.get("file_id"))
@@ -795,10 +801,16 @@ def finish_editorial_group_publication(
                 should_schedule = True
             else:
                 group["state"] = "published"
-                should_remove = True
-    if should_remove:
-        remove_pending_group(str(media_group_id), chat_id)
-    elif should_schedule:
+                # Removal must be atomic with the empty-state check. Otherwise
+                # a webhook can add a late member between unlock and pop.
+                pending_groups.pop(group_key, None)
+                timer_to_cancel = group_timers.pop(group_key, None)
+    if timer_to_cancel:
+        try:
+            timer_to_cancel.cancel()
+        except Exception:
+            pass
+    if should_schedule:
         schedule_processing(
             str(media_group_id), chat_id,
             delay=MEDIA_GROUP_INCOMPLETE_RETRY_DELAY,
@@ -2469,7 +2481,7 @@ def execute_bale_plan(
                 f"index={index + 1}"
             )
 
-    return True
+    return media_success if return_result else True
 
 
 # =========================================================
@@ -3364,4 +3376,4 @@ def handle_media_group_message(
         delay=MEDIA_GROUP_DELAY
     )
 
-    return media_success if return_result else True
+    return True
