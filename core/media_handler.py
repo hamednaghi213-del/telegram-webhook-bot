@@ -242,9 +242,14 @@ def cleanup_old_groups() -> None:
                 - last_update
             )
 
+            protected = group.get("state") in {"leased", "publishing", "retry_pending", "editorial_pending"}
+            has_unpublished = bool(group.get("files"))
             if (
                 age_seconds
                 > MAX_GROUP_AGE_SECONDS
+                and not protected
+                and not group.get("is_processing")
+                and not has_unpublished
             ):
 
                 groups_to_remove.append(
@@ -262,8 +267,14 @@ def cleanup_old_groups() -> None:
             > MAX_PENDING_GROUPS
         ):
 
+            removable_groups = [
+                item for item in pending_groups.items()
+                if item[1].get("state") not in {"leased", "publishing", "retry_pending", "editorial_pending"}
+                and not item[1].get("is_processing")
+                and not item[1].get("files")
+            ]
             sorted_groups = sorted(
-                pending_groups.items(),
+                removable_groups,
                 key=lambda item: (
                     item[1].get(
                         "last_update",
@@ -411,7 +422,13 @@ def add_to_pending_group(
                     None,
 
                 "timer_generation":
-                    0
+                    0,
+
+                "state":
+                    "collecting",
+
+                "leased_generation":
+                    None,
             }
 
             logger.info(
@@ -486,6 +503,8 @@ def add_to_pending_group(
             # A late member invalidates an uncommitted snapshot.  The active
             # processor re-checks this generation immediately before send.
             if group.get("is_processing"):
+                if group.get("state") == "publishing":
+                    group["state"] = "retry_pending"
                 logger.info(
                     f"🔄 Media Group snapshot invalidated | "
                     f"group={media_group_id} | generation={group['generation']}"
@@ -2426,6 +2445,8 @@ def process_media_group(
             return False
 
         group["is_processing"] = True
+        group["state"] = "leased"
+        group["leased_generation"] = current_generation
         snapshot_generation = current_generation
 
         raw_main_text = (
@@ -2482,6 +2503,15 @@ def process_media_group(
     try:
 
         formatted_main_text = ""
+        forced_content_type = None
+        if raw_main_text:
+            try:
+                from core.webhook_handler import detect_editorial_admin_tag
+                forced_content_type, raw_main_text, _removed = detect_editorial_admin_tag(
+                    raw_main_text
+                )
+            except Exception:
+                forced_content_type = None
 
         if raw_main_text:
 
@@ -2576,6 +2606,27 @@ def process_media_group(
                 )
                 schedule_processing(media_group_id, chat_id, delay=MEDIA_GROUP_DELAY)
                 return False
+            live_group["state"] = "publishing"
+
+        if forced_content_type:
+            from core.webhook_handler import try_queue_editorial_text_review
+            queued = try_queue_editorial_text_review(
+                chat_id=chat_id,
+                text=raw_main_text,
+                entities=[],
+                forward_source=forward_source or None,
+                forced_content_type=forced_content_type,
+                media_files=files,
+                source_key=f"tg:{chat_id}:album:{media_group_id}",
+                media_group_id=media_group_id,
+            )
+            if queued:
+                with group_lock:
+                    live_group = pending_groups.get(group_key)
+                    if live_group:
+                        live_group["state"] = "editorial_pending"
+                        live_group["is_processing"] = False
+                return True
 
         shared_result = publish_prepared_content(
             chat_id,
@@ -2595,8 +2646,37 @@ def process_media_group(
                 live_group = pending_groups.get(group_key)
                 if live_group:
                     live_group["published_generation"] = snapshot_generation
-            remove_pending_group(media_group_id, chat_id)
-            logger.info(f"🧹 Media Group cleaned after success | group={media_group_id}")
+                    snapshot_ids = {
+                        item.get("message_id") if item.get("message_id") is not None
+                        else ("file", item.get("file_id"))
+                        for item in files
+                    }
+                    live_group["files"] = [
+                        item for item in live_group.get("files", [])
+                        if (
+                            item.get("message_id") if item.get("message_id") is not None
+                            else ("file", item.get("file_id"))
+                        ) not in snapshot_ids
+                    ]
+                    if live_group["files"]:
+                        live_group["state"] = "retry_pending"
+                        live_group["is_processing"] = False
+                    else:
+                        live_group["state"] = "published"
+            with group_lock:
+                should_remove = bool(
+                    pending_groups.get(group_key)
+                    and pending_groups[group_key].get("state") == "published"
+                    and not pending_groups[group_key].get("files")
+                )
+            if should_remove:
+                remove_pending_group(media_group_id, chat_id)
+                logger.info(f"🧹 Media Group cleaned after success | group={media_group_id}")
+            else:
+                schedule_processing(
+                    media_group_id, chat_id,
+                    delay=MEDIA_GROUP_INCOMPLETE_RETRY_DELAY,
+                )
             return True
         logger.error("❌ Shared Media Group publication failed | group=%s", media_group_id)
         return False
@@ -2739,8 +2819,13 @@ def process_media_group(
         with group_lock:
             live_group = pending_groups.get(group_key)
             if live_group:
-                live_group["is_processing"] = False
-                retry_required = True
+                if live_group.get("state") == "editorial_pending":
+                    live_group["is_processing"] = False
+                else:
+                    live_group["is_processing"] = False
+                    if live_group.get("state") != "published":
+                        live_group["state"] = "retry_pending"
+                    retry_required = True
         if retry_required:
             schedule_processing(
                 media_group_id,
@@ -2789,6 +2874,9 @@ def schedule_processing(
                 f"group={media_group_id}"
             )
 
+            return
+
+        if group.get("state") == "editorial_pending":
             return
 
         old_timer = group_timers.get(

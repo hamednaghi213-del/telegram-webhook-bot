@@ -1344,6 +1344,7 @@ def publish_prepared_text(
     editorial_finalized: bool = False,
     neutral_text: Optional[str] = None,
     source_key: str = "",
+    files: Optional[List[Dict[str, Any]]] = None,
 ) -> bool:
 
     try:
@@ -1360,6 +1361,7 @@ def publish_prepared_text(
                 blockquote_blocks=list(blockquote_blocks or []),
                 expandable_blocks=list(expandable_blocks or []),
                 other_entities=list(other_entities or []),
+                files=list(files or []),
                 editorial_finalized=editorial_finalized,
                 source_key=source_key,
             ),
@@ -2438,9 +2440,10 @@ def try_queue_editorial_text_review(
     forward_source: Optional[
         Dict[str, Any]
     ] = None,
-    forced_content_type: Any = (
-        _FORCED_CONTENT_TYPE_UNSET
-    )
+    forced_content_type: Any = (_FORCED_CONTENT_TYPE_UNSET),
+    media_files: Optional[List[Dict[str, Any]]] = None,
+    source_key: str = "",
+    media_group_id: Optional[str] = None,
 ) -> bool:
 
     explicit_argument = (
@@ -2658,7 +2661,16 @@ def try_queue_editorial_text_review(
                 ),
                 metadata={
                     "kind":
-                        "text",
+                        "album" if media_files else "text",
+
+                    "files":
+                        list(media_files or []),
+
+                    "source_key":
+                        source_key,
+
+                    "media_group_id":
+                        media_group_id,
 
                     "main_text":
                         prepared[
@@ -3339,12 +3351,17 @@ def handle_editorial_callback(
                             []
                         )
                     ),
-                    editorial_finalized=True
-                    ,source_key=f"editorial:{review_id}:original"
+                    editorial_finalized=True,
+                    source_key=metadata.get("source_key") or f"editorial:{review_id}:original",
+                    files=metadata.get("files", []),
                 )
             )
 
             if success:
+
+                if metadata.get("media_group_id"):
+                    from core.media_handler import remove_pending_group
+                    remove_pending_group(metadata["media_group_id"], user_id)
 
                 mark_original_published(
                     review_id=review_id,
@@ -3403,12 +3420,17 @@ def handle_editorial_callback(
                     blockquote_blocks=[],
                     expandable_blocks=[],
                     other_entities=[],
-                    editorial_finalized=True
-                    ,source_key=f"editorial:{review_id}:summary"
+                    editorial_finalized=True,
+                    source_key=metadata.get("source_key") or f"editorial:{review_id}:summary",
+                    files=metadata.get("files", []),
                 )
             )
 
             if success:
+
+                if metadata.get("media_group_id"):
+                    from core.media_handler import remove_pending_group
+                    remove_pending_group(metadata["media_group_id"], user_id)
 
                 mark_summary_published(
                     review_id=review_id,
@@ -4077,6 +4099,10 @@ def handle_webhook() -> Tuple[
             logger.exception(
                 f"[{req_id}] ❌ Active media context lookup failed | {e}"
             )
+
+            if metadata.get("media_group_id"):
+                from core.media_handler import remove_pending_group
+                remove_pending_group(metadata["media_group_id"], user_id)
 
         # Workspace publication no longer happens here.  Raw updates must
         # first pass the editorial/media-group/content pipeline.  Legacy and

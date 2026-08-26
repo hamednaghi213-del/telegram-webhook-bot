@@ -428,7 +428,7 @@ def remove_source_signature(
                             neighbor < index
                             and bool(
                                 re.fullmatch(
-                                    r"[\s\W_]*(?:#[\w\u0600-\u06ff]+|@[A-Za-z0-9_]{5,})[\s\W_]*",
+                                    r"\s*[^\w\s#@]+\s*(?:#[\w\u0600-\u06ff]+|@[A-Za-z0-9_]{5,})\s*",
                                     normalize_invisible_characters(candidate),
                                     flags=re.UNICODE,
                                 )

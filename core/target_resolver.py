@@ -6,7 +6,29 @@ from core.content_model import PublicationTarget
 
 
 def _normalise_external_id(value) -> str:
-    return str(value or "").strip().lower()
+    value = str(value or "").strip().lower()
+    return value[1:] if value.startswith("@") else value
+
+
+def canonical_target_identity(target: PublicationTarget) -> str:
+    """Return a stable, network-free physical destination identity."""
+    destination = dict(target.destination or {})
+    verified_chat_id = (
+        destination.get("verified_chat_id")
+        or destination.get("numeric_chat_id")
+        or destination.get("verified_numeric_chat_id")
+    )
+    if verified_chat_id not in (None, ""):
+        identity = f"chat:{str(verified_chat_id).strip()}"
+    else:
+        username = _normalise_external_id(target.external_id)
+        if username:
+            identity = f"external:{username}"
+        elif target.destination_id is not None:
+            identity = f"destination:{target.destination_id}"
+        else:
+            identity = f"target:{target.key}"
+    return f"{target.platform.strip().lower()}:{identity}"
 
 
 def resolve_publication_targets(chat_id: int) -> Tuple[List[PublicationTarget], List[str]]:
@@ -100,9 +122,9 @@ def resolve_publication_targets(chat_id: int) -> Tuple[List[PublicationTarget], 
 
     # One physical channel must receive a source item only once, even if it is
     # reachable through both the Legacy adapter and a Workspace destination.
-    deduplicated: Dict[Tuple[str, str], PublicationTarget] = {}
+    deduplicated: Dict[str, PublicationTarget] = {}
     for target in targets:
-        identity = (target.platform, _normalise_external_id(target.external_id))
+        identity = canonical_target_identity(target)
         previous = deduplicated.get(identity)
         if previous is None or (previous.kind == "legacy" and target.kind == "workspace"):
             deduplicated[identity] = target

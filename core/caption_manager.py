@@ -1,4 +1,6 @@
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 import os
 import re
 
@@ -23,6 +25,18 @@ from core.ai_summarizer_provider import (
 
 
 logger = logging.getLogger(__name__)
+
+_smart_summary_allowed = ContextVar("smart_summary_allowed", default=True)
+
+
+@contextmanager
+def suppress_smart_summary():
+    """Disable AI summarization only for the current execution context."""
+    token = _smart_summary_allowed.set(False)
+    try:
+        yield
+    finally:
+        _smart_summary_allowed.reset(token)
 
 
 PRESERVED_TELEGRAM_ENTITY_TYPES = {
@@ -109,6 +123,8 @@ SMART_MAIN_PRESERVE_LIMIT = 320
 
 
 def smart_summarizer_enabled() -> bool:
+    if not _smart_summary_allowed.get():
+        return False
 
     value = (
         os.getenv(

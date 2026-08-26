@@ -1,7 +1,8 @@
 """Shared, transport-neutral content models for the publication pipeline."""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from types import MappingProxyType
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -24,16 +25,30 @@ class IncomingContentEnvelope:
         return f"tg:{self.chat_id}:message:{self.message_id}"
 
 
-@dataclass
+def _freeze_mapping(value: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    return MappingProxyType(dict(value or {}))
+
+
+def _freeze_mapping_sequence(values) -> Tuple[Mapping[str, Any], ...]:
+    return tuple(_freeze_mapping(value) for value in (values or ()))
+
+
+@dataclass(frozen=True)
 class PreparedContent:
     main_text: str = ""
     neutral_text: str = ""
-    blockquote_blocks: List[Dict[str, Any]] = field(default_factory=list)
-    expandable_blocks: List[Dict[str, Any]] = field(default_factory=list)
-    other_entities: List[Dict[str, Any]] = field(default_factory=list)
-    files: List[Dict[str, Any]] = field(default_factory=list)
+    blockquote_blocks: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
+    expandable_blocks: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
+    other_entities: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
+    files: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
     editorial_finalized: bool = False
     source_key: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "blockquote_blocks", _freeze_mapping_sequence(self.blockquote_blocks))
+        object.__setattr__(self, "expandable_blocks", _freeze_mapping_sequence(self.expandable_blocks))
+        object.__setattr__(self, "other_entities", _freeze_mapping_sequence(self.other_entities))
+        object.__setattr__(self, "files", _freeze_mapping_sequence(self.files))
 
 
 @dataclass(frozen=True)
@@ -45,3 +60,18 @@ class PublicationTarget:
     workspace_id: Optional[int] = None
     destination_id: Optional[int] = None
     destination: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DeliveryResult:
+    platform: str
+    workspace_id: Optional[int]
+    destination_id: Optional[int]
+    destination_chat_id: str
+    primary_message_id: Optional[int] = None
+    blockquote_message_ids: Tuple[int, ...] = field(default_factory=tuple)
+    followup_message_ids: Tuple[int, ...] = field(default_factory=tuple)
+    status: str = "pending"
+    error: Optional[str] = None
+    attempt: int = 0
+    idempotency_key: str = ""

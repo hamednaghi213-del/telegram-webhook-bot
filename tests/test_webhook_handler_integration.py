@@ -555,7 +555,7 @@ def test_single_media_telegram_failure_prevents_bale():
 # BALE FAILURE DOES NOT FAIL OPERATION
 # =========================================================
 
-def test_single_media_bale_failure_does_not_fail_operation():
+def test_single_media_bale_failure_remains_retryable():
 
     parsed = {
         "main_text": "MAIN",
@@ -604,7 +604,9 @@ def test_single_media_bale_failure_does_not_fail_operation():
             )
         )
 
-    assert success is True
+    # A failed Bale delivery is no longer silently treated as complete; the
+    # successful Telegram step remains claimed for a granular retry.
+    assert success is False
 
 
 # =========================================================
