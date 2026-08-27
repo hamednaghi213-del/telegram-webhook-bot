@@ -1,4 +1,6 @@
 from core.formatter import remove_source_signature
+from core.publication_icons import format_with_profile
+from core.webhook_handler import prepare_text_content
 
 
 def test_requested_source_footer_is_removed_without_touching_body_entities():
@@ -114,3 +116,34 @@ def test_url_only_forward_is_not_emptied_as_source_footer():
     )
 
     assert cleaned == source
+
+
+def test_workspace_neutral_text_reuses_legacy_cleanup_output():
+    source = (
+        "محسن رضایی: ایران فهرستی از شروط خود را آماده کرده!!\n\n"
+        "ایران در حال حاضر یک مسیر موقت و مشخص دارد.\n\n"
+        "#N\n"
+        "🔷 @mahdaviatakhbar 🔷"
+    )
+    prepared = prepare_text_content(
+        source,
+        [],
+        forward_source={
+            "is_forwarded": True,
+            "source_title": "صائب بن مالک",
+            # Deliberately differs from the footer handle: Legacy cleanup must
+            # still remove foreign branding before Workspace formatting.
+            "source_username": "SaebNews",
+        },
+    )
+
+    assert prepared["neutral_text"] == prepared["main_text"]
+    assert "#N" not in prepared["neutral_text"]
+    assert "@mahdaviatakhbar" not in prepared["neutral_text"]
+
+    workspace_output = format_with_profile(
+        prepared["neutral_text"],
+        {"title_icon": "❇️", "body_icons": ["🔷"]},
+    )
+    assert "#N" not in workspace_output
+    assert "@mahdaviatakhbar" not in workspace_output

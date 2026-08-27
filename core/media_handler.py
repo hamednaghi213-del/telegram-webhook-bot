@@ -2713,16 +2713,10 @@ def process_media_group(
         from core.content_model import PreparedContent
         from core.publication_engine import publish_prepared_content
 
-        neutral_main_text = raw_main_text
-        try:
-            from core.formatter import remove_source_signature
-            neutral_main_text = remove_source_signature(
-                raw_main_text,
-                source_title=forward_source.get("source_title"),
-                source_username=forward_source.get("source_username"),
-            )
-        except Exception:
-            neutral_main_text = raw_main_text
+        # Albums and single messages must share the same established Legacy
+        # content-processing result. Destination-specific formatting strips
+        # these Legacy icons and applies the selected Workspace profile later.
+        neutral_main_text = formatted_main_text or raw_main_text
 
         with group_lock:
             live_group = pending_groups.get(group_key)

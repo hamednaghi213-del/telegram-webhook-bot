@@ -1710,15 +1710,12 @@ def process_single_photo_video(
                     main_text
                 )
 
-        try:
-            from core.formatter import remove_source_signature
-            neutral_main_text = remove_source_signature(
-                main_text,
-                source_title=(forward_source or {}).get("source_title"),
-                source_username=(forward_source or {}).get("source_username"),
-            )
-        except Exception:
-            neutral_main_text = main_text
+        # Workspace formatting must start from the exact same cleaned and
+        # structured base produced by the established Legacy formatter.  The
+        # destination icon layer strips Legacy decoration before applying its
+        # own profile, so keeping a second raw-ish cleanup path here would only
+        # reintroduce source footers (mentions, hashtags, URLs, CTA lines).
+        neutral_main_text = formatted_main_text or main_text
 
         from core.content_model import PreparedContent
         from core.publication_engine import publish_prepared_content
@@ -2020,15 +2017,9 @@ def prepare_text_content(
                 main_text
             )
 
-    try:
-        from core.formatter import remove_source_signature
-        neutral_main_text = remove_source_signature(
-            main_text,
-            source_title=(forward_source or {}).get("source_title"),
-            source_username=(forward_source or {}).get("source_username"),
-        )
-    except Exception:
-        neutral_main_text = main_text
+    # Reuse the established Legacy formatter output as the shared semantic
+    # base. Target-specific icons/branding are applied only after this point.
+    neutral_main_text = formatted_main_text or main_text
 
     return {
         "main_text":
