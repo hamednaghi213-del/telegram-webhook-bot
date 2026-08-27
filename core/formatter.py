@@ -347,6 +347,32 @@ def is_source_line(
             ):
                 return True
 
+            # Some channels use a linked promotional label instead of their
+            # exact Telegram title, for example forward title
+            # "دیپارتمان ZTE13" and footer
+            # "کانال تحلیلی مالی دیپارتمان ZTE".  Treat only a short,
+            # trailing channel/media label with a distinctive title token as
+            # a signature.  Ordinary sentences mentioning the source remain.
+            footer_words = {"کانال", "رسانه", "پیج", "صفحه"}
+            line_tokens = set(re.findall(
+                r"[A-Za-z0-9_\u0600-\u06ff]+", normalized_line_lower
+            ))
+            title_tokens = set(re.findall(
+                r"[A-Za-z0-9_\u0600-\u06ff]+", source_title_lower
+            ))
+            distinctive_title_tokens = {
+                token for token in title_tokens
+                if len(token) >= 5 and token not in footer_words
+            }
+            looks_like_linked_channel_label = bool(
+                line_tokens & footer_words
+                and line_tokens & distinctive_title_tokens
+                and len(normalized_line) <= len(source_title_clean) + 40
+                and not re.search(r"[.!؟?]$", normalized_line)
+            )
+            if looks_like_linked_channel_label:
+                return True
+
     return False
 
 
