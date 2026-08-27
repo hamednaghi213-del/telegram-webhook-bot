@@ -872,6 +872,43 @@ def test_25_setbranding_command_saves_workspace_branding(monkeypatch):
     assert branding["workspace_id"] == ws["id"]
 
 
+def test_25a_stepwise_branding_preserves_full_media_name(monkeypatch):
+    """The onboarding path collects name, hashtag and tag independently."""
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(2025)
+    ch_mod.handle_setup(2025)
+
+    ch_mod.handle_command("/setbranding دنیا ۲۴ انگلیسی", 2025)
+    ws = db.workspaces[0]
+    branding = db.get_workspace_branding(ws["id"])
+    assert branding["media_name"] == "دنیا ۲۴ انگلیسی"
+    assert db.get_workspace_setup_state(ws["id"])["current_step_key"] == "setup_channel"
+    assert "/sethashtag" in sent[-1][1]
+
+    ch_mod.handle_command("/sethashtag #دنیا۲۴_انگلیسی", 2025)
+    branding = db.get_workspace_branding(ws["id"])
+    assert branding["hashtag"] == "#دنیا۲۴_انگلیسی"
+    assert "/setchanneltag" in sent[-1][1]
+
+    ch_mod.handle_command("/setchanneltag @Donya24News_En", 2025)
+    branding = db.get_workspace_branding(ws["id"])
+    assert branding["channel_tag"] == "@Donya24News_En"
+    assert db.get_workspace_setup_state(ws["id"])["current_step_key"] == (
+        "setup_branding_sample"
+    )
+    assert "نمونه پیام" in sent[-1][1]
+
+
+def test_25b_stepwise_hashtag_rejects_spaces(monkeypatch):
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    ch_mod.handle_start(2026)
+    ch_mod.handle_command("/setbranding رسانه آزمایشی", 2026)
+    ch_mod.handle_command("/sethashtag #هشتگ نادرست", 2026)
+
+    assert "فاصله نداشته باشد" in sent[-1][1]
+    assert not (db.get_workspace_branding(db.workspaces[0]["id"]) or {}).get("hashtag")
+
+
 def test_26_finishsetup_requires_branding_and_destination(monkeypatch):
     """/finishsetup fails gracefully when requirements are missing."""
     _, ch_mod, db, sent = _load_modules(monkeypatch)
@@ -913,6 +950,9 @@ def test_26_finishsetup_requires_branding_and_destination(monkeypatch):
         "setup:done",
         "setup:later",
     }
+    preference = db.get_active_workspace_preference(db.users[0]["id"])
+    assert preference["context_type"] == "workspace"
+    assert preference["active_workspace_id"] == db.workspaces[0]["id"]
 
 
 def test_26a_branding_sample_requires_preview_confirmation(monkeypatch):

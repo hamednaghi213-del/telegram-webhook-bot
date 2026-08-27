@@ -47,6 +47,10 @@ try:
         set_active_legacy_context,
         set_active_workspace,
     )
+    try:
+        from core.database import select_workspace as select_workspace_for_publication
+    except (ImportError, AttributeError):
+        select_workspace_for_publication = set_active_workspace
     _ACTIVE_WORKSPACE_ENABLED: bool = True
 except (ImportError, AttributeError):
     _ACTIVE_WORKSPACE_ENABLED = False
@@ -520,10 +524,9 @@ def _setup_resume_message(current_step_key: str) -> str:
     if current_step_key == "setup_branding":
         return (
             "▶️ مرحله ۲: برندینگ رسانه\n\n"
-            "نام رسانه، هشتگ پیش‌فرض و تگ کانال را تنظیم کنید:\n"
-            "/setbranding نام_رسانه #هشتگ @تگ_کانال\n\n"
-            "مثال:\n"
-            "/setbranding دنیا۲۴ #دنیا_۲۴ @Donya24News\n\n"
+            "اطلاعات برندینگ را جداگانه وارد کنید.\n\n"
+            "ابتدا نام کامل رسانه را بفرستید:\n"
+            "/setbranding دنیا ۲۴ انگلیسی\n\n"
             "❓ راهنما: /help"
         )
     if current_step_key == "setup_branding_sample":
@@ -1319,20 +1322,28 @@ def handle_setbranding(args: str, chat_id: int) -> bool:
         send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
         return True
     try:
-        parts = (args or "").split()
-        if len(parts) < 1:
+        raw_value = (args or "").strip()
+        if not raw_value:
             send_message(
                 chat_id,
-                "❌ فرمت صحیح:\n"
-                "/setbranding نام_رسانه #هشتگ @تگ_کانال\n\n"
-                "مثال:\n/setbranding دنیا۲۴ #دنیا_۲۴ @Donya24News\n\n"
-                "هشتگ و تگ کانال اختیاری هستند."
+                "❌ نام کامل رسانه را وارد کنید.\n\n"
+                "مثال:\n/setbranding دنیا ۲۴ انگلیسی"
             )
             return True
 
-        media_name = parts[0].strip()
-        hashtag = parts[1].strip() if len(parts) > 1 else ""
-        channel_tag = parts[2].strip() if len(parts) > 2 else ""
+        # Keep the historical combined syntax working, but treat every word
+        # before #/@ as the full media name.
+        parts = raw_value.split()
+        hashtag_index = next(
+            (i for i, value in enumerate(parts) if value.startswith("#")), None
+        )
+        tag_index = next(
+            (i for i, value in enumerate(parts) if value.startswith("@")), None
+        )
+        markers = [i for i in (hashtag_index, tag_index) if i is not None]
+        media_name = " ".join(parts[:min(markers) if markers else len(parts)]).strip()
+        supplied_hashtag = parts[hashtag_index] if hashtag_index is not None else ""
+        supplied_tag = parts[tag_index] if tag_index is not None else ""
 
         if not media_name:
             send_message(chat_id, "❌ نام رسانه نمی‌تواند خالی باشد.")
@@ -1352,6 +1363,9 @@ def handle_setbranding(args: str, chat_id: int) -> bool:
                 send_message(chat_id, f"❌ {reason}")
                 return True
 
+        current_branding = get_workspace_branding(workspace["id"]) or {}
+        hashtag = supplied_hashtag or current_branding.get("hashtag", "")
+        channel_tag = supplied_tag or current_branding.get("channel_tag", "")
         branding = save_workspace_branding(
             workspace["id"],
             media_name=media_name,
@@ -1361,20 +1375,29 @@ def handle_setbranding(args: str, chat_id: int) -> bool:
 
         if branding:
             setup_state = get_or_init_setup_state(workspace["id"])
-            if setup_state.get("step") != "completed":
+            combined_command = bool(supplied_hashtag or supplied_tag)
+            if setup_state.get("step") != "completed" and combined_command:
                 advance_to_step(workspace["id"], "setup_branding_sample")
                 update_workspace_branding_sample(
                     workspace["id"], "", [], "not_started"
                 )
-            send_message(
-                chat_id,
-                f"✅ برندینگ رسانه ذخیره شد:\n"
-                f"نام رسانه: {media_name}\n"
-                f"هشتگ: {hashtag or '(تنظیم نشده)'}\n"
-                f"تگ کانال: {channel_tag or '(تنظیم نشده)'}\n\n"
-                "حالا یک نمونه پیام واقعی از قالب دلخواهتان بفرستید یا فوروارد کنید.\n"
-                "قبل از ذخیره آیکون‌ها، پیش‌نمایش برای تأیید شما نمایش داده می‌شود."
-            )
+            if combined_command:
+                send_message(
+                    chat_id,
+                    f"✅ برندینگ رسانه ذخیره شد:\n"
+                    f"نام رسانه: {media_name}\n"
+                    f"هشتگ: {hashtag or '(تنظیم نشده)'}\n"
+                    f"تگ کانال: {channel_tag or '(تنظیم نشده)'}\n\n"
+                    "حالا یک نمونه پیام واقعی بفرستید یا فوروارد کنید."
+                )
+            else:
+                send_message(
+                    chat_id,
+                    f"✅ نام رسانه ذخیره شد: {media_name}\n\n"
+                    "حالا هشتگ را جداگانه وارد کنید:\n"
+                    "/sethashtag #دنیا۲۴_انگلیسی\n\n"
+                    "هشتگ نباید فاصله داشته باشد."
+                )
         else:
             send_message(chat_id, "❌ خطا در ذخیره برندینگ.")
 
@@ -1382,6 +1405,78 @@ def handle_setbranding(args: str, chat_id: int) -> bool:
     except Exception:
         logger.exception("❌ Error in handle_setbranding")
         send_message(chat_id, "❌ خطا در تنظیم برندینگ")
+        return False
+
+
+def handle_sethashtag(args: str, chat_id: int) -> bool:
+    """Store an onboarding hashtag independently from the media name."""
+    hashtag = (args or "").strip()
+    if not hashtag.startswith("#") or any(ch.isspace() for ch in hashtag):
+        send_message(
+            chat_id,
+            "❌ هشتگ باید با # شروع شود و فاصله نداشته باشد.\n"
+            "مثال: /sethashtag #دنیا۲۴_انگلیسی",
+        )
+        return True
+    try:
+        user, workspace = _get_workspace_for_user(chat_id)
+        if not workspace:
+            send_message(chat_id, "❌ رسانه‌ای یافت نشد. ابتدا /start را بفرستید.")
+            return True
+        current = get_workspace_branding(workspace["id"]) or {}
+        media_name = (current.get("media_name") or "").strip()
+        if not media_name:
+            send_message(chat_id, "❌ ابتدا نام رسانه را با /setbranding وارد کنید.")
+            return True
+        save_workspace_branding(
+            workspace["id"], media_name, hashtag, current.get("channel_tag", "")
+        )
+        send_message(
+            chat_id,
+            f"✅ هشتگ ذخیره شد: {hashtag}\n\n"
+            "حالا تگ کانال را جداگانه وارد کنید:\n"
+            "/setchanneltag @Donya24News_En",
+        )
+        return True
+    except Exception:
+        logger.exception("❌ Error in handle_sethashtag")
+        send_message(chat_id, "❌ خطا در ذخیره هشتگ")
+        return False
+
+
+def handle_setchanneltag(args: str, chat_id: int) -> bool:
+    """Finish stepwise branding collection and request a branding sample."""
+    channel_tag = (args or "").strip()
+    valid, error = validate_channel(channel_tag)
+    if not valid:
+        send_message(chat_id, error + "\nمثال: /setchanneltag @Donya24News_En")
+        return True
+    try:
+        user, workspace = _get_workspace_for_user(chat_id)
+        if not workspace:
+            send_message(chat_id, "❌ رسانه‌ای یافت نشد. ابتدا /start را بفرستید.")
+            return True
+        current = get_workspace_branding(workspace["id"]) or {}
+        media_name = (current.get("media_name") or "").strip()
+        hashtag = (current.get("hashtag") or "").strip()
+        if not media_name or not hashtag:
+            send_message(chat_id, "❌ ابتدا نام رسانه و هشتگ را وارد کنید.")
+            return True
+        save_workspace_branding(workspace["id"], media_name, hashtag, channel_tag)
+        state = get_or_init_setup_state(workspace["id"])
+        if state.get("step") != "completed":
+            advance_to_step(workspace["id"], "setup_branding_sample")
+            update_workspace_branding_sample(workspace["id"], "", [], "not_started")
+        send_message(
+            chat_id,
+            f"✅ تگ کانال ذخیره شد: {channel_tag}\n\n"
+            "حالا یک نمونه پیام واقعی بفرستید یا فوروارد کنید.\n"
+            "ربات پیش‌نمایش برندینگ و آیکون‌ها را برای تأیید نمایش می‌دهد.",
+        )
+        return True
+    except Exception:
+        logger.exception("❌ Error in handle_setchanneltag")
+        send_message(chat_id, "❌ خطا در ذخیره تگ کانال")
         return False
 
 
@@ -1876,6 +1971,8 @@ def handle_finishsetup(chat_id: int) -> bool:
 
         ok, reason = complete_setup(workspace["id"], user["id"])
         if ok:
+            # Make a newly completed workspace immediately publishable.
+            select_workspace_for_publication(user["id"], workspace["id"])
             send_message_with_keyboard(
                 chat_id,
                 "🎉 رسانه شما راه‌اندازی شد!\n\n"
@@ -1938,7 +2035,9 @@ def handle_settings(chat_id: int) -> bool:
             "🏢 تغییر رسانه فعال:\n"
             "<code>/workspaces</code>\n\n"
             "🔧 برندینگ:\n"
-            "<code>/setbranding نام #هشتگ @تگ</code>\n\n"
+            "<code>/setbranding نام کامل رسانه</code>\n"
+            "<code>/sethashtag #هشتگ</code>\n"
+            "<code>/setchanneltag @تگ_کانال</code>\n\n"
             "🎨 آیکون‌ها:\n"
             "<code>/seticons 🟢 🔵</code>\n"
             "<code>/clearicons</code>\n\n"
@@ -2055,7 +2154,9 @@ def handle_help(chat_id: int) -> bool:
                     "نیازی به ساخت یا ارسال توکن جداگانه بله ندارد.\n\n"
                     "━━━━━━━━━━━━━━━━━━\n"
                     "۴) برندینگ و نمونه پیام\n\n"
-                    "/setbranding نام_رسانه #هشتگ @تگ — ثبت اطلاعات اولیه\n\n"
+                    "/setbranding نام کامل رسانه — ثبت نام\n"
+                    "/sethashtag #هشتگ — ثبت هشتگ\n"
+                    "/setchanneltag @تگ — ثبت تگ کانال\n\n"
                     "سپس یک پیام واقعی از قالب رسانه ارسال یا Forward کنید. ربات "
                     "آیکون‌ها، عنوان، بندها، CTA، هشتگ، آیدی، لینک بله و قالب‌های "
                     "قابل تشخیص را استخراج و پیش‌نمایش می‌کند.\n\n"
@@ -2720,6 +2821,8 @@ def handle_command(text: str, chat_id: int) -> bool:
             "removedestination": lambda: handle_removedestination(args, chat_id),
             "nextsetupstep": lambda: handle_nextsetupstep(chat_id),
             "setbranding": lambda: handle_setbranding(args, chat_id),
+            "sethashtag": lambda: handle_sethashtag(args, chat_id),
+            "setchanneltag": lambda: handle_setchanneltag(args, chat_id),
             "confirmbranding": lambda: handle_confirmbranding(chat_id),
             "confirmbalesuggestion": lambda: handle_confirmbalesuggestion(chat_id),
             "ignorebalesuggestion": lambda: handle_ignorebalesuggestion(chat_id),
