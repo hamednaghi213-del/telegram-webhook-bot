@@ -68,3 +68,49 @@ def test_domain_in_body_is_preserved_when_not_part_of_source_footer():
         source_title="عصر ایران",
         source_username="MyAsriran",
     ) == source
+
+
+def test_trailing_forward_source_url_is_removed_without_handle():
+    source = (
+        "WSJ: Trump Rejects Initial Iran Deal, Hikes Pressure\n\n"
+        "Trump is abandoning the June understanding with Iran.\n\n"
+        "https://www.c14news.com/article/1495422/"
+    )
+
+    cleaned = remove_source_signature(
+        source,
+        source_title="Channel 14 - English Edition",
+        source_username="C14English",
+    )
+
+    assert cleaned == (
+        "WSJ: Trump Rejects Initial Iran Deal, Hikes Pressure\n\n"
+        "Trump is abandoning the June understanding with Iran."
+    )
+
+
+def test_body_url_is_preserved_for_forwarded_content():
+    source = (
+        "برای جزئیات https://example.com/report را در متن خبر ببینید.\n\n"
+        "ادامه متن اصلی خبر"
+    )
+
+    cleaned = remove_source_signature(
+        source,
+        source_title="Example News",
+        source_username="ExampleNews",
+    )
+
+    assert "https://example.com/report" in cleaned
+
+
+def test_url_only_forward_is_not_emptied_as_source_footer():
+    source = "https://example.com/report"
+
+    cleaned = remove_source_signature(
+        source,
+        source_title="Example News",
+        source_username="ExampleNews",
+    )
+
+    assert cleaned == source

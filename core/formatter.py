@@ -396,6 +396,19 @@ def remove_source_signature(
 
     removable_indexes = set()
 
+    standalone_source_url_pattern = re.compile(
+        r"\s*(?:https?://|www\.)"
+        r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
+        r"(?:/[^\s]*)?\s*",
+        flags=re.IGNORECASE,
+    )
+    adjacent_source_domain_pattern = re.compile(
+        r"\s*(?:https?://)?(?:www\.)?"
+        r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
+        r"(?:/[^\s]*)?\s*",
+        flags=re.IGNORECASE,
+    )
+
     for index in range(
         start_index,
         len(lines)
@@ -408,6 +421,23 @@ def remove_source_signature(
             removable_indexes.add(
                 index
             )
+
+    # The established Legacy cleaner removes external source URLs before
+    # formatting. Workspace content keeps a neutral copy so destination icons
+    # can be applied later; classify a standalone URL on the final line as the
+    # same source footer. Requiring forwarded-source metadata, a preceding
+    # content line, and final position preserves legitimate body links.
+    if source_title or source_username:
+        non_empty_indexes = [
+            index for index in range(start_index, len(lines))
+            if lines[index].strip()
+        ]
+        if len(non_empty_indexes) >= 2:
+            final_index = non_empty_indexes[-1]
+            if standalone_source_url_pattern.fullmatch(
+                normalize_invisible_characters(lines[final_index])
+            ):
+                removable_indexes.add(final_index)
 
     if removable_indexes:
         changed = True
@@ -454,12 +484,8 @@ def remove_source_signature(
                             # A standalone website immediately adjacent to a
                             # confirmed source handle/title is part of the
                             # same footer (e.g. asriran.com + @MyAsriran).
-                            bool(re.fullmatch(
-                                r"\s*(?:https?://)?(?:www\.)?"
-                                r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
-                                r"(?:/[^\s]*)?\s*",
-                                normalize_invisible_characters(candidate),
-                                flags=re.IGNORECASE,
+                            bool(adjacent_source_domain_pattern.fullmatch(
+                                normalize_invisible_characters(candidate)
                             ))
                         )
                         or (
