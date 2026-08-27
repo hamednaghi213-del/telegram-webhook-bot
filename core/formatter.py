@@ -451,6 +451,18 @@ def remove_source_signature(
                             candidate
                         )
                         or (
+                            # A standalone website immediately adjacent to a
+                            # confirmed source handle/title is part of the
+                            # same footer (e.g. asriran.com + @MyAsriran).
+                            bool(re.fullmatch(
+                                r"\s*(?:https?://)?(?:www\.)?"
+                                r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
+                                r"(?:/[^\s]*)?\s*",
+                                normalize_invisible_characters(candidate),
+                                flags=re.IGNORECASE,
+                            ))
+                        )
+                        or (
                             neighbor < index
                             and bool(
                                 re.fullmatch(

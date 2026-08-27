@@ -39,3 +39,32 @@ def test_body_sentence_that_mentions_source_title_is_preserved():
         source_username="ZTE13",
     )
     assert cleaned == source
+
+
+def test_standalone_source_domain_next_to_source_handle_is_removed():
+    source = (
+        "پزشکیان: کشور ما قربانی ترور است\n\n"
+        "🔷 متن واقعی خبر.\n\n"
+        "asriran.com\n"
+        "@MyAsriran"
+    )
+    cleaned = remove_source_signature(
+        source,
+        source_title="عصر ایران",
+        source_username="MyAsriran",
+    )
+    assert "متن واقعی خبر" in cleaned
+    assert "asriran.com" not in cleaned
+    assert "@MyAsriran" not in cleaned
+
+
+def test_domain_in_body_is_preserved_when_not_part_of_source_footer():
+    source = (
+        "برای مشاهده سند به example.com مراجعه کنید.\n\n"
+        "این نشانی بخشی از متن واقعی خبر است."
+    )
+    assert remove_source_signature(
+        source,
+        source_title="عصر ایران",
+        source_username="MyAsriran",
+    ) == source
