@@ -147,3 +147,24 @@ def test_workspace_neutral_text_reuses_legacy_cleanup_output():
     )
     assert "#N" not in workspace_output
     assert "@mahdaviatakhbar" not in workspace_output
+
+
+def test_trailing_source_icons_after_last_real_word_are_removed():
+    source = (
+        "قدردانی رئیس‌جمهور از پیام مقام معظم رهبری "
+        "به مناسبت هفته دولت ✳️\n\n"
+        "🔷 هم‌میهن را در فضای مجازی دنبال کنید:\n\n"
+        "🔷 سایت - بله - تلگرام - روبیکا - اینستاگرام"
+    )
+
+    cleaned = remove_source_signature(
+        source,
+        source_title="هم‌میهن",
+        source_username="hammihanonline",
+    )
+
+    assert cleaned == (
+        "قدردانی رئیس‌جمهور از پیام مقام معظم رهبری "
+        "به مناسبت هفته دولت"
+    )
+    assert "✳️" not in cleaned
