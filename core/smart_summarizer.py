@@ -1642,6 +1642,34 @@ def summarize_text_safely(
         )
     )
 
+    # The requested target is selected within the content-policy reduction
+    # limit, while the provider is explicitly allowed to use a small
+    # underfill band. Validate that accepted band consistently: otherwise a
+    # response which obeys the target instruction can be rejected solely
+    # because it lands a few characters below the exact target.
+    validation_max_reduction_ratio = (
+        effective_max_reduction_ratio
+    )
+
+    if (
+        required_reduction_ratio
+        <= effective_max_reduction_ratio
+        and effective_minimum_target_length > 0
+        and effective_minimum_target_length
+        < original_length
+    ):
+
+        validation_max_reduction_ratio = min(
+            ABSOLUTE_MAX_REDUCTION_RATIO,
+            max(
+                effective_max_reduction_ratio,
+                calculate_required_reduction_ratio(
+                    original_length,
+                    effective_minimum_target_length
+                )
+            )
+        )
+
     # =====================================================
     # BUILD SMART INSTRUCTION
     # =====================================================
@@ -1724,7 +1752,7 @@ def summarize_text_safely(
             summary_text=generated,
             target_length=target_length,
             max_reduction_ratio=(
-                effective_max_reduction_ratio
+                validation_max_reduction_ratio
             ),
             content_type=content_type
         )
@@ -1840,7 +1868,7 @@ def summarize_text_safely(
                 summary_text=retry_generated,
                 target_length=target_length,
                 max_reduction_ratio=(
-                    effective_max_reduction_ratio
+                    validation_max_reduction_ratio
                 ),
                 content_type=content_type
             )
@@ -2077,7 +2105,7 @@ def summarize_text_safely(
                     summary_text=retry_generated,
                     target_length=retry_target,
                     max_reduction_ratio=(
-                        effective_max_reduction_ratio
+                        validation_max_reduction_ratio
                     ),
                     content_type=content_type
                 )
