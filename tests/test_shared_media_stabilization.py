@@ -28,7 +28,16 @@ def test_expandable_content_participates_in_shared_summary_capacity(monkeypatch)
     def analyze(**kwargs):
         calls.append(kwargs)
         return SimpleNamespace(
-            telegram={"media_caption": "خلاصه", "followup_messages": []},
+            telegram={
+                "media_caption": "خلاصه",
+                "followup_messages": [],
+                "blockquote_messages": [],
+                "_semantic_summary": {
+                    "main_text": "خلاصه",
+                    "blockquote_blocks": [],
+                    "expandable_blocks": [],
+                },
+            },
             bale={}, text={"telegram": {"messages": ["خلاصه"]}},
         )
 
@@ -46,6 +55,86 @@ def test_expandable_content_participates_in_shared_summary_capacity(monkeypatch)
     assert calls[0]["main_text"] == "کوتاه"
     assert len(calls[0]["expandable_blocks"][0]["text"]) == 1200
     assert analyzed.main_text == "خلاصه"
+
+
+def test_rendered_expandable_html_never_reenters_prepared_content(monkeypatch):
+    rendered = "<blockquote expandable>" + ("متن فارسی 😀 " * 90) + "</blockquote>"
+
+    monkeypatch.setattr(
+        "core.caption_manager.analyze_content",
+        lambda **_: SimpleNamespace(
+            telegram={
+                "media_caption": rendered[:1019],
+                "media_parse_mode": "HTML",
+                "media_caption_entities": [],
+                "followup_messages": [],
+                "blockquote_messages": [rendered],
+            },
+            bale={},
+            text={"telegram": {"messages": []}},
+        ),
+    )
+    prepared = PreparedContent(
+        main_text="تیتر کوتاه",
+        neutral_text="تیتر کوتاه",
+        expandable_blocks=[{
+            "type": "expandable_blockquote",
+            "text": "متن فارسی 😀 " * 90,
+        }],
+        files=[{"type": "photo", "file_id": "p"}],
+    )
+
+    analyzed = publication_engine._shared_content_analysis(prepared)
+
+    assert analyzed is prepared
+    assert "<blockquote" not in analyzed.main_text
+    assert len(analyzed.expandable_blocks) == 1
+
+
+def test_semantic_summary_replaces_blocks_without_html_leak(monkeypatch):
+    calls = []
+
+    def analyze(**kwargs):
+        calls.append(kwargs)
+        if kwargs["branding"] == "":
+            return SimpleNamespace(
+                telegram={
+                    "media_caption": "خلاصه\n\nنقل‌قول کوتاه",
+                    "media_parse_mode": None,
+                    "media_caption_entities": [{"type": "expandable_blockquote", "offset": 8, "length": 15}],
+                    "followup_messages": [],
+                    "blockquote_messages": [],
+                    "_semantic_summary": {
+                        "main_text": "خلاصه",
+                        "blockquote_blocks": [],
+                        "expandable_blocks": [{
+                            "type": "expandable_blockquote",
+                            "text": "نقل‌قول کوتاه",
+                        }],
+                    },
+                },
+                bale={},
+                text={"telegram": {"messages": []}},
+            )
+        return _media_plan()
+
+    monkeypatch.setattr("core.caption_manager.analyze_content", analyze)
+    prepared = PreparedContent(
+        main_text="تیتر کوتاه",
+        neutral_text="تیتر کوتاه",
+        expandable_blocks=[{
+            "type": "expandable_blockquote",
+            "text": "متن فارسی 😀 " * 90,
+        }],
+        files=[{"type": "photo", "file_id": "p"}],
+    )
+
+    analyzed = publication_engine._shared_content_analysis(prepared)
+
+    assert len(calls) == 1
+    assert analyzed.main_text == "خلاصه"
+    assert analyzed.expandable_blocks[0]["text"] == "نقل‌قول کوتاه"
+    assert "<blockquote" not in analyzed.main_text
 
 
 @pytest.mark.parametrize("media_type", ["photo", "video", "document"])

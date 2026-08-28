@@ -351,12 +351,44 @@ def _shared_content_analysis(prepared: PreparedContent) -> PreparedContent:
     )
     if prepared.files:
         candidate = str(plan.telegram.get("media_caption") or "").strip()
-        has_remainder = bool(plan.telegram.get("followup_messages"))
+        has_remainder = bool(
+            plan.telegram.get("followup_messages")
+            or plan.telegram.get("blockquote_messages")
+        )
+        semantic_summary = plan.telegram.get("_semantic_summary")
     else:
         messages = list((plan.text.get("telegram") or {}).get("messages") or [])
         candidate = str(messages[0] if len(messages) == 1 else "").strip()
         has_remainder = len(messages) != 1
-    if candidate and not has_remainder and len(candidate) < len(publishable_text):
+        semantic_summary = None
+    if (
+        prepared.files
+        and semantic_summary
+        and candidate
+        and not has_remainder
+        and len(candidate) < len(publishable_text)
+    ):
+        summarized_main = str(semantic_summary.get("main_text") or "").strip()
+        summarized_blockquotes = tuple(
+            semantic_summary.get("blockquote_blocks") or ()
+        )
+        summarized_expandable = tuple(
+            semantic_summary.get("expandable_blocks") or ()
+        )
+        return replace(
+            prepared,
+            main_text=summarized_main,
+            neutral_text=summarized_main,
+            blockquote_blocks=summarized_blockquotes,
+            expandable_blocks=summarized_expandable,
+            other_entities=(),
+        )
+    if (
+        not prepared.files
+        and candidate
+        and not has_remainder
+        and len(candidate) < len(publishable_text)
+    ):
         return replace(
             prepared,
             main_text=candidate,

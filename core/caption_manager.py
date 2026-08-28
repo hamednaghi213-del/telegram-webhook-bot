@@ -1741,7 +1741,16 @@ def try_smart_telegram_media_summary(
         "blockquote_messages":
             [],
         "document_fallback":
-            False
+            False,
+        # Keep the summarized result in its semantic form for the shared
+        # engine.  ``media_caption`` is a rendered transport artifact (and
+        # may contain HTML or rebuilt Telegram entities); it must never be
+        # fed back into PreparedContent as ordinary text.
+        "_semantic_summary": {
+            "main_text": summarized_main,
+            "blockquote_blocks": summarized_normal_blocks,
+            "expandable_blocks": summarized_expandable_blocks,
+        },
     }
 
 
