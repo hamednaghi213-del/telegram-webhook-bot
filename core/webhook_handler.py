@@ -1621,7 +1621,8 @@ def process_single_photo_video(
         Dict[str, Any]
     ] = None,
     source_key: str = "",
-) -> bool:
+    return_result: bool = False,
+) -> Any:
 
     try:
 
@@ -1735,6 +1736,8 @@ def process_single_photo_video(
                 source_key=source_key,
             ),
         )
+        if return_result:
+            return shared_result
         return bool(shared_result.get("ok"))
 
         branding = (
@@ -1807,6 +1810,45 @@ def process_single_photo_video(
         )
 
         return False
+
+
+def _publication_acknowledgement_state(result: Any) -> str:
+    """Classify a structured fan-out result without hiding partial failures."""
+    if not isinstance(result, dict):
+        return "success" if bool(result) else "failure"
+
+    deliveries = list(result.get("results") or [])
+    statuses = [
+        item.get("status") if isinstance(item, dict) else getattr(item, "status", None)
+        for item in deliveries
+    ]
+    succeeded = sum(status == "succeeded" for status in statuses)
+    failed = sum(status != "succeeded" for status in statuses)
+    resolution_failed = bool(result.get("errors"))
+
+    if succeeded and (failed or resolution_failed):
+        return "partial"
+    if succeeded:
+        return "success"
+    return "failure"
+
+
+def _send_media_publication_acknowledgement(
+    chat_id: int,
+    result: Any,
+    success_message: str,
+) -> None:
+    state = _publication_acknowledgement_state(result)
+    if state == "success":
+        message = success_message
+    elif state == "partial":
+        message = (
+            "⚠️ رسانه در برخی مقصدها منتشر شد، اما ارسال به "
+            "یک یا چند مقصد با مشکل روبرو شد."
+        )
+    else:
+        message = "❌ ارسال رسانه با مشکل روبرو شد."
+    send_message(chat_id, message)
 
 
 # =========================================================
@@ -4371,29 +4413,16 @@ def handle_webhook() -> Tuple[
 
             success = (
                 process_single_photo_video(
-                    **kwargs
+                    **kwargs,
+                    return_result=True,
                 )
             )
 
-            if success:
-
-                send_message(
-                    chat_id,
-                    (
-                        "✅ خبر تصویری/ویدیویی شما "
-                        "در کانال منتشر شد."
-                    )
-                )
-
-            else:
-
-                send_message(
-                    chat_id,
-                    (
-                        "❌ ارسال رسانه با مشکل "
-                        "روبرو شد."
-                    )
-                )
+            _send_media_publication_acknowledgement(
+                chat_id,
+                success,
+                "✅ خبر تصویری/ویدیویی شما در کانال منتشر شد.",
+            )
 
             return {
                 "ok": True
@@ -4438,29 +4467,16 @@ def handle_webhook() -> Tuple[
 
             success = (
                 process_single_photo_video(
-                    **kwargs
+                    **kwargs,
+                    return_result=True,
                 )
             )
 
-            if success:
-
-                send_message(
-                    chat_id,
-                    (
-                        "✅ رسانه شما در کانال "
-                        "منتشر شد."
-                    )
-                )
-
-            else:
-
-                send_message(
-                    chat_id,
-                    (
-                        "❌ ارسال رسانه با مشکل "
-                        "روبرو شد."
-                    )
-                )
+            _send_media_publication_acknowledgement(
+                chat_id,
+                success,
+                "✅ رسانه شما در کانال منتشر شد.",
+            )
 
             return {
                 "ok": True
