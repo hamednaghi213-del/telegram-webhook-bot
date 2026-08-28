@@ -15,6 +15,7 @@ from core.telegram_caption_entities import (
 )
 
 from core.smart_summarizer import (
+    DEFAULT_MAX_REDUCTION_RATIO,
     summarize_text_safely
 )
 
@@ -1279,6 +1280,29 @@ def try_smart_telegram_media_summary(
         )
         / visible_source_length
     )
+
+    # Stable one-message policy: when the main section already fits and the
+    # detached quote alone can be adapted within the normal safe reduction
+    # limit, preserve the main section and summarize only the overflowing
+    # structured block.  Proportional budgeting across both sections caused
+    # two independent summary operations and could fall back to a follow-up
+    # even though one valid media caption was achievable.
+    if (
+        not preserve_short_main
+        and main_text
+        and combined_blocks
+        and len(main_text) < available_text_capacity
+    ):
+        block_source_length = total_source_text_length - len(main_text)
+        block_budget = available_text_capacity - len(main_text)
+        block_reduction = (
+            (block_source_length - block_budget) / block_source_length
+            if block_source_length > block_budget and block_source_length > 0
+            else 0.0
+        )
+        if block_reduction <= DEFAULT_MAX_REDUCTION_RATIO:
+            preserve_short_main = True
+            source_parts[0]["preserve"] = True
 
     logger.info(
         f"🧠 Smart media summarization candidate | "

@@ -137,6 +137,55 @@ def test_semantic_summary_replaces_blocks_without_html_leak(monkeypatch):
     assert "<blockquote" not in analyzed.main_text
 
 
+def test_real_one_message_policy_preserves_main_and_adapts_expandable_once(monkeypatch):
+    calls = []
+
+    monkeypatch.setenv("ENABLE_SMART_SUMMARIZER", "true")
+    monkeypatch.setattr("core.caption_manager.gemini_provider_configured", lambda: True)
+
+    def summarize_text_safely(**kwargs):
+        calls.append(kwargs)
+        assert kwargs["original_text"] == "ب" * 1021
+        assert kwargs["target_length"] == 651
+        return SimpleNamespace(
+            success=True,
+            summary_text="ب" * 620,
+            metadata={"content_type": "normal_news"},
+        )
+
+    monkeypatch.setattr(
+        "core.caption_manager.summarize_text_safely",
+        summarize_text_safely,
+    )
+
+    from core.caption_manager import try_smart_telegram_media_summary
+
+    plan = try_smart_telegram_media_summary(
+        main_text="م" * 371,
+        blockquote_blocks=[],
+        expandable_blocks=[{
+            "type": "expandable_blockquote",
+            "text": "ب" * 1021,
+        }],
+        branding="",
+        caption_limit=1024,
+    )
+
+    assert len(calls) == 1
+    assert plan is not None
+    assert plan["followup_messages"] == []
+    assert plan["blockquote_messages"] == []
+    assert len(plan["media_caption"]) <= 1024
+    assert "<blockquote" not in plan["media_caption"]
+    assert any(
+        entity["type"] == "expandable_blockquote"
+        for entity in plan["media_caption_entities"]
+    )
+    semantic = plan["_semantic_summary"]
+    assert semantic["main_text"] == "م" * 371
+    assert semantic["expandable_blocks"][0]["text"] == "ب" * 620
+
+
 @pytest.mark.parametrize("media_type", ["photo", "video", "document"])
 @pytest.mark.parametrize("kind", ["legacy", "workspace"])
 def test_single_media_uses_stable_plan_executor(monkeypatch, media_type, kind):
