@@ -1,5 +1,6 @@
 import logging
 import re
+import unicodedata
 from typing import Optional, List
 
 from core.cleaner import clean_text
@@ -350,9 +351,9 @@ def is_source_line(
             # Some channels use a linked promotional label instead of their
             # exact Telegram title, for example forward title
             # "دیپارتمان ZTE13" and footer
-            # "کانال تحلیلی مالی دیپارتمان ZTE".  Treat only a short,
+            # "کانال تحلیلی مالی دیپارتمان ZTE". Treat only a short,
             # trailing channel/media label with a distinctive title token as
-            # a signature.  Ordinary sentences mentioning the source remain.
+            # a signature. Ordinary sentences mentioning the source remain.
             footer_words = {"کانال", "رسانه", "پیج", "صفحه"}
             line_tokens = set(re.findall(
                 r"[A-Za-z0-9_\u0600-\u06ff]+", normalized_line_lower
@@ -374,6 +375,149 @@ def is_source_line(
                 return True
 
     return False
+
+
+def is_promotional_source_footer_line(
+    line: str,
+    source_title: Optional[str] = None,
+) -> bool:
+    """
+    Detect a trailing promotional/social-media footer belonging to the
+    forwarded source.
+
+    This intentionally requires source metadata plus promotional wording so
+    an ordinary body sentence mentioning the source is not removed.
+    """
+    if not line or not source_title:
+        return False
+
+    value = (
+        strip_leading_decoration(
+            normalize_invisible_characters(
+                line
+            )
+        )
+        .strip()
+    )
+
+    if not value:
+        return False
+
+    value_lower = value.lower()
+
+    source_title_clean = (
+        strip_leading_decoration(
+            normalize_invisible_characters(
+                str(source_title)
+            )
+        )
+        .strip()
+        .lower()
+    )
+
+    if not source_title_clean:
+        return False
+
+    title_tokens = {
+        token
+        for token in re.findall(
+            r"[A-Za-z0-9_\u0600-\u06ff]+",
+            source_title_clean,
+        )
+        if len(token) >= 3
+    }
+
+    line_tokens = set(
+        re.findall(
+            r"[A-Za-z0-9_\u0600-\u06ff]+",
+            value_lower,
+        )
+    )
+
+    mentions_source = bool(
+        title_tokens
+        and line_tokens & title_tokens
+    )
+
+    promotional_phrases = (
+        "دنبال کنید",
+        "ما را دنبال کنید",
+        "در فضای مجازی",
+        "شبکه های اجتماعی",
+        "شبکه‌های اجتماعی",
+        "همراه ما باشید",
+        "به ما بپیوندید",
+        "عضویت در",
+        "عضو شوید",
+    )
+
+    has_promotional_phrase = any(
+        phrase in value_lower
+        for phrase in promotional_phrases
+    )
+
+    return (
+        mentions_source
+        and has_promotional_phrase
+    )
+
+
+def strip_trailing_source_icons(
+    text: str
+) -> str:
+    """
+    Remove only icon/emoji decoration that remains after the final textual
+    content.
+
+    Internal emoji are preserved.
+
+    Examples:
+        "متن خبر ✳️" -> "متن خبر"
+        "متن خبر 🔴🔷" -> "متن خبر"
+        "متن 🔴 داخل خبر" -> unchanged
+    """
+    if not text:
+        return ""
+
+    value = text.rstrip()
+
+    while value:
+        changed = False
+
+        while (
+            value
+            and value[-1].isspace()
+        ):
+            value = value[:-1]
+            changed = True
+
+        if not value:
+            break
+
+        character = value[-1]
+
+        if (
+            character in {
+                "\ufe0e",
+                "\ufe0f",
+                "\u200d",
+                "\u20e3",
+            }
+            or "\U0001F3FB"
+            <= character
+            <= "\U0001F3FF"
+            or unicodedata.category(
+                character
+            ) in {"So", "Sk"}
+        ):
+            value = value[:-1]
+            changed = True
+            continue
+
+        if not changed:
+            break
+
+    return value.rstrip()
 
 
 def remove_source_signature(
@@ -402,6 +546,7 @@ def remove_source_signature(
         r"(?:/[^\s]*)?\s*",
         flags=re.IGNORECASE,
     )
+
     adjacent_source_domain_pattern = re.compile(
         r"\s*(?:https?://)?(?:www\.)?"
         r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
@@ -422,6 +567,38 @@ def remove_source_signature(
                 index
             )
 
+    # Detect promotional/social-media source footers.
+    #
+    # Example:
+    #
+    #   🔷 هم‌میهن را در فضای مجازی دنبال کنید:
+    #
+    # Once a confirmed promotional footer belonging to the forwarded source
+    # begins in the trailing section, everything after it belongs to that
+    # footer and must not enter the neutral/shared publication content.
+    if source_title:
+        promotional_footer_start = None
+
+        for index in range(
+            start_index,
+            len(lines)
+        ):
+            if is_promotional_source_footer_line(
+                lines[index],
+                source_title=source_title,
+            ):
+                promotional_footer_start = index
+                break
+
+        if promotional_footer_start is not None:
+            for index in range(
+                promotional_footer_start,
+                len(lines)
+            ):
+                removable_indexes.add(
+                    index
+                )
+
     # The established Legacy cleaner removes external source URLs before
     # formatting. Workspace content keeps a neutral copy so destination icons
     # can be applied later; classify a standalone URL on the final line as the
@@ -429,15 +606,25 @@ def remove_source_signature(
     # content line, and final position preserves legitimate body links.
     if source_title or source_username:
         non_empty_indexes = [
-            index for index in range(start_index, len(lines))
+            index
+            for index in range(
+                start_index,
+                len(lines)
+            )
             if lines[index].strip()
         ]
+
         if len(non_empty_indexes) >= 2:
             final_index = non_empty_indexes[-1]
+
             if standalone_source_url_pattern.fullmatch(
-                normalize_invisible_characters(lines[final_index])
+                normalize_invisible_characters(
+                    lines[final_index]
+                )
             ):
-                removable_indexes.add(final_index)
+                removable_indexes.add(
+                    final_index
+                )
 
     if removable_indexes:
         changed = True
@@ -484,16 +671,24 @@ def remove_source_signature(
                             # A standalone website immediately adjacent to a
                             # confirmed source handle/title is part of the
                             # same footer (e.g. asriran.com + @MyAsriran).
-                            bool(adjacent_source_domain_pattern.fullmatch(
-                                normalize_invisible_characters(candidate)
-                            ))
+                            bool(
+                                adjacent_source_domain_pattern.fullmatch(
+                                    normalize_invisible_characters(
+                                        candidate
+                                    )
+                                )
+                            )
                         )
                         or (
                             neighbor < index
                             and bool(
                                 re.fullmatch(
-                                    r"\s*[^\w\s#@]+\s*(?:#[\w\u0600-\u06ff]+|@[A-Za-z0-9_]{5,})\s*",
-                                    normalize_invisible_characters(candidate),
+                                    r"\s*[^\w\s#@]+\s*"
+                                    r"(?:#[\w\u0600-\u06ff]+|"
+                                    r"@[A-Za-z0-9_]{5,})\s*",
+                                    normalize_invisible_characters(
+                                        candidate
+                                    ),
                                     flags=re.UNICODE,
                                 )
                             )
@@ -544,6 +739,13 @@ def remove_source_signature(
     )
 
     cleaned_text = remove_orphan_separators(
+        cleaned_text
+    )
+
+    # Final source-icon guard:
+    # after footer cleanup, remove emoji/icon decoration that remains after
+    # the final real textual content. Emoji inside the body are untouched.
+    cleaned_text = strip_trailing_source_icons(
         cleaned_text
     )
 
