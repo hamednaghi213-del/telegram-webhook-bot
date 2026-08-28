@@ -88,16 +88,20 @@ def _normalize_executor_result(outcome: Any) -> ExecutorResult:
     message_id = _message_id_from_outcome(outcome)
     message_ids = _message_ids_from_outcome(outcome)
     status_code = None
+    error_code = None
     error = None
+    operation = None
     raw = outcome
     candidate = outcome[2] if isinstance(outcome, tuple) and len(outcome) > 2 else outcome
     if isinstance(candidate, dict):
         status_code = candidate.get("status_code")
+        error_code = candidate.get("error_code")
         error = candidate.get("error") or candidate.get("description")
+        operation = candidate.get("operation")
     if isinstance(outcome, tuple) and len(outcome) > 1 and not ok:
         error = str(outcome[1] or error or "executor failed")
     return ExecutorResult(ok, message_id, message_ids,
-                          status_code, error, raw)
+                          status_code, error, raw, error_code, operation)
 
 
 def _message_ids_from_outcome(outcome: Any) -> Tuple[int, ...]:
@@ -216,37 +220,27 @@ def _send_media_target(
     target: PublicationTarget,
     files: List[Dict[str, Any]],
     plan: Dict[str, Any],
-) -> bool:
+):
     if target.platform == "telegram":
         from core.media_handler import execute_telegram_plan
-        if target.kind == "legacy":
-            ok = execute_telegram_plan(files, plan)
-            from core.media_handler import get_last_media_message_id
-            message_id = get_last_media_message_id()
-            return ExecutorResult(bool(ok), message_id,
-                                  (message_id,) if message_id is not None else (),
-                                  raw_result=ok)
-        if len(files) == 1:
-            from core.workspace_publisher import _send_media_to_destination
-            item = files[0]
-            return _send_media_to_destination(
-                api_url,
-                target.external_id,
-                item.get("file_id"),
-                item.get("type"),
-                plan.get("media_caption", "") or "",
-            )
-        ok = execute_telegram_plan(
+        outcome = execute_telegram_plan(
             files,
             plan,
-            channel_id=target.external_id,
-            api_url=api_url,
+            channel_id=None if target.kind == "legacy" else target.external_id,
+            api_url=None if target.kind == "legacy" else api_url,
+            return_result=True,
         )
-        from core.media_handler import get_last_media_message_id
-        message_id = get_last_media_message_id()
-        return ExecutorResult(bool(ok), message_id,
-                              (message_id,) if message_id is not None else (),
-                              raw_result=ok)
+        normalized = _normalize_executor_result(outcome)
+        if normalized.success and normalized.primary_message_id is None:
+            from core.media_handler import get_last_media_message_id
+            message_id = get_last_media_message_id()
+            if message_id is not None:
+                normalized = replace(
+                    normalized,
+                    primary_message_id=message_id,
+                    message_ids=(message_id,),
+                )
+        return normalized
 
     if target.kind == "legacy":
         from core.media_handler import execute_bale_plan
@@ -331,11 +325,18 @@ def _shared_content_analysis(prepared: PreparedContent) -> PreparedContent:
     from core.caption_manager import analyze_content
 
     source_text = prepared.neutral_text or prepared.main_text
+    detached_texts = [
+        str(block.get("text") or "")
+        for block in (*prepared.blockquote_blocks, *prepared.expandable_blocks)
+    ]
+    publishable_text = "\n\n".join(
+        item for item in (source_text, *detached_texts) if item
+    )
     # The stable planner only invokes Smart Summary when platform capacity is
     # exceeded. Editorial approval finalizes the review decision, but a long
     # approved original still has to fit the requested single-message output.
     threshold = 996 if prepared.files else 4096
-    if len(source_text) <= threshold:
+    if len(publishable_text) <= threshold:
         return prepared
     plan = analyze_content(
         main_text=source_text,
@@ -355,11 +356,13 @@ def _shared_content_analysis(prepared: PreparedContent) -> PreparedContent:
         messages = list((plan.text.get("telegram") or {}).get("messages") or [])
         candidate = str(messages[0] if len(messages) == 1 else "").strip()
         has_remainder = len(messages) != 1
-    if candidate and not has_remainder and len(candidate) < len(source_text):
+    if candidate and not has_remainder and len(candidate) < len(publishable_text):
         return replace(
             prepared,
             main_text=candidate,
             neutral_text=candidate,
+            blockquote_blocks=(),
+            expandable_blocks=(),
             other_entities=(),
         )
     return prepared
@@ -474,6 +477,7 @@ def publish_prepared_content(
     store.claim_source(source_key)
     store.mark_source(source_key, "sending")
     results: List[DeliveryResult] = []
+    failure_details: Dict[str, ExecutorResult] = {}
     plan_cache: Dict[Tuple[Any, ...], Any] = {}
     target_content_cache: Dict[Tuple[Any, ...], Tuple[str, str]] = {}
     legacy_telegram_failed = False
@@ -556,7 +560,9 @@ def publish_prepared_content(
                     chat_id, api_url, target, analyzed, platform_plan, part_kind, index
                 )
                 if not _outcome_ok(outcome):
-                    error = f"{part_name} failed"
+                    detail = _normalize_executor_result(outcome)
+                    failure_details[identity] = detail
+                    error = detail.error or f"{part_name} failed"
                     store.mark_failed(source_key, identity, error)
                     if target.kind == "legacy" and target.platform == "telegram":
                         legacy_telegram_failed = True
@@ -569,6 +575,7 @@ def publish_prepared_content(
             if error is None:
                 store.mark_succeeded(source_key, identity)
             final = store.get_delivery(source_key, identity)
+            detail = failure_details.get(identity)
             results.append(DeliveryResult(
                 target.platform, target.workspace_id, target.destination_id,
                 final.message_chat_ids.get("primary", target.external_id),
@@ -578,6 +585,10 @@ def publish_prepared_content(
                 blockquote_message_ids=tuple(value for key, value in sorted(final.message_ids.items()) if key.startswith("blockquote:")),
                 status=final.status, error=final.error, attempt=final.attempt,
                 idempotency_key=f"{source_key}:{identity}",
+                status_code=detail.status_code if detail else None,
+                error_code=detail.error_code if detail else None,
+                failed_part=part_name if detail else None,
+                operation=detail.operation if detail else None,
             ))
         except Exception as exc:
             store.mark_failed(source_key, identity, str(exc))

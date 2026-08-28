@@ -92,6 +92,8 @@ class ExecutorResult:
     status_code: Optional[int] = None
     error: Optional[str] = None
     raw_result: Any = None
+    error_code: Optional[int] = None
+    operation: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -106,5 +108,9 @@ class DeliveryResult:
     followup_message_ids: Tuple[int, ...] = field(default_factory=tuple)
     status: str = "pending"
     error: Optional[str] = None
+    status_code: Optional[int] = None
+    error_code: Optional[int] = None
+    failed_part: Optional[str] = None
+    operation: Optional[str] = None
     attempt: int = 0
     idempotency_key: str = ""

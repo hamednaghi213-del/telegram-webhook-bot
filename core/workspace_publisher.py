@@ -346,7 +346,12 @@ def _send_media_to_destination(
         if r.status_code == 200 and data.get("ok"):
             return True, "", data.get("result") or {}
         err = _extract_error(r)
-        return False, err, None
+        return False, err, {
+            "status_code": r.status_code,
+            "error_code": data.get("error_code"),
+            "error": err,
+            "operation": endpoint,
+        }
     except Exception as e:
         return False, str(e), None
 
@@ -367,7 +372,12 @@ def _send_text_to_destination(
         if r.status_code == 200 and data.get("ok"):
             return True, "", data.get("result") or {}
         err = _extract_error(r)
-        return False, err, None
+        return False, err, {
+            "status_code": r.status_code,
+            "error_code": data.get("error_code"),
+            "error": err,
+            "operation": "sendMessage",
+        }
     except Exception as e:
         return False, str(e), None
 

@@ -31,6 +31,7 @@ def test_default_model(
         get_gemini_model()
         == DEFAULT_GEMINI_MODEL
     )
+    assert DEFAULT_GEMINI_MODEL == "gemini-3.5-flash-lite"
 
 
 # =========================================================
@@ -341,6 +342,67 @@ def test_successful_request(
         result
         == "خلاصه معتبر"
     )
+
+
+def test_gemini_35_flash_lite_override_uses_existing_contract(
+    monkeypatch
+):
+
+    monkeypatch.setenv(
+        "GEMINI_API_KEY",
+        "fake-key"
+    )
+    monkeypatch.setenv(
+        "GEMINI_SUMMARIZER_MODEL",
+        "gemini-3.5-flash-lite"
+    )
+
+    captured = {}
+
+    class FakeResponse:
+
+        status_code = 200
+        text = ""
+
+        def json(self):
+
+            return {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": "خلاصه معتبر"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+
+    def fake_post(url, **kwargs):
+
+        captured["url"] = url
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        "core.ai_summarizer_provider.requests.post",
+        fake_post
+    )
+
+    result = summarize_with_gemini(
+        "متن اصلی خبر طولانی است.",
+        "بدون تحریف خلاصه کن.",
+        100
+    )
+
+    assert result == "خلاصه معتبر"
+    assert captured["url"].endswith(
+        "/v1beta/models/gemini-3.5-flash-lite:generateContent"
+    )
+    assert captured["headers"]["x-goog-api-key"] == "fake-key"
+    assert captured["json"]["contents"][0]["role"] == "user"
 
 
 # =========================================================

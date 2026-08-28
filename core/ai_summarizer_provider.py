@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # =========================================================
 
 DEFAULT_GEMINI_MODEL = (
-    "gemini-2.5-flash-lite"
+    "gemini-3.5-flash-lite"
 )
 
 DEFAULT_CONNECT_TIMEOUT = 10

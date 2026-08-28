@@ -1537,7 +1537,8 @@ def send_single_media_to_channel(
     ] = None,
     channel_id: Optional[str] = None,
     api_url: Optional[str] = None,
-) -> bool:
+    return_result: bool = False,
+):
 
     set_last_media_message_id(
         None
@@ -1651,8 +1652,30 @@ def send_single_media_to_channel(
             f"{message_id or '-'}"
         )
 
+        if return_result:
+            data = response.json() or {}
+            result = data.get("result") or {}
+            return {
+                "ok": True,
+                "result": result,
+                "message_id": result.get("message_id"),
+                "status_code": response.status_code,
+                "operation": endpoint,
+            }
         return True
 
+    if return_result:
+        try:
+            data = response.json() if response is not None else {}
+        except Exception:
+            data = {}
+        return {
+            "ok": False,
+            "status_code": getattr(response, "status_code", None),
+            "error_code": data.get("error_code"),
+            "error": data.get("description") or "Telegram media request failed",
+            "operation": endpoint,
+        }
     return False
 
 
@@ -2088,7 +2111,8 @@ def execute_telegram_plan(
     plan: Dict[str, Any],
     channel_id: Optional[str] = None,
     api_url: Optional[str] = None,
-) -> bool:
+    return_result: bool = False,
+):
 
     media_caption = (
         plan.get(
@@ -2180,6 +2204,7 @@ def execute_telegram_plan(
                         media_caption_entities
                     ),
                     **_destination_kwargs(channel_id, api_url),
+                    **({"return_result": True} if return_result else {}),
                 )
             )
 
@@ -2198,6 +2223,7 @@ def execute_telegram_plan(
                         media_parse_mode
                     ),
                     **_destination_kwargs(channel_id, api_url),
+                    **({"return_result": True} if return_result else {}),
                 )
             )
 
@@ -2213,6 +2239,7 @@ def execute_telegram_plan(
                     ),
                     media_caption,
                     **_destination_kwargs(channel_id, api_url),
+                    **({"return_result": True} if return_result else {}),
                 )
             )
 
@@ -2261,7 +2288,7 @@ def execute_telegram_plan(
             "❌ Telegram media execution failed"
         )
 
-        return False
+        return media_success if return_result else False
 
     media_message_id = (
         get_last_media_message_id()
@@ -2375,7 +2402,7 @@ def execute_telegram_plan(
         f"{len(followup_messages)}"
     )
 
-    return True
+    return media_success if return_result and isinstance(media_success, dict) else True
 
 
 # =========================================================
