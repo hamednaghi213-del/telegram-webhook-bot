@@ -154,3 +154,102 @@ def test_editorial_finalized_is_applied_once_per_destination_plan(monkeypatch):
     assert result["ok"] is True
     assert len(calls) == 1
     assert calls[0]["editorial_finalized"] is True
+
+
+def test_long_finalized_editorial_is_summarized_to_one_message(monkeypatch):
+    target = PublicationTarget("workspace", "workspace", "telegram", "@workspace", 2, 20)
+    calls = []
+    sent = []
+
+    def fake_analyze(**kwargs):
+        calls.append(kwargs)
+        if kwargs["branding"] == "":
+            return SimpleNamespace(
+                telegram={}, bale={},
+                text={
+                    "telegram": {"messages": ["خلاصه هوشمند"]},
+                    "bale": {"messages": ["خلاصه هوشمند"]},
+                },
+            )
+        return SimpleNamespace(
+            telegram={}, bale={},
+            text={
+                "telegram": {"messages": [kwargs["main_text"]]},
+                "bale": {"messages": [kwargs["main_text"]]},
+            },
+        )
+
+    monkeypatch.setattr("core.caption_manager.analyze_content", fake_analyze)
+    monkeypatch.setattr(
+        publication_engine,
+        "_target_content_and_branding",
+        lambda _chat, _target, prepared: (prepared.neutral_text, "brand"),
+    )
+    monkeypatch.setattr(
+        publication_engine,
+        "_send_text_target",
+        lambda _chat, _api, _target, plan: sent.extend(plan["messages"]) or True,
+    )
+    publication_engine.reset_local_idempotency_state()
+
+    result = publication_engine.publish_prepared_content(
+        1,
+        "api",
+        PreparedContent(
+            main_text="متن بلند " * 700,
+            editorial_finalized=True,
+            require_single_message=True,
+            source_key="editorial:long:summary",
+        ),
+        [target],
+    )
+
+    assert result["ok"] is True
+    assert sent == ["خلاصه هوشمند"]
+    assert calls[0]["editorial_finalized"] is False
+    assert len(calls) == 2
+
+
+def test_long_editorial_is_not_split_when_summary_is_unavailable(monkeypatch):
+    target = PublicationTarget("workspace", "workspace", "telegram", "@workspace", 2, 20)
+    sent = []
+    target_processing = []
+
+    monkeypatch.setattr(
+        "core.caption_manager.analyze_content",
+        lambda **_kwargs: SimpleNamespace(
+            telegram={}, bale={},
+            text={
+                "telegram": {"messages": ["قسمت اول", "قسمت دوم", "قسمت سوم"]},
+                "bale": {"messages": ["قسمت اول", "قسمت دوم", "قسمت سوم"]},
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        publication_engine,
+        "_target_content_and_branding",
+        lambda *_args: target_processing.append(True) or ("base", "brand"),
+    )
+    monkeypatch.setattr(
+        publication_engine,
+        "_send_text_target",
+        lambda *_args: sent.append(True) or True,
+    )
+    publication_engine.reset_local_idempotency_state()
+
+    result = publication_engine.publish_prepared_content(
+        1,
+        "api",
+        PreparedContent(
+            main_text="متن بلند " * 700,
+            editorial_finalized=True,
+            require_single_message=True,
+            source_key="editorial:long:unavailable",
+        ),
+        [target],
+    )
+
+    assert result["ok"] is False
+    assert result["errors"] == ["editorial_summary_unavailable"]
+    assert target_processing == []
+    assert sent == []

@@ -1358,6 +1358,7 @@ def publish_prepared_text(
     neutral_text: Optional[str] = None,
     source_key: str = "",
     files: Optional[List[Dict[str, Any]]] = None,
+    require_single_message: bool = False,
 ) -> bool:
 
     try:
@@ -1376,6 +1377,7 @@ def publish_prepared_text(
                 other_entities=list(other_entities or []),
                 files=list(files or []),
                 editorial_finalized=editorial_finalized,
+                require_single_message=require_single_message,
                 source_key=source_key,
             ),
         )
@@ -3373,6 +3375,7 @@ def handle_editorial_callback(
                         )
                     ),
                     editorial_finalized=True,
+                    require_single_message=True,
                     source_key=publication_source_key,
                     files=publication_files,
                 )
@@ -3460,6 +3463,7 @@ def handle_editorial_callback(
                     expandable_blocks=[],
                     other_entities=[],
                     editorial_finalized=True,
+                    require_single_message=True,
                     source_key=publication_source_key,
                     files=publication_files,
                 )

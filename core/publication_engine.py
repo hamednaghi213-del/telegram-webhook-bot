@@ -332,10 +332,10 @@ def _shared_content_analysis(prepared: PreparedContent) -> PreparedContent:
 
     source_text = prepared.neutral_text or prepared.main_text
     # The stable planner only invokes Smart Summary when platform capacity is
-    # exceeded. Avoid a redundant planner pass for content that cannot trigger
-    # AI, and for already-finalized editorial content.
+    # exceeded. Editorial approval finalizes the review decision, but a long
+    # approved original still has to fit the requested single-message output.
     threshold = 996 if prepared.files else 4096
-    if prepared.editorial_finalized or len(source_text) <= threshold:
+    if len(source_text) <= threshold:
         return prepared
     plan = analyze_content(
         main_text=source_text,
@@ -343,7 +343,10 @@ def _shared_content_analysis(prepared: PreparedContent) -> PreparedContent:
         expandable_blocks=list(prepared.expandable_blocks),
         other_entities=list(prepared.other_entities),
         branding="",
-        editorial_finalized=prepared.editorial_finalized,
+        editorial_finalized=(
+            prepared.editorial_finalized
+            and not prepared.require_single_message
+        ),
     )
     if prepared.files:
         candidate = str(plan.telegram.get("media_caption") or "").strip()
@@ -452,6 +455,21 @@ def publish_prepared_content(
     targets = list(unique_targets.values())
 
     analyzed = _shared_content_analysis(prepared)
+    if (
+        prepared.require_single_message
+        and len(analyzed.neutral_text or analyzed.main_text)
+        > (996 if analyzed.files else 4096)
+    ):
+        logger.error(
+            "Editorial single-message publication blocked | "
+            "source=%s | reason=summary_unavailable",
+            prepared.publication_identity,
+        )
+        return {
+            "ok": False,
+            "results": [],
+            "errors": ["editorial_summary_unavailable"],
+        }
     source_key = analyzed.publication_identity
     store.claim_source(source_key)
     store.mark_source(source_key, "sending")

@@ -54,6 +54,7 @@ class PreparedContent:
     other_entities: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
     files: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
     editorial_finalized: bool = False
+    require_single_message: bool = False
     source_key: str = ""
     publication_id: str = field(default_factory=lambda: uuid4().hex)
 

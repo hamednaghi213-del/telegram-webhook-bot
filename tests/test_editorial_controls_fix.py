@@ -1260,6 +1260,7 @@ def test_editorial_summary_publish_passes_finalized(monkeypatch):
     assert published_kwargs[0].get("editorial_finalized") is True, (
         "editorial_finalized=True must be passed for summary publish"
     )
+    assert published_kwargs[0].get("require_single_message") is True
 
 
 def test_editorial_original_publish_passes_finalized(monkeypatch):
@@ -1301,3 +1302,4 @@ def test_editorial_original_publish_passes_finalized(monkeypatch):
     assert published_kwargs[0].get("editorial_finalized") is True, (
         "editorial_finalized=True must be passed for original publish"
     )
+    assert published_kwargs[0].get("require_single_message") is True
