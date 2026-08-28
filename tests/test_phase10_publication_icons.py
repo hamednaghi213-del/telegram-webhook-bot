@@ -104,3 +104,20 @@ def test_complete_profile_preserves_cta_role_without_using_it_for_body():
         "🟩 تیتر\n\n🔷 بند اول\n\n🔷 بند دوم\n\n"
         "📌 رسانه را در بله دنبال کنید"
     )
+    
+def test_concatenated_stored_icons_are_split_into_independent_icons():
+    from core.publication_icons import normalize_icons
+
+    assert normalize_icons(["🟩🔷"]) == ["🟩", "🔷"]
+
+
+def test_already_separated_icons_remain_unchanged():
+    from core.publication_icons import normalize_icons
+
+    assert normalize_icons(["🟩", "🔷"]) == ["🟩", "🔷"]
+
+
+def test_composed_emoji_is_not_split():
+    from core.publication_icons import normalize_icons
+
+    assert normalize_icons(["👍🏽"]) == ["👍🏽"]
