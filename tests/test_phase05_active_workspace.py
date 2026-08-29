@@ -458,3 +458,17 @@ def test_new_preference_upsert_supplies_created_at(
     assert payload["updated_at"] >= payload["created_at"]
     assert result["created_at"] == payload["created_at"]
 
+def test_workspace_keyboard_does_not_restore_unchecked_active_workspace():
+    """
+    Regression:
+    An explicitly empty publication selection means no workspace is checked.
+    Active workspace is management context only and must not appear selected.
+    """
+    keyboard = workspace_publisher.build_workspace_keyboard(
+        WORKSPACES,
+        20,
+        selected_workspace_ids=[],
+    )
+
+    assert keyboard[0][0]["text"].startswith("▫️")
+    assert keyboard[1][0]["text"].startswith("▫️")
