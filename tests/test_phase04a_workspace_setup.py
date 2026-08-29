@@ -1496,3 +1496,27 @@ def test_setup_prefers_owned_incomplete_workspace_over_active_manager_workspace(
 
     assert resolved_user["id"] == user["id"]
     assert resolved_workspace["id"] == owned_workspace["id"]
+
+def test_36_workspace_name_syncs_with_media_name(monkeypatch):
+    """
+    Regression:
+    Saving workspace branding must keep workspaces.name
+    synchronized with workspace_branding.media_name.
+    """
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+
+    user = db.get_or_create_user_by_telegram_id(9201)
+    workspace = db.create_workspace("رسانه جدید", user["id"])
+
+    ws_mod.save_workspace_branding(
+        workspace["id"],
+        media_name="فردای نو",
+        hashtag="#فردای_نو",
+        channel_tag="@farda_no",
+    )
+
+    updated_workspace = db.get_workspace(workspace["id"])
+    branding = db.get_workspace_branding(workspace["id"])
+
+    assert branding["media_name"] == "فردای نو"
+    assert updated_workspace["name"] == "فردای نو"
