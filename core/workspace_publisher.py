@@ -346,24 +346,22 @@ def build_workspace_keyboard(
 
     for workspace in workspaces:
         marker = "✅" if workspace.get("id") in selected_ids else "▫️"
-        role = (
-            workspace.get("membership_role")
-            or workspace.get("member_role")
-            or "member"
-        )
+
         display_label = (
             workspace.get("display_label")
             or workspace.get("name")
             or workspace["id"]
         )
+
         platforms = workspace.get("display_platforms") or []
         platform_suffix = (
             f" — {'/'.join(platforms)}"
             if len(platforms) > 1
             else ""
         )
+
         keyboard.append([{
-            "text": f"{marker} {display_label}{platform_suffix} ({role})",
+            "text": f"{marker} {display_label}{platform_suffix}",
             "callback_data": f"ws:toggle:{workspace['id']}",
         }])
 
