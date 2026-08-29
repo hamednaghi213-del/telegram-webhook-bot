@@ -781,6 +781,28 @@ def get_workspace(
     )
 
     return _first_row(result)
+@with_retry
+def update_workspace_name(
+    workspace_id: int,
+    name: str
+) -> Optional[Dict[str, Any]]:
+    """همگام‌سازی نام workspace با نام واقعی رسانه"""
+    normalized_name = (name or "").strip()
+    if not normalized_name:
+        raise ValueError("Workspace name is required")
+
+    result = (
+        supabase
+        .table("workspaces")
+        .update({
+            "name": normalized_name,
+            "updated_at": time.time()
+        })
+        .eq("id", workspace_id)
+        .execute()
+    )
+
+    return _first_row(result)
 
 
 @with_retry
