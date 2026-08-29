@@ -1379,3 +1379,48 @@ def test_26g_start_does_not_override_completed_users_intentional_workspace_selec
     assert preference is not None
     assert preference["context_type"] == "workspace"
     assert preference["active_workspace_id"] == manager_workspace["id"]
+
+def test_unchecked_workspace_is_not_restored_from_active_preference(monkeypatch):
+    """
+    Regression:
+    An unchecked workspace must never become a publication target merely
+    because it is the active workspace.
+
+    Active workspace controls management context.
+    Checkmarks control publication targets.
+    """
+    _load_modules(monkeypatch)
+
+    from core.workspace_publisher import resolve_workspaces_for_user
+
+    telegram_id = 404040
+    user = {"id": 10, "telegram_user_id": telegram_id}
+
+    workspace_a = {
+        "id": 101,
+        "name": "رسانه الف",
+        "membership_role": "owner",
+    }
+    workspace_b = {
+        "id": 202,
+        "name": "رسانه ب",
+        "membership_role": "owner",
+    }
+
+    selected, error = resolve_workspaces_for_user(
+        telegram_id,
+        get_user_fn=lambda _telegram_id: user,
+        list_workspaces_fn=lambda _user_id: [
+            workspace_a,
+            workspace_b,
+        ],
+        get_active_preference_fn=lambda _user_id: {
+            "context_type": "workspace",
+            "active_workspace_id": workspace_b["id"],
+        },
+        # User has explicitly left BOTH workspaces unchecked.
+        list_selected_ids_fn=lambda _user_id: [],
+    )
+
+    assert selected == []
+    assert error is not None
