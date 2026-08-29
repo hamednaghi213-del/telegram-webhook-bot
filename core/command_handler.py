@@ -674,8 +674,8 @@ def handle_workspaces(chat_id: int) -> bool:
                 None,
             )
             display_workspace["display_label"] = (
-                (primary or {}).get("external_id")
-                or workspace.get("name")
+                workspace.get("name")
+                or (primary or {}).get("external_id")
                 or f"رسانه {workspace['id']}"
             )
             display_workspace["display_platforms"] = sorted({
