@@ -1424,3 +1424,75 @@ def test_unchecked_workspace_is_not_restored_from_active_preference(monkeypatch)
 
     assert selected == []
     assert error is not None
+
+def test_setup_prefers_owned_incomplete_workspace_over_active_manager_workspace(monkeypatch):
+    """
+    Regression:
+    A user can be manager of another completed workspace while also owning
+    an incomplete workspace that is currently being set up.
+
+    Setup commands must resolve to the user's own incomplete workspace,
+    not to the manager workspace selected as active publication context.
+    """
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+
+    telegram_id = 2029
+
+    # Existing completed workspace owned by someone else.
+    existing_owner = db.get_or_create_user_by_telegram_id(999002)
+    manager_workspace = db.create_workspace(
+        "بی‌نشانه",
+        existing_owner["id"],
+    )
+
+    db.add_workspace_member(
+        manager_workspace["id"],
+        existing_owner["id"],
+        role="owner",
+        status="active",
+    )
+
+    db.add_workspace_member(
+        manager_workspace["id"],
+        db.get_or_create_user_by_telegram_id(telegram_id)["id"],
+        role="manager",
+        status="active",
+    )
+
+    db.upsert_workspace_branding(
+        manager_workspace["id"],
+        "بی‌نشانه",
+        "#بی_نشانه",
+        "@beneshaneh",
+    )
+
+    # User's own unfinished workspace.
+    user = db.get_user_by_telegram_id(telegram_id)
+
+    owned_workspace = db.create_workspace(
+        "رسانه جدید",
+        user["id"],
+    )
+
+    db.add_workspace_member(
+        owned_workspace["id"],
+        user["id"],
+        role="owner",
+        status="active",
+    )
+
+    # Manager workspace is deliberately the active publication context.
+    db.set_active_workspace(
+        user["id"],
+        manager_workspace["id"],
+    )
+
+    # User is in setup for their own workspace.
+    ch_mod.start_setup(owned_workspace["id"])
+
+    resolved_user, resolved_workspace = ch_mod._get_workspace_for_user(
+        telegram_id
+    )
+
+    assert resolved_user["id"] == user["id"]
+    assert resolved_workspace["id"] == owned_workspace["id"]
