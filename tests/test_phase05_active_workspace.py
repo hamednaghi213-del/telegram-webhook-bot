@@ -457,3 +457,4 @@ def test_new_preference_upsert_supplies_created_at(
     assert payload["created_at"] > 0
     assert payload["updated_at"] >= payload["created_at"]
     assert result["created_at"] == payload["created_at"]
+
