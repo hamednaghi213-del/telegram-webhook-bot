@@ -452,12 +452,14 @@ def test_handle_workspaces_uses_verified_telegram_destination(monkeypatch):
         {"id": 2, "platform": "bale", "external_id": "@bale"},
         {"id": 1, "platform": "telegram", "external_id": "@telegram", "is_default": True},
     ])
-    assert "@telegram" in keyboard[0][0]["text"]
+    assert "واقعی" in keyboard[0][0]["text"]
+    assert "@telegram" not in keyboard[0][0]["text"]
 
 
 def test_handle_workspaces_falls_back_to_bale_destination(monkeypatch):
     keyboard = _workspace_label(monkeypatch, [{"id": 2, "platform": "bale", "external_id": "@bale"}])
-    assert "@bale" in keyboard[0][0]["text"]
+    assert "واقعی" in keyboard[0][0]["text"]
+    assert "@bale" not in keyboard[0][0]["text"]
 
 
 def test_handle_workspaces_falls_back_to_real_workspace_name(monkeypatch):
