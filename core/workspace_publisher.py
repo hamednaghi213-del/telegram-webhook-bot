@@ -256,25 +256,62 @@ def resolve_workspaces_for_user(
     get_active_preference_fn=None,
     list_selected_ids_fn=None,
 ) -> Tuple[List[Dict], Optional[str]]:
-    """Resolve every workspace selected for simultaneous publication."""
+    """
+    Resolve workspaces selected explicitly for publication.
+
+    Publication selection and active management context are intentionally
+    separate concepts:
+
+    - selected workspace IDs control publication targets
+    - active_workspace_id controls management/setup context only
+
+    When an explicit publication-selection provider is available, an active
+    workspace must never be restored implicitly after the user unchecked it.
+    """
     user = get_user_fn(telegram_user_id)
     if not user:
         return [], None
+
     workspaces = list_workspaces_fn(user["id"])
     if not workspaces:
         return [], None
+
+    # The publication path supplies list_selected_ids_fn. In that path the
+    # checkmarks are authoritative, even when there is only one workspace.
+    if list_selected_ids_fn is not None:
+        selected_ids = set(list_selected_ids_fn(user["id"]) or [])
+
+        selected = [
+            workspace
+            for workspace in workspaces
+            if workspace.get("id") in selected_ids
+        ]
+
+        if selected:
+            return selected, None
+
+        return [], (
+            "هیچ رسانه‌ای برای انتشار انتخاب نشده است. "
+            "لطفاً از /workspaces حداقل یک رسانه را انتخاب کنید."
+        )
+
+    # Backward-compatible behavior for older/internal callers that do not
+    # provide an explicit publication-selection function.
     if len(workspaces) == 1:
         return workspaces, None
-    selected_ids = set(
-        list_selected_ids_fn(user["id"]) or []
-    ) if list_selected_ids_fn else set()
-    if not selected_ids and get_active_preference_fn:
+
+    if get_active_preference_fn:
         preference = get_active_preference_fn(user["id"]) or {}
         if preference.get("context_type") != "legacy":
-            selected_ids.add(preference.get("active_workspace_id"))
-    selected = [ws for ws in workspaces if ws.get("id") in selected_ids]
-    if selected:
-        return selected, None
+            active_workspace_id = preference.get("active_workspace_id")
+            selected = [
+                workspace
+                for workspace in workspaces
+                if workspace.get("id") == active_workspace_id
+            ]
+            if selected:
+                return selected, None
+
     return [], "شما عضو چند رسانه هستید. لطفاً حداقل یک رسانه را انتخاب کنید."
 
 
@@ -499,6 +536,7 @@ def publish_to_destinations(
         "failure": len(failed),
         "errors": [item.destination_chat_id for item in failed],
     }
+
 
 def format_publish_result(result: Dict[str, Any]) -> str:
     """Format publish result as Persian summary message."""
