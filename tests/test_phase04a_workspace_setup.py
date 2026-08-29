@@ -101,6 +101,17 @@ class InMemoryDb4A:
             if w["id"] == workspace_id:
                 return w
         return None
+    def update_workspace_name(self, workspace_id, name):
+        workspace = self.get_workspace(workspace_id)
+        if not workspace:
+            return None
+
+        normalized_name = (name or "").strip()
+        if not normalized_name:
+            raise ValueError("Workspace name is required")
+
+        workspace["name"] = normalized_name
+        return deepcopy(workspace)
 
     # ── workspace members ──────────────────────────────
     def get_workspace_member(self, workspace_id, user_id):
@@ -325,6 +336,7 @@ def _make_fake_db_module(db: InMemoryDb4A) -> types.ModuleType:
     mod.create_workspace = db.create_workspace
     mod.list_owned_workspaces = db.list_owned_workspaces
     mod.get_workspace = db.get_workspace
+    mod.update_workspace_name = db.update_workspace_name
     mod.get_workspace_member = db.get_workspace_member
     mod.add_workspace_member = db.add_workspace_member
     mod.update_workspace_member_role = db.update_workspace_member_role
