@@ -1059,7 +1059,6 @@ def _handle_workspace_callback(
         deselect_workspace,
         list_user_workspace_memberships,
         get_workspace_setup_state,
-        list_verified_active_destinations,
         get_tenant,
     )
 
@@ -1192,9 +1191,16 @@ def _handle_workspace_callback(
         )
 
         display_workspaces = (
-            prepare_workspace_display_rows(
+            prepare_workspace_display_row
                 workspaces,
-                list_verified_active_destinations,
+        getattr(
+    __import__(
+        "core.database",
+        fromlist=["list_verified_active_destinations"],
+    ),
+    "list_verified_active_destinations",
+    lambda _workspace_id: [],
+),
                 get_workspace_branding,
             )
         )
@@ -1459,7 +1465,14 @@ def _handle_workspace_callback(
         display_workspaces = (
             prepare_workspace_display_rows(
                 workspaces,
-                list_verified_active_destinations,
+        getattr(
+    __import__(
+        "core.database",
+        fromlist=["list_verified_active_destinations"],
+    ),
+    "list_verified_active_destinations",
+    lambda _workspace_id: [],
+),
                 get_workspace_branding,
             )
         )
