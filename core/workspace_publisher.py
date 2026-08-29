@@ -1059,7 +1059,6 @@ def _handle_workspace_callback(
         deselect_workspace,
         list_user_workspace_memberships,
         get_workspace_setup_state,
-        get_tenant,
     )
 
     callback_data = (
