@@ -577,8 +577,7 @@ def _get_workspace_for_user(chat_id: int):
     incomplete_owned = [
         workspace
         for workspace in owned_workspaces
-        if (get_workspace_setup_state(workspace["id"]) or {}).get("step")
-        != "completed"
+        if not is_setup_completed(workspace["id"])
     ]
 
     if incomplete_owned:
