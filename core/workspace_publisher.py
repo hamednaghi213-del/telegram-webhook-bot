@@ -1061,6 +1061,14 @@ def _handle_workspace_callback(
         get_workspace_setup_state,
     )
 
+   get_tenant = getattr(
+    __import__(
+        "core.database",
+        fromlist=["get_tenant"],
+    ),
+    "get_tenant",
+    lambda _chat_id: None,
+) 
     callback_data = (
         callback_query.get("data", "")
         or ""
