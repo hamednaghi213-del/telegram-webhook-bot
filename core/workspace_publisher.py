@@ -1061,7 +1061,7 @@ def _handle_workspace_callback(
         get_workspace_setup_state,
     )
 
-       get_tenant = getattr(
+    get_tenant = getattr(
         __import__(
             "core.database",
             fromlist=["get_tenant"],
