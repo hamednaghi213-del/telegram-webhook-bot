@@ -564,7 +564,7 @@ def _get_workspace_for_user(chat_id: int):
             return user, None
         return user, _select_primary_workspace(workspaces)
 
-       workspaces = list_user_workspaces(user["id"], include_inactive=False)
+    workspaces = list_user_workspaces(user["id"], include_inactive=False)
     if not workspaces:
         return user, None
 
