@@ -472,3 +472,33 @@ def test_workspace_keyboard_does_not_restore_unchecked_active_workspace():
 
     assert keyboard[0][0]["text"].startswith("▫️")
     assert keyboard[1][0]["text"].startswith("▫️")
+
+def test_workspace_keyboard_shows_media_name_without_membership_role():
+    """
+    Regression:
+    /workspaces must show the media display name as the main label.
+    Membership roles such as owner/manager/publisher must not be appended
+    to the visible media title.
+    """
+    workspaces = [
+        {
+            "id": 30,
+            "name": "Internal Workspace Name",
+            "membership_role": "owner",
+            "display_label": "دنیا ۲۴ انگلیسی",
+            "display_platforms": ["bale", "telegram"],
+        }
+    ]
+
+    keyboard = workspace_publisher.build_workspace_keyboard(
+        workspaces,
+        30,
+        selected_workspace_ids=[30],
+    )
+
+    text = keyboard[0][0]["text"]
+
+    assert text.startswith("✅ دنیا ۲۴ انگلیسی")
+    assert "bale/telegram" in text
+    assert "(owner)" not in text
+    assert "Internal Workspace Name" not in text
