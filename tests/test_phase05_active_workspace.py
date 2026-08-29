@@ -131,12 +131,22 @@ def test_multiple_workspaces_resolve_all_selected_memberships():
 
 
 def test_multiple_workspaces_fall_back_to_legacy_active_preference():
+    """
+    Backward compatibility:
+    when no explicit publication-selection provider is available,
+    the legacy active-workspace preference may still be used as fallback.
+
+    This is intentionally different from an explicit selection provider
+    returning [], which means the user has no workspace checked for publication.
+    """
     workspaces, error = workspace_publisher.resolve_workspaces_for_user(
         100,
         lambda _telegram_id: {"id": 1},
         lambda _user_id: WORKSPACES,
-        lambda _user_id: {"active_workspace_id": 20, "context_type": "workspace"},
-        lambda _user_id: [],
+        lambda _user_id: {
+            "active_workspace_id": 20,
+            "context_type": "workspace",
+        },
     )
 
     assert [workspace["id"] for workspace in workspaces] == [20]
@@ -156,19 +166,38 @@ def test_workspace_toggle_adds_workspace_and_answers_callback(monkeypatch):
     fake_database.set_active_workspace = lambda _user_id, _workspace_id: None
     fake_database.set_legacy_workspace_selected = lambda _user_id, _selected: None
     fake_database.get_active_workspace_preference = lambda _user_id: {
-        "context_type": "workspace", "active_workspace_id": 10,
+        "context_type": "workspace",
+        "active_workspace_id": 10,
         "legacy_selected": False,
     }
     fake_database.list_selected_workspace_ids = lambda _user_id: sorted(selected)
-    fake_database.select_workspace = lambda _user_id, workspace_id: selected.add(workspace_id)
-    fake_database.deselect_workspace = lambda _user_id, workspace_id: selected.remove(workspace_id)
+    fake_database.select_workspace = (
+        lambda _user_id, workspace_id: selected.add(workspace_id)
+    )
+    fake_database.deselect_workspace = (
+        lambda _user_id, workspace_id: selected.remove(workspace_id)
+    )
     fake_database.list_user_workspace_memberships = lambda _user_id: WORKSPACES
-    fake_database.get_workspace_setup_state = lambda _workspace_id: {"step": "completed"}
+    fake_database.get_workspace_setup_state = (
+        lambda _workspace_id: {"step": "completed"}
+    )
     fake_database.get_tenant = lambda _chat_id: None
     monkeypatch.setitem(sys.modules, "core.database", fake_database)
-    monkeypatch.setattr(workspace_publisher, "_ws_answer_callback", lambda *args: answers.append(args))
-    monkeypatch.setattr(workspace_publisher, "_ws_edit_message_keyboard", lambda *args: edits.append(args))
-    monkeypatch.setattr(workspace_publisher, "_ws_send_message", lambda *args: messages.append(args))
+    monkeypatch.setattr(
+        workspace_publisher,
+        "_ws_answer_callback",
+        lambda *args: answers.append(args),
+    )
+    monkeypatch.setattr(
+        workspace_publisher,
+        "_ws_edit_message_keyboard",
+        lambda *args: edits.append(args),
+    )
+    monkeypatch.setattr(
+        workspace_publisher,
+        "_ws_send_message",
+        lambda *args: messages.append(args),
+    )
 
     workspace_publisher._handle_workspace_callback(
         {"id": "cb", "data": "ws:toggle:20", "from": {"id": 100}},
@@ -194,16 +223,27 @@ def test_workspace_toggle_does_not_remove_last_selection(monkeypatch):
     fake_database.set_active_workspace = lambda _user_id, _workspace_id: None
     fake_database.set_legacy_workspace_selected = lambda _user_id, _selected: None
     fake_database.get_active_workspace_preference = lambda _user_id: {
-        "context_type": "workspace", "active_workspace_id": 10,
+        "context_type": "workspace",
+        "active_workspace_id": 10,
         "legacy_selected": False,
     }
     fake_database.list_selected_workspace_ids = lambda _user_id: sorted(selected)
-    fake_database.select_workspace = lambda _user_id, workspace_id: selected.add(workspace_id)
-    fake_database.deselect_workspace = lambda _user_id, workspace_id: selected.remove(workspace_id)
+    fake_database.select_workspace = (
+        lambda _user_id, workspace_id: selected.add(workspace_id)
+    )
+    fake_database.deselect_workspace = (
+        lambda _user_id, workspace_id: selected.remove(workspace_id)
+    )
     fake_database.list_user_workspace_memberships = lambda _user_id: WORKSPACES
-    fake_database.get_workspace_setup_state = lambda _workspace_id: {"step": "completed"}
+    fake_database.get_workspace_setup_state = (
+        lambda _workspace_id: {"step": "completed"}
+    )
     monkeypatch.setitem(sys.modules, "core.database", fake_database)
-    monkeypatch.setattr(workspace_publisher, "_ws_answer_callback", lambda *args: answers.append(args))
+    monkeypatch.setattr(
+        workspace_publisher,
+        "_ws_answer_callback",
+        lambda *args: answers.append(args),
+    )
 
     workspace_publisher._handle_workspace_callback(
         {"id": "cb", "data": "ws:toggle:10", "from": {"id": 100}},
@@ -254,21 +294,50 @@ def test_selected_workspace_in_legacy_context_is_activated_not_removed(monkeypat
     fake_database.get_workspace_branding = lambda _workspace_id: None
     fake_database.set_active_legacy_context = lambda _user_id: None
     fake_database.set_legacy_workspace_selected = lambda _user_id, _selected: None
-    fake_database.set_active_workspace = lambda user_id, workspace_id: active.append(workspace_id)
+    fake_database.set_active_workspace = (
+        lambda user_id, workspace_id: active.append(workspace_id)
+    )
     fake_database.get_active_workspace_preference = lambda _user_id: (
-        {"context_type": "workspace", "active_workspace_id": active[-1], "legacy_selected": True}
-        if active else {"context_type": "legacy", "active_workspace_id": None, "legacy_selected": True}
+        {
+            "context_type": "workspace",
+            "active_workspace_id": active[-1],
+            "legacy_selected": True,
+        }
+        if active
+        else {
+            "context_type": "legacy",
+            "active_workspace_id": None,
+            "legacy_selected": True,
+        }
     )
     fake_database.list_selected_workspace_ids = lambda _user_id: sorted(selected)
-    fake_database.select_workspace = lambda _user_id, workspace_id: selected.add(workspace_id)
-    fake_database.deselect_workspace = lambda _user_id, workspace_id: selected.remove(workspace_id)
+    fake_database.select_workspace = (
+        lambda _user_id, workspace_id: selected.add(workspace_id)
+    )
+    fake_database.deselect_workspace = (
+        lambda _user_id, workspace_id: selected.remove(workspace_id)
+    )
     fake_database.list_user_workspace_memberships = lambda _user_id: WORKSPACES
-    fake_database.get_workspace_setup_state = lambda _workspace_id: {"step": "completed"}
+    fake_database.get_workspace_setup_state = (
+        lambda _workspace_id: {"step": "completed"}
+    )
     fake_database.get_tenant = lambda _chat_id: {"telegram_channel": "@old"}
     monkeypatch.setitem(sys.modules, "core.database", fake_database)
-    monkeypatch.setattr(workspace_publisher, "_ws_answer_callback", lambda *args: answers.append(args))
-    monkeypatch.setattr(workspace_publisher, "_ws_edit_message_keyboard", lambda *args: None)
-    monkeypatch.setattr(workspace_publisher, "_ws_send_message", lambda *args: None)
+    monkeypatch.setattr(
+        workspace_publisher,
+        "_ws_answer_callback",
+        lambda *args: answers.append(args),
+    )
+    monkeypatch.setattr(
+        workspace_publisher,
+        "_ws_edit_message_keyboard",
+        lambda *args: None,
+    )
+    monkeypatch.setattr(
+        workspace_publisher,
+        "_ws_send_message",
+        lambda *args: None,
+    )
 
     workspace_publisher._handle_workspace_callback(
         {"id": "cb", "data": "ws:toggle:20", "from": {"id": 100}},
@@ -292,28 +361,47 @@ def test_active_incomplete_workspace_resumes_existing_setup(monkeypatch):
     fake_database.set_legacy_workspace_selected = lambda _user_id, _selected: None
     fake_database.set_active_workspace = lambda _user_id, _workspace_id: None
     fake_database.get_active_workspace_preference = lambda _user_id: {
-        "context_type": "workspace", "active_workspace_id": 20,
+        "context_type": "workspace",
+        "active_workspace_id": 20,
         "legacy_selected": True,
     }
     fake_database.list_selected_workspace_ids = lambda _user_id: sorted(selected)
-    fake_database.select_workspace = lambda _user_id, workspace_id: selected.add(workspace_id)
-    fake_database.deselect_workspace = lambda _user_id, workspace_id: selected.remove(workspace_id)
+    fake_database.select_workspace = (
+        lambda _user_id, workspace_id: selected.add(workspace_id)
+    )
+    fake_database.deselect_workspace = (
+        lambda _user_id, workspace_id: selected.remove(workspace_id)
+    )
     fake_database.list_user_workspace_memberships = lambda _user_id: WORKSPACES
     fake_database.get_workspace_setup_state = lambda _workspace_id: {
-        "step": "in_progress", "current_step_key": "setup_branding_sample",
+        "step": "in_progress",
+        "current_step_key": "setup_branding_sample",
     }
     fake_database.get_tenant = lambda _chat_id: {"telegram_channel": "@old"}
     fake_command_handler = types.ModuleType("core.command_handler")
     fake_command_handler.handle_setup = lambda chat_id: resumed.append(chat_id)
     monkeypatch.setitem(sys.modules, "core.database", fake_database)
     monkeypatch.setitem(sys.modules, "core.command_handler", fake_command_handler)
-    monkeypatch.setattr(workspace_publisher, "_ws_answer_callback", lambda *args: None)
-    monkeypatch.setattr(workspace_publisher, "_ws_edit_message_keyboard", lambda *args: None)
-    monkeypatch.setattr(workspace_publisher, "_ws_send_message", lambda *args: None)
+    monkeypatch.setattr(
+        workspace_publisher,
+        "_ws_answer_callback",
+        lambda *args: None,
+    )
+    monkeypatch.setattr(
+        workspace_publisher,
+        "_ws_edit_message_keyboard",
+        lambda *args: None,
+    )
+    monkeypatch.setattr(
+        workspace_publisher,
+        "_ws_send_message",
+        lambda *args: None,
+    )
 
     workspace_publisher._handle_workspace_callback(
         {"id": "cb", "data": "ws:toggle:20", "from": {"id": 100}},
-        "req", "https://api.test",
+        "req",
+        "https://api.test",
     )
 
     assert selected == {20}
@@ -358,7 +446,9 @@ def test_new_preference_upsert_supplies_created_at(
 ):
     database, fake_supabase = preference_database
     monkeypatch.setattr(
-        database, "get_active_workspace_preference", lambda _user_id: None
+        database,
+        "get_active_workspace_preference",
+        lambda _user_id: None,
     )
 
     result = database.set_active_legacy_context(3)
