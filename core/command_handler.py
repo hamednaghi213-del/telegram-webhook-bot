@@ -564,16 +564,35 @@ def _get_workspace_for_user(chat_id: int):
             return user, None
         return user, _select_primary_workspace(workspaces)
 
-    workspaces = list_user_workspaces(user["id"], include_inactive=False)
+       workspaces = list_user_workspaces(user["id"], include_inactive=False)
     if not workspaces:
         return user, None
+
+    owned_workspaces = [
+        workspace
+        for workspace in workspaces
+        if workspace.get("owner_user_id") == user["id"]
+    ]
+
+    incomplete_owned = [
+        workspace
+        for workspace in owned_workspaces
+        if (get_workspace_setup_state(workspace["id"]) or {}).get("step")
+        != "completed"
+    ]
+
+    if incomplete_owned:
+        return user, _select_primary_workspace(incomplete_owned)
+
     preference = get_active_workspace_preference(user["id"]) or {}
     if preference.get("context_type") == "legacy":
         return user, None
+
     active_workspace_id = preference.get("active_workspace_id")
     for workspace in workspaces:
         if workspace.get("id") == active_workspace_id:
             return user, workspace
+
     workspace = _select_primary_workspace(workspaces)
     return user, workspace
 
