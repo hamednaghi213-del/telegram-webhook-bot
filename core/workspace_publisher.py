@@ -315,6 +315,92 @@ def resolve_workspaces_for_user(
     return [], "شما عضو چند رسانه هستید. لطفاً حداقل یک رسانه را انتخاب کنید."
 
 
+def prepare_workspace_display_rows(
+    workspaces: List[Dict],
+    list_verified_active_destinations_fn,
+    get_workspace_branding_fn,
+) -> List[Dict]:
+    """
+    Prepare visible workspace identity consistently.
+
+    Used whenever the /workspaces keyboard is rebuilt, including callbacks.
+
+    Label priority:
+    1. workspace_branding.media_name
+    2. verified Telegram destination
+    3. verified Bale destination
+    4. workspace.name
+    5. generic workspace ID
+    """
+    display_workspaces = []
+
+    for workspace in workspaces:
+        display_workspace = dict(workspace)
+
+        destinations = (
+            list_verified_active_destinations_fn(
+                workspace["id"]
+            )
+            or []
+        )
+
+        destinations = sorted(
+            destinations,
+            key=lambda item: (
+                not bool(item.get("is_default")),
+                item.get("platform") != "telegram",
+                item.get("id") or 0,
+            ),
+        )
+
+        primary = next(
+            (
+                item
+                for item in destinations
+                if item.get("platform") == "telegram"
+            ),
+            None,
+        ) or next(
+            (
+                item
+                for item in destinations
+                if item.get("platform") == "bale"
+            ),
+            None,
+        )
+
+        branding = (
+            get_workspace_branding_fn(
+                workspace["id"]
+            )
+            or {}
+        )
+
+        media_name = (
+            branding.get("media_name")
+            or ""
+        ).strip()
+
+        display_workspace["display_label"] = (
+            media_name
+            or (primary or {}).get("external_id")
+            or workspace.get("name")
+            or f"رسانه {workspace['id']}"
+        )
+
+        display_workspace["display_platforms"] = sorted({
+            str(item.get("platform") or "")
+            for item in destinations
+            if item.get("platform")
+        })
+
+        display_workspaces.append(
+            display_workspace
+        )
+
+    return display_workspaces
+
+
 def build_workspace_keyboard(
     workspaces: List[Dict],
     active_workspace_id: Optional[int],
@@ -502,22 +588,26 @@ def publish_to_destinations(
         )
         for dest in destinations
     ]
+
     source_material = "|".join([
         content_text or "",
         media_file_id or "",
         media_type or "",
         ",".join(str(dest.get("id")) for dest in destinations),
     ])
+
     source_key = source_key or (
         "wp:legacy-callback:" + hashlib.sha256(
             (source_material + str(uuid.uuid4())).encode("utf-8")
         ).hexdigest()
     )
+
     files = (
         [{"type": media_type, "file_id": media_file_id}]
         if media_file_id and media_type
         else []
     )
+
     shared = publish_prepared_content(
         0,
         api_url,
@@ -530,27 +620,50 @@ def publish_to_destinations(
         ),
         targets=targets,
     )
+
     deliveries = list(shared.get("results") or [])
-    successful = [item for item in deliveries if item.status == "succeeded"]
-    failed = [item for item in deliveries if item.status != "succeeded"]
+    successful = [
+        item
+        for item in deliveries
+        if item.status == "succeeded"
+    ]
+    failed = [
+        item
+        for item in deliveries
+        if item.status != "succeeded"
+    ]
 
     # Preserve the old Telegram↔Bale edit-link behavior only when an actual
     # pair and both primary IDs are available. Never collapse multiple pairs.
     if record_message_link_fn:
         by_workspace: Dict[int, List[Any]] = {}
+
         for item in successful:
             if item.workspace_id is not None:
-                by_workspace.setdefault(item.workspace_id, []).append(item)
+                by_workspace.setdefault(
+                    item.workspace_id,
+                    [],
+                ).append(item)
 
         for workspace_id, items in by_workspace.items():
             telegram = next(
-                (item for item in items if item.platform == "telegram"),
+                (
+                    item
+                    for item in items
+                    if item.platform == "telegram"
+                ),
                 None,
             )
+
             bale = next(
-                (item for item in items if item.platform == "bale"),
+                (
+                    item
+                    for item in items
+                    if item.platform == "bale"
+                ),
                 None,
             )
+
             if (
                 telegram
                 and bale
@@ -571,7 +684,10 @@ def publish_to_destinations(
     return {
         "success": len(successful),
         "failure": len(failed),
-        "errors": [item.destination_chat_id for item in failed],
+        "errors": [
+            item.destination_chat_id
+            for item in failed
+        ],
     }
 
 
@@ -583,10 +699,19 @@ def format_publish_result(result: Dict[str, Any]) -> str:
     if failure == 0:
         return f"✅ انتشار انجام شد\nموفق: {success}\nناموفق: ۰"
 
-    lines = [f"موفق: {success}", f"❌ ناموفق: {failure}"]
+    lines = [
+        f"موفق: {success}",
+        f"❌ ناموفق: {failure}",
+    ]
+
     errors = result.get("errors") or []
+
     if errors:
-        lines.append("کانال‌های ناموفق: " + "، ".join(str(e) for e in errors))
+        lines.append(
+            "کانال‌های ناموفق: "
+            + "، ".join(str(e) for e in errors)
+        )
+
     return "\n".join(lines)
 
 
@@ -609,7 +734,10 @@ def store_pending(
         "media_file_id": media_file_id,
         "media_type": media_type,
         "source_key": source_key,
-        "selected": set(d["id"] for d in destinations),  # default: all selected
+        "selected": set(
+            d["id"]
+            for d in destinations
+        ),
     }
 
 
@@ -623,13 +751,18 @@ def clear_pending(chat_id: int) -> None:
     _PENDING.pop(chat_id, None)
 
 
-def toggle_destination_selection(chat_id: int, dest_id: int) -> bool:
+def toggle_destination_selection(
+    chat_id: int,
+    dest_id: int,
+) -> bool:
     """Toggle a destination in/out of the selection. Returns new state."""
     pending = _PENDING.get(chat_id)
+
     if not pending:
         return False
 
     selected = pending["selected"]
+
     if dest_id in selected:
         selected.discard(dest_id)
         return False
@@ -647,16 +780,30 @@ def build_selection_keyboard(
 
     for dest in destinations:
         d_id = dest["id"]
-        name = dest.get("name") or dest.get("external_id", "")
-        check = "✅" if d_id in selected_ids else "☑️"
+        name = (
+            dest.get("name")
+            or dest.get("external_id", "")
+        )
+        check = (
+            "✅"
+            if d_id in selected_ids
+            else "☑️"
+        )
+
         rows.append([{
             "text": f"{check} {name}",
             "callback_data": f"wp:toggle:{d_id}",
         }])
 
     rows.append([
-        {"text": "📤 انتشار", "callback_data": "wp:confirm"},
-        {"text": "❌ لغو", "callback_data": "wp:cancel"},
+        {
+            "text": "📤 انتشار",
+            "callback_data": "wp:confirm",
+        },
+        {
+            "text": "❌ لغو",
+            "callback_data": "wp:cancel",
+        },
     ])
 
     return rows
@@ -690,26 +837,33 @@ def _try_workspace_publication(
         )
 
         user = get_user_by_telegram_id(chat_id)
+
         if not user:
             return False
 
-        workspaces = list_user_workspace_memberships(user["id"])
+        workspaces = list_user_workspace_memberships(
+            user["id"]
+        )
+
         if not workspaces:
             return False
 
-        selected_workspaces, workspace_error = resolve_workspaces_for_user(
-            chat_id,
-            lambda _telegram_id: user,
-            lambda _user_id: workspaces,
-            get_active_workspace_preference,
-            list_selected_workspace_ids,
+        selected_workspaces, workspace_error = (
+            resolve_workspaces_for_user(
+                chat_id,
+                lambda _telegram_id: user,
+                lambda _user_id: workspaces,
+                get_active_workspace_preference,
+                list_selected_workspace_ids,
+            )
         )
 
         if not selected_workspaces:
             _ws_send_message(
                 api_url,
                 chat_id,
-                workspace_error or "رسانه فعالی یافت نشد.",
+                workspace_error
+                or "رسانه فعالی یافت نشد.",
             )
             return True
 
@@ -717,13 +871,22 @@ def _try_workspace_publication(
 
         for workspace in selected_workspaces:
             workspace_id = workspace["id"]
-            setup_state = get_workspace_setup_state(workspace_id)
 
-            if not setup_state or setup_state.get("step") != "completed":
+            setup_state = get_workspace_setup_state(
+                workspace_id
+            )
+
+            if (
+                not setup_state
+                or setup_state.get("step") != "completed"
+            ):
                 _ws_send_message(
                     api_url,
                     chat_id,
-                    f"❌ راه‌اندازی رسانه «{workspace.get('name')}» کامل نیست.",
+                    (
+                        "❌ راه‌اندازی رسانه "
+                        f"«{workspace.get('name')}» کامل نیست."
+                    ),
                 )
                 return True
 
@@ -732,6 +895,7 @@ def _try_workspace_publication(
                 user["id"],
                 get_workspace_member,
             )
+
             if not allowed:
                 _ws_send_message(
                     api_url,
@@ -741,7 +905,9 @@ def _try_workspace_publication(
                 return True
 
             destinations.extend(
-                list_verified_active_destinations(workspace_id)
+                list_verified_active_destinations(
+                    workspace_id
+                )
             )
 
         destinations = list({
@@ -753,13 +919,17 @@ def _try_workspace_publication(
             _ws_send_message(
                 api_url,
                 chat_id,
-                "❌ هیچ کانال تأیید شده‌ای موجود نیست. ابتدا کانال را تأیید کنید.",
+                (
+                    "❌ هیچ کانال تأیید شده‌ای موجود نیست. "
+                    "ابتدا کانال را تأیید کنید."
+                ),
             )
             return True
 
         # Extract content from message
         media_type = None
         media_file_id = None
+
         content_text = (
             msg.get("caption")
             or msg.get("text")
@@ -767,7 +937,13 @@ def _try_workspace_publication(
         ).strip()
 
         # Simple media extraction
-        for mtype in ("photo", "video", "document", "voice", "audio"):
+        for mtype in (
+            "photo",
+            "video",
+            "document",
+            "voice",
+            "audio",
+        ):
             if mtype in msg:
                 media_type = mtype
 
@@ -792,6 +968,7 @@ def _try_workspace_publication(
             destination.get("platform")
             for destination in destinations
         }
+
         paired_destinations = (
             len(destinations) == 2
             and platforms == {"telegram", "bale"}
@@ -811,11 +988,15 @@ def _try_workspace_publication(
                 media_type,
                 get_destination_branding,
                 get_workspace_branding,
-                record_message_link_fn=_record_publication_message_link,
+                record_message_link_fn=(
+                    _record_publication_message_link
+                ),
                 source_key=(
-                    f"telegram:{chat_id}:message:{msg.get('message_id')}"
+                    f"telegram:{chat_id}:message:"
+                    f"{msg.get('message_id')}"
                 ),
             )
+
             _ws_send_message(
                 api_url,
                 chat_id,
@@ -831,11 +1012,13 @@ def _try_workspace_publication(
             media_file_id,
             media_type,
             source_key=(
-                f"telegram:{chat_id}:message:{msg.get('message_id')}"
+                f"telegram:{chat_id}:message:"
+                f"{msg.get('message_id')}"
             ),
         )
 
         pending = get_pending(chat_id)
+
         keyboard = build_selection_keyboard(
             destinations,
             pending["selected"],
@@ -847,6 +1030,7 @@ def _try_workspace_publication(
             "📢 انتخاب کانال انتشار:",
             keyboard,
         )
+
         return True
 
     except Exception as e:
@@ -875,46 +1059,79 @@ def _handle_workspace_callback(
         deselect_workspace,
         list_user_workspace_memberships,
         get_workspace_setup_state,
+        list_verified_active_destinations,
+        get_tenant,
     )
 
-    callback_data = callback_query.get("data", "") or ""
-    callback_id = callback_query.get("id", "")
-    from_user = callback_query.get("from", {}) or {}
+    callback_data = (
+        callback_query.get("data", "")
+        or ""
+    )
+
+    callback_id = (
+        callback_query.get("id", "")
+        or ""
+    )
+
+    from_user = (
+        callback_query.get("from", {})
+        or {}
+    )
+
     chat_id = from_user.get("id")
 
     if chat_id is None:
         return
 
     parts = callback_data.split(":")
+
     if len(parts) < 2:
         return
 
     if callback_data == "ws:legacy":
         try:
-            user = get_user_by_telegram_id(chat_id)
-            if not user:
-                raise ValueError("user not found")
+            user = get_user_by_telegram_id(
+                chat_id
+            )
 
-            from core.database import get_tenant
-            if not get_tenant(chat_id):
-                raise ValueError("legacy tenant not found")
+            if not user:
+                raise ValueError(
+                    "user not found"
+                )
+
+            legacy_tenant = get_tenant(chat_id)
+
+            if not legacy_tenant:
+                raise ValueError(
+                    "legacy tenant not found"
+                )
 
             preference = (
-                get_active_workspace_preference(user["id"])
+                get_active_workspace_preference(
+                    user["id"]
+                )
                 or {}
             )
+
             selected_ids = set(
-                list_selected_workspace_ids(user["id"])
+                list_selected_workspace_ids(
+                    user["id"]
+                )
             )
+
             legacy_selected = bool(
                 preference.get("legacy_selected")
                 if "legacy_selected" in preference
-                else preference.get("context_type") == "legacy"
+                else (
+                    preference.get("context_type")
+                    == "legacy"
+                )
             )
 
             if (
                 legacy_selected
-                and preference.get("context_type") == "legacy"
+                and preference.get("context_type")
+                == "legacy"
             ):
                 if not selected_ids:
                     _ws_answer_callback(
@@ -928,14 +1145,23 @@ def _handle_workspace_callback(
                     user["id"],
                     False,
                 )
-                text = "رسانه قدیمی از انتشار هم‌زمان حذف شد"
+
+                text = (
+                    "رسانه قدیمی از انتشار هم‌زمان حذف شد"
+                )
 
             else:
-                set_active_legacy_context(user["id"])
+                set_active_legacy_context(
+                    user["id"]
+                )
+
                 text = (
                     "رسانه قدیمی برای مدیریت فعال شد"
                     if legacy_selected
-                    else "رسانه قدیمی به انتشار هم‌زمان اضافه شد"
+                    else (
+                        "رسانه قدیمی به انتشار "
+                        "هم‌زمان اضافه شد"
+                    )
                 )
 
         except (TypeError, ValueError):
@@ -953,23 +1179,53 @@ def _handle_workspace_callback(
         )
 
         preference = (
-            get_active_workspace_preference(user["id"])
+            get_active_workspace_preference(
+                user["id"]
+            )
             or {}
         )
-        workspaces = list_user_workspace_memberships(
-            user["id"]
+
+        workspaces = (
+            list_user_workspace_memberships(
+                user["id"]
+            )
+        )
+
+        display_workspaces = (
+            prepare_workspace_display_rows(
+                workspaces,
+                list_verified_active_destinations,
+                get_workspace_branding,
+            )
+        )
+
+        legacy_label = (
+            (legacy_tenant or {}).get(
+                "telegram_channel"
+            )
+            or (legacy_tenant or {}).get(
+                "bale_channel"
+            )
+            or "رسانه قدیمی"
         )
 
         keyboard = build_workspace_keyboard(
-            workspaces,
-            preference.get("active_workspace_id"),
-            selected_workspace_ids=list_selected_workspace_ids(
-                user["id"]
+            display_workspaces,
+            preference.get(
+                "active_workspace_id"
+            ),
+            selected_workspace_ids=(
+                list_selected_workspace_ids(
+                    user["id"]
+                )
             ),
             include_legacy=True,
             legacy_active=bool(
-                preference.get("legacy_selected")
+                preference.get(
+                    "legacy_selected"
+                )
             ),
+            legacy_label=legacy_label,
         )
 
         _ws_edit_message_keyboard(
@@ -977,19 +1233,32 @@ def _handle_workspace_callback(
             callback_query,
             keyboard,
         )
+
         _ws_send_message(
             api_url,
             chat_id,
             f"✅ {text}.",
         )
 
-    elif callback_data.startswith("ws:select:") and len(parts) >= 3:
+    elif (
+        callback_data.startswith(
+            "ws:select:"
+        )
+        and len(parts) >= 3
+    ):
         try:
             workspace_id = int(parts[2])
-            user = get_user_by_telegram_id(chat_id)
+
+            user = (
+                get_user_by_telegram_id(
+                    chat_id
+                )
+            )
 
             if not user:
-                raise ValueError("user not found")
+                raise ValueError(
+                    "user not found"
+                )
 
             select_workspace(
                 user["id"],
@@ -1009,69 +1278,120 @@ def _handle_workspace_callback(
             callback_id,
             "رسانه فعال تغییر کرد",
         )
+
         _ws_send_message(
             api_url,
             chat_id,
-            "✅ رسانه فعال با موفقیت تغییر کرد.",
+            (
+                "✅ رسانه فعال با موفقیت "
+                "تغییر کرد."
+            ),
         )
 
-    elif callback_data.startswith("ws:toggle:") and len(parts) >= 3:
+    elif (
+        callback_data.startswith(
+            "ws:toggle:"
+        )
+        and len(parts) >= 3
+    ):
         resume_incomplete_setup = False
 
         try:
             workspace_id = int(parts[2])
-            user = get_user_by_telegram_id(chat_id)
+
+            user = (
+                get_user_by_telegram_id(
+                    chat_id
+                )
+            )
 
             if not user:
-                raise ValueError("user not found")
+                raise ValueError(
+                    "user not found"
+                )
 
             selected_ids = set(
-                list_selected_workspace_ids(user["id"])
+                list_selected_workspace_ids(
+                    user["id"]
+                )
             )
+
             preference = (
-                get_active_workspace_preference(user["id"])
+                get_active_workspace_preference(
+                    user["id"]
+                )
                 or {}
             )
 
             legacy_selected = bool(
-                preference.get("legacy_selected")
+                preference.get(
+                    "legacy_selected"
+                )
                 if "legacy_selected" in preference
-                else preference.get("context_type") == "legacy"
+                else (
+                    preference.get(
+                        "context_type"
+                    )
+                    == "legacy"
+                )
             )
 
             setup_state = (
-                get_workspace_setup_state(workspace_id)
+                get_workspace_setup_state(
+                    workspace_id
+                )
                 or {}
             )
+
             setup_incomplete = (
-                setup_state.get("step") != "completed"
+                setup_state.get("step")
+                != "completed"
             )
 
             if workspace_id in selected_ids:
                 if not (
-                    preference.get("context_type") == "workspace"
-                    and preference.get("active_workspace_id") == workspace_id
+                    preference.get(
+                        "context_type"
+                    )
+                    == "workspace"
+                    and preference.get(
+                        "active_workspace_id"
+                    )
+                    == workspace_id
                 ):
                     set_active_workspace(
                         user["id"],
                         workspace_id,
                     )
+
                     text = (
-                        "رسانه برای مدیریت و تکمیل راه‌اندازی فعال شد"
+                        "رسانه برای مدیریت و تکمیل "
+                        "راه‌اندازی فعال شد"
                     )
-                    resume_incomplete_setup = setup_incomplete
+
+                    resume_incomplete_setup = (
+                        setup_incomplete
+                    )
 
                 elif setup_incomplete:
                     text = (
-                        "راه‌اندازی رسانه از مرحله ذخیره‌شده ادامه پیدا می‌کند"
+                        "راه‌اندازی رسانه از مرحله "
+                        "ذخیره‌شده ادامه پیدا می‌کند"
                     )
+
                     resume_incomplete_setup = True
 
-                elif len(selected_ids) == 1 and not legacy_selected:
+                elif (
+                    len(selected_ids) == 1
+                    and not legacy_selected
+                ):
                     _ws_answer_callback(
                         api_url,
                         callback_id,
-                        "حداقل یک رسانه باید انتخاب بماند",
+                        (
+                            "حداقل یک رسانه باید "
+                            "انتخاب بماند"
+                        ),
                     )
                     return
 
@@ -1080,8 +1400,10 @@ def _handle_workspace_callback(
                         user["id"],
                         workspace_id,
                     )
+
                     text = (
-                        "رسانه از انتشار هم‌زمان حذف شد"
+                        "رسانه از انتشار "
+                        "هم‌زمان حذف شد"
                     )
 
             else:
@@ -1089,10 +1411,15 @@ def _handle_workspace_callback(
                     user["id"],
                     workspace_id,
                 )
+
                 text = (
-                    "رسانه به انتشار هم‌زمان اضافه شد"
+                    "رسانه به انتشار "
+                    "هم‌زمان اضافه شد"
                 )
-                resume_incomplete_setup = setup_incomplete
+
+                resume_incomplete_setup = (
+                    setup_incomplete
+                )
 
         except (TypeError, ValueError):
             _ws_answer_callback(
@@ -1108,29 +1435,70 @@ def _handle_workspace_callback(
             text,
         )
 
-        selected_ids = list_selected_workspace_ids(
-            user["id"]
-        )
-        workspaces = list_user_workspace_memberships(
-            user["id"]
+        selected_ids = (
+            list_selected_workspace_ids(
+                user["id"]
+            )
         )
 
-        from core.database import get_tenant
+        workspaces = (
+            list_user_workspace_memberships(
+                user["id"]
+            )
+        )
+
         preference = (
-            get_active_workspace_preference(user["id"])
+            get_active_workspace_preference(
+                user["id"]
+            )
             or {}
         )
 
+        legacy_tenant = get_tenant(chat_id)
+
+        display_workspaces = (
+            prepare_workspace_display_rows(
+                workspaces,
+                list_verified_active_destinations,
+                get_workspace_branding,
+            )
+        )
+
+        legacy_label = (
+            (legacy_tenant or {}).get(
+                "telegram_channel"
+            )
+            or (legacy_tenant or {}).get(
+                "bale_channel"
+            )
+            or "رسانه قدیمی"
+        )
+
         keyboard = build_workspace_keyboard(
-            workspaces,
-            preference.get("active_workspace_id"),
-            selected_workspace_ids=selected_ids,
-            include_legacy=bool(get_tenant(chat_id)),
-            legacy_active=bool(
-                preference.get("legacy_selected")
-                if "legacy_selected" in preference
-                else preference.get("context_type") == "legacy"
+            display_workspaces,
+            preference.get(
+                "active_workspace_id"
             ),
+            selected_workspace_ids=(
+                selected_ids
+            ),
+            include_legacy=bool(
+                legacy_tenant
+            ),
+            legacy_active=bool(
+                preference.get(
+                    "legacy_selected"
+                )
+                if "legacy_selected"
+                in preference
+                else (
+                    preference.get(
+                        "context_type"
+                    )
+                    == "legacy"
+                )
+            ),
+            legacy_label=legacy_label,
         )
 
         _ws_edit_message_keyboard(
@@ -1138,6 +1506,7 @@ def _handle_workspace_callback(
             callback_query,
             keyboard,
         )
+
         _ws_send_message(
             api_url,
             chat_id,
@@ -1145,19 +1514,29 @@ def _handle_workspace_callback(
         )
 
         if resume_incomplete_setup:
-            from core.command_handler import handle_setup
+            from core.command_handler import (
+                handle_setup
+            )
+
             handle_setup(chat_id)
 
-    elif len(parts) >= 3 and parts[1] == "toggle":
+    elif (
+        len(parts) >= 3
+        and parts[1] == "toggle"
+    ):
         try:
             dest_id = int(parts[2])
+
         except ValueError:
             return
 
-        new_state = toggle_destination_selection(
-            chat_id,
-            dest_id,
+        new_state = (
+            toggle_destination_selection(
+                chat_id,
+                dest_id,
+            )
         )
+
         pending = get_pending(chat_id)
 
         if not pending:
@@ -1168,17 +1547,25 @@ def _handle_workspace_callback(
             )
             return
 
-        keyboard = build_selection_keyboard(
-            pending["destinations"],
-            pending["selected"],
+        keyboard = (
+            build_selection_keyboard(
+                pending["destinations"],
+                pending["selected"],
+            )
         )
+
         _ws_edit_message_keyboard(
             api_url,
             callback_query,
             keyboard,
         )
 
-        check = "✅" if new_state else "☑️"
+        check = (
+            "✅"
+            if new_state
+            else "☑️"
+        )
+
         _ws_answer_callback(
             api_url,
             callback_id,
@@ -1228,8 +1615,13 @@ def _handle_workspace_callback(
             pending["media_type"],
             get_destination_branding,
             get_workspace_branding,
-            record_message_link_fn=_record_publication_message_link,
-            source_key=pending.get("source_key", ""),
+            record_message_link_fn=(
+                _record_publication_message_link
+            ),
+            source_key=pending.get(
+                "source_key",
+                "",
+            ),
         )
 
         _ws_send_message(
@@ -1246,6 +1638,7 @@ def _handle_workspace_callback(
             callback_id,
             "لغو شد",
         )
+
         _ws_send_message(
             api_url,
             chat_id,
@@ -1267,6 +1660,7 @@ def _ws_send_message(
             },
             timeout=10,
         )
+
     except Exception as e:
         logger.warning(
             f"_ws_send_message failed: {e}"
@@ -1296,7 +1690,8 @@ def _ws_send_message_with_keyboard(
 
     except Exception as e:
         logger.warning(
-            f"_ws_send_message_with_keyboard failed: {e}"
+            "_ws_send_message_with_keyboard "
+            f"failed: {e}"
         )
 
 
@@ -1314,6 +1709,7 @@ def _ws_answer_callback(
             },
             timeout=10,
         )
+
     except Exception as e:
         logger.warning(
             f"_ws_answer_callback failed: {e}"
@@ -1326,11 +1722,22 @@ def _ws_edit_message_keyboard(
     keyboard: list,
 ) -> None:
     try:
-        msg = callback_query.get("message", {}) or {}
+        msg = (
+            callback_query.get(
+                "message",
+                {},
+            )
+            or {}
+        )
+
         chat_id = (
-            msg.get("chat", {}) or {}
+            msg.get("chat", {})
+            or {}
         ).get("id")
-        message_id = msg.get("message_id")
+
+        message_id = msg.get(
+            "message_id"
+        )
 
         if chat_id and message_id:
             requests.post(
@@ -1347,5 +1754,6 @@ def _ws_edit_message_keyboard(
 
     except Exception as e:
         logger.warning(
-            f"_ws_edit_message_keyboard failed: {e}"
+            "_ws_edit_message_keyboard "
+            f"failed: {e}"
         )
