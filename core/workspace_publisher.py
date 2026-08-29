@@ -1191,8 +1191,8 @@ def _handle_workspace_callback(
         )
 
         display_workspaces = (
-            prepare_workspace_display_row
-                workspaces,
+            prepare_workspace_display_rows(
+    workspaces,
         getattr(
     __import__(
         "core.database",
