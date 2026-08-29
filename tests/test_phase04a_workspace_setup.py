@@ -1254,3 +1254,128 @@ def test_35_destination_branding_none_before_any_save(monkeypatch):
     dest, _ = ws_mod.register_channel_destination(ws["id"], "@empty_ch", "خالی")
 
     assert ws_mod.get_branding_for_destination(dest["id"]) is None
+
+def test_26f_onboarding_activates_owned_workspace_instead_of_manager_workspace(monkeypatch):
+    """
+    Regression:
+    A user may already be manager of another workspace.
+
+    When /start creates the user's own onboarding workspace, that owned
+    workspace must become the active setup context. Branding must never
+    overwrite the workspace where the user is only a manager.
+    """
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+    telegram_id = 2027
+
+    existing_owner = db.get_or_create_user_by_telegram_id(999001)
+    existing_workspace = db.create_workspace("بی‌نشانه", existing_owner["id"])
+    db.upsert_workspace_branding(
+        existing_workspace["id"],
+        "بی‌نشانه",
+        "#بی_نشانه",
+        "@beneshaneh",
+    )
+
+    user = db.get_or_create_user_by_telegram_id(telegram_id)
+    db.add_workspace_member(
+        existing_workspace["id"],
+        user["id"],
+        role="manager",
+        status="active",
+    )
+    db.set_active_workspace(user["id"], existing_workspace["id"])
+
+    ch_mod.handle_start(telegram_id)
+
+    owned = db.list_owned_workspaces(user["id"])
+    assert len(owned) == 1
+    owned_workspace = owned[0]
+    assert owned_workspace["id"] != existing_workspace["id"]
+
+    preference = db.get_active_workspace_preference(user["id"])
+    assert preference is not None
+    assert preference["context_type"] == "workspace"
+    assert preference["active_workspace_id"] == owned_workspace["id"]
+
+    ch_mod.handle_command(
+        "/setbranding فردای نو #فردای_نو @farda_nou",
+        telegram_id,
+    )
+
+    manager_branding = db.get_workspace_branding(existing_workspace["id"])
+    owned_branding = db.get_workspace_branding(owned_workspace["id"])
+
+    assert manager_branding["media_name"] == "بی‌نشانه"
+    assert manager_branding["hashtag"] == "#بی_نشانه"
+    assert manager_branding["channel_tag"] == "@beneshaneh"
+
+    assert owned_branding is not None
+    assert owned_branding["media_name"] == "فردای نو"
+    assert owned_branding["hashtag"] == "#فردای_نو"
+    assert owned_branding["channel_tag"] == "@farda_nou"
+
+def test_26g_start_does_not_override_completed_users_intentional_workspace_selection(monkeypatch):
+    """
+    Regression guard:
+    If a user's own workspace onboarding is already completed and they
+    intentionally selected another workspace where they are a manager,
+    /start must not force-switch them back to their owned workspace.
+    """
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+
+    telegram_id = 2028
+
+    # User's own workspace
+    user = db.get_or_create_user_by_telegram_id(telegram_id)
+    owned_workspace = db.create_workspace(
+        "رسانه شخصی",
+        user["id"],
+    )
+
+    db.add_workspace_member(
+        owned_workspace["id"],
+        user["id"],
+        role="owner",
+        status="active",
+    )
+
+    db.upsert_workspace_branding(
+        owned_workspace["id"],
+        "رسانه شخصی",
+        "#رسانه_شخصی",
+        "@personal_media",
+    )
+
+    # Complete onboarding for the owned workspace.
+    db.upsert_workspace_setup_state(
+    owned_workspace["id"],
+    "completed",
+)
+
+    # Another workspace where this same user is only manager.
+    other_owner = db.get_or_create_user_by_telegram_id(999002)
+    manager_workspace = db.create_workspace(
+        "رسانه مدیریتی",
+        other_owner["id"],
+    )
+
+    db.add_workspace_member(
+        manager_workspace["id"],
+        user["id"],
+        role="manager",
+        status="active",
+    )
+
+    # User intentionally selected the manager workspace.
+    db.set_active_workspace(
+        user["id"],
+        manager_workspace["id"],
+    )
+
+    ch_mod.handle_start(telegram_id)
+
+    preference = db.get_active_workspace_preference(user["id"])
+
+    assert preference is not None
+    assert preference["context_type"] == "workspace"
+    assert preference["active_workspace_id"] == manager_workspace["id"]

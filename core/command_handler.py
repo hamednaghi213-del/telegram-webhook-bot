@@ -2368,7 +2368,22 @@ def _ensure_onboarding_ready(chat_id: int) -> Dict[str, Any]:
         raise RuntimeError(
             "Failed to ensure owner membership for onboarding"
         )
+    should_activate_owned_workspace = True
 
+    if _WORKSPACE_SETUP_ENABLED:
+        setup_state = get_or_init_setup_state(workspace["id"])
+        should_activate_owned_workspace = (
+            setup_state.get("step", "not_started") != "completed"
+        )
+
+    if (
+        _ACTIVE_WORKSPACE_ENABLED
+        and should_activate_owned_workspace
+    ):
+        select_workspace_for_publication(
+            user["id"],
+            workspace["id"]
+        )
     return {
         "state_before": state_before,
         "user": user,
