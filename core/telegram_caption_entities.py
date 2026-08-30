@@ -1,4 +1,6 @@
 import logging
+import re
+import unicodedata
 
 from typing import (
     Dict,
@@ -14,6 +16,11 @@ from core.cleaner import (
 
 
 logger = logging.getLogger(__name__)
+
+
+TELEGRAM_MENTION_PATTERN = re.compile(
+    r"^@[A-Za-z0-9_]{5,32}$"
+)
 
 
 # =========================================================
@@ -385,6 +392,53 @@ def extract_branding_entities(
     return entities
 
 
+def should_auto_detect_branding_entities(
+    branding: str,
+    expandable_blocks: Optional[
+        List[Dict[str, Any]]
+    ] = None
+) -> bool:
+    """Use Telegram's entity detection at the problematic BiDi boundary.
+
+    Telegram clients can lay out an explicitly tagged RTL hashtag incorrectly
+    when it immediately follows an expandable blockquote and is followed by an
+    LTR mention.  The server already auto-detects both branding tokens when
+    they are left out of ``caption_entities``.  Keep this exception narrowly
+    scoped so ordinary captions and LTR branding retain their existing payload.
+    """
+
+    if not combine_blocks(
+        blockquote_blocks=[],
+        expandable_blocks=expandable_blocks
+    ):
+        return False
+
+    lines = [
+        line.strip()
+        for line in normalize_text(branding).splitlines()
+        if line.strip()
+    ]
+
+    for index, line in enumerate(lines[:-1]):
+        if not line.startswith("#"):
+            continue
+
+        mention = lines[index + 1]
+
+        if not TELEGRAM_MENTION_PATTERN.fullmatch(mention):
+            continue
+
+        hashtag_has_rtl = any(
+            unicodedata.bidirectional(character) in {"R", "AL"}
+            for character in line[1:]
+        )
+
+        if hashtag_has_rtl:
+            return True
+
+    return False
+
+
 # =========================================================
 # CAPTION BUILDER
 # =========================================================
@@ -561,7 +615,20 @@ def build_plain_caption_with_entities(
     # BRANDING ENTITIES (NEW)
     # =====================================================
 
-    if include_branding_entities and branding:
+    auto_detect_branding = (
+        include_branding_entities
+        and branding
+        and should_auto_detect_branding_entities(
+            branding,
+            expandable_blocks=expandable_blocks
+        )
+    )
+
+    if (
+        include_branding_entities
+        and branding
+        and not auto_detect_branding
+    ):
 
         branding_entities = (
             extract_branding_entities(

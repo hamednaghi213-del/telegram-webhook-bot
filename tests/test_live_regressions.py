@@ -161,11 +161,9 @@ def test_expandable_blockquote_removes_foreign_emoji():
     # Expected:
     #
     # 1. expandable_blockquote
-    # 2. hashtag
-    # 3. mention
     #
-    # Branding entities are explicit to avoid
-    # Telegram RTL / LTR BiDi positioning problems.
+    # Telegram auto-detects the RTL hashtag and LTR mention. Keeping them out
+    # of the explicit entity list avoids the confirmed client BiDi bug.
     # =====================================================
 
     entity_types = [
@@ -182,24 +180,9 @@ def test_expandable_blockquote_removes_foreign_emoji():
         == 1
     )
 
-    assert (
-        entity_types.count(
-            "hashtag"
-        )
-        == 1
-    )
-
-    assert (
-        entity_types.count(
-            "mention"
-        )
-        == 1
-    )
-
-    assert (
-        len(entities)
-        == 3
-    )
+    assert "hashtag" not in entity_types
+    assert "mention" not in entity_types
+    assert len(entities) == 1
 
     expandable_entity = next(
         (
@@ -220,56 +203,6 @@ def test_expandable_blockquote_removes_foreign_emoji():
 
     assert (
         expandable_entity.get(
-            "length",
-            0
-        )
-        > 0
-    )
-
-    hashtag_entity = next(
-        (
-            entity
-            for entity in entities
-            if entity.get(
-                "type"
-            )
-            == "hashtag"
-        ),
-        None
-    )
-
-    assert (
-        hashtag_entity
-        is not None
-    )
-
-    assert (
-        hashtag_entity.get(
-            "length",
-            0
-        )
-        > 0
-    )
-
-    mention_entity = next(
-        (
-            entity
-            for entity in entities
-            if entity.get(
-                "type"
-            )
-            == "mention"
-        ),
-        None
-    )
-
-    assert (
-        mention_entity
-        is not None
-    )
-
-    assert (
-        mention_entity.get(
             "length",
             0
         )
@@ -387,60 +320,6 @@ def test_expandable_blockquote_removes_foreign_emoji():
             "@Donya24News"
         )
         == 1
-    )
-
-    # =====================================================
-    # ENTITY POSITIONS MUST POINT TO THE REAL TEXT
-    # =====================================================
-
-    hashtag_offset = (
-        hashtag_entity[
-            "offset"
-        ]
-    )
-
-    hashtag_length = (
-        hashtag_entity[
-            "length"
-        ]
-    )
-
-    mention_offset = (
-        mention_entity[
-            "offset"
-        ]
-    )
-
-    mention_length = (
-        mention_entity[
-            "length"
-        ]
-    )
-
-    # چون در این تست قبل از Branding هیچ Emoji
-    # با surrogate pair در همان محدوده مورد بررسی
-    # لازم نیست مستقیماً Python slice را مبنا قرار دهیم.
-    #
-    # تست‌های تخصصی UTF-16 در فایل
-    # test_expandable_branding_entities.py انجام می‌شوند.
-    assert (
-        hashtag_offset
-        >= 0
-    )
-
-    assert (
-        hashtag_length
-        > 0
-    )
-
-    assert (
-        mention_offset
-        >= 0
-    )
-
-    assert (
-        mention_length
-        > 0
     )
 
     # =====================================================
