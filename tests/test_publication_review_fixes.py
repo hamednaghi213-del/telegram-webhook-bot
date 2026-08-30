@@ -480,6 +480,28 @@ def test_handle_workspaces_does_not_mutate_setup_state(monkeypatch):
     assert setup_state == before
 
 
+def test_handle_workspaces_uses_structural_legacy_label(monkeypatch):
+    import core.command_handler as command
+    monkeypatch.setattr(command, "_ACTIVE_WORKSPACE_ENABLED", True, raising=False)
+    monkeypatch.setattr(command, "get_tenant", lambda _c: {
+        "telegram_channel": "@channel",
+        "channel_tag": "@real_media",
+        "bale_channel": "@real_media_bale",
+    }, raising=False)
+    monkeypatch.setattr(command, "get_user_by_telegram_id", lambda _c: {"id": 5}, raising=False)
+    monkeypatch.setattr(command, "list_user_workspaces", lambda *_a, **_k: [], raising=False)
+    monkeypatch.setattr(command, "get_active_workspace_preference", lambda _u: {}, raising=False)
+    monkeypatch.setattr(command, "importlib", SimpleNamespace(
+        import_module=lambda _n: SimpleNamespace(list_selected_workspace_ids=lambda _u: [])
+    ), raising=False)
+    captured = []
+    monkeypatch.setattr(command, "send_message_with_keyboard", lambda _c, _t, keyboard: captured.append(keyboard) or True)
+
+    assert command.handle_workspaces(9) is True
+    assert "@real_media" in captured[0][0][0]["text"]
+    assert "@channel" not in captured[0][0][0]["text"]
+
+
 def test_wp_confirm_routes_through_shared_publication_engine(monkeypatch):
     import core.database as database
     import core.workspace_publisher as workspace

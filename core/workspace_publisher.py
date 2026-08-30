@@ -15,11 +15,26 @@ BRANDING_SEPARATOR_COST = 2  # "\n\n"
 
 # MVP publication roles that may publish
 PUBLISH_ROLES = frozenset({"owner", "manager", "publisher"})
+_LEGACY_PLACEHOLDER_LABELS = frozenset({"@channel", "channel"})
 
 # In-process pending publication store (keyed by chat_id)
 # Stores {"destinations": [...], "text": ..., "media_file_id": ...,
 #         "media_type": ..., "selected": set()}
 _PENDING: Dict[int, Dict] = {}
+
+
+def resolve_legacy_media_label(tenant: Optional[Dict[str, Any]]) -> str:
+    """Return a meaningful legacy-media label without exposing setup placeholders."""
+    tenant = tenant or {}
+    for key in ("telegram_channel", "channel_tag", "bale_channel"):
+        value = str(tenant.get(key) or "").strip()
+        if value and value.casefold() not in _LEGACY_PLACEHOLDER_LABELS:
+            return value
+
+    hashtag = str(tenant.get("hashtag") or "").strip().lstrip("#")
+    if hashtag:
+        return hashtag.replace("_", " ")
+    return "رسانه قدیمی"
 
 
 def _record_publication_message_link(**payload):

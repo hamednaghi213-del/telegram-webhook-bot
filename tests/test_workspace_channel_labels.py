@@ -1,4 +1,4 @@
-from core.workspace_publisher import build_workspace_keyboard
+from core.workspace_publisher import build_workspace_keyboard, resolve_legacy_media_label
 
 
 def test_workspace_keyboard_uses_real_channel_labels_and_internal_ids():
@@ -23,4 +23,19 @@ def test_workspace_keyboard_falls_back_to_workspace_name():
         None,
     )
     assert "نام واقعی" in keyboard[0][0]["text"]
+
+
+def test_legacy_label_ignores_registration_placeholder():
+    assert resolve_legacy_media_label({
+        "telegram_channel": "@channel",
+        "channel_tag": "@Donya24News",
+        "bale_channel": "@donya24_news",
+    }) == "@Donya24News"
+
+
+def test_legacy_label_hashtag_fallback_is_human_readable():
+    assert resolve_legacy_media_label({
+        "telegram_channel": "@channel",
+        "hashtag": "#رسانه_نمونه",
+    }) == "رسانه نمونه"
 

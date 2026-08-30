@@ -647,7 +647,10 @@ def handle_workspaces(chat_id: int) -> bool:
             select_selected(user["id"], workspaces[0]["id"])
             active_id = workspaces[0]["id"]
 
-        from core.workspace_publisher import build_workspace_keyboard
+        from core.workspace_publisher import (
+            build_workspace_keyboard,
+            resolve_legacy_media_label,
+        )
         list_verified_active_destinations = getattr(
             database_module,
             "list_verified_active_destinations",
@@ -688,11 +691,7 @@ def handle_workspaces(chat_id: int) -> bool:
             selected_workspace_ids=selected_ids,
             include_legacy=bool(legacy_tenant),
             legacy_active=legacy_active,
-            legacy_label=(
-                (legacy_tenant or {}).get("telegram_channel")
-                or (legacy_tenant or {}).get("bale_channel")
-                or "رسانه قدیمی"
-            ),
+            legacy_label=resolve_legacy_media_label(legacy_tenant),
         )
         if legacy_tenant:
             keyboard.append([{
