@@ -494,41 +494,21 @@ def build_plain_caption_with_entities(
     # =====================================================
     # BRANDING
     #
-    # فقط اگر expandable_blockquote وجود داشته باشد
-    # سه newline استفاده می‌کنیم.
-    #
-    # normal blockquote و خبر عادی همان دو newline قبلی.
+    # Keep the branding paragraph boundary identical to the normal text and
+    # media paths.  An extra empty paragraph after an RTL expandable quote can
+    # confuse Telegram's visual BiDi layout even when UTF-16 entity offsets are
+    # correct.
     # =====================================================
 
     if branding:
 
         if caption_parts:
 
-            has_expandable = any(
-                block.get(
-                    "type"
-                )
-                == "expandable_blockquote"
-
-                for block
-                in blocks
+            caption_parts.append(
+                "\n\n"
             )
 
-            if has_expandable:
-
-                caption_parts.append(
-                    "\n\n\n"
-                )
-
-                current_length += 3
-
-            else:
-
-                caption_parts.append(
-                    "\n\n"
-                )
-
-                current_length += 2
+            current_length += 2
 
         caption_parts.append(
             branding

@@ -1,8 +1,56 @@
 import pytest
+import unicodedata
 
 from core.caption_manager import (
-    analyze_content
+    analyze_content,
+    append_branding,
 )
+from core.telegram_caption_entities import validate_caption_entities
+
+
+def _utf16_entity_text(text, entity):
+    encoded = text.encode("utf-16-le")
+    start = entity["offset"] * 2
+    end = start + entity["length"] * 2
+    return encoded[start:end].decode("utf-16-le")
+
+
+def _paragraph_directions(text):
+    strong = {"L", "R", "AL"}
+    return [
+        next((unicodedata.bidirectional(char) for char in line if unicodedata.bidirectional(char) in strong), None)
+        for line in text.splitlines()
+    ]
+
+
+def test_persian_expandable_media_branding_matches_normal_bidi_boundary():
+    main_text = "تیتر فارسی\n\nمتن اصلی فارسی"
+    expandable = "تحلیل تکمیلی فارسی درباره خبر"
+    hashtag = "#دنیا_۲۴_نیوز"
+    mention = "@Donya24News"
+    branding = f"{hashtag}\n{mention}"
+
+    plan = analyze_content(
+        main_text=main_text,
+        expandable_blocks=[{"text": expandable, "offset": 100}],
+        branding=branding,
+    )
+    caption = plan.telegram["media_caption"]
+    entities = plan.telegram["media_caption_entities"]
+    hashtag_entity = next(item for item in entities if item["type"] == "hashtag")
+    mention_entity = next(item for item in entities if item["type"] == "mention")
+
+    assert validate_caption_entities(caption, entities)
+    assert _utf16_entity_text(caption, hashtag_entity) == hashtag
+    assert _utf16_entity_text(caption, mention_entity) == mention
+    assert caption.endswith(f"{expandable}\n\n{branding}")
+    assert "\n\n\n" not in caption[caption.index(expandable) + len(expandable):]
+
+    normal_text = append_branding(main_text, branding)
+    assert caption.rsplit(expandable, 1)[1] == normal_text.rsplit(main_text, 1)[1]
+    assert _paragraph_directions(caption[-len(branding):]) == _paragraph_directions(
+        normal_text[-len(branding):]
+    ) == ["AL", "L"]
 
 
 # =========================================================

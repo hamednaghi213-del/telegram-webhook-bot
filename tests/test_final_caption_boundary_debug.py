@@ -78,9 +78,8 @@ def test_final_caption_boundary_around_branding():
     # -----------------------------------------------------
     # فاصله بین پایان expandable و branding
     #
-    # باید دقیقاً سه newline باشد.
-    # این فاصله باعث می‌شود branding از مرز blockquote
-    # کاملاً جدا شود.
+    # باید دقیقاً مانند مسیر عادی دو newline باشد تا پاراگراف
+    # خالی اضافه بین متن RTL و branding مختلط RTL/LTR نسازیم.
     # -----------------------------------------------------
 
     gap_text = caption[
@@ -90,7 +89,7 @@ def test_final_caption_boundary_around_branding():
 
     assert (
         gap_text
-        == "\n\n\n"
+        == "\n\n"
     )
 
     # -----------------------------------------------------
@@ -186,7 +185,7 @@ def test_final_caption_boundary_around_branding():
         main_text
         + "\n\n"
         + expandable_text
-        + "\n\n\n"
+        + "\n\n"
         + branding
     )
 
