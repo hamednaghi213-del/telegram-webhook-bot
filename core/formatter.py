@@ -289,6 +289,26 @@ def is_source_line(
     if has_source_icon and re.search(r"@[A-Za-z0-9_]{5,}", normalized_line):
         return True
 
+    has_footer_decoration = any(
+    stripped_without_invisible.startswith(decoration)
+    for decoration in (KNOWN_BULLETS + SOURCE_ICONS)
+    )
+
+    standalone_handle = (
+        strip_trailing_source_icons(
+            normalized_line
+        )
+        .strip()
+    )
+
+    if (
+        has_footer_decoration
+        and re.fullmatch(
+            r"@[A-Za-z0-9_]{5,}",
+            standalone_handle,
+        )
+    ):
+        return True
     normalized_source_username = (
         normalize_username(
             source_username
@@ -666,6 +686,14 @@ def remove_source_signature(
                         )
                         or is_suspicious_footer_fragment(
                             candidate
+                        )
+                        or bool(
+                            re.fullmatch(
+                                r"#[A-Za-z0-9_]{1,4}",
+                                normalize_invisible_characters(
+                                    candidate
+                                ).strip(),
+                            )
                         )
                         or (
                             # A standalone website immediately adjacent to a
