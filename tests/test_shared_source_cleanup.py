@@ -168,3 +168,26 @@ def test_trailing_source_icons_after_last_real_word_are_removed():
         "به مناسبت هفته دولت"
     )
     assert "✳️" not in cleaned
+
+def test_decorated_source_handle_and_adjacent_short_hashtag_are_removed():
+    source = (
+        "فوری | صدای چندین انفجار در تنگه هرمز شنیده شد "
+        "که ناشی از شلیک موشک توسط نیروی دریایی سپاه "
+        "پاسداران به سمت کشتی‌های متخلف بود\n\n"
+        "#P\n"
+        "🔷 @mahdaviatakhbar 🔷"
+    )
+
+    cleaned = remove_source_signature(
+        source,
+        source_title="منبع آزمایشی",
+        source_username="DifferentSource",
+    )
+
+    assert cleaned == (
+        "فوری | صدای چندین انفجار در تنگه هرمز شنیده شد "
+        "که ناشی از شلیک موشک توسط نیروی دریایی سپاه "
+        "پاسداران به سمت کشتی‌های متخلف بود"
+    )
+    assert "#P" not in cleaned
+    assert "@mahdaviatakhbar" not in cleaned
