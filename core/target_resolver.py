@@ -49,6 +49,9 @@ def resolve_publication_targets(chat_id: int) -> Tuple[List[PublicationTarget], 
     list_verified_active_destinations = getattr(
         database, "list_verified_active_destinations", lambda _id: []
     )
+    canonical_enabled = bool(
+        getattr(database, "canonical_media_enabled", lambda: False)()
+    )
 
     targets: List[PublicationTarget] = []
     errors: List[str] = []
@@ -71,14 +74,29 @@ def resolve_publication_targets(chat_id: int) -> Tuple[List[PublicationTarget], 
     )
     if legacy_selected and user:
         memberships_for_compat = list_user_workspace_memberships(user["id"]) or []
-        bulk_loader = getattr(database, "list_publication_destinations_for_workspaces", None)
-        if bulk_loader:
+        if canonical_enabled:
+            from core.canonical_media import canonical_target_is_ready, media_access_allows
+            canonical_loader = getattr(database, "list_canonical_publication_destinations", None)
+            all_rows = canonical_loader(
+                user["id"], [workspace["id"] for workspace in memberships_for_compat]
+            ) if canonical_loader else []
+            all_rows = [
+                row for row in all_rows
+                if media_access_allows(row.get("media_member"))
+                and canonical_target_is_ready(row)
+            ]
             from core.legacy_workspace_compat import legacy_is_fully_canonical
-            all_rows = bulk_loader([
-                workspace["id"] for workspace in memberships_for_compat
-            ])
             if legacy_is_fully_canonical(tenant, all_rows):
                 legacy_selected = False
+        else:
+            bulk_loader = getattr(database, "list_publication_destinations_for_workspaces", None)
+            if bulk_loader:
+                from core.legacy_workspace_compat import legacy_is_fully_canonical
+                all_rows = bulk_loader([
+                    workspace["id"] for workspace in memberships_for_compat
+                ])
+                if legacy_is_fully_canonical(tenant, all_rows):
+                    legacy_selected = False
     if legacy_selected:
         targets.append(PublicationTarget(
             key=f"legacy:telegram:{tenant['telegram_channel']}",
@@ -96,7 +114,39 @@ def resolve_publication_targets(chat_id: int) -> Tuple[List[PublicationTarget], 
             destination=dict(tenant),
         ))
 
-    if user:
+    if user and canonical_enabled:
+        from core.canonical_media import (
+            canonical_target_is_ready,
+            group_access_allows,
+            media_access_allows,
+        )
+        memberships = list_user_workspace_memberships(user["id"]) or []
+        membership_by_workspace = {int(row["id"]): row for row in memberships}
+        authorized_selected = [
+            workspace_id for workspace_id in selected_ids
+            if group_access_allows(membership_by_workspace.get(int(workspace_id)))
+        ]
+        loader = getattr(database, "list_canonical_publication_destinations", None)
+        canonical_rows = loader(user["id"], authorized_selected) if loader else []
+        for destination in canonical_rows or []:
+            workspace_id = int(destination["workspace_id"])
+            if not media_access_allows(destination.get("media_member")):
+                errors.append(
+                    f"مجوز انتشار هویت رسانه در گروه «{membership_by_workspace.get(workspace_id, {}).get('name') or workspace_id}» معتبر نیست"
+                )
+                continue
+            if not canonical_target_is_ready(destination):
+                continue
+            targets.append(PublicationTarget(
+                key=f"workspace:{workspace_id}:destination:{destination['id']}",
+                kind="workspace",
+                platform=str(destination.get("platform") or "telegram"),
+                external_id=str(destination.get("external_id") or ""),
+                workspace_id=workspace_id,
+                destination_id=destination.get("id"),
+                destination={**dict(destination), "_canonical_media": True},
+            ))
+    elif user:
         memberships = list_user_workspace_memberships(user["id"]) or []
         for workspace in memberships:
             workspace_id = workspace.get("id")

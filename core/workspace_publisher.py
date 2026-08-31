@@ -436,6 +436,7 @@ def prepare_workspace_display_rows(
     workspaces: List[Dict],
     list_verified_active_destinations_fn,
     get_workspace_branding_fn,
+    canonical_group_mode: Optional[bool] = None,
 ) -> List[Dict]:
     """
     Prepare visible workspace identity consistently.
@@ -449,6 +450,10 @@ def prepare_workspace_display_rows(
     4. workspace.name
     5. generic workspace ID
     """
+    if canonical_group_mode is None:
+        canonical_group_mode = (
+            os.getenv("ENABLE_CANONICAL_MEDIA", "false").strip().lower() == "true"
+        )
     display_workspaces = []
 
     for workspace in workspaces:
@@ -460,6 +465,19 @@ def prepare_workspace_display_rows(
             )
             or []
         )
+        management_destinations = destinations
+        if canonical_group_mode:
+            try:
+                from core.database import list_workspace_destinations
+                management_destinations = list_workspace_destinations(workspace["id"]) or []
+            except Exception:
+                logger.exception(
+                    "Canonical group visibility load failed | workspace=%s",
+                    workspace.get("id"),
+                )
+                management_destinations = []
+            if not management_destinations:
+                continue
 
         destinations = sorted(
             destinations,
@@ -486,11 +504,8 @@ def prepare_workspace_display_rows(
             None,
         )
 
-        branding = (
-            get_workspace_branding_fn(
-                workspace["id"]
-            )
-            or {}
+        branding = {} if canonical_group_mode else (
+            get_workspace_branding_fn(workspace["id"]) or {}
         )
 
         media_name = (
@@ -499,7 +514,7 @@ def prepare_workspace_display_rows(
         ).strip()
 
         display_workspace["display_label"] = (
-            media_name
+            (workspace.get("name") if canonical_group_mode else media_name)
             or (primary or {}).get("external_id")
             or workspace.get("name")
             or f"رسانه {workspace['id']}"
@@ -510,7 +525,7 @@ def prepare_workspace_display_rows(
             for item in destinations
             if item.get("platform")
         })
-        display_workspace["destination_count"] = len(destinations)
+        display_workspace["destination_count"] = len(management_destinations)
 
         display_workspaces.append(
             display_workspace

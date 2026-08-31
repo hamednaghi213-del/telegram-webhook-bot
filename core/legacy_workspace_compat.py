@@ -102,14 +102,30 @@ def claim_legacy_destinations(
     if any(canonical_destination_identity(specs[key]) in ambiguous_keys for key in requested):
         raise ValueError("مالکیت این مقصد Legacy مبهم است و انتقال خودکار امن نیست.")
 
-    rows = database.list_publication_destinations_for_workspaces(list(manageable))
+    canonical = bool(getattr(database, "canonical_media_enabled", lambda: False)())
+    rows = (
+        database.list_canonical_destinations_for_workspaces(list(manageable))
+        if canonical
+        else database.list_publication_destinations_for_workspaces(list(manageable))
+    )
     by_identity = {canonical_destination_identity(row): row for row in rows}
     claimed = []
     for key in requested:
         spec = specs[key]
         identity = canonical_destination_identity(spec)
         existing = by_identity.get(identity)
-        if existing:
+        if canonical:
+            existing = database.claim_legacy_destination_canonical(
+                user_id=user_id,
+                workspace_id=int(target_workspace_id),
+                identity_key=f"legacy-tenant:{int(tenant['id'])}",
+                platform=spec["platform"],
+                external_id=spec["external_id"],
+                media_name=str(tenant.get("channel_tag") or spec["external_id"]).strip(),
+                hashtag=str(tenant.get("hashtag") or "").strip(),
+                channel_tag=str(tenant.get("channel_tag") or "").strip(),
+            )
+        elif existing:
             if int(existing["workspace_id"]) != int(target_workspace_id):
                 moved = database.move_publication_destinations([existing["id"]], target_workspace_id)
                 existing = moved[0]
@@ -127,7 +143,11 @@ def claim_legacy_destinations(
         claimed.append(existing)
 
     database.select_workspace(user_id, int(target_workspace_id))
-    target_rows = database.list_workspace_destinations(int(target_workspace_id))
+    target_rows = (
+        database.list_canonical_destinations_for_workspaces([int(target_workspace_id)])
+        if canonical
+        else database.list_workspace_destinations(int(target_workspace_id))
+    )
     target_keys = {canonical_destination_identity(row) for row in target_rows}
     legacy_keys = {canonical_destination_identity(row) for row in specs.values()}
     if legacy_keys.issubset(target_keys):

@@ -55,6 +55,34 @@ def _target_content_and_branding(
         return prepared.main_text, build_branding_for_user(chat_id)
 
     destination_context = dict(target.destination or {})
+    if destination_context.get("_canonical_media"):
+        from core.canonical_media import resolve_media_branding
+        from core.publication_icons import format_with_icons, format_with_profile, normalize_icons
+        resolved = resolve_media_branding(
+            dict(destination_context.get("media_identity") or {}),
+            dict(destination_context.get("destination_branding") or {}),
+        )
+        parts = [
+            value for value in (
+                resolved.get("hashtag"),
+                resolved.get("channel_tag"),
+                resolved.get("custom_footer") if resolved.get("footer_enabled") else "",
+            ) if value
+        ]
+        branding = "\n".join(parts)
+        profile = resolved.get("publication_profile") or {}
+        if profile:
+            content = format_with_profile(
+                prepared.neutral_text or prepared.main_text, profile, True
+            )
+        else:
+            icons = normalize_icons(resolved.get("publication_icons") or [])
+            if not resolved.get("icons_enabled", False):
+                icons = []
+            content = format_with_icons(
+                prepared.neutral_text or prepared.main_text, icons, bool(icons)
+            )
+        return content, branding
     get_destination_branding = destination_context.get("_get_dest_branding_fn")
     get_workspace_branding = destination_context.get("_get_ws_branding_fn")
     if not get_destination_branding or not get_workspace_branding:

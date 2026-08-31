@@ -907,6 +907,27 @@ def list_workspace_destination_counts(
     if not normalized_ids:
         return {}
 
+    if canonical_media_enabled():
+        rows = list_canonical_destinations_for_workspaces(normalized_ids)
+        counts = {
+            workspace_id: {"total": 0, "active_verified": 0}
+            for workspace_id in normalized_ids
+        }
+        destination_ids = sorted({int(row["id"]) for row in rows})
+        verifications = (
+            supabase.table("destination_verification").select("destination_id,verified")
+            .in_("destination_id", destination_ids).execute().data or []
+        ) if destination_ids else []
+        verified_ids = {
+            int(row["destination_id"]) for row in verifications if row.get("verified")
+        }
+        for destination in rows:
+            workspace_id = int(destination["workspace_id"])
+            counts[workspace_id]["total"] += 1
+            if destination.get("status") == "active" and int(destination["id"]) in verified_ids:
+                counts[workspace_id]["active_verified"] += 1
+        return counts
+
     result = (
         supabase.table("publication_destinations")
         .select("workspace_id, status, destination_verification(verified)")
@@ -928,6 +949,141 @@ def list_workspace_destination_counts(
         if destination.get("status") == "active" and verification.get("verified"):
             counts[workspace_id]["active_verified"] += 1
     return counts
+
+
+def canonical_media_enabled() -> bool:
+    """Explicit cutover gate: never query additive tables on an old schema."""
+    return os.getenv("ENABLE_CANONICAL_MEDIA", "false").strip().lower() == "true"
+
+
+@with_retry
+def list_canonical_destinations_for_workspaces(
+    workspace_ids: List[int],
+) -> List[Dict[str, Any]]:
+    """Bulk-load physical destinations through their group associations."""
+    ids = sorted({int(value) for value in (workspace_ids or [])})
+    if not ids:
+        return []
+    associations = (
+        supabase.table("workspace_destinations")
+        .select("workspace_id,destination_id,status")
+        .in_("workspace_id", ids)
+        .eq("status", "active")
+        .execute().data or []
+    )
+    destination_ids = sorted({int(row["destination_id"]) for row in associations})
+    if not destination_ids:
+        return []
+    destinations = (
+        supabase.table("publication_destinations")
+        .select("*").in_("id", destination_ids).neq("status", "removed")
+        .execute().data or []
+    )
+    by_id = {int(row["id"]): row for row in destinations}
+    rows = []
+    for association in associations:
+        destination = by_id.get(int(association["destination_id"]))
+        if not destination:
+            continue
+        rows.append({
+            **destination,
+            "workspace_id": int(association["workspace_id"]),
+            "association_status": association.get("status"),
+        })
+    return sorted(rows, key=lambda row: (int(row["workspace_id"]), int(row["id"])))
+
+
+@with_retry
+def list_canonical_publication_destinations(
+    user_id: int,
+    workspace_ids: List[int],
+) -> List[Dict[str, Any]]:
+    """Resolve ready canonical rows with media access in bulk (no N+1)."""
+    rows = [
+        row for row in list_canonical_destinations_for_workspaces(workspace_ids)
+        if row.get("media_identity_id") is not None
+    ]
+    destination_ids = sorted({int(row["id"]) for row in rows})
+    media_ids = sorted({int(row["media_identity_id"]) for row in rows if row.get("media_identity_id")})
+    if not destination_ids or not media_ids:
+        return []
+    verifications = (
+        supabase.table("destination_verification").select("*")
+        .in_("destination_id", destination_ids).execute().data or []
+    )
+    overrides = (
+        supabase.table("destination_branding").select("*")
+        .in_("destination_id", destination_ids).execute().data or []
+    )
+    identities = (
+        supabase.table("media_identities").select("*")
+        .in_("id", media_ids).execute().data or []
+    )
+    memberships = (
+        supabase.table("media_identity_members").select("*")
+        .eq("user_id", int(user_id)).in_("media_identity_id", media_ids)
+        .eq("status", "active").execute().data or []
+    )
+    verification_by_destination = {int(row["destination_id"]): row for row in verifications}
+    override_by_destination = {int(row["destination_id"]): row for row in overrides}
+    identity_by_id = {int(row["id"]): row for row in identities}
+    membership_by_media = {int(row["media_identity_id"]): row for row in memberships}
+    resolved = []
+    for row in rows:
+        media_id = int(row["media_identity_id"])
+        resolved.append({
+            **row,
+            "verification": verification_by_destination.get(int(row["id"]), {}),
+            "destination_branding": override_by_destination.get(int(row["id"]), {}),
+            "media_identity": identity_by_id.get(media_id, {}),
+            "media_member": membership_by_media.get(media_id, {}),
+            "media_status": identity_by_id.get(media_id, {}).get("status"),
+        })
+    return resolved
+
+
+@with_retry
+def move_canonical_destination_associations(
+    destination_ids: List[int], target_workspace_id: int,
+) -> List[Dict[str, Any]]:
+    """Atomically change group associations without changing physical rows."""
+    ids = sorted({int(value) for value in destination_ids})
+    result = supabase.rpc("move_workspace_destination_memberships", {
+        "p_destination_ids": ids,
+        "p_target_workspace_id": int(target_workspace_id),
+    }).execute()
+    rows = result.data or []
+    if {int(row["destination_id"]) for row in rows} != set(ids):
+        raise RuntimeError("Canonical association move was incomplete")
+    return rows
+
+
+@with_retry
+def claim_legacy_destination_canonical(
+    user_id: int,
+    workspace_id: int,
+    identity_key: str,
+    platform: str,
+    external_id: str,
+    media_name: str,
+    hashtag: str = "",
+    channel_tag: str = "",
+) -> Dict[str, Any]:
+    """Call the transaction-scoped canonical claim primitive."""
+    result = supabase.rpc("claim_legacy_destination_canonical", {
+        "p_user_id": int(user_id),
+        "p_workspace_id": int(workspace_id),
+        "p_identity_key": str(identity_key),
+        "p_platform": str(platform),
+        "p_external_id": str(external_id),
+        "p_media_name": str(media_name),
+        "p_hashtag": str(hashtag or ""),
+        "p_channel_tag": str(channel_tag or ""),
+    }).execute()
+    row = _first_row(result)
+    if not row:
+        raise RuntimeError("Canonical Legacy claim returned no destination")
+    return row
 
 
 @with_retry
@@ -1268,6 +1424,12 @@ def list_workspace_destinations(
     workspace_id: int,
     include_removed: bool = False
 ) -> List[Dict[str, Any]]:
+    if canonical_media_enabled():
+        rows = list_canonical_destinations_for_workspaces([workspace_id])
+        if include_removed:
+            return rows
+        return [row for row in rows if row.get("status") != "removed"]
+
     workspace = get_workspace(workspace_id)
     if not workspace:
         raise ValueError(f"Workspace not found: {workspace_id}")
