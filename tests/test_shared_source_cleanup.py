@@ -191,3 +191,22 @@ def test_decorated_source_handle_and_adjacent_short_hashtag_are_removed():
     )
     assert "#P" not in cleaned
     assert "@mahdaviatakhbar" not in cleaned
+
+def test_adjacent_source_media_label_is_removed_with_source_handle():
+    source = (
+        "وال استریت ژورنال گزارش داد:\n\n"
+        "دن دریسکول، وزیر نیروی زمینی ایالات متحده، استعفای خود را ارائه کرد.\n\n"
+        "سپاه سایبری پاسداران 👇🏻\n"
+        "@SEPAHCYBERY"
+    )
+
+    cleaned = remove_source_signature(
+        source,
+        source_title="سپاه سایبری پاسداران 🇮🇷",
+        source_username="SEPAHCYBERY",
+    )
+
+    assert "سپاه سایبری پاسداران" not in cleaned
+    assert "@SEPAHCYBERY" not in cleaned
+    assert "وال استریت ژورنال گزارش داد:" in cleaned
+    assert "دن دریسکول، وزیر نیروی زمینی ایالات متحده، استعفای خود را ارائه کرد." in cleaned
