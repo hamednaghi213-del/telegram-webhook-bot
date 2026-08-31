@@ -23,6 +23,55 @@ _LEGACY_PLACEHOLDER_LABELS = frozenset({"@channel", "channel"})
 _PENDING: Dict[int, Dict] = {}
 
 
+def build_destination_move_keyboard(
+    target_workspace_id: int,
+    candidates: List[Dict],
+    selected_ids=None,
+) -> list:
+    """Build a compact, stateless multi-select keyboard for destination moves."""
+    selected = {int(value) for value in (selected_ids or [])}
+    keyboard = []
+    for destination in candidates:
+        destination_id = int(destination["id"])
+        checked = destination_id in selected
+        platform = "تلگرام" if destination.get("platform") == "telegram" else "بله"
+        label = (
+            f"{'✅' if checked else '⬜'} {destination.get('external_id')} — {platform}"
+            f" — {destination.get('source_workspace_name')}"
+        )
+        keyboard.append([{
+            "text": label[:60],
+            "callback_data": (
+                f"ws:move:pick:{int(target_workspace_id)}:{destination_id}:"
+                f"{1 if checked else 0}"
+            ),
+        }])
+    keyboard.append([{
+        "text": "✅ انتقال انتخاب‌شده‌ها",
+        "callback_data": f"ws:move:confirm:{int(target_workspace_id)}",
+    }])
+    keyboard.append([{
+        "text": "⬅️ بازگشت",
+        "callback_data": f"ws:manage:{int(target_workspace_id)}",
+    }])
+    return keyboard
+
+
+def selected_destination_ids_from_callback(callback_query: Dict) -> set:
+    keyboard = (((callback_query.get("message") or {}).get("reply_markup") or {}).get("inline_keyboard") or [])
+    selected = set()
+    for row in keyboard:
+        for button in row:
+            data = str(button.get("callback_data") or "")
+            parts = data.split(":")
+            if len(parts) == 6 and parts[:3] == ["ws", "move", "pick"] and parts[5] == "1":
+                try:
+                    selected.add(int(parts[4]))
+                except (TypeError, ValueError):
+                    pass
+    return selected
+
+
 def resolve_legacy_media_label(tenant: Optional[Dict[str, Any]]) -> str:
     """Return a meaningful legacy-media label without exposing setup placeholders."""
     tenant = tenant or {}
@@ -1274,6 +1323,7 @@ def _handle_workspace_callback(
         and len(parts) >= 3
     ):
         try:
+            from core.database import get_workspace_member
             workspace_id = int(parts[2])
             user = get_user_by_telegram_id(chat_id)
             member = get_workspace_member(workspace_id, (user or {}).get("id"))
@@ -1303,11 +1353,68 @@ def _handle_workspace_callback(
             [
                 [{"text": "✏️ تغییر نام گروه", "callback_data": f"ws:rename:{workspace_id}"}],
                 [{"text": "➕ افزودن کانال", "callback_data": f"ws:addchannel:{workspace_id}"}],
+                [{"text": "📥 انتقال کانال موجود", "callback_data": f"ws:move:list:{workspace_id}"}],
                 [{"text": "📡 مدیریت کانال‌ها", "callback_data": f"ws:destinations:{workspace_id}"}],
                 [{"text": "👥 مدیریت اعضا", "callback_data": f"ws:members:{workspace_id}"}],
                 [{"text": "⬅️ بازگشت", "callback_data": "ws:back"}],
             ],
         )
+
+    elif callback_data.startswith("ws:move:") and len(parts) >= 4:
+        from core import database as database_module
+        from core.workspace_destination_moves import list_move_candidates, move_destinations
+        try:
+            action = parts[2]
+            target_workspace_id = int(parts[3])
+            user = get_user_by_telegram_id(chat_id)
+            if not user:
+                raise ValueError("کاربر یافت نشد.")
+            _target, candidates = list_move_candidates(
+                database_module, user["id"], target_workspace_id,
+            )
+            if action == "list":
+                _ws_answer_callback(api_url, callback_id, "انتخاب کانال")
+                if not candidates:
+                    _ws_send_message(api_url, chat_id, "کانال قابل انتقالی یافت نشد.")
+                    return
+                _ws_send_message_with_keyboard(
+                    api_url,
+                    chat_id,
+                    "کانال‌هایی را که می‌خواهید به این گروه منتقل شوند انتخاب کنید:",
+                    build_destination_move_keyboard(target_workspace_id, candidates),
+                )
+                return
+            selected = selected_destination_ids_from_callback(callback_query)
+            if action == "pick" and len(parts) == 6:
+                destination_id = int(parts[4])
+                candidate_ids = {int(row["id"]) for row in candidates}
+                if destination_id not in candidate_ids:
+                    raise ValueError("کانال انتخاب‌شده قابل انتقال نیست.")
+                if destination_id in selected:
+                    selected.remove(destination_id)
+                else:
+                    selected.add(destination_id)
+                _ws_answer_callback(api_url, callback_id, "انتخاب به‌روزرسانی شد")
+                _ws_edit_message_keyboard(
+                    api_url,
+                    callback_query,
+                    build_destination_move_keyboard(target_workspace_id, candidates, selected),
+                )
+                return
+            if action == "confirm":
+                moved = move_destinations(
+                    database_module, user["id"], target_workspace_id, selected,
+                )
+                _ws_answer_callback(api_url, callback_id, "انتقال انجام شد")
+                _ws_send_message(
+                    api_url,
+                    chat_id,
+                    f"✅ {len(moved)} کانال با موفقیت منتقل شد.",
+                )
+                return
+            raise ValueError("عملیات انتقال نامعتبر است.")
+        except (TypeError, ValueError) as exc:
+            _ws_answer_callback(api_url, callback_id, str(exc)[:180])
 
     elif callback_data.startswith("ws:rename:") and len(parts) >= 3:
         try:

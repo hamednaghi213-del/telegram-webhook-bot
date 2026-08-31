@@ -1296,6 +1296,50 @@ def list_workspace_destinations(
 
 
 @with_retry
+def list_publication_destinations_for_workspaces(
+    workspace_ids: List[int],
+    include_removed: bool = False,
+) -> List[Dict[str, Any]]:
+    """Bulk-load destinations for workspace management without N+1 queries."""
+    ids = sorted({int(workspace_id) for workspace_id in workspace_ids})
+    if not ids:
+        return []
+    query = (
+        supabase.table("publication_destinations")
+        .select("*")
+        .in_("workspace_id", ids)
+    )
+    if not include_removed:
+        query = query.neq("status", "removed")
+    return sorted(query.execute().data or [], key=lambda item: item.get("id", 0))
+
+
+@with_retry
+def move_publication_destinations(
+    destination_ids: List[int],
+    target_workspace_id: int,
+) -> List[Dict[str, Any]]:
+    """Move an already-authorized batch in one database statement."""
+    ids = sorted({int(destination_id) for destination_id in destination_ids})
+    if not ids:
+        return []
+    result = (
+        supabase.table("publication_destinations")
+        .update({
+            "workspace_id": int(target_workspace_id),
+            "is_default": False,
+            "updated_at": time.time(),
+        })
+        .in_("id", ids)
+        .execute()
+    )
+    rows = result.data or []
+    if {int(row["id"]) for row in rows} != set(ids):
+        raise RuntimeError("Destination move did not update the complete batch")
+    return sorted(rows, key=lambda item: item.get("id", 0))
+
+
+@with_retry
 def update_publication_destination(
     destination_id: int,
     **fields

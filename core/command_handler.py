@@ -956,7 +956,14 @@ def handle_setup(chat_id: int) -> bool:
             )
         else:
             current = state.get("current_step_key", "setup_channel")
-            send_message(chat_id, _setup_resume_message(current))
+            if current == "setup_channel":
+                send_message_with_keyboard(
+                    chat_id,
+                    _setup_resume_message(current),
+                    _setup_destination_actions_keyboard(workspace["id"]),
+                )
+            else:
+                send_message(chat_id, _setup_resume_message(current))
 
         return True
     except Exception:
@@ -1015,14 +1022,14 @@ def handle_addchannel(args: str, chat_id: int) -> bool:
                 chat_id,
                 f"⚠️ کانال {external_id} قبلاً اضافه شده است.\n\n"
                 "می‌توانید کانال دیگری اضافه کنید یا ادامه دهید.",
-                _setup_destination_actions_keyboard(),
+                _setup_destination_actions_keyboard(workspace["id"]),
             )
         elif dest:
             send_message_with_keyboard(
                 chat_id,
                 f"✅ کانال {external_id} ثبت شد.\n\n"
                 "🔍 در حال بررسی دسترسی ادمین ربات...",
-                _setup_destination_actions_keyboard(),
+                _setup_destination_actions_keyboard(workspace["id"]),
             )
             # Phase 4B: Real Telegram verification
             _verify_and_activate_channel(workspace["id"], dest, chat_id)
@@ -1088,14 +1095,20 @@ def _verify_and_activate_channel(
         logger.exception("Error in _verify_and_activate_channel")
 
 
-def _setup_destination_actions_keyboard() -> list:
-    return [
+def _setup_destination_actions_keyboard(workspace_id=None) -> list:
+    keyboard = [
         [
             {"text": "➕ افزودن کانال تلگرام", "callback_data": "setup:add_telegram"},
             {"text": "➕ افزودن کانال بله", "callback_data": "setup:add_bale"},
         ],
-        [{"text": "▶️ ادامه", "callback_data": "setup:continue_branding"}],
     ]
+    if workspace_id is not None:
+        keyboard.append([{
+            "text": "📥 انتقال کانال موجود",
+            "callback_data": f"ws:move:list:{int(workspace_id)}",
+        }])
+    keyboard.append([{"text": "▶️ ادامه", "callback_data": "setup:continue_branding"}])
+    return keyboard
 
 
 def handle_verifychannel(args: str, chat_id: int) -> bool:
@@ -1338,14 +1351,14 @@ def handle_addbale(args: str, chat_id: int) -> bool:
             send_message_with_keyboard(
                 chat_id,
                 "⚠️ این کانال بله قبلاً ثبت شده است.",
-                _setup_destination_actions_keyboard(),
+                _setup_destination_actions_keyboard(workspace["id"]),
             )
             return True
         _verify_and_activate_bale(destination, chat_id)
         send_message_with_keyboard(
             chat_id,
             "می‌توانید کانال دیگری اضافه کنید یا ادامه دهید.",
-            _setup_destination_actions_keyboard(),
+            _setup_destination_actions_keyboard(workspace["id"]),
         )
         return True
     except Exception:
