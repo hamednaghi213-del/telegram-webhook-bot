@@ -261,10 +261,16 @@ def test_backfill_rejects_one_physical_destination_in_two_active_groups():
 
 def test_repeated_backfill_is_idempotent():
     snapshot = {
-        "media_identities": [{"id": 20, "identity_key": "donya24"}],
+        "media_identities": [{
+            "id": 20, "identity_key": "donya24",
+            "media_name": "Donya24News", "hashtag": "#دنیا_۲۴_نیوز",
+            "channel_tag": "@Donya24News", "publication_icons": [],
+            "icons_enabled": False, "publication_profile": {},
+        }],
         "destinations": [{
             "id": 30, "media_identity_id": 20, "platform": "bale",
-            "external_id": "donya24_news", "status": "active",
+            "external_id": "donya24_news", "normalized_external_id": "donya24_news",
+            "status": "active",
         }],
         "media_members": [{
             "media_identity_id": 20, "user_id": 3, "role": "owner", "status": "active",
