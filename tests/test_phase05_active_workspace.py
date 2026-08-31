@@ -499,6 +499,6 @@ def test_workspace_keyboard_shows_media_name_without_membership_role():
     text = keyboard[0][0]["text"]
 
     assert text.startswith("✅ دنیا ۲۴ انگلیسی")
-    assert "bale/telegram" in text
+    assert "0 کانال" in text
     assert "(owner)" not in text
     assert "Internal Workspace Name" not in text

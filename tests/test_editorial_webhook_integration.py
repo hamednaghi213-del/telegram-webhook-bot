@@ -1,6 +1,7 @@
 import os
+import sys
 
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,7 @@ from core.editorial_pending import (
     clear_pending_reviews,
     create_pending_review,
     get_pending_review,
+    set_admin_instruction_waiting,
 )
 
 
@@ -582,6 +584,53 @@ def test_webhook_normal_news_uses_existing_path(
         )
         == 1
     )
+
+
+def test_pending_editorial_instruction_has_priority_over_workspace_bare_input(monkeypatch):
+    review = create_pending_review(
+        user_id=100,
+        content_type="opinion_note",
+        original_text="متن اصلی",
+        current_summary="خلاصه",
+        metadata={"summary_success": True},
+    )
+    set_admin_instruction_waiting(review.review_id, user_id=100)
+
+    setup_calls = []
+    instruction_calls = []
+    command_handler = ModuleType("core.command_handler")
+    command_handler.handle_workspace_stateful_input = (
+        lambda *_args: setup_calls.append(_args) or True
+    )
+    monkeypatch.setitem(sys.modules, "core.command_handler", command_handler)
+    import core
+    monkeypatch.setattr(core, "command_handler", command_handler, raising=False)
+    monkeypatch.setattr(
+        webhook_handler,
+        "process_admin_instruction_message",
+        lambda **kwargs: instruction_calls.append(kwargs) or True,
+    )
+
+    payload = {
+        "update_id": 3,
+        "message": {
+            "message_id": 12,
+            "chat": {"id": 100},
+            "text": "این متن باید دستور تحریریه باشد",
+        },
+    }
+    with app.test_request_context(
+        "/",
+        method="POST",
+        json=payload,
+        headers={"X-Telegram-Bot-Api-Secret-Token": "test-secret"},
+    ):
+        body, status = webhook_handler.handle_webhook()
+
+    assert status == 200
+    assert body["admin_instruction"] is True
+    assert len(instruction_calls) == 1
+    assert setup_calls == []
 
 
 # =========================================================

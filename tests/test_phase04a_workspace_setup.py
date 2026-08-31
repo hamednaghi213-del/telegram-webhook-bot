@@ -61,6 +61,20 @@ class InMemoryDb4A:
         self.users.append(user)
         return user
 
+    def get_user_by_id(self, user_id):
+        return next((u for u in self.users if u["id"] == user_id), None)
+
+    def set_user_pending_workspace_action(self, user_id, action, workspace_id=None):
+        user = self.get_user_by_id(user_id)
+        if not user:
+            return None
+        user["pending_workspace_action"] = action
+        user["pending_workspace_id"] = workspace_id
+        return deepcopy(user)
+
+    def clear_user_pending_workspace_action(self, user_id):
+        return self.set_user_pending_workspace_action(user_id, None, None)
+
     # ── tenants (legacy) ───────────────────────────────
     def get_tenant(self, user_id):
         return self.tenants.get(user_id)
@@ -333,6 +347,9 @@ def _make_fake_db_module(db: InMemoryDb4A) -> types.ModuleType:
     mod.update_bale_settings = db.update_bale_settings
     mod.get_user_by_telegram_id = db.get_user_by_telegram_id
     mod.get_or_create_user_by_telegram_id = db.get_or_create_user_by_telegram_id
+    mod.get_user_by_id = db.get_user_by_id
+    mod.set_user_pending_workspace_action = db.set_user_pending_workspace_action
+    mod.clear_user_pending_workspace_action = db.clear_user_pending_workspace_action
     mod.create_workspace = db.create_workspace
     mod.list_owned_workspaces = db.list_owned_workspaces
     mod.get_workspace = db.get_workspace
@@ -731,26 +748,27 @@ def test_20_phase1_and_phase2_workspace_member_helpers_unchanged(monkeypatch):
 # TESTS: COMMAND-HANDLER INTEGRATION  (21-26)
 # =========================================================
 
+def _start_with_workspace(ch_mod, db, telegram_id, name="گروه رسانه ای آزمایشی"):
+    ch_mod.handle_start(telegram_id)
+    assert ch_mod.handle_workspace_stateful_input(name, telegram_id) is True
+    return db.list_owned_workspaces(db.get_user_by_telegram_id(telegram_id)["id"])[0]
+
 def test_21_start_new_user_shows_setup_prompt(monkeypatch):
-    """/start for a brand-new workspace user shows /setup prompt."""
+    """/start asks for a name and does not create a workspace prematurely."""
     _, ch_mod, db, sent = _load_modules(monkeypatch)
     ch_mod.handle_start(1001)
 
-    assert len(db.workspaces) == 1
+    assert len(db.workspaces) == 0
+    user = db.get_user_by_telegram_id(1001)
+    assert user["pending_workspace_action"] == "create_workspace_name"
     last_msg = sent[-1][1]
-    assert "/setup" in last_msg
-    assert ch_mod._test_sent_keyboards == [
-        (1001, [[{
-            "text": "🚀 شروع راه‌اندازی",
-            "callback_data": "setup:start",
-        }]])
-    ]
+    assert "نام" in last_msg
 
 
 def test_22_start_completed_setup_shows_ready_panel(monkeypatch):
     """/start after completed setup shows the ready panel, not the wizard."""
     _, ch_mod, db, sent = _load_modules(monkeypatch)
-    ch_mod.handle_start(1002)  # creates workspace + not_started state
+    _start_with_workspace(ch_mod, db, 1002)
 
     user = db.get_user_by_telegram_id(1002)
     ws = db.list_owned_workspaces(user["id"])[0]
@@ -769,15 +787,20 @@ def test_23_repeated_start_does_not_duplicate_workspace(monkeypatch):
     ch_mod.handle_start(1003)
     ch_mod.handle_start(1003)
 
-    assert len(db.workspaces) == 1
+    assert len(db.workspaces) == 0
     assert len(db.users) == 1
+    assert db.users[0]["pending_workspace_action"] == "create_workspace_name"
+
+    assert ch_mod.handle_workspace_stateful_input("رسانه من", 1003) is True
+    ch_mod.handle_start(1003)
+    assert len(db.workspaces) == 1
     owner_mems = [m for m in db.workspace_members if m["role"] == "owner"]
     assert len(owner_mems) == 1
 
 
 def test_23a_setup_command_starts_new_user_at_first_step(monkeypatch):
     _, ch_mod, db, _ = _load_modules(monkeypatch)
-    ch_mod.handle_start(1004)
+    _start_with_workspace(ch_mod, db, 1004)
 
     assert ch_mod.handle_command("/setup", 1004) is True
     state = db.get_workspace_setup_state(db.workspaces[0]["id"])
@@ -787,7 +810,7 @@ def test_23a_setup_command_starts_new_user_at_first_step(monkeypatch):
 
 def test_23b_setup_command_resumes_saved_step(monkeypatch):
     _, ch_mod, db, sent = _load_modules(monkeypatch)
-    ch_mod.handle_start(1005)
+    _start_with_workspace(ch_mod, db, 1005)
     workspace_id = db.workspaces[0]["id"]
     db.upsert_workspace_setup_state(
         workspace_id,
@@ -804,7 +827,7 @@ def test_23b_setup_command_resumes_saved_step(monkeypatch):
 
 def test_23c_setup_command_does_not_reset_completed_workspace(monkeypatch):
     _, ch_mod, db, sent = _load_modules(monkeypatch)
-    ch_mod.handle_start(1006)
+    _start_with_workspace(ch_mod, db, 1006)
     workspace_id = db.workspaces[0]["id"]
     db.upsert_workspace_setup_state(workspace_id, "completed", None)
 
@@ -817,14 +840,14 @@ def test_23c_setup_command_does_not_reset_completed_workspace(monkeypatch):
 
 
 def test_23d_workspace_help_explains_complete_new_user_flow(monkeypatch):
-    _, ch_mod, _, sent = _load_modules(monkeypatch)
-    ch_mod.handle_start(1007)
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    _start_with_workspace(ch_mod, db, 1007)
 
     sent.clear()
     assert ch_mod.handle_command("/help", 1007) is True
     help_text = sent[-1][1]
     assert "راهنمای کامل کاربر جدید" in help_text
-    assert "🚀 شروع راه‌اندازی" in help_text
+    assert "راه‌اندازی نیمه‌کاره است" in help_text
     assert "/addchannel @channel" in help_text
     assert "/skipbale" in help_text
     assert "/confirmbranding" in help_text
@@ -835,7 +858,7 @@ def test_23d_workspace_help_explains_complete_new_user_flow(monkeypatch):
 
 def test_23e_workspace_help_reports_saved_setup_step(monkeypatch):
     _, ch_mod, db, sent = _load_modules(monkeypatch)
-    ch_mod.handle_start(1008)
+    _start_with_workspace(ch_mod, db, 1008)
     workspace_id = db.workspaces[0]["id"]
     db.upsert_workspace_setup_state(
         workspace_id,
@@ -852,7 +875,7 @@ def test_23e_workspace_help_reports_saved_setup_step(monkeypatch):
 def test_24_addchannel_command_registers_unverified_destination(monkeypatch):
     """/addchannel stores channel as inactive + creates verification record."""
     _, ch_mod, db, sent = _load_modules(monkeypatch)
-    ch_mod.handle_start(2001)
+    _start_with_workspace(ch_mod, db, 2001)
 
     ch_mod.handle_command("/addchannel @TestChannel", 2001)
 
@@ -871,7 +894,7 @@ def test_24_addchannel_command_registers_unverified_destination(monkeypatch):
 def test_25_setbranding_command_saves_workspace_branding(monkeypatch):
     """/setbranding stores branding on the workspace, not the user."""
     _, ch_mod, db, sent = _load_modules(monkeypatch)
-    ch_mod.handle_start(2002)
+    _start_with_workspace(ch_mod, db, 2002)
 
     ch_mod.handle_command("/setbranding دنیا۲۴ #دنیا_۲۴ @Donya24News", 2002)
 
@@ -887,7 +910,7 @@ def test_25_setbranding_command_saves_workspace_branding(monkeypatch):
 def test_25a_stepwise_branding_preserves_full_media_name(monkeypatch):
     """The onboarding path collects name, hashtag and tag independently."""
     _, ch_mod, db, sent = _load_modules(monkeypatch)
-    ch_mod.handle_start(2025)
+    _start_with_workspace(ch_mod, db, 2025)
     ch_mod.handle_setup(2025)
 
     ch_mod.handle_command("/setbranding دنیا ۲۴ انگلیسی", 2025)
@@ -913,7 +936,7 @@ def test_25a_stepwise_branding_preserves_full_media_name(monkeypatch):
 
 def test_25b_stepwise_hashtag_rejects_spaces(monkeypatch):
     _, ch_mod, db, sent = _load_modules(monkeypatch)
-    ch_mod.handle_start(2026)
+    _start_with_workspace(ch_mod, db, 2026)
     ch_mod.handle_command("/setbranding رسانه آزمایشی", 2026)
     ch_mod.handle_command("/sethashtag #هشتگ نادرست", 2026)
 
@@ -924,7 +947,7 @@ def test_25b_stepwise_hashtag_rejects_spaces(monkeypatch):
 def test_26_finishsetup_requires_branding_and_destination(monkeypatch):
     """/finishsetup fails gracefully when requirements are missing."""
     _, ch_mod, db, sent = _load_modules(monkeypatch)
-    ch_mod.handle_start(2003)
+    _start_with_workspace(ch_mod, db, 2003)
 
     # No branding, no channel — finish must fail
     sent.clear()
@@ -969,7 +992,7 @@ def test_26_finishsetup_requires_branding_and_destination(monkeypatch):
 
 def test_26a_branding_sample_requires_preview_confirmation(monkeypatch):
     _, ch_mod, db, sent = _load_modules(monkeypatch)
-    ch_mod.handle_start(2010)
+    _start_with_workspace(ch_mod, db, 2010)
     ch_mod.handle_command("/setbranding آزمایش #آزمایش @TestChannel", 2010)
 
     ws = db.workspaces[0]
@@ -1003,7 +1026,7 @@ def test_26a_branding_sample_requires_preview_confirmation(monkeypatch):
 
 def test_26b_resample_discards_unconfirmed_preview(monkeypatch):
     _, ch_mod, db, _ = _load_modules(monkeypatch)
-    ch_mod.handle_start(2011)
+    _start_with_workspace(ch_mod, db, 2011)
     ch_mod.handle_command("/setbranding آزمایش #آزمایش @TestChannel", 2011)
     ch_mod.handle_branding_sample_message({"text": "🔴 نمونه اول"}, 2011)
     ch_mod.handle_command("/resamplebranding", 2011)
@@ -1017,7 +1040,7 @@ def test_26b_resample_discards_unconfirmed_preview(monkeypatch):
 
 def test_26c_sample_saves_hidden_bale_suggestion_without_blocking(monkeypatch):
     _, ch_mod, db, sent = _load_modules(monkeypatch)
-    ch_mod.handle_start(2013)
+    _start_with_workspace(ch_mod, db, 2013)
     ch_mod.handle_command("/setbranding فردای نو #فردای_نو @farda_nou", 2013)
 
     title = "جانشین اینفانتینو از آسیا می‌آید؟"
@@ -1105,6 +1128,12 @@ def test_26e_legacy_user_can_open_workspaces_and_create_new_media(monkeypatch):
     assert "ابتدا /start" not in sent[-1][1]
 
     ch_mod.handle_create_workspace(telegram_id)
+    assert len(db.workspaces) == 0
+    assert user["pending_workspace_action"] == "create_workspace_name"
+    ch_mod.handle_create_workspace(telegram_id)
+    assert len(db.workspaces) == 0
+
+    assert ch_mod.handle_workspace_stateful_input("رسانه تازه", telegram_id) is True
     assert len(db.workspaces) == 1
     workspace = db.workspaces[0]
     assert db.get_workspace_setup_state(workspace["id"])["step"] == "in_progress"
@@ -1298,6 +1327,8 @@ def test_26f_onboarding_activates_owned_workspace_instead_of_manager_workspace(m
     db.set_active_workspace(user["id"], existing_workspace["id"])
 
     ch_mod.handle_start(telegram_id)
+    assert db.list_owned_workspaces(user["id"]) == []
+    assert ch_mod.handle_workspace_stateful_input("فردای نو", telegram_id) is True
 
     owned = db.list_owned_workspaces(user["id"])
     assert len(owned) == 1
@@ -1509,11 +1540,10 @@ def test_setup_prefers_owned_incomplete_workspace_over_active_manager_workspace(
     assert resolved_user["id"] == user["id"]
     assert resolved_workspace["id"] == owned_workspace["id"]
 
-def test_36_workspace_name_syncs_with_media_name(monkeypatch):
+def test_36_workspace_name_is_independent_from_branding_media_name(monkeypatch):
     """
     Regression:
-    Saving workspace branding must keep workspaces.name
-    synchronized with workspace_branding.media_name.
+    Saving branding must not implicitly rename the workspace.
     """
     ws_mod, _, db, _ = _load_modules(monkeypatch)
 
@@ -1531,4 +1561,113 @@ def test_36_workspace_name_syncs_with_media_name(monkeypatch):
     branding = db.get_workspace_branding(workspace["id"])
 
     assert branding["media_name"] == "فردای نو"
-    assert updated_workspace["name"] == "فردای نو"
+    assert updated_workspace["name"] == "رسانه جدید"
+
+
+def test_completed_workspaces_are_never_reused_when_creating_more(monkeypatch):
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(9301)
+    first = db.create_workspace("سیاسی", user["id"])
+    second = db.create_workspace("اقتصادی", user["id"])
+    for workspace in (first, second):
+        db.upsert_workspace_setup_state(workspace["id"], "completed", None)
+
+    assert ch_mod.handle_create_workspace(9301) is True
+    assert ch_mod.handle_workspace_stateful_input("ورزشی", 9301) is True
+
+    assert [item["name"] for item in db.workspaces] == ["سیاسی", "اقتصادی", "ورزشی"]
+    assert len({item["id"] for item in db.workspaces}) == 3
+
+
+def test_one_hundred_completed_workspaces_allow_workspace_101(monkeypatch):
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(9302)
+    for index in range(100):
+        workspace = db.create_workspace(f"گروه {index + 1}", user["id"])
+        db.upsert_workspace_setup_state(workspace["id"], "completed", None)
+
+    assert ch_mod.handle_create_workspace(9302) is True
+    assert ch_mod.handle_workspace_stateful_input("گروه 101", 9302) is True
+    assert len(db.list_owned_workspaces(user["id"])) == 101
+    assert db.workspaces[-1]["name"] == "گروه 101"
+
+
+def test_incomplete_workspace_is_resumed_and_duplicate_callback_is_idempotent(monkeypatch):
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(9303)
+    workspace = db.create_workspace("نیمه کاره", user["id"])
+    db.upsert_workspace_setup_state(workspace["id"], "in_progress", "setup_branding")
+
+    assert ch_mod.handle_create_workspace(9303) is True
+    assert ch_mod.handle_create_workspace(9303) is True
+    assert len(db.workspaces) == 1
+    assert user.get("pending_workspace_action") is None
+    assert db.get_active_workspace_preference(user["id"])["active_workspace_id"] == workspace["id"]
+
+
+def test_rename_changes_only_workspace_name_and_cancel_clears_state(monkeypatch):
+    ws_mod, ch_mod, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(9304)
+    workspace = db.create_workspace("قدیمی", user["id"])
+    db.upsert_workspace_setup_state(workspace["id"], "completed", None)
+    ws_mod.save_workspace_branding(workspace["id"], "نام رسانه", "#نام_رسانه", "@media")
+    destination, _ = ws_mod.register_channel_destination(workspace["id"], "@channel", "کانال")
+    members_before = deepcopy(db.workspace_members)
+    destinations_before = deepcopy(db.publication_destinations)
+
+    assert ch_mod.begin_workspace_rename(9304, workspace["id"]) is True
+    assert ch_mod.handle_workspace_stateful_input("نام تازه", 9304) is True
+    assert db.get_workspace(workspace["id"])["name"] == "نام تازه"
+    assert db.get_workspace_branding(workspace["id"])["media_name"] == "نام رسانه"
+    assert db.workspace_members == members_before
+    assert db.publication_destinations == destinations_before
+    assert destination["workspace_id"] == workspace["id"]
+
+    assert ch_mod.begin_workspace_rename(9304, workspace["id"]) is True
+    assert ch_mod.handle_cancel_workspace_action(9304) is True
+    assert user["pending_workspace_action"] is None
+    assert db.get_workspace(workspace["id"])["name"] == "نام تازه"
+
+
+def test_invalid_pending_name_preserves_state_and_does_not_create(monkeypatch):
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+    ch_mod.handle_start(9305)
+    user = db.get_user_by_telegram_id(9305)
+
+    assert ch_mod.handle_workspace_stateful_input("/not-a-name", 9305) is False
+    assert ch_mod.handle_workspace_stateful_input("x", 9305) is True
+    assert db.workspaces == []
+    assert user["pending_workspace_action"] == "create_workspace_name"
+
+
+def test_bare_setup_inputs_route_only_through_owned_incomplete_step(monkeypatch):
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+    workspace = _start_with_workspace(ch_mod, db, 9306, "گروه من")
+
+    assert ch_mod.handle_workspace_stateful_input("@telegram_one", 9306) is True
+    assert db.publication_destinations[-1]["platform"] == "telegram"
+
+    db.upsert_workspace_setup_state(workspace["id"], "in_progress", "setup_bale_channel")
+    monkeypatch.setattr(ch_mod, "_verify_and_activate_bale", lambda *_args: True)
+    assert ch_mod.handle_workspace_stateful_input("@bale_one", 9306) is True
+    assert db.publication_destinations[-1]["platform"] == "bale"
+
+    db.upsert_workspace_setup_state(workspace["id"], "in_progress", "setup_branding")
+    assert ch_mod.handle_workspace_stateful_input("نام کامل رسانه", 9306) is True
+    assert db.get_workspace_branding(workspace["id"])["media_name"] == "نام کامل رسانه"
+    assert db.get_workspace(workspace["id"])["name"] == "گروه من"
+
+    db.upsert_workspace_setup_state(workspace["id"], "completed", None)
+    assert ch_mod.handle_workspace_stateful_input("این یک خبر عادی است", 9306) is False
+
+
+def test_setup_prompts_use_generic_examples(monkeypatch):
+    _, ch_mod, _, _ = _load_modules(monkeypatch)
+    prompts = "\n".join(
+        ch_mod._setup_resume_message(step)
+        for step in ("setup_channel", "setup_bale_channel", "setup_branding")
+    )
+    assert "@mychannel" in prompts
+    assert "دنیا" not in prompts
+    assert "فردای" not in prompts
+    assert "بی‌نشانه" not in prompts

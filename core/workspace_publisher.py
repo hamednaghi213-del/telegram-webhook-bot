@@ -408,6 +408,7 @@ def prepare_workspace_display_rows(
             for item in destinations
             if item.get("platform")
         })
+        display_workspace["destination_count"] = len(destinations)
 
         display_workspaces.append(
             display_workspace
@@ -454,17 +455,17 @@ def build_workspace_keyboard(
             or workspace["id"]
         )
 
-        platforms = workspace.get("display_platforms") or []
-        platform_suffix = (
-            f" — {'/'.join(platforms)}"
-            if len(platforms) > 1
-            else ""
-        )
-
-        keyboard.append([{
-            "text": f"{marker} {display_label}{platform_suffix}",
-            "callback_data": f"ws:toggle:{workspace['id']}",
-        }])
+        destination_count = int(workspace.get("destination_count") or 0)
+        keyboard.append([
+            {
+                "text": f"{marker} {display_label} — {destination_count} کانال",
+                "callback_data": f"ws:toggle:{workspace['id']}",
+            },
+            {
+                "text": "⚙️",
+                "callback_data": f"ws:manage:{workspace['id']}",
+            },
+        ])
 
     return keyboard
 
@@ -1267,6 +1268,76 @@ def _handle_workspace_callback(
             chat_id,
             f"✅ {text}.",
         )
+
+    elif (
+        callback_data.startswith("ws:manage:")
+        and len(parts) >= 3
+    ):
+        try:
+            workspace_id = int(parts[2])
+            user = get_user_by_telegram_id(chat_id)
+            member = get_workspace_member(workspace_id, (user or {}).get("id"))
+            workspace = next(
+                (
+                    item for item in list_user_workspace_memberships(user["id"])
+                    if item.get("id") == workspace_id
+                ),
+                None,
+            ) if user else None
+            if not user or not workspace or not member or member.get("status") != "active":
+                raise ValueError("workspace access denied")
+        except (TypeError, ValueError):
+            _ws_answer_callback(api_url, callback_id, "گروه رسانه‌ای معتبر نیست")
+            return
+
+        _ws_answer_callback(api_url, callback_id, "مدیریت گروه")
+        _ws_send_message_with_keyboard(
+            api_url,
+            chat_id,
+            f"📁 {workspace.get('name') or workspace_id}\n\n"
+            "✏️ تغییر نام گروه\n"
+            "➕ افزودن کانال\n"
+            "📡 مدیریت کانال‌ها\n"
+            "👥 مدیریت اعضا\n"
+            "⚙️ تنظیمات رسانه",
+            [
+                [{"text": "✏️ تغییر نام گروه", "callback_data": f"ws:rename:{workspace_id}"}],
+                [{"text": "➕ افزودن کانال", "callback_data": f"ws:addchannel:{workspace_id}"}],
+                [{"text": "📡 مدیریت کانال‌ها", "callback_data": f"ws:destinations:{workspace_id}"}],
+                [{"text": "👥 مدیریت اعضا", "callback_data": f"ws:members:{workspace_id}"}],
+                [{"text": "⬅️ بازگشت", "callback_data": "ws:back"}],
+            ],
+        )
+
+    elif callback_data.startswith("ws:rename:") and len(parts) >= 3:
+        try:
+            workspace_id = int(parts[2])
+            from core.command_handler import begin_workspace_rename
+            _ws_answer_callback(api_url, callback_id, "نام جدید را ارسال کنید")
+            begin_workspace_rename(chat_id, workspace_id)
+        except (TypeError, ValueError):
+            _ws_answer_callback(api_url, callback_id, "گروه رسانه‌ای معتبر نیست")
+
+    elif callback_data.startswith(("ws:addchannel:", "ws:destinations:", "ws:members:")) and len(parts) >= 3:
+        try:
+            workspace_id = int(parts[2])
+            user = get_user_by_telegram_id(chat_id)
+            set_active_workspace(user["id"], workspace_id)
+            action = parts[1]
+            message = {
+                "addchannel": "شناسه کانال را با /addchannel @mychannel اضافه کنید.",
+                "destinations": "برای مدیریت کانال‌ها /destinations را بفرستید.",
+                "members": "برای مدیریت اعضا /members را بفرستید.",
+            }[action]
+            _ws_answer_callback(api_url, callback_id, "گروه برای مدیریت فعال شد")
+            _ws_send_message(api_url, chat_id, message)
+        except (TypeError, ValueError):
+            _ws_answer_callback(api_url, callback_id, "گروه رسانه‌ای معتبر نیست")
+
+    elif callback_data == "ws:back":
+        _ws_answer_callback(api_url, callback_id, "بازگشت")
+        from core.command_handler import handle_workspaces
+        handle_workspaces(chat_id)
 
     elif (
         callback_data.startswith(

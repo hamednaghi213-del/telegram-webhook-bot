@@ -3779,6 +3779,9 @@ def handle_setup_callback(
         "setup:add_media",
         "setup:done",
         "setup:later",
+        "setup:add_telegram",
+        "setup:add_bale",
+        "setup:continue_branding",
     }
     if callback_data not in valid_actions:
         answer_callback_query(callback_id, "دستور راه‌اندازی نامعتبر است.")
@@ -3793,6 +3796,32 @@ def handle_setup_callback(
         from core.command_handler import handle_create_workspace
 
         handle_create_workspace(int(user_id))
+        return True
+
+    if callback_data in {"setup:add_telegram", "setup:add_bale", "setup:continue_branding"}:
+        from core.command_handler import (
+            _get_workspace_for_user,
+            handle_nextsetupstep,
+        )
+        from core.workspace_setup import advance_to_step
+
+        user, workspace = _get_workspace_for_user(int(user_id))
+        if not user or not workspace:
+            answer_callback_query(callback_id, "گروه رسانه‌ای یافت نشد.")
+            return True
+        if callback_data == "setup:continue_branding":
+            answer_callback_query(callback_id, "ادامه راه‌اندازی")
+            handle_nextsetupstep(int(user_id))
+            return True
+        step = (
+            "setup_bale_channel"
+            if callback_data == "setup:add_bale"
+            else "setup_channel"
+        )
+        advance_to_step(workspace["id"], step)
+        answer_callback_query(callback_id, "مقدار را ارسال کنید.")
+        from core.command_handler import _setup_resume_message
+        send_message(int(user_id), _setup_resume_message(step))
         return True
 
     if callback_data == "setup:done":
@@ -4075,6 +4104,37 @@ def handle_webhook() -> Tuple[
             return {
                 "ok": True
             }, 200
+
+        # Pending Editorial has priority over every bare setup/name input.
+        if command_text.strip():
+            try:
+                from core.editorial_pending import get_waiting_admin_instruction_review
+                waiting_review = get_waiting_admin_instruction_review(user_id=chat_id)
+            except Exception as e:
+                logger.exception(f"[{req_id}] ❌ Early editorial guard failed | {e}")
+                waiting_review = None
+            if waiting_review is not None:
+                process_admin_instruction_message(
+                    chat_id=chat_id,
+                    instruction_text=command_text,
+                    req_id=req_id,
+                )
+                return {
+                    "ok": True,
+                    "admin_instruction": True,
+                    "review_id": waiting_review.review_id,
+                }, 200
+
+            try:
+                from core.command_handler import handle_workspace_stateful_input
+                if handle_workspace_stateful_input(command_text, chat_id):
+                    return {"ok": True, "workspace_setup_input": True}, 200
+            except (ImportError, AttributeError):
+                pass
+            except Exception as e:
+                logger.exception(f"[{req_id}] ❌ Workspace stateful input failed | {e}")
+                send_message(chat_id, "❌ خطا در پردازش ورودی گروه رسانه‌ای.")
+                return {"ok": True}, 200
 
         # =================================================
         # BRANDING SAMPLE ONBOARDING

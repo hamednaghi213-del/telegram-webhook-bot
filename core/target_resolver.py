@@ -88,8 +88,6 @@ def resolve_publication_targets(chat_id: int) -> Tuple[List[PublicationTarget], 
 
     if user:
         memberships = list_user_workspace_memberships(user["id"]) or []
-        if len(memberships) == 1 and not selected_ids and not legacy_selected:
-            selected_ids.add(memberships[0].get("id"))
         for workspace in memberships:
             workspace_id = workspace.get("id")
             if workspace_id not in selected_ids:

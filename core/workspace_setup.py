@@ -45,7 +45,6 @@ from core.database import (
     upsert_destination_branding,
     upsert_destination_verification,
     upsert_workspace_branding,
-    update_workspace_name,
     update_workspace_branding_sample,
     upsert_workspace_setup_state,
 )
@@ -213,7 +212,6 @@ def save_workspace_branding(
         hashtag=hashtag,
         channel_tag=channel_tag,
     )
-    update_workspace_name(workspace_id, media_name)
     logger.info(
         "Workspace branding saved | "
         f"workspace={workspace_id} media_name={media_name}"

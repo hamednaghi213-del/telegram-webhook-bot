@@ -67,6 +67,18 @@ class InMemoryDb:
         self.users.append(user)
         return user
 
+    def get_user_by_id(self, user_id):
+        return next((user for user in self.users if user["id"] == user_id), None)
+
+    def set_user_pending_workspace_action(self, user_id, action, workspace_id=None):
+        user = self.get_user_by_id(user_id)
+        user["pending_workspace_action"] = action
+        user["pending_workspace_id"] = workspace_id
+        return user
+
+    def clear_user_pending_workspace_action(self, user_id):
+        return self.set_user_pending_workspace_action(user_id, None, None)
+
     def list_owned_workspaces(self, owner_user_id, include_inactive=False):
         rows = [
             row
@@ -150,6 +162,9 @@ def _load_command_handler(monkeypatch):
     fake_database.update_bale_settings = db.update_bale_settings
     fake_database.get_user_by_telegram_id = db.get_user_by_telegram_id
     fake_database.get_or_create_user_by_telegram_id = db.get_or_create_user_by_telegram_id
+    fake_database.get_user_by_id = db.get_user_by_id
+    fake_database.set_user_pending_workspace_action = db.set_user_pending_workspace_action
+    fake_database.clear_user_pending_workspace_action = db.clear_user_pending_workspace_action
     fake_database.create_workspace = db.create_workspace
     fake_database.list_owned_workspaces = db.list_owned_workspaces
     fake_database.get_workspace_member = db.get_workspace_member
@@ -181,19 +196,22 @@ def _load_command_handler(monkeypatch):
     return command_handler, db, sent_messages
 
 
-def test_start_new_user_creates_user_workspace_and_owner(monkeypatch):
+def test_start_new_user_waits_for_name_then_creates_owner_workspace(monkeypatch):
     command_handler, db, sent = _load_command_handler(monkeypatch)
 
     assert command_handler.handle_start(1001) is True
 
     assert len(db.users) == 1
     assert db.users[0]["telegram_user_id"] == 1001
+    assert len(db.workspaces) == 0
+    assert db.users[0]["pending_workspace_action"] == "create_workspace_name"
+    assert command_handler.handle_workspace_stateful_input("سیاسی", 1001) is True
     assert len(db.workspaces) == 1
-    assert db.workspaces[0]["name"] == "رسانه من"
+    assert db.workspaces[0]["name"] == "سیاسی"
     owner = db.get_workspace_member(db.workspaces[0]["id"], db.users[0]["id"])
     assert owner["role"] == "owner"
     assert owner["status"] == "active"
-    assert "افزودن مقصد انتشار" in sent[-1][1]
+    assert "مقصد انتشار" in sent[-1][1]
 
 
 def test_register_text_command_remains_available(monkeypatch):
@@ -211,6 +229,8 @@ def test_start_is_idempotent_and_does_not_duplicate_workspace(monkeypatch):
     assert command_handler.handle_start(1002) is True
 
     assert len(db.users) == 1
+    assert len(db.workspaces) == 0
+    assert command_handler.handle_workspace_stateful_input("اقتصادی", 1002) is True
     assert len(db.workspaces) == 1
     assert len(db.workspace_members) == 1
     assert db.calls["create_workspace"] == 1
@@ -225,6 +245,8 @@ def test_start_resumes_when_user_exists_but_workspace_missing(monkeypatch):
     assert command_handler.handle_start(1003) is True
 
     assert len(db.users) == 1
+    assert len(db.workspaces) == 0
+    assert command_handler.handle_workspace_stateful_input("ورزشی", 1003) is True
     assert len(db.workspaces) == 1
     owner = db.get_workspace_member(db.workspaces[0]["id"], user["id"])
     assert owner["role"] == "owner"
@@ -270,8 +292,8 @@ def test_help_for_new_user_is_contextual(monkeypatch):
 
     command_handler.handle_start(3001)
     assert command_handler.handle_help(3001) is True
-    assert "راهنمای مقصد انتشار" in sent[-1][1]
-    assert "/settelegram @channel" in sent[-1][1]
+    assert "راهنمای تکمیل تنظیمات" in sent[-1][1]
+    assert "/adddestination" in sent[-1][1]
 
 
 def test_help_button_action_and_existing_command_routing(monkeypatch):

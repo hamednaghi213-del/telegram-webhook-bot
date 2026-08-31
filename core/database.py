@@ -586,6 +586,11 @@ WORKSPACE_MEMBER_STATUSES = {
     "removed"
 }
 
+WORKSPACE_PENDING_ACTIONS = {
+    "create_workspace_name",
+    "rename_workspace",
+}
+
 
 def _validate_enum(
     value: str,
@@ -658,6 +663,37 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
         .execute()
     )
     return _first_row(result)
+
+
+@with_retry
+def set_user_pending_workspace_action(
+    user_id: int,
+    action: Optional[str],
+    workspace_id: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """Persist the short-lived Create/Rename workspace input state."""
+    if action is not None and action not in WORKSPACE_PENDING_ACTIONS:
+        raise ValueError("Invalid pending workspace action")
+    if action == "rename_workspace" and workspace_id is None:
+        raise ValueError("Rename action requires a workspace")
+    if action != "rename_workspace":
+        workspace_id = None
+
+    result = (
+        supabase.table("users")
+        .update({
+            "pending_workspace_action": action,
+            "pending_workspace_id": workspace_id,
+            "updated_at": time.time(),
+        })
+        .eq("id", user_id)
+        .execute()
+    )
+    return _first_row(result)
+
+
+def clear_user_pending_workspace_action(user_id: int) -> Optional[Dict[str, Any]]:
+    return set_user_pending_workspace_action(user_id, None, None)
 
 
 @with_retry
@@ -814,7 +850,10 @@ def list_user_workspaces(
     membership_query = (
         supabase
         .table("workspace_members")
-        .select("*")
+        .select(
+            "id, workspace_id, role, status, "
+            "workspaces(id, name, owner_user_id, status, created_at, updated_at)"
+        )
         .eq("user_id", user_id)
     )
 
@@ -833,9 +872,11 @@ def list_user_workspaces(
 
     workspaces = []
     for membership in memberships:
-        workspace = get_workspace(
-            membership["workspace_id"]
-        )
+        workspace = membership.get("workspaces")
+        # Older PostgREST/test adapters may not support embedded relations.
+        # Production uses the embedded row, keeping the common path to one query.
+        if not workspace:
+            workspace = get_workspace(membership["workspace_id"])
         if not workspace:
             continue
 
@@ -855,6 +896,38 @@ def list_user_workspaces(
         workspaces,
         key=lambda item: item.get("id", 0)
     )
+
+
+@with_retry
+def list_workspace_destination_counts(
+    workspace_ids: List[int],
+) -> Dict[int, Dict[str, int]]:
+    """Return channel counts for many workspaces in one PostgREST query."""
+    normalized_ids = sorted({int(value) for value in (workspace_ids or [])})
+    if not normalized_ids:
+        return {}
+
+    result = (
+        supabase.table("publication_destinations")
+        .select("workspace_id, status, destination_verification(verified)")
+        .in_("workspace_id", normalized_ids)
+        .neq("status", "removed")
+        .execute()
+    )
+    counts = {
+        workspace_id: {"total": 0, "active_verified": 0}
+        for workspace_id in normalized_ids
+    }
+    for destination in result.data or []:
+        workspace_id = int(destination["workspace_id"])
+        counts.setdefault(workspace_id, {"total": 0, "active_verified": 0})
+        counts[workspace_id]["total"] += 1
+        verification = destination.get("destination_verification") or {}
+        if isinstance(verification, list):
+            verification = verification[0] if verification else {}
+        if destination.get("status") == "active" and verification.get("verified"):
+            counts[workspace_id]["active_verified"] += 1
+    return counts
 
 
 @with_retry

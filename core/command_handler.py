@@ -5,6 +5,8 @@ import requests
 import re
 from typing import Optional, Dict, Any, Tuple
 
+from core.workspace_destinations import can_manage_destinations
+
 from core.database import (
     get_tenant,
     save_tenant,
@@ -24,6 +26,7 @@ from core.database import (
 # (e.g. during Phase 3 test isolation), the flag is False and
 # the old handle_start path is used unchanged.
 try:
+    from core.database import get_workspace_setup_state
     from core.workspace_setup import (
         get_or_init_setup_state,
         start_setup,
@@ -71,10 +74,7 @@ try:
         update_publication_destination_status,
     )
     from core.workspace_setup import save_destination_branding
-    from core.workspace_destinations import (
-        can_manage_destinations,
-        find_workspace_destination,
-    )
+    from core.workspace_destinations import find_workspace_destination
     _DESTINATION_MANAGEMENT_ENABLED: bool = True
 except (ImportError, AttributeError):
     _DESTINATION_MANAGEMENT_ENABLED = False
@@ -121,6 +121,8 @@ TOKEN_MAX_LENGTH = 255
 CHANNEL_MIN_LENGTH = 6
 CHANNEL_MAX_LENGTH = 33
 DEFAULT_WORKSPACE_NAME = "رسانه من"
+WORKSPACE_NAME_MIN_LENGTH = 2
+WORKSPACE_NAME_MAX_LENGTH = 80
 
 
 # =========================================================
@@ -422,6 +424,13 @@ def handle_start(chat_id: int) -> bool:
             )
             return True
 
+        user = get_user_by_telegram_id(chat_id)
+        if not user:
+            user = get_or_create_user_by_telegram_id(chat_id, status="active")
+        if not list_owned_workspaces(user["id"], include_inactive=True):
+            _begin_workspace_name_input(chat_id, user, "create_workspace_name")
+            return True
+
         onboarding_result = _ensure_onboarding_ready(chat_id)
         workspace = onboarding_result["workspace"]
         user = onboarding_result["user"]
@@ -512,21 +521,23 @@ def _setup_resume_message(current_step_key: str) -> str:
         return (
             "▶️ راه‌اندازی در حال انجام است.\n\n"
             "مرحله ۱: افزودن کانال\n"
-            "کانال تلگرام خود را وارد کنید (الزامی):\n"
-            "/addchannel @channel_id\n\n"
-            "کانال بله دارید؟ ربات مرکزی ما را مدیر کنید و بفرستید:\n"
-            "/addbale @bale_channel\n"
-            "اگر بله ندارید: /skipbale\n\n"
-            "چند کانال دارید؟ همه را اضافه کنید.\n"
-            "وقتی تمام کانال‌ها اضافه شد: /nextsetupstep\n\n"
+            "شناسه کانال تلگرام را بفرستید.\n"
+            "مثال: @mychannel\n\n"
+            "❓ راهنما: /help"
+        )
+    if current_step_key == "setup_bale_channel":
+        return (
+            "▶️ افزودن کانال بله\n\n"
+            "شناسه کانال بله را بفرستید.\n"
+            "مثال: @mychannel\n\n"
             "❓ راهنما: /help"
         )
     if current_step_key == "setup_branding":
         return (
             "▶️ مرحله ۲: برندینگ رسانه\n\n"
             "اطلاعات برندینگ را جداگانه وارد کنید.\n\n"
-            "ابتدا نام کامل رسانه را بفرستید:\n"
-            "/setbranding دنیا ۲۴ انگلیسی\n\n"
+            "نام کامل رسانه را بفرستید.\n"
+            "این نام در Branding مطالب استفاده می‌شود.\n\n"
             "❓ راهنما: /help"
         )
     if current_step_key == "setup_branding_sample":
@@ -620,7 +631,11 @@ def handle_workspaces(chat_id: int) -> bool:
 
         workspaces = list_user_workspaces(user["id"], include_inactive=False)
         if not workspaces and not legacy_tenant:
-            send_message(chat_id, "❌ رسانه فعالی برای شما یافت نشد.")
+            send_message_with_keyboard(
+                chat_id,
+                "هنوز گروه رسانه‌ای ندارید.",
+                [[{"text": "➕ ایجاد گروه رسانه‌ای جدید", "callback_data": "setup:create_workspace"}]],
+            )
             return True
 
         preference = get_active_workspace_preference(user["id"]) or {}
@@ -651,39 +666,22 @@ def handle_workspaces(chat_id: int) -> bool:
             build_workspace_keyboard,
             resolve_legacy_media_label,
         )
-        list_verified_active_destinations = getattr(
-            database_module,
-            "list_verified_active_destinations",
-            lambda _workspace_id: [],
+        list_counts = getattr(database_module, "list_workspace_destination_counts", None)
+        destination_counts = (
+            list_counts([workspace["id"] for workspace in workspaces])
+            if list_counts else {}
         )
-
         display_workspaces = []
         for workspace in workspaces:
             display_workspace = dict(workspace)
-            destinations = list_verified_active_destinations(workspace["id"]) or []
-            destinations = sorted(
-                destinations,
-                key=lambda item: (
-                    not bool(item.get("is_default")),
-                    item.get("platform") != "telegram",
-                    item.get("id") or 0,
-                ),
-            )
-            primary = next(
-                (item for item in destinations if item.get("platform") == "telegram"),
-                None,
-            ) or next(
-                (item for item in destinations if item.get("platform") == "bale"),
-                None,
-            )
             display_workspace["display_label"] = (
                 workspace.get("name")
-                or (primary or {}).get("external_id")
                 or f"رسانه {workspace['id']}"
             )
-            display_workspace["display_platforms"] = sorted({
-                str(item.get("platform") or "") for item in destinations if item.get("platform")
-            })
+            display_workspace["display_platforms"] = []
+            display_workspace["destination_count"] = (
+                destination_counts.get(workspace["id"], {}).get("total", 0)
+            )
             display_workspaces.append(display_workspace)
         keyboard = build_workspace_keyboard(
             display_workspaces,
@@ -693,15 +691,14 @@ def handle_workspaces(chat_id: int) -> bool:
             legacy_active=legacy_active,
             legacy_label=resolve_legacy_media_label(legacy_tenant),
         )
-        if legacy_tenant:
-            keyboard.append([{
-                "text": "➕ ایجاد رسانه جدید",
-                "callback_data": "setup:create_workspace",
-            }])
+        keyboard.append([{
+            "text": "➕ ایجاد گروه رسانه‌ای جدید",
+            "callback_data": "setup:create_workspace",
+        }])
 
         send_message_with_keyboard(
             chat_id,
-            "🏢 رسانه‌های شما\n\nیک یا چند رسانه را برای انتشار هم‌زمان انتخاب کنید:",
+            "🏢 گروه‌های رسانه‌ای شما\n\nیک یا چند گروه را برای انتشار هم‌زمان انتخاب کنید:",
             keyboard,
         )
         return True
@@ -712,14 +709,11 @@ def handle_workspaces(chat_id: int) -> bool:
 
 
 def handle_create_workspace(chat_id: int) -> bool:
-    """Create or resume a separate workspace for a legacy account owner."""
+    """Resume an incomplete owned workspace, otherwise request a group name."""
     if not _WORKSPACE_SETUP_ENABLED:
         send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
         return True
     try:
-        database_module = importlib.import_module("core.database")
-        select_selected = getattr(database_module, "select_workspace", set_active_workspace)
-        legacy_tenant = get_tenant(chat_id)
         user = get_user_by_telegram_id(chat_id)
         if not user:
             user = get_or_create_user_by_telegram_id(chat_id, status="active")
@@ -738,35 +732,153 @@ def handle_create_workspace(chat_id: int) -> bool:
             ),
             None,
         )
-        created = workspace is None
-        if created:
-            workspace = create_workspace(
-                name="رسانه جدید",
-                owner_user_id=user["id"],
-                status="active",
+        if workspace is not None:
+            database_module = importlib.import_module("core.database")
+            clear_pending = getattr(database_module, "clear_user_pending_workspace_action", None)
+            if clear_pending:
+                clear_pending(user["id"])
+            getattr(database_module, "select_workspace", set_active_workspace)(
+                user["id"], workspace["id"]
             )
+            start_setup(workspace["id"])
+            send_message(chat_id, "▶️ راه‌اندازی نیمه‌کاره ادامه پیدا می‌کند.")
+            handle_setup(chat_id)
+            return True
 
-        select_selected(user["id"], workspace["id"])
-        start_setup(workspace["id"])
-        prefix = (
-            "✅ رسانه جدید ساخته شد. راه‌اندازی مرحله‌به‌مرحله آغاز می‌شود."
-            if created
-            else "▶️ راه‌اندازی نیمه‌کاره از مرحله ذخیره‌شده ادامه پیدا می‌کند."
-        )
-        send_message(chat_id, prefix)
-        # Reuse the exact setup command flow so new and legacy users receive
-        # the same resumable wizard without duplicating onboarding logic.
-        handle_setup(chat_id)
-        logger.info(
-            "Legacy workspace creation | "
-            f"user={chat_id} | workspace={workspace['id']} | "
-            f"created={created} | legacy={bool(legacy_tenant)}"
-        )
+        _begin_workspace_name_input(chat_id, user, "create_workspace_name")
         return True
     except Exception:
         logger.exception("Error creating workspace for legacy user")
         send_message(chat_id, "❌ خطا در ایجاد رسانه جدید")
         return False
+
+
+def _validate_workspace_name(value: str) -> Tuple[bool, str]:
+    name = str(value or "").strip()
+    if "\n" in name or "\r" in name:
+        return False, "نام گروه باید در یک خط باشد."
+    if not (WORKSPACE_NAME_MIN_LENGTH <= len(name) <= WORKSPACE_NAME_MAX_LENGTH):
+        return False, "نام گروه باید بین ۲ تا ۸۰ نویسه باشد."
+    if name.startswith("/"):
+        return False, "نام گروه نمی‌تواند با / شروع شود."
+    return True, name
+
+
+def _begin_workspace_name_input(
+    chat_id: int,
+    user: Dict[str, Any],
+    action: str,
+    workspace_id: Optional[int] = None,
+) -> bool:
+    database_module = importlib.import_module("core.database")
+    setter = getattr(database_module, "set_user_pending_workspace_action")
+    setter(user["id"], action, workspace_id)
+    if action == "rename_workspace":
+        send_message(chat_id, "✏️ نام جدید گروه را بفرستید.\nبرای لغو: /cancel")
+    else:
+        send_message(
+            chat_id,
+            "📁 نام گروه رسانه‌ای را وارد کنید\n\n"
+            "این نام فقط برای مدیریت کانال‌های شماست و در مطالب منتشرشده نمایش داده نمی‌شود.\n\n"
+            "مثال: سیاسی، اقتصادی، ورزشی\n\nبرای لغو: /cancel",
+        )
+    return True
+
+
+def begin_workspace_rename(chat_id: int, workspace_id: int) -> bool:
+    user = get_user_by_telegram_id(chat_id)
+    workspace = importlib.import_module("core.database").get_workspace(workspace_id)
+    member = get_workspace_member(workspace_id, (user or {}).get("id")) if user else None
+    if not user or not workspace or not member or member.get("status") != "active":
+        send_message(chat_id, "❌ گروه رسانه‌ای معتبر نیست.")
+        return True
+    if member.get("role") not in {"owner", "manager"}:
+        send_message(chat_id, "❌ مجوز تغییر نام این گروه را ندارید.")
+        return True
+    return _begin_workspace_name_input(
+        chat_id, user, "rename_workspace", workspace_id
+    )
+
+
+def handle_cancel_workspace_action(chat_id: int) -> bool:
+    user = get_user_by_telegram_id(chat_id)
+    if user:
+        database_module = importlib.import_module("core.database")
+        clear_pending = getattr(database_module, "clear_user_pending_workspace_action", None)
+        if clear_pending:
+            clear_pending(user["id"])
+    send_message(chat_id, "✅ عملیات لغو شد.")
+    return True
+
+
+def handle_workspace_stateful_input(text: str, chat_id: int) -> bool:
+    """Consume bare input only for a durable pending action or owned setup."""
+    value = str(text or "").strip()
+    if not value or value.startswith("/"):
+        return False
+    user = get_user_by_telegram_id(chat_id)
+    if not user:
+        return False
+    database_module = importlib.import_module("core.database")
+    refreshed_user = database_module.get_user_by_id(user["id"]) or user
+    action = refreshed_user.get("pending_workspace_action")
+
+    if action in {"create_workspace_name", "rename_workspace"}:
+        valid, name_or_error = _validate_workspace_name(value)
+        if not valid:
+            send_message(chat_id, f"❌ {name_or_error}\nدوباره نام را بفرستید یا /cancel را بزنید.")
+            return True
+        if action == "create_workspace_name":
+            workspace = create_workspace(
+                name=name_or_error, owner_user_id=user["id"], status="active"
+            )
+            database_module.clear_user_pending_workspace_action(user["id"])
+            selector = getattr(database_module, "select_workspace", None)
+            if selector is None:
+                selector = getattr(database_module, "set_active_workspace", None)
+            if selector:
+                selector(user["id"], workspace["id"])
+            if _WORKSPACE_SETUP_ENABLED:
+                start_setup(workspace["id"])
+            send_message(chat_id, f"✅ گروه رسانه‌ای «{name_or_error}» ساخته شد.")
+            if _WORKSPACE_SETUP_ENABLED:
+                handle_setup(chat_id)
+            else:
+                send_message(
+                    chat_id,
+                    "حالا مقصد انتشار خود را با /adddestination اضافه کنید.",
+                )
+            return True
+
+        workspace_id = refreshed_user.get("pending_workspace_id")
+        workspace = database_module.get_workspace(workspace_id) if workspace_id else None
+        member = get_workspace_member(workspace_id, user["id"]) if workspace_id else None
+        if not workspace or not member or member.get("status") != "active" or member.get("role") not in {"owner", "manager"}:
+            database_module.clear_user_pending_workspace_action(user["id"])
+            send_message(chat_id, "❌ امکان تغییر نام این گروه وجود ندارد.")
+            return True
+        database_module.update_workspace_name(workspace_id, name_or_error)
+        database_module.clear_user_pending_workspace_action(user["id"])
+        send_message(chat_id, f"✅ نام گروه به «{name_or_error}» تغییر کرد.")
+        return True
+
+    owned_workspaces = list_owned_workspaces(user["id"], include_inactive=True)
+    incomplete = [
+        workspace for workspace in owned_workspaces
+        if (get_workspace_setup_state(workspace["id"]) or {}).get("step") == "in_progress"
+    ]
+    if not incomplete:
+        return False
+    workspace = sorted(incomplete, key=lambda item: item.get("id", 0))[0]
+    state = get_workspace_setup_state(workspace["id"]) or {}
+    current = state.get("current_step_key")
+    if current == "setup_channel":
+        return handle_addchannel(value, chat_id)
+    if current == "setup_bale_channel":
+        return handle_addbale(value, chat_id)
+    if current == "setup_branding":
+        return handle_setbranding(value, chat_id)
+    return False
 
 
 def handle_switchworkspace(args: str, chat_id: int) -> bool:
@@ -899,19 +1011,18 @@ def handle_addchannel(args: str, chat_id: int) -> bool:
         )
 
         if is_dup:
-            send_message(
+            send_message_with_keyboard(
                 chat_id,
                 f"⚠️ کانال {external_id} قبلاً اضافه شده است.\n\n"
-                "کانال دیگری دارید؟ /addchannel @channel\n"
-                "وقتی تمام کانال‌ها اضافه شد: /nextsetupstep"
+                "می‌توانید کانال دیگری اضافه کنید یا ادامه دهید.",
+                _setup_destination_actions_keyboard(),
             )
         elif dest:
-            send_message(
+            send_message_with_keyboard(
                 chat_id,
                 f"✅ کانال {external_id} ثبت شد.\n\n"
-                "🔍 در حال بررسی دسترسی ادمین ربات...\n\n"
-                "کانال دیگری دارید؟ /addchannel @channel\n"
-                "وقتی تمام کانال‌ها اضافه شد: /nextsetupstep"
+                "🔍 در حال بررسی دسترسی ادمین ربات...",
+                _setup_destination_actions_keyboard(),
             )
             # Phase 4B: Real Telegram verification
             _verify_and_activate_channel(workspace["id"], dest, chat_id)
@@ -975,6 +1086,16 @@ def _verify_and_activate_channel(
             )
     except Exception:
         logger.exception("Error in _verify_and_activate_channel")
+
+
+def _setup_destination_actions_keyboard() -> list:
+    return [
+        [
+            {"text": "➕ افزودن کانال تلگرام", "callback_data": "setup:add_telegram"},
+            {"text": "➕ افزودن کانال بله", "callback_data": "setup:add_bale"},
+        ],
+        [{"text": "▶️ ادامه", "callback_data": "setup:continue_branding"}],
+    ]
 
 
 def handle_verifychannel(args: str, chat_id: int) -> bool:
@@ -1214,9 +1335,18 @@ def handle_addbale(args: str, chat_id: int) -> bool:
             workspace["id"], external_id, external_id
         )
         if duplicate:
-            send_message(chat_id, "⚠️ این کانال بله قبلاً ثبت شده است.")
+            send_message_with_keyboard(
+                chat_id,
+                "⚠️ این کانال بله قبلاً ثبت شده است.",
+                _setup_destination_actions_keyboard(),
+            )
             return True
         _verify_and_activate_bale(destination, chat_id)
+        send_message_with_keyboard(
+            chat_id,
+            "می‌توانید کانال دیگری اضافه کنید یا ادامه دهید.",
+            _setup_destination_actions_keyboard(),
+        )
         return True
     except Exception:
         logger.exception("Error adding Bale destination")
@@ -1293,13 +1423,13 @@ def handle_nextsetupstep(chat_id: int) -> bool:
             return True
 
         current = state.get("current_step_key", "setup_channel")
-        if current == "setup_channel":
+        if current in {"setup_channel", "setup_bale_channel"}:
             advance_to_step(workspace["id"], "setup_branding")
             send_message(chat_id, _setup_resume_message("setup_branding"))
         elif current == "setup_branding":
             branding = get_workspace_branding(workspace["id"]) or {}
             if not (branding.get("media_name") or "").strip():
-                send_message(chat_id, "❌ ابتدا برندینگ رسانه را با /setbranding ثبت کنید.")
+                send_message(chat_id, "❌ ابتدا نام کامل رسانه را بفرستید.")
             else:
                 advance_to_step(workspace["id"], "setup_branding_sample")
                 send_message(chat_id, _setup_resume_message("setup_branding_sample"))
@@ -1330,8 +1460,6 @@ def handle_setbranding(args: str, chat_id: int) -> bool:
     """
     /setbranding نام_رسانه #هشتگ @تگ_کانال — تنظیم برندینگ رسانه.
 
-    مثال: /setbranding دنیا۲۴ #دنیا_۲۴ @Donya24News
-
     برندینگ متعلق به رسانه است، نه کاربر تلگرام.
     مسیر برندینگ legacy دست‌نخورده می‌ماند.
     """
@@ -1344,7 +1472,7 @@ def handle_setbranding(args: str, chat_id: int) -> bool:
             send_message(
                 chat_id,
                 "❌ نام کامل رسانه را وارد کنید.\n\n"
-                "مثال:\n/setbranding دنیا ۲۴ انگلیسی"
+                "مثال: نام کامل رسانه"
             )
             return True
 
@@ -1412,7 +1540,7 @@ def handle_setbranding(args: str, chat_id: int) -> bool:
                     chat_id,
                     f"✅ نام رسانه ذخیره شد: {media_name}\n\n"
                     "حالا هشتگ را جداگانه وارد کنید:\n"
-                    "/sethashtag #دنیا۲۴_انگلیسی\n\n"
+                    "/sethashtag #my_media\n\n"
                     "هشتگ نباید فاصله داشته باشد."
                 )
         else:
@@ -1432,7 +1560,7 @@ def handle_sethashtag(args: str, chat_id: int) -> bool:
         send_message(
             chat_id,
             "❌ هشتگ باید با # شروع شود و فاصله نداشته باشد.\n"
-            "مثال: /sethashtag #دنیا۲۴_انگلیسی",
+            "مثال: /sethashtag #my_media",
         )
         return True
     try:
@@ -1452,7 +1580,7 @@ def handle_sethashtag(args: str, chat_id: int) -> bool:
             chat_id,
             f"✅ هشتگ ذخیره شد: {hashtag}\n\n"
             "حالا تگ کانال را جداگانه وارد کنید:\n"
-            "/setchanneltag @Donya24News_En",
+            "/setchanneltag @mychannel",
         )
         return True
     except Exception:
@@ -1466,7 +1594,7 @@ def handle_setchanneltag(args: str, chat_id: int) -> bool:
     channel_tag = (args or "").strip()
     valid, error = validate_channel(channel_tag)
     if not valid:
-        send_message(chat_id, error + "\nمثال: /setchanneltag @Donya24News_En")
+        send_message(chat_id, error + "\nمثال: /setchanneltag @mychannel")
         return True
     try:
         user, workspace = _get_workspace_for_user(chat_id)
@@ -2852,6 +2980,8 @@ def handle_command(text: str, chat_id: int) -> bool:
             "setdestinationbranding": lambda: handle_setdestinationbranding(args, chat_id),
             "removedestination": lambda: handle_removedestination(args, chat_id),
             "nextsetupstep": lambda: handle_nextsetupstep(chat_id),
+            "cancel": lambda: handle_cancel_workspace_action(chat_id),
+            "renameworkspace": lambda: begin_workspace_rename(chat_id, int(args.strip())) if args.strip().isdigit() else handle_workspaces(chat_id),
             "setbranding": lambda: handle_setbranding(args, chat_id),
             "sethashtag": lambda: handle_sethashtag(args, chat_id),
             "setchanneltag": lambda: handle_setchanneltag(args, chat_id),
@@ -2876,2131 +3006,6 @@ def handle_command(text: str, chat_id: int) -> bool:
             return commands[command]()
         
         # Unknown command
-        send_message(
-            chat_id,
-            f"❌ دستور /{command} شناسایی نشد.\n\n"
-            "برای مشاهده دستورات:\n"
-            "/help"
-        )
-        logger.warning(f"Unknown command: /{command}")
-        return True
-        
-    except Exception as e:
-        logger.exception(f"❌ Error handling command '{text}': {e}")
-        send_message(
-            chat_id,
-            "❌ خطا در پردازش دستور"
-        )
-        return False
-
-def handle_create_workspace(chat_id: int) -> bool:
-    """Create or resume a separate workspace for a legacy account owner."""
-    if not _WORKSPACE_SETUP_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    try:
-        database_module = importlib.import_module("core.database")
-        select_selected = getattr(database_module, "select_workspace", set_active_workspace)
-        legacy_tenant = get_tenant(chat_id)
-        user = get_user_by_telegram_id(chat_id)
-        if not user:
-            user = get_or_create_user_by_telegram_id(chat_id, status="active")
-
-        # Reuse an unfinished owner workspace.  This makes repeated callback
-        # delivery idempotent while never modifying or converting the legacy
-        # tenant row.
-        owned_workspaces = list_owned_workspaces(
-            user["id"], include_inactive=True
-        )
-        workspace = next(
-            (
-                item for item in owned_workspaces
-                if (get_workspace_setup_state(item["id"]) or {}).get("step")
-                != "completed"
-            ),
-            None,
-        )
-        created = workspace is None
-        if created:
-            workspace = create_workspace(
-                name="رسانه جدید",
-                owner_user_id=user["id"],
-                status="active",
-            )
-
-        select_selected(user["id"], workspace["id"])
-        start_setup(workspace["id"])
-        prefix = (
-            "✅ رسانه جدید ساخته شد. راه‌اندازی مرحله‌به‌مرحله آغاز می‌شود."
-            if created
-            else "▶️ راه‌اندازی نیمه‌کاره از مرحله ذخیره‌شده ادامه پیدا می‌کند."
-        )
-        send_message(chat_id, prefix)
-        # Reuse the exact setup command flow so new and legacy users receive
-        # the same resumable wizard without duplicating onboarding logic.
-        handle_setup(chat_id)
-        logger.info(
-            "Legacy workspace creation | "
-            f"user={chat_id} | workspace={workspace['id']} | "
-            f"created={created} | legacy={bool(legacy_tenant)}"
-        )
-        return True
-    except Exception:
-        logger.exception("Error creating workspace for legacy user")
-        send_message(chat_id, "❌ خطا در ایجاد رسانه جدید")
-        return False
-
-
-def handle_switchworkspace(args: str, chat_id: int) -> bool:
-    """Select an active workspace by numeric ID."""
-    if not _ACTIVE_WORKSPACE_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    value = (args or "").strip()
-    database_module = importlib.import_module("core.database")
-    select_selected = getattr(database_module, "select_workspace", set_active_workspace)
-    if not value:
-        return handle_workspaces(chat_id)
-    try:
-        user = get_user_by_telegram_id(chat_id)
-        if not user:
-            send_message(chat_id, "❌ ابتدا /start را بفرستید.")
-            return True
-        if value.lower() in {"legacy", "قدیمی", "دنیا24", "دنیا۲۴"}:
-            if not get_tenant(chat_id):
-                send_message(chat_id, "❌ حساب رسانه قدیمی برای شما یافت نشد.")
-                return True
-            set_active_legacy_context(user["id"])
-            send_message(chat_id, "✅ رسانه قدیمی شما فعال شد.")
-            return True
-        workspace_id = int(value)
-        select_selected(user["id"], workspace_id)
-        send_message(chat_id, "✅ رسانه فعال با موفقیت تغییر کرد.")
-        return True
-    except (TypeError, ValueError):
-        send_message(
-            chat_id,
-            "❌ شناسه رسانه معتبر نیست یا به آن دسترسی ندارید.\n"
-            "برای مشاهده رسانه‌ها: /workspaces",
-        )
-        return True
-    except Exception:
-        logger.exception("Error switching workspace")
-        send_message(chat_id, "❌ خطا در تغییر رسانه فعال")
-        return False
-
-
-# =========================================================
-# PHASE 4A — SETUP COMMAND HANDLERS
-# =========================================================
-
-def handle_setup(chat_id: int) -> bool:
-    """
-    /setup — شروع یا ادامه راه‌اندازی اولیه رسانه.
-
-    - اگر راه‌اندازی کامل شده: پنل آماده نمایش می‌دهد.
-    - اگر در حال انجام: از مرحله‌ای که متوقف شده ادامه می‌دهد.
-    - اگر هنوز شروع نشده: مرحله اول را آغاز می‌کند.
-    """
-    if not _WORKSPACE_SETUP_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    try:
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(
-                chat_id,
-                "❌ رسانه‌ای یافت نشد. ابتدا /start را بفرستید."
-            )
-            return True
-
-        state = start_setup(workspace["id"])
-        step = state.get("step", "in_progress")
-
-        if step == "completed":
-            send_message(
-                chat_id,
-                "✅ راه‌اندازی رسانه قبلاً کامل شده است.\n\n"
-                "📋 تنظیمات: /settings\n"
-                "❓ راهنما: /help"
-            )
-        else:
-            current = state.get("current_step_key", "setup_channel")
-            send_message(chat_id, _setup_resume_message(current))
-
-        return True
-    except Exception:
-        logger.exception("❌ Error in handle_setup")
-        send_message(chat_id, "❌ خطا در راه‌اندازی")
-        return False
-
-
-def handle_addchannel(args: str, chat_id: int) -> bool:
-    """
-    /addchannel @channel_id — افزودن کانال تلگرام در مرحله راه‌اندازی.
-
-    کانال با وضعیت غیر‌فعال (unverified) ذخیره می‌شود.
-    تأیید مدیریت کانال (admin verification) در Phase 4B انجام می‌شود.
-    """
-    if not _WORKSPACE_SETUP_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    try:
-        if not args:
-            send_message(
-                chat_id,
-                "❌ فرمت صحیح:\n/addchannel @channel_id\n\n"
-                "مثال: /addchannel @MyChannel"
-            )
-            return True
-
-        external_id = args.strip()
-        is_valid, err = validate_channel(external_id)
-        if not is_valid:
-            send_message(chat_id, err)
-            return True
-
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(
-                chat_id,
-                "❌ رسانه‌ای یافت نشد. ابتدا /start را بفرستید."
-            )
-            return True
-
-        if _DESTINATION_MANAGEMENT_ENABLED:
-            allowed, reason = _authorize_destination_manager(user, workspace)
-            if not allowed:
-                send_message(chat_id, f"❌ {reason}")
-                return True
-
-        dest, is_dup = register_channel_destination(
-            workspace["id"],
-            external_id=external_id,
-            name=external_id,
-        )
-
-        if is_dup:
-            send_message(
-                chat_id,
-                f"⚠️ کانال {external_id} قبلاً اضافه شده است.\n\n"
-                "کانال دیگری دارید؟ /addchannel @channel\n"
-                "وقتی تمام کانال‌ها اضافه شد: /nextsetupstep"
-            )
-        elif dest:
-            send_message(
-                chat_id,
-                f"✅ کانال {external_id} ثبت شد.\n\n"
-                "🔍 در حال بررسی دسترسی ادمین ربات...\n\n"
-                "کانال دیگری دارید؟ /addchannel @channel\n"
-                "وقتی تمام کانال‌ها اضافه شد: /nextsetupstep"
-            )
-            # Phase 4B: Real Telegram verification
-            _verify_and_activate_channel(workspace["id"], dest, chat_id)
-        else:
-            send_message(chat_id, "❌ خطا در ثبت کانال. دوباره تلاش کنید.")
-
-        return True
-    except Exception:
-        logger.exception("❌ Error in handle_addchannel")
-        send_message(chat_id, "❌ خطا در افزودن کانال")
-        return False
-
-
-# =========================================================
-# PHASE 4B — REAL TELEGRAM CHANNEL VERIFICATION
-# =========================================================
-
-def _verify_and_activate_channel(
-    workspace_id: int,
-    dest: Dict[str, Any],
-    chat_id: int
-) -> None:
-    """Run real Telegram admin verification and activate destination if verified."""
-    try:
-        if not API_URL:
-            logger.warning(
-                "Skipping channel verification — API_URL not configured"
-            )
-            return
-
-        from core.telegram_verifier import verify_channel_admin
-        from core.database import (
-            upsert_destination_verification,
-            update_publication_destination_status,
-        )
-
-        external_id = dest["external_id"]
-        verified, note = verify_channel_admin(API_URL, external_id)
-
-        upsert_destination_verification(
-            dest["id"],
-            verified=verified,
-            verification_note=note,
-        )
-
-        if verified:
-            update_publication_destination_status(dest["id"], "active")
-            send_message(
-                chat_id,
-                f"✅ کانال با موفقیت متصل شد.\n\n"
-                f"کانال {external_id} آماده انتشار است."
-            )
-        else:
-            # A destination that loses Telegram permissions must fail closed.
-            update_publication_destination_status(dest["id"], "inactive")
-            send_message(
-                chat_id,
-                f"⚠️ بررسی دسترسی ناموفق بود:\n{note}\n\n"
-                f"ابتدا ربات را به عنوان مدیر کانال اضافه کنید،\n"
-                f"سپس دوباره تلاش کنید:\n/verifychannel {external_id}"
-            )
-    except Exception:
-        logger.exception("Error in _verify_and_activate_channel")
-
-
-def handle_verifychannel(args: str, chat_id: int) -> bool:
-    """
-    /verifychannel @channel_id — بررسی مجدد دسترسی ادمین ربات در کانال.
-
-    اگر تأیید موفق باشد، کانال فعال (active) می‌شود.
-    """
-    if not _WORKSPACE_SETUP_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    try:
-        if not args:
-            send_message(
-                chat_id,
-                "❌ فرمت صحیح:\n/verifychannel @channel_id\n\n"
-                "مثال: /verifychannel @MyChannel"
-            )
-            return True
-
-        external_id = args.strip()
-        is_valid, err = validate_channel(external_id)
-        if not is_valid:
-            send_message(chat_id, err)
-            return True
-
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(
-                chat_id,
-                "❌ رسانه‌ای یافت نشد. ابتدا /start را بفرستید."
-            )
-            return True
-
-        if _DESTINATION_MANAGEMENT_ENABLED:
-            allowed, reason = _authorize_destination_manager(user, workspace)
-            if not allowed:
-                send_message(chat_id, f"❌ {reason}")
-                return True
-
-        from core.database import list_workspace_destinations
-
-        destinations = list_workspace_destinations(
-            workspace["id"],
-            include_removed=False
-        )
-        target = None
-        for destination in destinations:
-            if destination.get("external_id") == external_id:
-                target = destination
-                break
-
-        if not target:
-            send_message(
-                chat_id,
-                f"❌ کانال {external_id} در این رسانه ثبت نشده است.\n\n"
-                f"ابتدا آن را اضافه کنید:\n/addchannel {external_id}"
-            )
-            return True
-
-        _verify_and_activate_channel(workspace["id"], target, chat_id)
-        return True
-    except Exception:
-        logger.exception("❌ Error in handle_verifychannel")
-        send_message(chat_id, "❌ خطا در بررسی کانال")
-        return False
-
-
-def handle_destinations(chat_id: int) -> bool:
-    """List publication destinations for the active workspace."""
-    if not _DESTINATION_MANAGEMENT_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    try:
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
-            return True
-        destinations = list_workspace_destinations(workspace["id"])
-        if not destinations:
-            send_message(chat_id, "📡 هنوز مقصدی ثبت نشده است.\n/addchannel @channel")
-            return True
-        lines = [f"📡 مقصدهای {workspace.get('name') or workspace['id']}"]
-        for destination in destinations:
-            marker = "⭐" if destination.get("is_default") else "•"
-            lines.append(
-                f"{marker} {destination['id']} — {destination.get('external_id')} "
-                f"— {destination.get('status')}"
-            )
-        send_long_message(chat_id, "\n".join(lines))
-        return True
-    except Exception:
-        logger.exception("Error listing destinations")
-        send_message(chat_id, "❌ خطا در نمایش مقصدها")
-        return False
-
-
-def _destination_command_context(chat_id: int, destination_id: int):
-    user, workspace = _get_workspace_for_user(chat_id)
-    if not workspace:
-        return user, workspace, None, "رسانه‌ای یافت نشد."
-    allowed, reason = _authorize_destination_manager(user, workspace)
-    if not allowed:
-        return user, workspace, None, reason
-    destination = find_workspace_destination(
-        list_workspace_destinations(workspace["id"]), destination_id
-    )
-    if not destination:
-        return user, workspace, None, "مقصد در رسانه فعال شما یافت نشد."
-    return user, workspace, destination, ""
-
-
-def handle_setdefaultdestination(args: str, chat_id: int) -> bool:
-    """Set an active destination as the workspace default."""
-    value = (args or "").strip()
-    if not _DESTINATION_MANAGEMENT_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    if not value.isdigit():
-        send_message(chat_id, "❌ فرمت صحیح: /setdefaultdestination DESTINATION_ID")
-        return True
-    try:
-        _, workspace, destination, error = _destination_command_context(
-            chat_id, int(value)
-        )
-        if error:
-            send_message(chat_id, f"❌ {error}")
-            return True
-        if destination.get("status") != "active":
-            send_message(chat_id, "❌ فقط مقصد تأییدشده و فعال می‌تواند پیش‌فرض باشد.")
-            return True
-        set_default_publication_destination(workspace["id"], destination["id"])
-        send_message(chat_id, f"✅ مقصد {destination['external_id']} پیش‌فرض شد.")
-        return True
-    except Exception:
-        logger.exception("Error setting default destination")
-        send_message(chat_id, "❌ خطا در تعیین مقصد پیش‌فرض")
-        return False
-
-
-def handle_removedestination(args: str, chat_id: int) -> bool:
-    """Soft-remove a destination from the active workspace."""
-    value = (args or "").strip()
-    if not _DESTINATION_MANAGEMENT_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    if not value.isdigit():
-        send_message(chat_id, "❌ فرمت صحیح: /removedestination DESTINATION_ID")
-        return True
-    try:
-        _, _, destination, error = _destination_command_context(chat_id, int(value))
-        if error:
-            send_message(chat_id, f"❌ {error}")
-            return True
-        update_publication_destination_status(destination["id"], "removed")
-        send_message(chat_id, f"✅ مقصد {destination['external_id']} حذف شد.")
-        return True
-    except Exception:
-        logger.exception("Error removing destination")
-        send_message(chat_id, "❌ خطا در حذف مقصد")
-        return False
-
-
-def handle_setdestinationbranding(args: str, chat_id: int) -> bool:
-    """Set hashtag and channel tag overrides for one destination."""
-    parts = (args or "").split()
-    if not _DESTINATION_MANAGEMENT_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    if len(parts) < 1 or not parts[0].isdigit():
-        send_message(
-            chat_id,
-            "❌ فرمت صحیح: /setdestinationbranding DESTINATION_ID #هشتگ @تگ",
-        )
-        return True
-    try:
-        destination_id = int(parts[0])
-        hashtag = parts[1] if len(parts) > 1 else ""
-        channel_tag = parts[2] if len(parts) > 2 else ""
-        _, _, destination, error = _destination_command_context(
-            chat_id, destination_id
-        )
-        if error:
-            send_message(chat_id, f"❌ {error}")
-            return True
-        save_destination_branding(
-            destination["id"], hashtag=hashtag, channel_tag=channel_tag
-        )
-        send_message(chat_id, f"✅ برندینگ مقصد {destination['external_id']} ذخیره شد.")
-        return True
-    except Exception:
-        logger.exception("Error setting destination branding")
-        send_message(chat_id, "❌ خطا در تنظیم برندینگ مقصد")
-        return False
-
-
-def _verify_and_activate_bale(dest: Dict[str, Any], chat_id: int) -> bool:
-    token = os.getenv("BALE_BOT_TOKEN", "").strip()
-    verified, note = verify_bale_channel_admin(token, dest["external_id"])
-    upsert_destination_verification(
-        dest["id"], verified=verified, verification_note=note
-    )
-    update_publication_destination_status(
-        dest["id"], "active" if verified else "inactive"
-    )
-    if verified:
-        send_message(chat_id, f"✅ کانال بله {dest['external_id']} متصل شد.")
-    else:
-        send_message(
-            chat_id,
-            f"⚠️ اتصال بله کامل نشد: {note}\n"
-            "ثبت‌نام و انتشار تلگرام بدون اختلال ادامه دارد.",
-        )
-    return bool(verified)
-
-
-def handle_addbale(args: str, chat_id: int) -> bool:
-    """Register an optional Bale channel using the central Bale bot."""
-    if not _BALE_WORKSPACE_ENABLED:
-        send_message(chat_id, "❌ اتصال بله در حال حاضر فعال نیست.")
-        return True
-    external_id = (args or "").strip()
-    valid, error = validate_channel(external_id)
-    if not valid:
-        send_message(chat_id, error or "❌ فرمت صحیح: /addbale @channel")
-        return True
-    try:
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
-            return True
-        allowed, reason = _authorize_destination_manager(user, workspace)
-        if not allowed:
-            send_message(chat_id, f"❌ {reason}")
-            return True
-        destination, duplicate = register_bale_destination(
-            workspace["id"], external_id, external_id
-        )
-        if duplicate:
-            send_message(chat_id, "⚠️ این کانال بله قبلاً ثبت شده است.")
-            return True
-        _verify_and_activate_bale(destination, chat_id)
-        return True
-    except Exception:
-        logger.exception("Error adding Bale destination")
-        send_message(chat_id, "❌ خطا در افزودن بله؛ تلگرام فعال باقی می‌ماند.")
-        return False
-
-
-def handle_verifybale(args: str, chat_id: int) -> bool:
-    """Retry optional Bale verification without blocking Telegram."""
-    external_id = (args or "").strip()
-    if not external_id:
-        send_message(chat_id, "❌ فرمت صحیح: /verifybale @channel")
-        return True
-    try:
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
-            return True
-        allowed, reason = _authorize_destination_manager(user, workspace)
-        if not allowed:
-            send_message(chat_id, f"❌ {reason}")
-            return True
-        destination = next(
-            (
-                item for item in list_workspace_destinations(workspace["id"])
-                if item.get("platform") == "bale"
-                and item.get("external_id") == external_id
-            ),
-            None,
-        )
-        if not destination:
-            send_message(chat_id, "❌ ابتدا کانال بله را با /addbale ثبت کنید.")
-            return True
-        _verify_and_activate_bale(destination, chat_id)
-        return True
-    except Exception:
-        logger.exception("Error verifying Bale destination")
-        send_message(chat_id, "❌ خطا در تأیید بله؛ تلگرام فعال باقی می‌ماند.")
-        return False
-
-
-def handle_skipbale(chat_id: int) -> bool:
-    send_message(
-        chat_id,
-        "✅ بله فعلاً رد شد. ثبت‌نام تلگرام ادامه دارد.\n"
-        "بعداً می‌توانید از /addbale استفاده کنید.",
-    )
-    return True
-
-
-def handle_nextsetupstep(chat_id: int) -> bool:
-    """
-    /nextsetupstep — پیشروی به مرحله بعدی راه‌اندازی.
-    از مرحله کانال به مرحله برندینگ می‌رود.
-    """
-    if not _WORKSPACE_SETUP_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    try:
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(
-                chat_id,
-                "❌ رسانه‌ای یافت نشد. ابتدا /start را بفرستید."
-            )
-            return True
-
-        state = get_or_init_setup_state(workspace["id"])
-        if state.get("step") == "completed":
-            send_message(
-                chat_id,
-                "✅ راه‌اندازی قبلاً کامل شده است.\n/settings"
-            )
-            return True
-
-        current = state.get("current_step_key", "setup_channel")
-        if current == "setup_channel":
-            advance_to_step(workspace["id"], "setup_branding")
-            send_message(chat_id, _setup_resume_message("setup_branding"))
-        elif current == "setup_branding":
-            branding = get_workspace_branding(workspace["id"]) or {}
-            if not (branding.get("media_name") or "").strip():
-                send_message(chat_id, "❌ ابتدا برندینگ رسانه را با /setbranding ثبت کنید.")
-            else:
-                advance_to_step(workspace["id"], "setup_branding_sample")
-                send_message(chat_id, _setup_resume_message("setup_branding_sample"))
-        elif current == "setup_branding_sample":
-            if state.get("branding_sample_status") != "confirmed":
-                send_message(
-                    chat_id,
-                    "❌ ابتدا نمونه پیام را بفرستید و پیش‌نمایش را با "
-                    "/confirmbranding تأیید کنید."
-                )
-            else:
-                advance_to_step(workspace["id"], "setup_member")
-                send_message(chat_id, _setup_resume_message("setup_member"))
-        else:
-            send_message(
-                chat_id,
-                "✅ همه مراحل راه‌اندازی کامل شده‌اند.\n"
-                "برای پایان: /finishsetup"
-            )
-        return True
-    except Exception:
-        logger.exception("❌ Error in handle_nextsetupstep")
-        send_message(chat_id, "❌ خطا در پیشروی مرحله")
-        return False
-
-
-def handle_setbranding(args: str, chat_id: int) -> bool:
-    """
-    /setbranding نام_رسانه #هشتگ @تگ_کانال — تنظیم برندینگ رسانه.
-
-    مثال: /setbranding دنیا۲۴ #دنیا_۲۴ @Donya24News
-
-    برندینگ متعلق به رسانه است، نه کاربر تلگرام.
-    مسیر برندینگ legacy دست‌نخورده می‌ماند.
-    """
-    if not _WORKSPACE_SETUP_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    try:
-        raw_value = (args or "").strip()
-        if not raw_value:
-            send_message(
-                chat_id,
-                "❌ نام کامل رسانه را وارد کنید.\n\n"
-                "مثال:\n/setbranding دنیا ۲۴ انگلیسی"
-            )
-            return True
-
-        # Keep the historical combined syntax working, but treat every word
-        # before #/@ as the full media name.
-        parts = raw_value.split()
-        hashtag_index = next(
-            (i for i, value in enumerate(parts) if value.startswith("#")), None
-        )
-        tag_index = next(
-            (i for i, value in enumerate(parts) if value.startswith("@")), None
-        )
-        markers = [i for i in (hashtag_index, tag_index) if i is not None]
-        media_name = " ".join(parts[:min(markers) if markers else len(parts)]).strip()
-        supplied_hashtag = parts[hashtag_index] if hashtag_index is not None else ""
-        supplied_tag = parts[tag_index] if tag_index is not None else ""
-
-        if not media_name:
-            send_message(chat_id, "❌ نام رسانه نمی‌تواند خالی باشد.")
-            return True
-
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(
-                chat_id,
-                "❌ رسانه‌ای یافت نشد. ابتدا /start را بفرستید."
-            )
-            return True
-
-        if _DESTINATION_MANAGEMENT_ENABLED:
-            allowed, reason = _authorize_destination_manager(user, workspace)
-            if not allowed:
-                send_message(chat_id, f"❌ {reason}")
-                return True
-
-        current_branding = get_workspace_branding(workspace["id"]) or {}
-        hashtag = supplied_hashtag or current_branding.get("hashtag", "")
-        channel_tag = supplied_tag or current_branding.get("channel_tag", "")
-        branding = save_workspace_branding(
-            workspace["id"],
-            media_name=media_name,
-            hashtag=hashtag,
-            channel_tag=channel_tag,
-        )
-
-        if branding:
-            setup_state = get_or_init_setup_state(workspace["id"])
-            combined_command = bool(supplied_hashtag or supplied_tag)
-            if setup_state.get("step") != "completed" and combined_command:
-                advance_to_step(workspace["id"], "setup_branding_sample")
-                update_workspace_branding_sample(
-                    workspace["id"], "", [], "not_started"
-                )
-            if combined_command:
-                send_message(
-                    chat_id,
-                    f"✅ برندینگ رسانه ذخیره شد:\n"
-                    f"نام رسانه: {media_name}\n"
-                    f"هشتگ: {hashtag or '(تنظیم نشده)'}\n"
-                    f"تگ کانال: {channel_tag or '(تنظیم نشده)'}\n\n"
-                    "حالا یک نمونه پیام واقعی بفرستید یا فوروارد کنید."
-                )
-            else:
-                send_message(
-                    chat_id,
-                    f"✅ نام رسانه ذخیره شد: {media_name}\n\n"
-                    "حالا هشتگ را جداگانه وارد کنید:\n"
-                    "/sethashtag #دنیا۲۴_انگلیسی\n\n"
-                    "هشتگ نباید فاصله داشته باشد."
-                )
-        else:
-            send_message(chat_id, "❌ خطا در ذخیره برندینگ.")
-
-        return True
-    except Exception:
-        logger.exception("❌ Error in handle_setbranding")
-        send_message(chat_id, "❌ خطا در تنظیم برندینگ")
-        return False
-
-
-def handle_sethashtag(args: str, chat_id: int) -> bool:
-    """Store an onboarding hashtag independently from the media name."""
-    hashtag = (args or "").strip()
-    if not hashtag.startswith("#") or any(ch.isspace() for ch in hashtag):
-        send_message(
-            chat_id,
-            "❌ هشتگ باید با # شروع شود و فاصله نداشته باشد.\n"
-            "مثال: /sethashtag #دنیا۲۴_انگلیسی",
-        )
-        return True
-    try:
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(chat_id, "❌ رسانه‌ای یافت نشد. ابتدا /start را بفرستید.")
-            return True
-        current = get_workspace_branding(workspace["id"]) or {}
-        media_name = (current.get("media_name") or "").strip()
-        if not media_name:
-            send_message(chat_id, "❌ ابتدا نام رسانه را با /setbranding وارد کنید.")
-            return True
-        save_workspace_branding(
-            workspace["id"], media_name, hashtag, current.get("channel_tag", "")
-        )
-        send_message(
-            chat_id,
-            f"✅ هشتگ ذخیره شد: {hashtag}\n\n"
-            "حالا تگ کانال را جداگانه وارد کنید:\n"
-            "/setchanneltag @Donya24News_En",
-        )
-        return True
-    except Exception:
-        logger.exception("❌ Error in handle_sethashtag")
-        send_message(chat_id, "❌ خطا در ذخیره هشتگ")
-        return False
-
-
-def handle_setchanneltag(args: str, chat_id: int) -> bool:
-    """Finish stepwise branding collection and request a branding sample."""
-    channel_tag = (args or "").strip()
-    valid, error = validate_channel(channel_tag)
-    if not valid:
-        send_message(chat_id, error + "\nمثال: /setchanneltag @Donya24News_En")
-        return True
-    try:
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(chat_id, "❌ رسانه‌ای یافت نشد. ابتدا /start را بفرستید.")
-            return True
-        current = get_workspace_branding(workspace["id"]) or {}
-        media_name = (current.get("media_name") or "").strip()
-        hashtag = (current.get("hashtag") or "").strip()
-        if not media_name or not hashtag:
-            send_message(chat_id, "❌ ابتدا نام رسانه و هشتگ را وارد کنید.")
-            return True
-        save_workspace_branding(workspace["id"], media_name, hashtag, channel_tag)
-        state = get_or_init_setup_state(workspace["id"])
-        if state.get("step") != "completed":
-            advance_to_step(workspace["id"], "setup_branding_sample")
-            update_workspace_branding_sample(workspace["id"], "", [], "not_started")
-        send_message(
-            chat_id,
-            f"✅ تگ کانال ذخیره شد: {channel_tag}\n\n"
-            "حالا یک نمونه پیام واقعی بفرستید یا فوروارد کنید.\n"
-            "ربات پیش‌نمایش برندینگ و آیکون‌ها را برای تأیید نمایش می‌دهد.",
-        )
-        return True
-    except Exception:
-        logger.exception("❌ Error in handle_setchanneltag")
-        send_message(chat_id, "❌ خطا در ذخیره تگ کانال")
-        return False
-
-
-def handle_branding_sample_message(message: Dict[str, Any], chat_id: int) -> bool:
-    """Capture a non-command sample while onboarding is at sample confirmation."""
-    if not _PUBLICATION_ICONS_ENABLED:
-        return False
-    user, workspace = _get_workspace_for_user(chat_id)
-    if not workspace:
-        return False
-    if _DESTINATION_MANAGEMENT_ENABLED:
-        allowed, _ = _authorize_destination_manager(user, workspace)
-        if not allowed:
-            return False
-    state = get_or_init_setup_state(workspace["id"])
-    if state.get("current_step_key") != "setup_branding_sample":
-        return False
-
-    sample_text = (message.get("caption") or message.get("text") or "").strip()
-    if not sample_text:
-        send_message(
-            chat_id,
-            "❌ نمونه باید متن یا کپشن داشته باشد. لطفاً یک پیام متنی یا رسانه دارای کپشن بفرستید."
-        )
-        return True
-
-    branding = get_workspace_branding(workspace["id"]) or {}
-    sample_entities = list(
-        message.get("caption_entities")
-        or message.get("entities")
-        or []
-    )
-    analysis = analyze_branding_sample(sample_text, sample_entities)
-    icons = analysis["icons"]
-    bale_channel = analysis.get("bale_channel") or ""
-    bale_url = analysis.get("bale_url") or ""
-    bale_status = "pending" if bale_channel else "none"
-    update_workspace_branding_sample(
-        workspace["id"],
-        sample_text,
-        icons,
-        "pending_confirmation",
-        bale_url=bale_url,
-        bale_channel=bale_channel,
-        bale_status=bale_status,
-        profile=analysis["profile"],
-    )
-    preview = build_branding_preview_html(
-        sample_text,
-        icons,
-        branding,
-        analysis.get("bold_texts") or [],
-    )
-    send_message(chat_id, "👁 پیش‌نمایش خروجی پیشنهادی:")
-    if len(preview) <= 4000:
-        send_message(chat_id, preview or "(بدون متن)", parse_mode="HTML")
-    else:
-        # A registration sample can be longer than Telegram's message limit.
-        # Fall back to safely split plain text instead of losing the preview.
-        send_long_message(
-            chat_id,
-            build_branding_preview(sample_text, icons, branding) or "(بدون متن)",
-        )
-    details = (
-        "تمام آیکون‌های شناسایی‌شده: "
-        f"{' '.join(icons) if icons else '(بدون آیکون)'}\n"
-        "آیکون عنوان/بدنه: "
-        f"{' '.join(analysis['structural_icons']) if analysis['structural_icons'] else '(ندارد)'}\n"
-        "آیکون CTA: "
-        f"{' '.join(analysis['cta_icons']) if analysis['cta_icons'] else '(ندارد)'}\n"
-        f"هشتگ‌ها: {' '.join(analysis['hashtags']) if analysis['hashtags'] else '(ندارد)'}\n"
-        f"آیدی‌ها: {' '.join(analysis['mentions']) if analysis['mentions'] else '(ندارد)'}\n"
-        f"قالب Bold: {'شناسایی شد' if analysis.get('bold_texts') else 'وجود ندارد'}\n\n"
-    )
-    if bale_channel:
-        details += (
-            "🔗 کانال بله پیشنهادی شناسایی شد:\n"
-            f"{bale_channel}\n{bale_url}\n"
-            "برای اتصال و بررسی دسترسی ربات: /confirmbalesuggestion\n"
-            "برای نادیده‌گرفتن: /ignorebalesuggestion\n\n"
-        )
-    details += (
-        "اگر قالب خروجی درست است: /confirmbranding\n"
-        "برای فرستادن نمونه دیگر: /resamplebranding"
-    )
-    send_message(chat_id, details)
-    return True
-
-
-def handle_confirmbalesuggestion(chat_id: int) -> bool:
-    """Confirm, register and verify the Bale channel inferred from the sample."""
-    user, workspace = _get_workspace_for_user(chat_id)
-    if not workspace:
-        send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
-        return True
-    allowed, reason = _authorize_destination_manager(user, workspace)
-    if not allowed:
-        send_message(chat_id, f"❌ {reason}")
-        return True
-    state = get_or_init_setup_state(workspace["id"])
-    channel = (state.get("branding_sample_bale_channel") or "").strip()
-    if state.get("branding_sample_bale_status") != "pending" or not channel:
-        send_message(chat_id, "❌ پیشنهاد فعالی برای کانال بله وجود ندارد.")
-        return True
-    destination, duplicate = register_bale_destination(
-        workspace["id"], channel, channel
-    )
-    if duplicate:
-        existing = [
-            item for item in list_workspace_destinations(workspace["id"])
-            if item.get("platform") == "bale" and item.get("external_id") == channel
-        ]
-        destination = existing[0] if existing else destination
-    verified = bool(destination) and _verify_and_activate_bale(destination, chat_id)
-    update_workspace_branding_sample(
-        workspace["id"],
-        state.get("branding_sample_text") or "",
-        state.get("branding_sample_icons") or [],
-        state.get("branding_sample_status") or "pending_confirmation",
-        bale_url=state.get("branding_sample_bale_url") or "",
-        bale_channel=channel,
-        bale_status="connected" if verified else "pending",
-        profile=state.get("branding_sample_profile") or {},
-    )
-    return True
-
-
-def handle_ignorebalesuggestion(chat_id: int) -> bool:
-    """Ignore an inferred Bale channel without blocking Telegram onboarding."""
-    user, workspace = _get_workspace_for_user(chat_id)
-    if not workspace:
-        send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
-        return True
-    allowed, reason = _authorize_destination_manager(user, workspace)
-    if not allowed:
-        send_message(chat_id, f"❌ {reason}")
-        return True
-    state = get_or_init_setup_state(workspace["id"])
-    update_workspace_branding_sample(
-        workspace["id"],
-        state.get("branding_sample_text") or "",
-        state.get("branding_sample_icons") or [],
-        state.get("branding_sample_status") or "pending_confirmation",
-        bale_url=state.get("branding_sample_bale_url") or "",
-        bale_channel=state.get("branding_sample_bale_channel") or "",
-        bale_status="ignored",
-        profile=state.get("branding_sample_profile") or {},
-    )
-    send_message(chat_id, "✅ پیشنهاد کانال بله نادیده گرفته شد؛ ثبت‌نام تلگرام ادامه دارد.")
-    return True
-
-
-def handle_confirmbranding(chat_id: int) -> bool:
-    """Commit the pending sample icon profile only after explicit owner approval."""
-    user, workspace = _get_workspace_for_user(chat_id)
-    if not workspace:
-        send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
-        return True
-    if _DESTINATION_MANAGEMENT_ENABLED:
-        allowed, reason = _authorize_destination_manager(user, workspace)
-        if not allowed:
-            send_message(chat_id, f"❌ {reason}")
-            return True
-    state = get_or_init_setup_state(workspace["id"])
-    if (
-        state.get("current_step_key") != "setup_branding_sample"
-        or state.get("branding_sample_status") != "pending_confirmation"
-    ):
-        send_message(chat_id, "❌ ابتدا یک نمونه پیام برای پیش‌نمایش بفرستید.")
-        return True
-
-    icons = normalize_icons(state.get("branding_sample_icons") or [])
-    profile = state.get("branding_sample_profile") or {}
-    current_branding = get_workspace_branding(workspace["id"]) or {}
-    extracted_hashtags = profile.get("hashtags") or []
-    extracted_mentions = profile.get("mentions") or []
-    # Confirmation means the sample itself is authoritative for branding.
-    # Keep the separately supplied media name, but replace footer tokens when
-    # the sample contains them.
-    save_workspace_branding(
-        workspace["id"],
-        current_branding.get("media_name") or workspace.get("name") or "رسانه",
-        extracted_hashtags[0] if extracted_hashtags else current_branding.get("hashtag") or "",
-        extracted_mentions[0] if extracted_mentions else current_branding.get("channel_tag") or "",
-    )
-    update_workspace_branding_icons(workspace["id"], icons, enabled=bool(icons))
-    update_workspace_branding_profile(
-        workspace["id"], profile
-    )
-    update_workspace_branding_sample(
-        workspace["id"],
-        state.get("branding_sample_text") or "",
-        icons,
-        "confirmed",
-        profile=profile,
-    )
-    advance_to_step(workspace["id"], "setup_member")
-    send_message(
-        chat_id,
-        "✅ قالب برندینگ و آیکون‌ها تأیید و ذخیره شد.\n\n"
-        + _setup_resume_message("setup_member")
-    )
-    return True
-
-
-def handle_resamplebranding(chat_id: int) -> bool:
-    """Discard the pending preview and wait for another sample message."""
-    user, workspace = _get_workspace_for_user(chat_id)
-    if not workspace:
-        send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
-        return True
-    if _DESTINATION_MANAGEMENT_ENABLED:
-        allowed, reason = _authorize_destination_manager(user, workspace)
-        if not allowed:
-            send_message(chat_id, f"❌ {reason}")
-            return True
-    advance_to_step(workspace["id"], "setup_branding_sample")
-    update_workspace_branding_sample(
-        workspace["id"], "", [], "not_started",
-        bale_url="", bale_channel="", bale_status="none", profile={},
-    )
-    send_message(chat_id, _setup_resume_message("setup_branding_sample"))
-    return True
-
-
-def handle_seticons(args: str, chat_id: int) -> bool:
-    """Replace the complete ordered icon list with any supplied Unicode icons."""
-    if not _PUBLICATION_ICONS_ENABLED:
-        send_message(chat_id, "❌ تنظیم آیکون در حال حاضر فعال نیست.")
-        return True
-    icons = normalize_icons((args or "").split())
-    if not icons:
-        send_message(chat_id, "❌ آیکونی پیدا نشد. مثال: /seticons 🟢 🔵")
-        return True
-    try:
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
-            return True
-        allowed, reason = _authorize_destination_manager(user, workspace)
-        if not allowed:
-            send_message(chat_id, f"❌ {reason}")
-            return True
-        update_workspace_branding_icons(workspace["id"], icons, enabled=True)
-        send_message(chat_id, f"✅ آیکون‌ها ذخیره شدند:\n{' '.join(icons)}")
-        return True
-    except Exception:
-        logger.exception("Error updating publication icons")
-        send_message(chat_id, "❌ خطا در ذخیره آیکون‌ها")
-        return False
-
-
-def handle_clearicons(chat_id: int) -> bool:
-    """Disable all publication icons for the active workspace."""
-    if not _PUBLICATION_ICONS_ENABLED:
-        send_message(chat_id, "❌ تنظیم آیکون در حال حاضر فعال نیست.")
-        return True
-    try:
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
-            return True
-        allowed, reason = _authorize_destination_manager(user, workspace)
-        if not allowed:
-            send_message(chat_id, f"❌ {reason}")
-            return True
-        update_workspace_branding_icons(workspace["id"], [], enabled=False)
-        send_message(chat_id, "✅ انتشار بدون آیکون تنظیم شد.")
-        return True
-    except Exception:
-        logger.exception("Error clearing publication icons")
-        send_message(chat_id, "❌ خطا در حذف آیکون‌ها")
-        return False
-
-
-def handle_addmember(args: str, chat_id: int) -> bool:
-    """
-    /addmember TELEGRAM_ID نقش — افزودن عضو به رسانه.
-
-    نقش‌های مجاز: manager, publisher, writer
-    یک کاربر می‌تواند عضو چند رسانه باشد (multi-workspace).
-    نقش مالک قابل انتقال نیست.
-    """
-    if not _WORKSPACE_SETUP_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    try:
-        parts = (args or "").split()
-        if len(parts) < 2:
-            send_message(
-                chat_id,
-                "❌ فرمت صحیح:\n"
-                "/addmember TELEGRAM_ID نقش\n\n"
-                "نقش‌های مجاز: manager, publisher, writer\n\n"
-                "مثال: /addmember 123456789 manager"
-            )
-            return True
-
-        try:
-            target_telegram_id = int(parts[0])
-        except ValueError:
-            send_message(
-                chat_id,
-                "❌ شناسه تلگرام باید عدد باشد.\n"
-                "مثال: /addmember 123456789 manager"
-            )
-            return True
-
-        role = parts[1].strip().lower()
-
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(
-                chat_id,
-                "❌ رسانه‌ای یافت نشد. ابتدا /start را بفرستید."
-            )
-            return True
-
-        actor = get_workspace_member(workspace["id"], user["id"])
-        allowed, reason = authorize_member_action(
-            (actor or {}).get("role"),
-            requested_role=role,
-        ) if _MEMBER_MANAGEMENT_ENABLED else (True, "")
-        if not allowed:
-            send_message(chat_id, f"❌ {reason}")
-            return True
-
-        membership, err = add_member_to_workspace(
-            workspace["id"],
-            target_telegram_id,
-            role=role,
-        )
-
-        if err == "duplicate":
-            send_message(
-                chat_id,
-                f"⚠️ کاربر {target_telegram_id} قبلاً عضو این رسانه است.\n\n"
-                "عضو دیگری: /addmember TELEGRAM_ID نقش\n"
-                "پایان: /finishsetup"
-            )
-        elif membership:
-            send_message(
-                chat_id,
-                f"✅ عضو جدید با نقش {role} اضافه شد.\n\n"
-                "عضو دیگری: /addmember TELEGRAM_ID نقش\n"
-                "پایان: /finishsetup"
-            )
-        else:
-            send_message(chat_id, f"❌ {err or 'خطا در افزودن عضو'}")
-
-        return True
-    except Exception:
-        logger.exception("❌ Error in handle_addmember")
-        send_message(chat_id, "❌ خطا در افزودن عضو")
-        return False
-
-
-def handle_members(chat_id: int) -> bool:
-    """List members of the active workspace."""
-    if not _MEMBER_MANAGEMENT_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    try:
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
-            return True
-        actor = get_workspace_member(workspace["id"], user["id"])
-        if (actor or {}).get("role") not in {"owner", "manager"}:
-            send_message(chat_id, "❌ فقط مالک یا مدیر می‌تواند فهرست اعضا را ببیند.")
-            return True
-
-        lines = [f"👥 اعضای {workspace.get('name') or workspace['id']}"]
-        for member in list_workspace_members(workspace["id"], include_inactive=True):
-            member_user = get_user_by_id(member["user_id"]) or {}
-            telegram_id = member_user.get("telegram_user_id", member["user_id"])
-            lines.append(
-                f"• {telegram_id} — {member.get('role')} — {member.get('status')}"
-            )
-        send_long_message(chat_id, "\n".join(lines))
-        return True
-    except Exception:
-        logger.exception("Error listing workspace members")
-        send_message(chat_id, "❌ خطا در نمایش اعضا")
-        return False
-
-
-def _find_member_by_telegram_id(workspace_id: int, telegram_id: int):
-    target_user = get_user_by_telegram_id(telegram_id)
-    if not target_user:
-        return None, None
-    return target_user, get_workspace_member(workspace_id, target_user["id"])
-
-
-def handle_setmemberrole(args: str, chat_id: int) -> bool:
-    """Change a non-owner member role in the active workspace."""
-    if not _MEMBER_MANAGEMENT_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    parts = (args or "").split()
-    if len(parts) != 2 or not parts[0].isdigit():
-        send_message(chat_id, "❌ فرمت صحیح: /setmemberrole TELEGRAM_ID نقش")
-        return True
-    try:
-        telegram_id, role = int(parts[0]), parts[1].lower()
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
-            return True
-        actor = get_workspace_member(workspace["id"], user["id"])
-        target_user, target = _find_member_by_telegram_id(workspace["id"], telegram_id)
-        if not target:
-            send_message(chat_id, "❌ این کاربر عضو رسانه نیست.")
-            return True
-        allowed, reason = authorize_member_action(
-            (actor or {}).get("role"), target.get("role"), role
-        )
-        if not allowed:
-            send_message(chat_id, f"❌ {reason}")
-            return True
-        update_workspace_member_role(workspace["id"], target_user["id"], role)
-        send_message(chat_id, f"✅ نقش کاربر {telegram_id} به {role} تغییر کرد.")
-        return True
-    except Exception:
-        logger.exception("Error changing workspace member role")
-        send_message(chat_id, "❌ خطا در تغییر نقش عضو")
-        return False
-
-
-def handle_removemember(args: str, chat_id: int) -> bool:
-    """Soft-remove a non-owner member from the active workspace."""
-    if not _MEMBER_MANAGEMENT_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    value = (args or "").strip()
-    if not value.isdigit():
-        send_message(chat_id, "❌ فرمت صحیح: /removemember TELEGRAM_ID")
-        return True
-    try:
-        telegram_id = int(value)
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(chat_id, "❌ رسانه‌ای یافت نشد.")
-            return True
-        actor = get_workspace_member(workspace["id"], user["id"])
-        target_user, target = _find_member_by_telegram_id(workspace["id"], telegram_id)
-        if not target:
-            send_message(chat_id, "❌ این کاربر عضو رسانه نیست.")
-            return True
-        allowed, reason = authorize_member_action(
-            (actor or {}).get("role"), target.get("role")
-        )
-        if not allowed:
-            send_message(chat_id, f"❌ {reason}")
-            return True
-        update_workspace_member_status(workspace["id"], target_user["id"], "removed")
-        send_message(chat_id, f"✅ کاربر {telegram_id} از رسانه حذف شد.")
-        return True
-    except Exception:
-        logger.exception("Error removing workspace member")
-        send_message(chat_id, "❌ خطا در حذف عضو")
-        return False
-
-
-def handle_finishsetup(chat_id: int) -> bool:
-    """
-    /finishsetup — پایان راه‌اندازی و فعال‌سازی رسانه.
-
-    نیازمندی‌های حداقلی:
-    - عضویت فعال مالک
-    - برندینگ تنظیم شده (حداقل نام رسانه)
-    - حداقل یک کانال ثبت شده
-    """
-    if not _WORKSPACE_SETUP_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    try:
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(
-                chat_id,
-                "❌ رسانه‌ای یافت نشد. ابتدا /start را بفرستید."
-            )
-            return True
-
-        if is_setup_completed(workspace["id"]):
-            send_message(
-                chat_id,
-                "✅ راه‌اندازی قبلاً کامل شده است.\n/settings"
-            )
-            return True
-
-        ok, reason = complete_setup(workspace["id"], user["id"])
-        if ok:
-            # Make a newly completed workspace immediately publishable.
-            select_workspace_for_publication(user["id"], workspace["id"])
-            send_message_with_keyboard(
-                chat_id,
-                "🎉 رسانه شما راه‌اندازی شد!\n\n"
-                "✅ تنظیمات: /settings\n"
-                "❓ راهنما: /help\n\n"
-                "⚠️ نکته: کانال‌های ثبت‌شده تا تأیید دسترسی ادمین\n"
-                "غیرفعال هستند. (Phase 4B)\n\n"
-                "آیا اکنون می‌خواهید رسانه دیگری اضافه کنید؟",
-                [
-                    [{
-                        "text": "➕ افزودن رسانه دیگر",
-                        "callback_data": "setup:add_media",
-                    }],
-                    [
-                        {
-                            "text": "✅ پایان راه‌اندازی",
-                            "callback_data": "setup:done",
-                        },
-                        {
-                            "text": "🕒 بعداً اضافه می‌کنم",
-                            "callback_data": "setup:later",
-                        },
-                    ],
-                ],
-            )
-        else:
-            send_message(
-                chat_id,
-                f"❌ راه‌اندازی کامل نشد:\n{reason}\n\n"
-                "پس از رفع مشکل دوباره /finishsetup بفرستید."
-            )
-        return True
-    except Exception:
-        logger.exception("❌ Error in handle_finishsetup")
-        send_message(chat_id, "❌ خطا در پایان راه‌اندازی")
-        return False
-
-
-def handle_settings(chat_id: int) -> bool:
-    """
-    /settings — منوی تنظیمات پس از راه‌اندازی.
-
-    تنظیمات را می‌توان بارها تغییر داد؛ راه‌اندازی مجدد اتفاق نمی‌افتد.
-    """
-    if not _WORKSPACE_SETUP_ENABLED:
-        send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
-        return True
-    try:
-        user, workspace = _get_workspace_for_user(chat_id)
-        if not workspace:
-            send_message(
-                chat_id,
-                "❌ رسانه‌ای یافت نشد. ابتدا /start را بفرستید."
-            )
-            return True
-
-        send_message(
-            chat_id,
-            "📋 تنظیمات رسانه\n\n"
-            "🏢 تغییر رسانه فعال:\n"
-            "<code>/workspaces</code>\n\n"
-            "🔧 برندینگ:\n"
-            "<code>/setbranding نام کامل رسانه</code>\n"
-            "<code>/sethashtag #هشتگ</code>\n"
-            "<code>/setchanneltag @تگ_کانال</code>\n\n"
-            "🎨 آیکون‌ها:\n"
-            "<code>/seticons 🟢 🔵</code>\n"
-            "<code>/clearicons</code>\n\n"
-            "📡 کانال‌ها:\n"
-            "<code>/destinations</code>\n"
-            "<code>/addchannel @channel</code>\n"
-            "<code>/verifychannel @channel</code>\n"
-            "<code>/addbale @channel</code> (اختیاری)\n"
-            "<code>/verifybale @channel</code>\n"
-            "<code>/setdefaultdestination DESTINATION_ID</code>\n"
-            "<code>/setdestinationbranding DESTINATION_ID #هشتگ @تگ</code>\n"
-            "<code>/removedestination DESTINATION_ID</code>\n\n"
-            "👥 اعضا:\n"
-            "<code>/members</code>\n"
-            "<code>/addmember TELEGRAM_ID نقش</code>\n"
-            "<code>/setmemberrole TELEGRAM_ID نقش</code>\n"
-            "<code>/removemember TELEGRAM_ID</code>\n\n"
-            "❓ راهنما:\n"
-            "<code>/help</code>",
-            parse_mode="HTML",
-        )
-        return True
-    except Exception:
-        logger.exception("❌ Error in handle_settings")
-        send_message(chat_id, "❌ خطا در نمایش تنظیمات")
-        return False
-
-
-def handle_help(chat_id: int) -> bool:
-    """
-    پردازش دستور /help
-    """
-    try:
-        tenant = get_tenant(chat_id)
-        if tenant:
-            text = (
-                "📚 راهنمای ربات\n\n"
-                "/register\n"
-                "ثبت‌نام در ربات\n\n"
-                "/settelegram @channel\n"
-                "تنظیم کانال تلگرام\n\n"
-                "/setbale @channel\n"
-                "تنظیم کانال بله\n\n"
-                "/setbaletoken TOKEN\n"
-                "تنظیم توکن ربات بله\n\n"
-                "/status\n"
-                "مشاهده وضعیت تنظیمات\n\n"
-                "/help\n"
-                "نمایش راهنما"
-            )
-            send_long_message(chat_id, text)
-            return True
-
-        # Workspace onboarding has its own complete, state-aware guide. Keep
-        # the legacy help below unchanged for compatibility with older setups.
-        if _WORKSPACE_SETUP_ENABLED:
-            _, workspace = _get_workspace_for_user(chat_id)
-            if workspace:
-                setup_state = get_or_init_setup_state(workspace["id"])
-                setup_step = setup_state.get("step", "not_started")
-                current_step = setup_state.get("current_step_key")
-
-                if setup_step == "completed":
-                    state_text = "✅ وضعیت: راه‌اندازی این رسانه کامل شده است."
-                elif setup_step == "in_progress":
-                    step_names = {
-                        "setup_channel": "افزودن و تأیید کانال‌ها",
-                        "setup_branding": "ثبت برندینگ رسانه",
-                        "setup_branding_sample": "ارسال و تأیید نمونه پیام",
-                        "setup_member": "افزودن اعضا یا پایان راه‌اندازی",
-                    }
-                    state_text = (
-                        "▶️ وضعیت: راه‌اندازی نیمه‌کاره است.\n"
-                        f"مرحله فعلی: {step_names.get(current_step, 'ادامه راه‌اندازی')}\n"
-                        "برای ادامه از همان مرحله: /setup"
-                    )
-                else:
-                    state_text = (
-                        "🆕 وضعیت: راه‌اندازی هنوز شروع نشده است.\n"
-                        "دکمه «🚀 شروع راه‌اندازی» را بزنید یا /setup را بفرستید."
-                    )
-
-                text = (
-                    "📚 راهنمای کامل کاربر جدید\n\n"
-                    f"{state_text}\n\n"
-                    "━━━━━━━━━━━━━━━━━━\n"
-                    "۱) شروع و ادامه راه‌اندازی\n\n"
-                    "/start — ساخت حساب، نمایش وضعیت و دکمه شروع\n"
-                    "/setup — شروع یا ادامه از مرحله ذخیره‌شده\n"
-                    "/status — مشاهده رسانه و تنظیمات فعال\n\n"
-                    "اطلاعات راه‌اندازی نیمه‌کاره با /setup پاک نمی‌شود و رسانه "
-                    "تکمیل‌شده نیز از ابتدا ساخته نخواهد شد.\n\n"
-                    "━━━━━━━━━━━━━━━━━━\n"
-                    "۲) اتصال کانال تلگرام\n\n"
-                    "ابتدا ربات را در کانال تلگرام Admin کنید. سپس:\n"
-                    "/addchannel @channel — افزودن کانال تلگرام\n"
-                    "/verifychannel @channel — بررسی دسترسی ادمین ربات\n"
-                    "/destinations — نمایش مقصدهای ثبت‌شده\n"
-                    "/nextsetupstep — رفتن به مرحله بعد پس از افزودن کانال‌ها\n\n"
-                    "برای چند کانال، /addchannel را برای هر کانال تکرار کنید.\n\n"
-                    "━━━━━━━━━━━━━━━━━━\n"
-                    "۳) اتصال اختیاری بله\n\n"
-                    "اگر کانال بله دارید، ربات مرکزی بله را Admin کنید و سپس:\n"
-                    "/addbale @channel — افزودن کانال بله\n"
-                    "/verifybale @channel — بررسی دسترسی ربات در بله\n"
-                    "/skipbale — ادامه بدون کانال بله\n\n"
-                    "نداشتن بله مانع ثبت‌نام یا انتشار تلگرام نیست و کاربر جدید "
-                    "نیازی به ساخت یا ارسال توکن جداگانه بله ندارد.\n\n"
-                    "━━━━━━━━━━━━━━━━━━\n"
-                    "۴) برندینگ و نمونه پیام\n\n"
-                    "/setbranding نام کامل رسانه — ثبت نام\n"
-                    "/sethashtag #هشتگ — ثبت هشتگ\n"
-                    "/setchanneltag @تگ — ثبت تگ کانال\n\n"
-                    "سپس یک پیام واقعی از قالب رسانه ارسال یا Forward کنید. ربات "
-                    "آیکون‌ها، عنوان، بندها، CTA، هشتگ، آیدی، لینک بله و قالب‌های "
-                    "قابل تشخیص را استخراج و پیش‌نمایش می‌کند.\n\n"
-                    "/confirmbranding — تأیید پیش‌نمایش و ذخیره قالب\n"
-                    "/resamplebranding — رد پیش‌نمایش و ارسال نمونه دیگر\n"
-                    "/confirmbalesuggestion — تأیید کانال بله استخراج‌شده\n"
-                    "/ignorebalesuggestion — نادیده‌گرفتن پیشنهاد بله\n"
-                    "/seticons 🟢 🔵 — تغییر دستی فهرست آیکون‌ها\n"
-                    "/clearicons — انتشار بدون آیکون‌های قالب\n\n"
-                    "هیچ نمونه‌ای بدون تأیید کاربر نهایی نمی‌شود.\n\n"
-                    "━━━━━━━━━━━━━━━━━━\n"
-                    "۵) اعضا و نقش‌ها\n\n"
-                    "/addmember TELEGRAM_ID manager — افزودن مدیر رسانه\n"
-                    "/addmember TELEGRAM_ID publisher — افزودن ناشر\n"
-                    "/addmember TELEGRAM_ID writer — افزودن نویسنده\n"
-                    "/members — مشاهده اعضای Workspace\n"
-                    "/setmemberrole TELEGRAM_ID role — تغییر نقش\n"
-                    "/removemember TELEGRAM_ID — حذف عضو\n\n"
-                    "Admin کردن فرد در کانال تلگرام به‌تنهایی او را عضو Workspace "
-                    "نمی‌کند؛ مالک باید /addmember را نیز اجرا کند.\n\n"
-                    "━━━━━━━━━━━━━━━━━━\n"
-                    "۶) پایان راه‌اندازی و استفاده روزانه\n\n"
-                    "/finishsetup — تکمیل راه‌اندازی پس از کانال و برندینگ\n"
-                    "/workspaces — نمایش و انتخاب رسانه‌های در دسترس\n"
-                    "/switchworkspace ID — انتخاب رسانه با شناسه\n"
-                    "/settings — تنظیمات رسانه فعال\n"
-                    "/setdefaultdestination ID — تعیین مقصد پیش‌فرض\n"
-                    "/setdestinationbranding ID #هشتگ @تگ — برندینگ مقصد\n"
-                    "/removedestination ID — حذف مقصد\n\n"
-                    "برای انتشار، ابتدا Workspace درست را با /workspaces انتخاب "
-                    "کنید و سپس پیام خبر را برای ربات بفرستید یا Forward کنید.\n\n"
-                    "━━━━━━━━━━━━━━━━━━\n"
-                    "۷) نکات مهم\n\n"
-                    "• دستور /register برای سازگاری مسیر قدیمی باقی مانده است؛ "
-                    "کاربر جدید باید از /start و /setup استفاده کند.\n"
-                    "• برای نمایش Workspace به یک همکار، علاوه بر دسترسی کانال باید "
-                    "او را با /addmember اضافه کنید.\n"
-                    "• اگر چند رسانه دارید، قبل از انتشار رسانه فعال را کنترل کنید.\n"
-                    "• برای مشاهده دوباره همین راهنما: /help"
-                )
-                send_long_message(chat_id, text)
-                return True
-
-        onboarding_state = _get_onboarding_state(chat_id)
-        if onboarding_state == "not_started":
-            text = (
-                "📚 راهنمای شروع\n\n"
-                "۱) /start را بفرستید تا حساب شما آماده شود.\n"
-                "۲) سپس مقصد انتشار را اضافه کنید.\n\n"
-                "برای تنظیم مقصد تلگرام:\n"
-                "/settelegram @channel"
-            )
-        elif onboarding_state == "in_progress":
-            text = (
-                "📚 راهنمای تکمیل تنظیمات\n\n"
-                "تنظیمات اولیه در حال تکمیل است.\n"
-                "یک بار /start را بفرستید.\n\n"
-                "بعد از آن مقصد انتشار را اضافه کنید:\n"
-                "/adddestination"
-            )
-        else:
-            text = (
-                "📚 راهنمای مقصد انتشار\n\n"
-                "مقصد انتشار خود را وصل کنید:\n"
-                "/settelegram @channel\n"
-                "/setbale @channel (اختیاری)\n"
-                "/setbaletoken TOKEN (اختیاری)\n\n"
-                "برای وضعیت فعلی: /status"
-            )
-
-        send_long_message(chat_id, text)
-        return True
-
-    except Exception:
-        logger.exception("❌ Error in handle_help")
-        send_message(chat_id, "❌ خطا در نمایش راهنما")
-        return False
-
-
-def handle_adddestination(chat_id: int) -> bool:
-    """راهنمای اولیه افزودن مقصد انتشار"""
-    text = (
-        "➕ افزودن مقصد انتشار\n\n"
-        "برای شروع، مقصد تلگرام را تنظیم کنید:\n"
-        "/settelegram @channel\n\n"
-        "در صورت نیاز می‌توانید مقصد بله را هم اضافه کنید:\n"
-        "/setbale @channel\n"
-        "/setbaletoken TOKEN"
-    )
-    send_long_message(chat_id, text)
-    return True
-
-
-def _select_primary_workspace(workspaces):
-    """انتخاب workspace اصلی برای onboarding"""
-    if not workspaces:
-        return None
-
-    active_workspaces = [
-        workspace
-        for workspace in workspaces
-        if workspace.get("status") == "active"
-    ]
-    candidates = active_workspaces or workspaces
-    return sorted(
-        candidates,
-        key=lambda item: item.get("id", 0)
-    )[0]
-
-
-def _get_onboarding_state(chat_id: int) -> str:
-    """
-    وضعیت onboarding کاربر:
-    - not_started
-    - in_progress
-    - completed
-    """
-    user = get_user_by_telegram_id(chat_id)
-    if not user:
-        return "not_started"
-
-    workspaces = list_owned_workspaces(
-        user["id"],
-        include_inactive=True
-    )
-    if not workspaces:
-        return "in_progress"
-
-    workspace = _select_primary_workspace(workspaces)
-    membership = get_workspace_member(
-        workspace["id"],
-        user["id"]
-    )
-    if not membership:
-        return "in_progress"
-
-    if (
-        membership.get("role") == "owner"
-        and membership.get("status") == "active"
-    ):
-        return "completed"
-
-    return "in_progress"
-
-
-def _ensure_onboarding_ready(chat_id: int) -> Dict[str, Any]:
-    """ایجاد/تکمیل idempotent onboarding برای کاربر جدید"""
-    user = get_user_by_telegram_id(chat_id)
-    if not user:
-        state_before = "not_started"
-        user = get_or_create_user_by_telegram_id(
-            chat_id,
-            status="active"
-        )
-    else:
-        state_before = "in_progress"
-
-    owned_workspaces = list_owned_workspaces(
-        user["id"],
-        include_inactive=True
-    )
-    workspace = _select_primary_workspace(owned_workspaces)
-    membership = None
-    if workspace:
-        membership = get_workspace_member(
-            workspace["id"],
-            user["id"]
-        )
-        if (
-            membership
-            and membership.get("role") == "owner"
-            and membership.get("status") == "active"
-        ):
-            state_before = "completed"
-
-    if not workspace:
-        workspace = create_workspace(
-            name=DEFAULT_WORKSPACE_NAME,
-            owner_user_id=user["id"],
-            status="active"
-        )
-        membership = get_workspace_member(
-            workspace["id"],
-            user["id"]
-        )
-    if not membership:
-        membership = add_workspace_member(
-            workspace_id=workspace["id"],
-            user_id=user["id"],
-            role="owner",
-            status="active"
-        )
-
-    if membership and membership.get("role") != "owner":
-        membership = update_workspace_member_role(
-            workspace["id"],
-            user["id"],
-            "owner"
-        )
-
-    if membership and membership.get("status") != "active":
-        membership = update_workspace_member_status(
-            workspace["id"],
-            user["id"],
-            "active"
-        )
-
-    if not membership:
-        raise RuntimeError(
-            "Failed to ensure owner membership for onboarding"
-        )
-
-    should_activate_owned_workspace = True
-
-    if _WORKSPACE_SETUP_ENABLED:
-        setup_state = get_or_init_setup_state(workspace["id"])
-        should_activate_owned_workspace = (
-            setup_state.get("step", "not_started") != "completed"
-        )
-
-    if (
-        _ACTIVE_WORKSPACE_ENABLED
-        and should_activate_owned_workspace
-    ):
-        select_workspace_for_publication(
-            user["id"],
-            workspace["id"]
-        )
-
-    return {
-        "state_before": state_before,
-        "user": user,
-        "workspace": workspace,
-        "membership": membership
-    }
-
-
-def handle_register(chat_id: int) -> bool:
-    """
-    پردازش دستور /register
-    """
-    try:
-        tenant = get_tenant(chat_id)
-        
-        if tenant:
-            send_message(
-                chat_id,
-                "✅ شما قبلاً ثبت‌نام کرده‌اید.\n\n"
-                "برای مشاهده وضعیت تنظیمات از /status استفاده کنید."
-            )
-            return True
-        
-        success = save_tenant(
-            user_id=chat_id,
-            bot_token="TOKEN_TEMP",
-            telegram_channel="@channel",
-            bale_channel="",
-            bale_token="",
-            hashtag="#دنیا_۲۴_نیوز",
-            channel_tag="@Donya24News"
-        )
-        
-        if success:
-            send_long_message(
-                chat_id,
-                "✅ ثبت‌نام شما با موفقیت انجام شد.\n\n"
-                "⚠️ توجه: تنظیمات موقتی هستند!\n\n"
-                "ابتدا کانال تلگرام را تنظیم کنید:\n"
-                "/settelegram @channel\n\n"
-                "سپس در صورت نیاز کانال بله را تنظیم کنید:\n"
-                "/setbale @channel\n\n"
-                "و توکن ربات بله را وارد کنید:\n"
-                "/setbaletoken TOKEN"
-            )
-            logger.info(f"✅ USER REGISTERED | user={chat_id}")
-        else:
-            send_message(
-                chat_id,
-                "❌ ثبت‌نام انجام نشد. لطفاً دوباره تلاش کنید."
-            )
-        
-        return True
-        
-    except Exception as e:
-        logger.exception(f"❌ Error in handle_register: {e}")
-        send_message(chat_id, "❌ خطا در پردازش ثبت‌نام")
-        return False
-
-
-def handle_settelegram(args: str, chat_id: int) -> bool:
-    """
-    پردازش دستور /settelegram @channel
-    """
-    try:
-        if not args:
-            send_message(
-                chat_id,
-                "❌ فرمت صحیح:\n\n"
-                "/settelegram @channel"
-            )
-            return True
-        
-        channel = args.strip()
-        
-        is_valid, error_msg = validate_channel(channel)
-        if not is_valid:
-            send_message(chat_id, error_msg)
-            return True
-        
-        tenant = get_tenant(chat_id)
-        if not tenant:
-            send_message(
-                chat_id,
-                "❌ ابتدا با /register ثبت‌نام کنید."
-            )
-            return True
-        
-        success = save_tenant(
-            user_id=chat_id,
-            bot_token=tenant.get("bot_token") or "TOKEN_TEMP",
-            telegram_channel=channel,
-            bale_channel=tenant.get("bale_channel") or "",
-            bale_token=tenant.get("bale_token") or "",
-            hashtag=tenant.get("hashtag") or "#دنیا_۲۴_نیوز",
-            channel_tag=tenant.get("channel_tag") or "@Donya24News"
-        )
-        
-        if success:
-            send_message(
-                chat_id,
-                f"✅ کانال تلگرام با موفقیت تنظیم شد:\n{channel}"
-            )
-            logger.info(
-                f"✅ TELEGRAM CHANNEL SET | "
-                f"user={chat_id} | channel={channel}"
-            )
-        else:
-            send_message(
-                chat_id,
-                "❌ ذخیره کانال تلگرام انجام نشد."
-            )
-        
-        return True
-        
-    except Exception as e:
-        logger.exception(f"❌ Error in handle_settelegram: {e}")
-        send_message(chat_id, "❌ خطا در تنظیم کانال تلگرام")
-        return False
-
-
-def handle_setbale(args: str, chat_id: int) -> bool:
-    """
-    پردازش دستور /setbale @channel
-    """
-    try:
-        if not args:
-            send_message(
-                chat_id,
-                "❌ فرمت صحیح:\n\n"
-                "/setbale @channel"
-            )
-            return True
-        
-        bale_channel = args.strip()
-        
-        is_valid, error_msg = validate_channel(bale_channel)
-        if not is_valid:
-            send_message(chat_id, error_msg)
-            return True
-        
-        tenant = get_tenant(chat_id)
-        if not tenant:
-            send_message(
-                chat_id,
-                "❌ ابتدا با /register ثبت‌نام کنید."
-            )
-            return True
-        
-        success = update_bale_settings(
-            chat_id,
-            bale_channel,
-            tenant.get("bale_token", "") or ""
-        )
-        
-        if success:
-            send_message(
-                chat_id,
-                f"✅ کانال بله با موفقیت تنظیم شد:\n{bale_channel}"
-            )
-            logger.info(
-                f"✅ BALE CHANNEL SET | "
-                f"user={chat_id} | channel={bale_channel}"
-            )
-        else:
-            send_message(
-                chat_id,
-                "❌ ذخیره کانال بله انجام نشد."
-            )
-        
-        return True
-        
-    except Exception as e:
-        logger.exception(f"❌ Error in handle_setbale: {e}")
-        send_message(chat_id, "❌ خطا در تنظیم کانال بله")
-        return False
-
-
-def handle_setbaletoken(args: str, chat_id: int) -> bool:
-    """
-    پردازش دستور /setbaletoken TOKEN
-    """
-    try:
-        if not args:
-            send_message(
-                chat_id,
-                "❌ فرمت صحیح:\n\n"
-                "/setbaletoken TOKEN"
-            )
-            return True
-        
-        bale_token = args.strip()
-        
-        is_valid, error_msg = validate_bale_token(bale_token)
-        if not is_valid:
-            send_message(chat_id, error_msg)
-            return True
-        
-        tenant = get_tenant(chat_id)
-        if not tenant:
-            send_message(
-                chat_id,
-                "❌ ابتدا با /register ثبت‌نام کنید."
-            )
-            return True
-        
-        success = update_bale_settings(
-            chat_id,
-            tenant.get("bale_channel", "") or "",
-            bale_token
-        )
-        
-        if success:
-            send_message(
-                chat_id,
-                "✅ توکن بله با موفقیت ذخیره شد."
-            )
-            logger.info(
-                f"✅ BALE TOKEN SET | user={chat_id}"
-            )
-        else:
-            send_message(
-                chat_id,
-                "❌ ذخیره توکن بله انجام نشد."
-            )
-        
-        return True
-        
-    except Exception as e:
-        logger.exception(f"❌ Error in handle_setbaletoken: {e}")
-        send_message(chat_id, "❌ خطا در تنظیم توکن بله")
-        return False
-
-
-def handle_status(chat_id: int) -> bool:
-    """Show status for the user's selected legacy or workspace media context."""
-    try:
-        tenant = get_tenant(chat_id)
-        user = get_user_by_telegram_id(chat_id)
-        workspaces = (
-            list_user_workspaces(user["id"], include_inactive=False)
-            if user and _ACTIVE_WORKSPACE_ENABLED
-            else []
-        )
-        preference = (
-            get_active_workspace_preference(user["id"]) or {}
-            if user and _ACTIVE_WORKSPACE_ENABLED
-            else {}
-        )
-
-        use_legacy = bool(
-            tenant
-            and (
-                not workspaces
-                or not preference
-                or preference.get("context_type") == "legacy"
-            )
-        )
-
-        if use_legacy:
-            telegram_channel = tenant.get("telegram_channel") or "تنظیم نشده"
-            bale_channel = tenant.get("bale_channel") or "تنظیم نشده"
-            bale_token_exists = bool(tenant.get("bale_token"))
-            status_text = (
-                "📊 وضعیت رسانه فعال: حساب قدیمی\n\n"
-                f"کانال تلگرام: {telegram_channel}\n"
-                f"کانال بله: {bale_channel}\n"
-                "توکن بله: "
-                f"{'✅ تنظیم شده' if bale_token_exists else '❌ تنظیم نشده'}\n\n"
-                "برای تغییر رسانه: /workspaces"
-            )
-            send_message(chat_id, status_text)
-            return True
-
-        active_workspace_id = preference.get("active_workspace_id")
-        active_workspace = next(
-            (
-                workspace for workspace in workspaces
-                if workspace.get("id") == active_workspace_id
-            ),
-            None,
-        )
-        if not active_workspace and len(workspaces) == 1 and not tenant:
-            active_workspace = workspaces[0]
-
-        if active_workspace:
-            try:
-                from core.database import list_workspace_destinations as list_dests
-                destinations = list_dests(
-                    active_workspace["id"], include_removed=False
-                )
-            except (ImportError, AttributeError):
-                destinations = []
-            destination_lines = [
-                f"• {item.get('platform', '?')}: "
-                f"{item.get('external_id') or item.get('name') or item.get('id')} "
-                f"({item.get('status', 'unknown')})"
-                for item in destinations
-            ]
-            status_text = (
-                "📊 وضعیت رسانه فعال\n\n"
-                f"نام رسانه: {active_workspace.get('name') or active_workspace['id']}\n"
-                f"شناسه رسانه: {active_workspace['id']}\n"
-                f"نقش شما: {active_workspace.get('membership_role') or 'member'}\n"
-                "مقصدها:\n"
-                + ("\n".join(destination_lines) if destination_lines else "• ثبت نشده")
-                + "\n\nبرای تغییر رسانه: /workspaces"
-            )
-            send_message(chat_id, status_text)
-            return True
-
-        if workspaces:
-            send_message(
-                chat_id,
-                "🏢 شما عضو چند رسانه هستید. ابتدا رسانه فعال را انتخاب کنید:\n"
-                "/workspaces",
-            )
-            return True
-
-        if not tenant:
-            send_message(
-                chat_id,
-                "❌ شما هنوز ثبت‌نام نکرده‌اید.\n\n"
-                "/register"
-            )
-            return True
-        
-        return True
-        
-    except Exception as e:
-        logger.exception(f"❌ Error in handle_status: {e}")
-        send_message(chat_id, "❌ خطا در بازیابی وضعیت")
-        return False
-
-
-# =========================================================
-# COMMAND DETECTION
-# =========================================================
-
-def is_command(text: str) -> bool:
-    """
-    بررسی اینکه متن یک دستور است یا نه
-    """
-    if not text:
-        return False
-    return text.strip().startswith("/")
-
-
-# =========================================================
-# MAIN COMMAND HANDLER
-# =========================================================
-
-def handle_command(text: str, chat_id: int) -> bool:
-    """
-    پردازش اصلی دستور
-    """
-    normalized_text = (text or "").strip()
-    if normalized_text == "راهنما":
-        return handle_help(chat_id)
-
-    if not normalized_text.startswith("/"):
-        logger.warning(
-            f"Invalid command format: {normalized_text}"
-        )
-        return False
-    
-    try:
-        command, args = parse_command(text)
-        
-        if not command:
-            logger.warning(f"Empty command for: {text}")
-            return False
-        
-        logger.info(
-            f"📌 COMMAND | user={chat_id} | command=/{command} | "
-            f"args_len={len(args)}"
-        )
-        
-        commands = {
-            "start": lambda: handle_start(chat_id),
-            "help": lambda: handle_help(chat_id),
-            "register": lambda: handle_register(chat_id),
-            "settelegram": lambda: handle_settelegram(args, chat_id),
-            "setbale": lambda: handle_setbale(args, chat_id),
-            "setbaletoken": lambda: handle_setbaletoken(args, chat_id),
-            "status": lambda: handle_status(chat_id),
-            "adddestination": lambda: handle_adddestination(chat_id),
-            # Phase 4A setup wizard
-            "setup": lambda: handle_setup(chat_id),
-            "addchannel": lambda: handle_addchannel(args, chat_id),
-            "verifychannel": lambda: handle_verifychannel(args, chat_id),
-            "addbale": lambda: handle_addbale(args, chat_id),
-            "verifybale": lambda: handle_verifybale(args, chat_id),
-            "skipbale": lambda: handle_skipbale(chat_id),
-            "destinations": lambda: handle_destinations(chat_id),
-            "setdefaultdestination": lambda: handle_setdefaultdestination(args, chat_id),
-            "setdestinationbranding": lambda: handle_setdestinationbranding(args, chat_id),
-            "removedestination": lambda: handle_removedestination(args, chat_id),
-            "nextsetupstep": lambda: handle_nextsetupstep(chat_id),
-            "setbranding": lambda: handle_setbranding(args, chat_id),
-            "sethashtag": lambda: handle_sethashtag(args, chat_id),
-            "setchanneltag": lambda: handle_setchanneltag(args, chat_id),
-            "confirmbranding": lambda: handle_confirmbranding(chat_id),
-            "confirmbalesuggestion": lambda: handle_confirmbalesuggestion(chat_id),
-            "ignorebalesuggestion": lambda: handle_ignorebalesuggestion(chat_id),
-            "resamplebranding": lambda: handle_resamplebranding(chat_id),
-            "seticons": lambda: handle_seticons(args, chat_id),
-            "clearicons": lambda: handle_clearicons(chat_id),
-            "addmember": lambda: handle_addmember(args, chat_id),
-            "members": lambda: handle_members(chat_id),
-            "setmemberrole": lambda: handle_setmemberrole(args, chat_id),
-            "removemember": lambda: handle_removemember(args, chat_id),
-            "finishsetup": lambda: handle_finishsetup(chat_id),
-            "settings": lambda: handle_settings(chat_id),
-            # Phase 5 active-workspace selection
-            "workspaces": lambda: handle_workspaces(chat_id),
-            "switchworkspace": lambda: handle_switchworkspace(args, chat_id),
-        }
-        
-        if command in commands:
-            return commands[command]()
-        
         send_message(
             chat_id,
             f"❌ دستور /{command} شناسایی نشد.\n\n"

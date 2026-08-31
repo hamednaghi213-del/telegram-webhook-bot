@@ -32,8 +32,25 @@ def test_repository_migrations_are_contiguous():
     migrations = validate_migration_sequence(schema_dir)
     assert [item.name[:3] for item in migrations] == [
         "001", "002", "003", "004", "005", "006", "007", "008", "009",
-        "010", "011", "012", "013", "014",
+        "010", "011", "012", "013", "014", "015",
     ]
+
+
+def test_workspace_pending_action_migration_is_additive_and_constrained():
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "schema"
+        / "015_workspace_pending_actions.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "add column if not exists pending_workspace_action text null" in migration
+    assert "add column if not exists pending_workspace_id bigint null" in migration
+    assert "'create_workspace_name'" in migration
+    assert "'rename_workspace'" in migration
+    assert "references public.workspaces(id)" in migration
+    assert "on delete set null" in migration
+    assert "update public.users" not in migration
+    assert "delete from" not in migration
 
 
 def test_migration_gap_is_rejected(tmp_path):
