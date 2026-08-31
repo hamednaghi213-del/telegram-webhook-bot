@@ -536,7 +536,8 @@ def _setup_resume_message(current_step_key: str) -> str:
         return (
             "▶️ مرحله ۲: برندینگ رسانه\n\n"
             "اطلاعات برندینگ را جداگانه وارد کنید.\n\n"
-            "نام کامل رسانه را بفرستید.\n"
+            "نام کامل رسانه را با دستور زیر بفرستید:\n"
+            "/setbranding نام کامل رسانه\n"
             "این نام در Branding مطالب استفاده می‌شود.\n\n"
             "❓ راهنما: /help"
         )
@@ -873,11 +874,18 @@ def handle_workspace_stateful_input(text: str, chat_id: int) -> bool:
     state = get_workspace_setup_state(workspace["id"]) or {}
     current = state.get("current_step_key")
     if current == "setup_channel":
-        return handle_addchannel(value, chat_id)
+        # Bare setup routing is intentionally narrower than /addchannel.
+        # News, forwards and button labels must never reach channel validation.
+        if value.startswith("@") and not any(ch.isspace() for ch in value):
+            return handle_addchannel(value, chat_id)
+        return False
     if current == "setup_bale_channel":
-        return handle_addbale(value, chat_id)
-    if current == "setup_branding":
-        return handle_setbranding(value, chat_id)
+        if value.startswith("@") and not any(ch.isspace() for ch in value):
+            return handle_addbale(value, chat_id)
+        return False
+    # Branding names and news are both arbitrary prose.  Without an explicit
+    # pending intent they cannot be distinguished safely, so branding prose is
+    # accepted only through its explicit command/callback flow.
     return False
 
 

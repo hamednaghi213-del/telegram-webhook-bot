@@ -1653,12 +1653,59 @@ def test_bare_setup_inputs_route_only_through_owned_incomplete_step(monkeypatch)
     assert db.publication_destinations[-1]["platform"] == "bale"
 
     db.upsert_workspace_setup_state(workspace["id"], "in_progress", "setup_branding")
-    assert ch_mod.handle_workspace_stateful_input("نام کامل رسانه", 9306) is True
+    assert ch_mod.handle_workspace_stateful_input("نام کامل رسانه", 9306) is False
+    assert ch_mod.handle_setbranding("نام کامل رسانه", 9306) is True
     assert db.get_workspace_branding(workspace["id"])["media_name"] == "نام کامل رسانه"
     assert db.get_workspace(workspace["id"])["name"] == "گروه من"
 
     db.upsert_workspace_setup_state(workspace["id"], "completed", None)
     assert ch_mod.handle_workspace_stateful_input("این یک خبر عادی است", 9306) is False
+
+
+def test_channel_step_never_consumes_long_or_forwarded_news(monkeypatch):
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+    workspace = _start_with_workspace(ch_mod, db, 9310, "سیاسی")
+    db.upsert_workspace_setup_state(workspace["id"], "in_progress", "setup_channel")
+    validator_calls = []
+    monkeypatch.setattr(
+        ch_mod,
+        "handle_addchannel",
+        lambda value, chat_id: validator_calls.append((value, chat_id)) or True,
+    )
+
+    long_news = "این یک خبر طولانی واقعی است که باید وارد مسیر انتشار شود " * 5
+    forwarded_news = "Forwarded from source\n@source این متن خبر است و شناسه کانال نیست"
+    display_label = "✅ @channel_name — تلگرام — از گروه قبلی"
+
+    assert ch_mod.handle_workspace_stateful_input(long_news, 9310) is False
+    assert ch_mod.handle_workspace_stateful_input(forwarded_news, 9310) is False
+    assert ch_mod.handle_workspace_stateful_input(display_label, 9310) is False
+    assert validator_calls == []
+
+
+def test_move_continue_then_news_falls_through_but_bare_channel_is_accepted(monkeypatch):
+    ws_mod, ch_mod, db, _ = _load_modules(monkeypatch)
+    source = _start_with_workspace(ch_mod, db, 9311, "مبدأ")
+    destination, _ = ws_mod.register_channel_destination(source["id"], "@existing", "existing")
+    target = db.create_workspace("سیاسی", db.get_user_by_telegram_id(9311)["id"])
+    db.upsert_workspace_setup_state(target["id"], "in_progress", "setup_channel")
+    destination["workspace_id"] = target["id"]
+    db.set_active_workspace(db.get_user_by_telegram_id(9311)["id"], target["id"])
+    monkeypatch.setattr(
+        ch_mod,
+        "_get_workspace_for_user",
+        lambda _chat_id: (db.get_user_by_telegram_id(9311), target),
+    )
+
+    assert ch_mod.handle_nextsetupstep(9311) is True
+    assert db.get_workspace_setup_state(target["id"])["current_step_key"] == "setup_branding"
+    assert ch_mod.handle_workspace_stateful_input("متن خبر طولانی برای انتشار " * 5, 9311) is False
+
+    db.upsert_workspace_setup_state(target["id"], "in_progress", "setup_channel")
+    calls = []
+    monkeypatch.setattr(ch_mod, "handle_addchannel", lambda value, _chat: calls.append(value) or True)
+    assert ch_mod.handle_workspace_stateful_input("@real_channel", 9311) is True
+    assert calls == ["@real_channel"]
 
 
 def test_setup_prompts_use_generic_examples(monkeypatch):

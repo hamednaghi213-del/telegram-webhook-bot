@@ -1,10 +1,13 @@
 from copy import deepcopy
+import importlib
+import sys
 
 import pytest
 
 from core.workspace_destination_moves import list_move_candidates, move_destinations
 from core.workspace_destinations import canonical_destination_identity, validate_destination_move
 from core.workspace_publisher import (
+    build_workspace_management_panel,
     build_destination_move_keyboard,
     selected_destination_ids_from_callback,
 )
@@ -51,6 +54,16 @@ def dest(destination_id, workspace_id, platform="telegram", external_id="@channe
         "is_default": extra.pop("is_default", False),
         **extra,
     }
+
+
+def _load_real_database(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_KEY", "a.b.c")
+    sys.modules.pop("core.database", None)
+    import core
+    if hasattr(core, "database"):
+        delattr(core, "database")
+    return importlib.import_module("core.database")
 
 
 @pytest.fixture
@@ -188,3 +201,76 @@ def test_selection_and_history_are_not_touched_by_move_contract(database):
     move_destinations(database, 7, 2, [10])
     assert database.selections == before_selection
     assert database.history == before_history
+
+
+def test_management_panel_shows_destinations_directly_without_submenu():
+    text, keyboard = build_workspace_management_panel(
+        {"id": 2, "name": "سیاسی"},
+        [dest(10, 2, "telegram", "@one"), dest(11, 2, "bale", "@two", status="inactive")],
+    )
+    assert "✅ @one — تلگرام" in text
+    assert "⬜ @two — بله" in text
+    assert "مدیریت کانال‌ها" not in text
+    callbacks = [button["callback_data"] for row in keyboard for button in row]
+    assert "ws:dest:toggle:10" in callbacks
+    assert "ws:dest:toggle:11" in callbacks
+    assert not any("@one" in callback or "تلگرام" in callback for callback in callbacks)
+
+
+def test_management_panel_scales_without_fixed_destination_limit():
+    rows = [dest(index, 2, external_id=f"@channel_{index}") for index in range(1, 101)]
+    _text, keyboard = build_workspace_management_panel({"id": 2, "name": "بزرگ"}, rows)
+    assert sum(1 for row in keyboard if row[0]["callback_data"].startswith("ws:dest:toggle:")) == 100
+
+
+def test_destination_toggle_is_authorized_and_does_not_touch_workspace_selection(monkeypatch):
+    database = _load_real_database(monkeypatch)
+    from core import workspace_publisher
+
+    row = dest(10, 2, "telegram", "@one")
+    updates = []
+    selection_calls = []
+    edits = []
+    monkeypatch.setattr(database, "get_user_by_telegram_id", lambda _chat: {"id": 7})
+    monkeypatch.setattr(database, "get_publication_destination", lambda _id: deepcopy(row))
+    monkeypatch.setattr(database, "get_workspace", lambda _id: {"id": 2, "name": "سیاسی", "status": "active"})
+    monkeypatch.setattr(database, "get_workspace_member", lambda _wid, _uid: {"role": "manager", "status": "active"})
+    monkeypatch.setattr(database, "update_publication_destination_status", lambda did, status: updates.append((did, status)))
+    monkeypatch.setattr(database, "list_workspace_destinations", lambda _wid: [{**row, "status": "inactive"}])
+    monkeypatch.setattr(database, "set_active_workspace", lambda *_args: selection_calls.append(_args))
+    monkeypatch.setattr(workspace_publisher, "_ws_answer_callback", lambda *_args: None)
+    monkeypatch.setattr(workspace_publisher, "_ws_edit_message_text", lambda *args: edits.append(args))
+
+    workspace_publisher._handle_workspace_callback(
+        {"id": "cb", "data": "ws:dest:toggle:10", "from": {"id": 100}, "message": {"chat": {"id": 100}, "message_id": 5}},
+        "req",
+        "https://api.test",
+    )
+
+    assert updates == [(10, "inactive")]
+    assert selection_calls == []
+    assert edits and "⬜ @one — تلگرام" in edits[0][2]
+
+
+@pytest.mark.parametrize("role,status", [("viewer", "active"), ("manager", "inactive")])
+def test_forged_destination_toggle_is_rejected(monkeypatch, role, status):
+    database = _load_real_database(monkeypatch)
+    from core import workspace_publisher
+
+    updates = []
+    answers = []
+    monkeypatch.setattr(database, "get_user_by_telegram_id", lambda _chat: {"id": 7})
+    monkeypatch.setattr(database, "get_publication_destination", lambda _id: dest(99, 9))
+    monkeypatch.setattr(database, "get_workspace", lambda _id: {"id": 9, "status": "active"})
+    monkeypatch.setattr(database, "get_workspace_member", lambda _wid, _uid: {"role": role, "status": status})
+    monkeypatch.setattr(database, "update_publication_destination_status", lambda *args: updates.append(args))
+    monkeypatch.setattr(workspace_publisher, "_ws_answer_callback", lambda *args: answers.append(args))
+
+    workspace_publisher._handle_workspace_callback(
+        {"id": "cb", "data": "ws:dest:toggle:99", "from": {"id": 100}},
+        "req",
+        "https://api.test",
+    )
+
+    assert updates == []
+    assert answers and "قابل مدیریت نیست" in answers[-1][-1]

@@ -72,6 +72,41 @@ def selected_destination_ids_from_callback(callback_query: Dict) -> set:
     return selected
 
 
+def build_workspace_management_panel(workspace: Dict, destinations: List[Dict]):
+    """Render destination state directly on the workspace management page."""
+    workspace_id = int(workspace["id"])
+    lines = [f"📁 {workspace.get('name') or workspace_id}", ""]
+    keyboard = []
+    for destination in sorted(destinations, key=lambda item: int(item.get("id", 0))):
+        active = destination.get("status") == "active"
+        platform = "تلگرام" if destination.get("platform") == "telegram" else "بله"
+        label = f"{'✅' if active else '⬜'} {destination.get('external_id')} — {platform}"
+        lines.append(label)
+        keyboard.append([{
+            "text": label[:60],
+            "callback_data": f"ws:dest:toggle:{int(destination['id'])}",
+        }])
+    if not destinations:
+        lines.append("هنوز کانالی در این گروه نیست.")
+    lines.extend([
+        "",
+        "✏️ تغییر نام گروه",
+        "➕ افزودن کانال",
+        "📥 انتقال کانال موجود",
+        "👥 مدیریت اعضا",
+        "⚙️ تنظیمات رسانه",
+    ])
+    keyboard.extend([
+        [{"text": "✏️ تغییر نام گروه", "callback_data": f"ws:rename:{workspace_id}"}],
+        [{"text": "➕ افزودن کانال", "callback_data": f"ws:addchannel:{workspace_id}"}],
+        [{"text": "📥 انتقال کانال موجود", "callback_data": f"ws:move:list:{workspace_id}"}],
+        [{"text": "👥 مدیریت اعضا", "callback_data": f"ws:members:{workspace_id}"}],
+        [{"text": "⚙️ تنظیمات رسانه", "callback_data": f"ws:settings:{workspace_id}"}],
+        [{"text": "⬅️ بازگشت", "callback_data": "ws:back"}],
+    ])
+    return "\n".join(lines), keyboard
+
+
 def resolve_legacy_media_label(tenant: Optional[Dict[str, Any]]) -> str:
     """Return a meaningful legacy-media label without exposing setup placeholders."""
     tenant = tenant or {}
@@ -1323,7 +1358,8 @@ def _handle_workspace_callback(
         and len(parts) >= 3
     ):
         try:
-            from core.database import get_workspace_member
+            from core.database import get_workspace_member, list_workspace_destinations
+            from core.workspace_destinations import can_manage_destinations
             workspace_id = int(parts[2])
             user = get_user_by_telegram_id(chat_id)
             member = get_workspace_member(workspace_id, (user or {}).get("id"))
@@ -1334,31 +1370,43 @@ def _handle_workspace_callback(
                 ),
                 None,
             ) if user else None
-            if not user or not workspace or not member or member.get("status") != "active":
+            allowed, _reason = can_manage_destinations((member or {}).get("role"))
+            if not user or not workspace or not member or member.get("status") != "active" or not allowed:
                 raise ValueError("workspace access denied")
+            destinations = list_workspace_destinations(workspace_id)
         except (TypeError, ValueError):
             _ws_answer_callback(api_url, callback_id, "گروه رسانه‌ای معتبر نیست")
             return
 
         _ws_answer_callback(api_url, callback_id, "مدیریت گروه")
-        _ws_send_message_with_keyboard(
-            api_url,
-            chat_id,
-            f"📁 {workspace.get('name') or workspace_id}\n\n"
-            "✏️ تغییر نام گروه\n"
-            "➕ افزودن کانال\n"
-            "📡 مدیریت کانال‌ها\n"
-            "👥 مدیریت اعضا\n"
-            "⚙️ تنظیمات رسانه",
-            [
-                [{"text": "✏️ تغییر نام گروه", "callback_data": f"ws:rename:{workspace_id}"}],
-                [{"text": "➕ افزودن کانال", "callback_data": f"ws:addchannel:{workspace_id}"}],
-                [{"text": "📥 انتقال کانال موجود", "callback_data": f"ws:move:list:{workspace_id}"}],
-                [{"text": "📡 مدیریت کانال‌ها", "callback_data": f"ws:destinations:{workspace_id}"}],
-                [{"text": "👥 مدیریت اعضا", "callback_data": f"ws:members:{workspace_id}"}],
-                [{"text": "⬅️ بازگشت", "callback_data": "ws:back"}],
-            ],
-        )
+        panel_text, panel_keyboard = build_workspace_management_panel(workspace, destinations)
+        _ws_send_message_with_keyboard(api_url, chat_id, panel_text, panel_keyboard)
+
+    elif callback_data.startswith("ws:dest:toggle:") and len(parts) == 4:
+        from core import database as database_module
+        from core.workspace_destinations import can_manage_destinations
+        try:
+            destination_id = int(parts[3])
+            user = get_user_by_telegram_id(chat_id)
+            destination = database_module.get_publication_destination(destination_id)
+            workspace_id = int((destination or {})["workspace_id"])
+            workspace = database_module.get_workspace(workspace_id)
+            member = database_module.get_workspace_member(workspace_id, (user or {})["id"])
+            allowed, _reason = can_manage_destinations((member or {}).get("role"))
+            if (
+                not user or not destination or destination.get("status") == "removed"
+                or not workspace or workspace.get("status") != "active"
+                or not member or member.get("status") != "active" or not allowed
+            ):
+                raise ValueError("اجازه مدیریت این کانال را ندارید.")
+            new_status = "inactive" if destination.get("status") == "active" else "active"
+            database_module.update_publication_destination_status(destination_id, new_status)
+            fresh = database_module.list_workspace_destinations(workspace_id)
+            panel_text, panel_keyboard = build_workspace_management_panel(workspace, fresh)
+            _ws_answer_callback(api_url, callback_id, "وضعیت کانال به‌روزرسانی شد")
+            _ws_edit_message_text(api_url, callback_query, panel_text, panel_keyboard)
+        except (KeyError, TypeError, ValueError):
+            _ws_answer_callback(api_url, callback_id, "کانال معتبر یا قابل مدیریت نیست")
 
     elif callback_data.startswith("ws:move:") and len(parts) >= 4:
         from core import database as database_module
@@ -1425,16 +1473,22 @@ def _handle_workspace_callback(
         except (TypeError, ValueError):
             _ws_answer_callback(api_url, callback_id, "گروه رسانه‌ای معتبر نیست")
 
-    elif callback_data.startswith(("ws:addchannel:", "ws:destinations:", "ws:members:")) and len(parts) >= 3:
+    elif callback_data.startswith(("ws:addchannel:", "ws:members:", "ws:settings:")) and len(parts) >= 3:
         try:
+            from core.database import get_workspace_member
+            from core.workspace_destinations import can_manage_destinations
             workspace_id = int(parts[2])
             user = get_user_by_telegram_id(chat_id)
+            member = get_workspace_member(workspace_id, (user or {}).get("id"))
+            allowed, reason = can_manage_destinations((member or {}).get("role"))
+            if not user or not member or member.get("status") != "active" or not allowed:
+                raise ValueError(reason or "workspace access denied")
             set_active_workspace(user["id"], workspace_id)
             action = parts[1]
             message = {
                 "addchannel": "شناسه کانال را با /addchannel @mychannel اضافه کنید.",
-                "destinations": "برای مدیریت کانال‌ها /destinations را بفرستید.",
                 "members": "برای مدیریت اعضا /members را بفرستید.",
+                "settings": "برای تنظیمات رسانه /settings را بفرستید.",
             }[action]
             _ws_answer_callback(api_url, callback_id, "گروه برای مدیریت فعال شد")
             _ws_send_message(api_url, chat_id, message)
@@ -1970,3 +2024,29 @@ def _ws_edit_message_keyboard(
             "_ws_edit_message_keyboard "
             f"failed: {e}"
         )
+
+
+def _ws_edit_message_text(
+    api_url: str,
+    callback_query: Dict,
+    text: str,
+    keyboard: list,
+) -> None:
+    """Refresh one management page after a server-authorized state change."""
+    try:
+        msg = callback_query.get("message", {}) or {}
+        chat_id = (msg.get("chat", {}) or {}).get("id")
+        message_id = msg.get("message_id")
+        if chat_id and message_id:
+            requests.post(
+                f"{api_url}/editMessageText",
+                json={
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": text,
+                    "reply_markup": {"inline_keyboard": keyboard},
+                },
+                timeout=10,
+            )
+    except Exception as e:
+        logger.warning(f"_ws_edit_message_text failed: {e}")
