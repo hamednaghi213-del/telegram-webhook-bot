@@ -13,8 +13,24 @@ BLOCKED_IDENTITY = "BLOCKED_IDENTITY"
 BLOCKED_AUTHORIZATION = "BLOCKED_AUTHORIZATION"
 NO_MIGRATION_REQUIRED = "NO_MIGRATION_REQUIRED"
 
-INSERT_TABLES = ("media_identities", "destinations", "media_members", "associations")
-UPDATE_TABLES = ("media_identities", "destinations", "associations", "legacy_preferences")
+INSERT_TABLES = (
+    "media_identities", "destinations", "media_members", "associations",
+    "workspace_members", "workspace_selections",
+)
+UPDATE_TABLES = (
+    "media_identities", "destinations", "media_members", "associations",
+    "workspace_members", "legacy_preferences",
+)
+
+PHYSICAL_TABLE_NAMES = {
+    "media_identities": "media_identities",
+    "destinations": "publication_destinations",
+    "media_members": "media_identity_members",
+    "associations": "workspace_destinations",
+    "workspace_members": "workspace_members",
+    "workspace_selections": "user_selected_workspaces",
+    "legacy_preferences": "user_workspace_preferences",
+}
 
 
 def _media_key(row: Dict) -> str:
@@ -51,6 +67,22 @@ def _merge_writes(target: Dict, source: Dict) -> None:
             _append_unique(target["updates"][table], row)
 
 
+def _physical_writes(writes: Dict) -> Dict:
+    """Expose the logical plan using exact Production table names."""
+    return {
+        "inserts": {
+            PHYSICAL_TABLE_NAMES[name]: deepcopy(rows)
+            for name, rows in writes["inserts"].items()
+        },
+        "updates": {
+            PHYSICAL_TABLE_NAMES[name]: deepcopy(rows)
+            for name, rows in writes["updates"].items()
+        },
+        "deletes": deepcopy(writes["deletes"]),
+        "counts": dict(writes["counts"]),
+    }
+
+
 def _block(blockers: List[Dict], status: str, media_key: str, **details) -> None:
     legacy_types = {
         BLOCKED_BRANDING: "branding_conflict",
@@ -80,6 +112,56 @@ def _branding(mapping: Dict) -> Dict:
     }
 
 
+def _simulate_targets(current: Dict, mappings: List[Dict]) -> Dict[str, List[Dict]]:
+    """Simulate post-backfill canonical resolution without Legacy targets."""
+    selected = {
+        (int(row["user_id"]), int(row["workspace_id"]))
+        for row in current.get("selected_workspaces", [])
+    }
+    memberships = {
+        (int(row["user_id"]), int(row["workspace_id"]))
+        for row in current.get("workspace_members", []) if row.get("status") == "active"
+    }
+    access = set()
+    destinations: Dict[str, Dict[Tuple[str, str], Dict]] = {}
+    for row in mappings:
+        if row.get("migrate") is False or row.get("placeholder"):
+            continue
+        media_key = _media_key(row)
+        access.add((int(row["user_id"]), media_key))
+        if row.get("create_workspace_membership") and row.get("workspace_membership_approved"):
+            memberships.add((int(row["user_id"]), int(row["workspace_id"])))
+        if row.get("select_workspace") and row.get("workspace_selection_approved"):
+            selected.add((int(row["user_id"]), int(row["workspace_id"])))
+        key = canonical_destination_key(row.get("platform"), row.get("external_id"))
+        destinations.setdefault(media_key, {})[key] = {
+            "media_key": media_key,
+            "workspace_id": int(row["workspace_id"]),
+            "platform": key[0],
+            "normalized_external_id": key[1],
+        }
+
+    user_ids = sorted({user_id for user_id, _ in selected} | {user_id for user_id, _ in access})
+    result: Dict[str, List[Dict]] = {}
+    for user_id in user_ids:
+        targets = []
+        seen = set()
+        for media_key, media_destinations in destinations.items():
+            if (user_id, media_key) not in access:
+                continue
+            for key, row in media_destinations.items():
+                workspace_id = int(row["workspace_id"])
+                if (user_id, workspace_id) not in selected or (user_id, workspace_id) not in memberships:
+                    continue
+                if key not in seen:
+                    seen.add(key)
+                    targets.append(dict(row))
+        result[str(user_id)] = sorted(
+            targets, key=lambda row: (row["workspace_id"], row["media_key"], row["platform"])
+        )
+    return result
+
+
 def _stable_branding_signature(branding: Dict) -> str:
     import json
     return json.dumps(branding, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -100,7 +182,9 @@ def _destination_update(destination: Dict, media_ref, normalized: str, mapping: 
 
 def _build_identity_writes(
     rows: List[Dict], existing_media: Dict, existing_destinations: Dict,
-    existing_members: set, existing_associations: Dict,
+    existing_members: Dict, existing_associations: Dict,
+    existing_workspace_members: Dict,
+    existing_workspace_selections: set,
 ) -> Tuple[Dict, Dict]:
     """Build intended writes for one Media Identity."""
     writes = _empty_writes()
@@ -117,7 +201,10 @@ def _build_identity_writes(
                 "old_values": old_values, "new_values": desired_branding,
             })
     else:
-        media = {"ref": f"media:{media_key}", "identity_key": media_key, **desired_branding}
+        media = {
+            "ref": f"media:{media_key}", "identity_key": media_key,
+            **desired_branding, "status": "active",
+        }
         media_ref = media["ref"]
         writes["inserts"]["media_identities"].append(media)
 
@@ -131,8 +218,12 @@ def _build_identity_writes(
                 "media_ref": media_ref,
                 "workspace_id": int(mapping["workspace_id"]),
                 "platform": key[0],
+                "destination_type": mapping.get("destination_type", "channel"),
+                "name": mapping.get("destination_name") or mapping.get("external_id"),
                 "external_id": mapping.get("external_id"),
                 "normalized_external_id": key[1],
+                "status": "active",
+                "is_default": bool(mapping.get("is_default", False)),
             }
             if mapping.get("platform_chat_id_verified") and mapping.get("platform_chat_id") not in (None, ""):
                 destination["platform_chat_id"] = str(mapping["platform_chat_id"])
@@ -145,11 +236,21 @@ def _build_identity_writes(
 
         user_id = int(mapping["user_id"])
         member_key = (media_ref, user_id) if isinstance(media_ref, int) else None
-        if member_key not in existing_members:
+        existing_member = existing_members.get(member_key) if member_key else None
+        desired_media_role = mapping.get("media_role", "publisher")
+        if not existing_member:
             _append_unique(writes["inserts"]["media_members"], {
                 "media_ref": media_ref,
                 "user_id": user_id,
-                "role": mapping.get("media_role", "publisher"),
+                "role": desired_media_role,
+                "status": "active",
+            })
+        elif existing_member.get("role") != desired_media_role:
+            _append_unique(writes["updates"]["media_members"], {
+                "media_identity_id": media_ref,
+                "user_id": user_id,
+                "old_values": {"role": existing_member.get("role")},
+                "new_values": {"role": desired_media_role},
             })
 
         destination_ref = destination.get("id") or destination["ref"]
@@ -165,7 +266,45 @@ def _build_identity_writes(
             _append_unique(writes["inserts"]["associations"], {
                 "destination_ref": destination_ref,
                 "workspace_id": workspace_id,
+                "status": "active",
             })
+
+        if (
+            mapping.get("create_workspace_membership")
+            and mapping.get("workspace_membership_approved")
+        ):
+            membership_key = (workspace_id, user_id)
+            existing_workspace_member = existing_workspace_members.get(membership_key)
+            desired_workspace_role = mapping.get("workspace_role", "manager")
+            if not existing_workspace_member:
+                _append_unique(writes["inserts"]["workspace_members"], {
+                    "workspace_id": workspace_id,
+                    "user_id": user_id,
+                    "role": desired_workspace_role,
+                    "status": "active",
+                })
+            elif (
+                existing_workspace_member.get("role") != desired_workspace_role
+                or existing_workspace_member.get("status") != "active"
+            ):
+                _append_unique(writes["updates"]["workspace_members"], {
+                    "id": existing_workspace_member.get("id"),
+                    "workspace_id": workspace_id,
+                    "user_id": user_id,
+                    "old_values": {
+                        "role": existing_workspace_member.get("role"),
+                        "status": existing_workspace_member.get("status"),
+                    },
+                    "new_values": {"role": desired_workspace_role, "status": "active"},
+                })
+
+        if mapping.get("select_workspace") and mapping.get("workspace_selection_approved"):
+            selection_key = (user_id, workspace_id)
+            if selection_key not in existing_workspace_selections:
+                _append_unique(writes["inserts"]["workspace_selections"], {
+                    "user_id": user_id,
+                    "workspace_id": workspace_id,
+                })
     return writes, media
 
 
@@ -186,12 +325,21 @@ def build_backfill_plan(snapshot: Dict, mappings: Iterable[Dict]) -> Dict:
         for row in current.get("media_identities", []) if row.get("identity_key")
     }
     existing_members = {
-        (int(row["media_identity_id"]), int(row["user_id"]))
+        (int(row["media_identity_id"]), int(row["user_id"])): row
         for row in current.get("media_members", []) if row.get("status") == "active"
     }
     existing_associations = {
         int(row["destination_id"]): row
         for row in current.get("workspace_destinations", []) if row.get("status") == "active"
+    }
+    existing_workspace_members = {
+        (int(row["workspace_id"]), int(row["user_id"])): row
+        for row in current.get("workspace_members", [])
+        if row.get("status") != "removed"
+    }
+    existing_workspace_selections = {
+        (int(row["user_id"]), int(row["workspace_id"]))
+        for row in current.get("selected_workspaces", [])
     }
 
     excluded_routes = []
@@ -234,9 +382,17 @@ def build_backfill_plan(snapshot: Dict, mappings: Iterable[Dict]) -> Dict:
             if row.get("workspace_id") is None or row.get("workspace_verified") is False:
                 _block(identity_blockers, BLOCKED_WORKSPACE, media_key,
                        workspace_id=row.get("workspace_id"), reason="workspace association is not verified")
-            if row.get("create_workspace_membership"):
+            if (
+                row.get("create_workspace_membership")
+                and not row.get("workspace_membership_approved")
+            ):
                 _block(identity_blockers, BLOCKED_AUTHORIZATION, media_key,
-                       user_id=row.get("user_id"), reason="planner cannot create workspace membership")
+                       user_id=row.get("user_id"),
+                       reason="workspace membership requires explicit human approval")
+            if row.get("select_workspace") and not row.get("workspace_selection_approved"):
+                _block(identity_blockers, BLOCKED_AUTHORIZATION, media_key,
+                       user_id=row.get("user_id"),
+                       reason="workspace selection requires explicit human approval")
 
             key = canonical_destination_key(row.get("platform"), row.get("external_id"))
             media_candidates = sorted(value for value in key_to_media.get(key, set()) if value)
@@ -261,7 +417,9 @@ def build_backfill_plan(snapshot: Dict, mappings: Iterable[Dict]) -> Dict:
 
         if media_key and all(row.get("workspace_id") is not None for row in rows):
             intended, _ = _build_identity_writes(
-                rows, existing_media, active_destinations, existing_members, existing_associations
+                rows, existing_media, active_destinations, existing_members,
+                existing_associations, existing_workspace_members,
+                existing_workspace_selections,
             )
         else:
             intended = _empty_writes()
@@ -276,6 +434,10 @@ def build_backfill_plan(snapshot: Dict, mappings: Iterable[Dict]) -> Dict:
 
     executable["counts"] = _counts(executable)
     conditional["counts"] = _counts(conditional)
+
+    for update in current.get("planned_legacy_suppression", []):
+        _append_unique(executable["updates"]["legacy_preferences"], deepcopy(update))
+    executable["counts"] = _counts(executable)
     rollback = {
         "transaction_scope": "executable plan only",
         "inserted_refs": [
@@ -298,11 +460,21 @@ def build_backfill_plan(snapshot: Dict, mappings: Iterable[Dict]) -> Dict:
         "historical_removed_destinations": removed_destinations,
         "executable": executable,
         "conditional": conditional,
+        "executable_tables": _physical_writes(executable),
+        "conditional_tables": _physical_writes(conditional),
         "inserts": executable["inserts"],
         "updates": executable["updates"],
         "deletes": executable["deletes"],
         "counts": executable["counts"],
         "rollback": rollback,
+        "target_simulation": _simulate_targets(current, mappings),
+        "decision_evidence": sorted({
+            source for row in mappings
+            for source in (
+                row.get("workspace_membership_approval_source"),
+                row.get("workspace_selection_approval_source"),
+            ) if source
+        }),
     }
 
 

@@ -226,7 +226,61 @@ def test_planner_never_creates_workspace_membership_or_auto_grants_it():
         user_id=2, create_workspace_membership=True, authorization_verified=False,
     )])
     assert BLOCKED_AUTHORIZATION in plan["identity_statuses"][0]["statuses"]
-    assert "workspace_members" not in plan["conditional"]["inserts"]
+    assert plan["conditional"]["inserts"]["workspace_members"] == []
+
+
+def test_explicit_human_approval_plans_workspace_manager_membership():
+    plan = build_backfill_plan({}, [mapping(
+        media_key="donya24news", user_id=2, media_role="manager",
+        create_workspace_membership=True, workspace_membership_approved=True,
+        workspace_role="manager", workspace_membership_approval_source="phase_5_user_decision",
+    )])
+    assert plan["safe_to_apply"]
+    assert plan["inserts"]["workspace_members"] == [{
+        "workspace_id": 6,
+        "user_id": 2,
+        "role": "manager",
+        "status": "active",
+    }]
+
+
+def test_existing_workspace_membership_is_reused_without_duplicate():
+    snapshot = {"workspace_members": [{
+        "id": 60, "workspace_id": 6, "user_id": 2,
+        "role": "manager", "status": "active",
+    }]}
+    plan = build_backfill_plan(snapshot, [mapping(
+        media_key="donya24news", user_id=2, media_role="manager",
+        create_workspace_membership=True, workspace_membership_approved=True,
+        workspace_role="manager",
+    )])
+    assert plan["inserts"]["workspace_members"] == []
+    assert plan["updates"]["workspace_members"] == []
+
+
+def test_approved_workspace_membership_role_change_is_explicit_update():
+    snapshot = {"workspace_members": [{
+        "id": 60, "workspace_id": 6, "user_id": 2,
+        "role": "publisher", "status": "active",
+    }]}
+    plan = build_backfill_plan(snapshot, [mapping(
+        media_key="donya24news", user_id=2, media_role="manager",
+        create_workspace_membership=True, workspace_membership_approved=True,
+        workspace_role="manager", workspace_membership_approval_source="human",
+    )])
+    assert plan["updates"]["workspace_members"] == [{
+        "id": 60, "workspace_id": 6, "user_id": 2,
+        "old_values": {"role": "publisher", "status": "active"},
+        "new_values": {"role": "manager", "status": "active"},
+    }]
+
+
+def test_exact_plan_exposes_physical_production_table_names():
+    plan = build_backfill_plan({}, [mapping()])
+    assert len(plan["executable_tables"]["inserts"]["media_identities"]) == 1
+    assert len(plan["executable_tables"]["inserts"]["media_identity_members"]) == 1
+    assert len(plan["executable_tables"]["inserts"]["publication_destinations"]) == 1
+    assert len(plan["executable_tables"]["inserts"]["workspace_destinations"]) == 1
 
 
 def test_history_message_links_retry_and_idempotency_are_ignored_and_protected():
