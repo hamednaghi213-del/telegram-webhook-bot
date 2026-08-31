@@ -350,9 +350,30 @@ def is_source_line(
         )
 
         if source_title_lower:
+            normalized_line_without_trailing_icons = (
+                strip_trailing_source_icons(
+                    normalized_line
+                )
+                .strip()
+                .lower()
+            )
+
+            source_title_without_trailing_icons = (
+                strip_trailing_source_icons(
+                    source_title_clean
+                )
+                .strip()
+                .lower()
+            )
+
             if (
                 normalized_line_lower
                 == source_title_lower
+                or (
+                    source_title_without_trailing_icons
+                    and normalized_line_without_trailing_icons
+                    == source_title_without_trailing_icons
+                )
             ):
                 return True
 
