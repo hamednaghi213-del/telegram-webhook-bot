@@ -181,7 +181,7 @@ def test_keyboard_has_multi_select_confirm_and_back(database):
 def test_selected_ids_are_recovered_from_real_callback_markup(database):
     _, candidates = list_move_candidates(database, 7, 2)
     callback = {"message": {"reply_markup": {"inline_keyboard": build_destination_move_keyboard(2, candidates, {11})}}}
-    assert selected_destination_ids_from_callback(callback) == {11}
+    assert selected_destination_ids_from_callback(callback) == {"d11"}
 
 
 def test_forged_malformed_markup_is_ignored():

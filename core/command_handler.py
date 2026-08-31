@@ -666,6 +666,7 @@ def handle_workspaces(chat_id: int) -> bool:
         from core.workspace_publisher import (
             build_workspace_keyboard,
             resolve_legacy_media_label,
+            visible_workspace_rows,
         )
         list_counts = getattr(database_module, "list_workspace_destination_counts", None)
         destination_counts = (
@@ -683,12 +684,23 @@ def handle_workspaces(chat_id: int) -> bool:
             display_workspace["destination_count"] = (
                 destination_counts.get(workspace["id"], {}).get("total", 0)
             )
+            display_workspace["canonical_visibility_known"] = (
+                workspace["id"] in destination_counts
+            )
             display_workspaces.append(display_workspace)
+        include_legacy = bool(legacy_tenant)
+        list_bulk_destinations = getattr(
+            database_module, "list_publication_destinations_for_workspaces", None
+        )
+        if include_legacy and list_bulk_destinations:
+            from core.legacy_workspace_compat import legacy_is_fully_canonical
+            canonical_rows = list_bulk_destinations([workspace["id"] for workspace in workspaces])
+            include_legacy = not legacy_is_fully_canonical(legacy_tenant, canonical_rows)
         keyboard = build_workspace_keyboard(
-            display_workspaces,
+            visible_workspace_rows(display_workspaces),
             active_id,
             selected_workspace_ids=selected_ids,
-            include_legacy=bool(legacy_tenant),
+            include_legacy=include_legacy,
             legacy_active=legacy_active,
             legacy_label=resolve_legacy_media_label(legacy_tenant),
         )
@@ -2579,37 +2591,10 @@ def handle_register(chat_id: int) -> bool:
             )
             return True
         
-        # ایجاد tenant جدید
-        success = save_tenant(
-            user_id=chat_id,
-            bot_token="TOKEN_TEMP",
-            telegram_channel="@channel",
-            bale_channel="",
-            bale_token="",
-            hashtag="#دنیا_۲۴_نیوز",
-            channel_tag="@Donya24News"
-        )
-        
-        if success:
-            send_long_message(
-                chat_id,
-                "✅ ثبت‌نام شما با موفقیت انجام شد.\n\n"
-                "⚠️ توجه: تنظیمات موقتی هستند!\n\n"
-                "ابتدا کانال تلگرام را تنظیم کنید:\n"
-                "/settelegram @channel\n\n"
-                "سپس در صورت نیاز کانال بله را تنظیم کنید:\n"
-                "/setbale @channel\n\n"
-                "و توکن ربات بله را وارد کنید:\n"
-                "/setbaletoken TOKEN"
-            )
-            logger.info(f"✅ USER REGISTERED | user={chat_id}")
-        else:
-            send_message(
-                chat_id,
-                "❌ ثبت‌نام انجام نشد. لطفاً دوباره تلاش کنید."
-            )
-        
-        return True
+        # Cutover: new registrations use the canonical Workspace model.
+        get_or_create_user_by_telegram_id(chat_id, status="active")
+        send_message(chat_id, "✅ ثبت‌نام انجام شد؛ نام گروه رسانه‌ای را وارد کنید.")
+        return handle_create_workspace(chat_id)
         
     except Exception as e:
         logger.exception(f"❌ Error in handle_register: {e}")

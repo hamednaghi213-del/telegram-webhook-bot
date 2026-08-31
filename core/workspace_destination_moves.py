@@ -27,8 +27,11 @@ def list_move_candidates(database, user_id: int, target_workspace_id: int) -> Tu
         if source_id == int(target_workspace_id):
             continue
         item = dict(row)
+        item["move_key"] = f"d{int(row['id'])}"
         item["source_workspace_name"] = names[source_id]
         candidates.append(item)
+    from core.legacy_workspace_compat import list_legacy_move_candidates
+    candidates.extend(list_legacy_move_candidates(database, user_id, target_workspace_id))
     return target, candidates
 
 

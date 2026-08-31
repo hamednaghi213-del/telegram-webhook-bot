@@ -69,6 +69,16 @@ def resolve_publication_targets(chat_id: int) -> Tuple[List[PublicationTarget], 
             else (not preference or preference.get("context_type") == "legacy")
         )
     )
+    if legacy_selected and user:
+        memberships_for_compat = list_user_workspace_memberships(user["id"]) or []
+        bulk_loader = getattr(database, "list_publication_destinations_for_workspaces", None)
+        if bulk_loader:
+            from core.legacy_workspace_compat import legacy_is_fully_canonical
+            all_rows = bulk_loader([
+                workspace["id"] for workspace in memberships_for_compat
+            ])
+            if legacy_is_fully_canonical(tenant, all_rows):
+                legacy_selected = False
     if legacy_selected:
         targets.append(PublicationTarget(
             key=f"legacy:telegram:{tenant['telegram_channel']}",

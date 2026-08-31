@@ -29,11 +29,14 @@ def build_destination_move_keyboard(
     selected_ids=None,
 ) -> list:
     """Build a compact, stateless multi-select keyboard for destination moves."""
-    selected = {int(value) for value in (selected_ids or [])}
+    selected = {
+        str(value) if str(value).startswith(("d", "l")) else f"d{int(value)}"
+        for value in (selected_ids or [])
+    }
     keyboard = []
     for destination in candidates:
-        destination_id = int(destination["id"])
-        checked = destination_id in selected
+        move_key = str(destination.get("move_key") or f"d{int(destination['id'])}")
+        checked = move_key in selected
         platform = "تلگرام" if destination.get("platform") == "telegram" else "بله"
         label = (
             f"{'✅' if checked else '⬜'} {destination.get('external_id')} — {platform}"
@@ -42,7 +45,7 @@ def build_destination_move_keyboard(
         keyboard.append([{
             "text": label[:60],
             "callback_data": (
-                f"ws:move:pick:{int(target_workspace_id)}:{destination_id}:"
+                f"ws:move:pick:{int(target_workspace_id)}:{move_key}:"
                 f"{1 if checked else 0}"
             ),
         }])
@@ -65,10 +68,16 @@ def selected_destination_ids_from_callback(callback_query: Dict) -> set:
             data = str(button.get("callback_data") or "")
             parts = data.split(":")
             if len(parts) == 6 and parts[:3] == ["ws", "move", "pick"] and parts[5] == "1":
-                try:
-                    selected.add(int(parts[4]))
-                except (TypeError, ValueError):
-                    pass
+                move_key = str(parts[4])
+                if (
+                    (move_key.startswith("d") and move_key[1:].isdigit())
+                    or (
+                        move_key.startswith("l")
+                        and move_key[-1:] in {"t", "b"}
+                        and move_key[1:-1].isdigit()
+                    )
+                ):
+                    selected.add(move_key)
     return selected
 
 
@@ -105,6 +114,15 @@ def build_workspace_management_panel(workspace: Dict, destinations: List[Dict]):
         [{"text": "⬅️ بازگشت", "callback_data": "ws:back"}],
     ])
     return "\n".join(lines), keyboard
+
+
+def visible_workspace_rows(workspaces: List[Dict]) -> List[Dict]:
+    """Hide only truly empty canonical groups; inactive destinations still count."""
+    return [
+        row for row in workspaces
+        if not row.get("canonical_visibility_known")
+        or int(row.get("destination_count") or 0) > 0
+    ]
 
 
 def resolve_legacy_media_label(tenant: Optional[Dict[str, Any]]) -> str:
@@ -1434,14 +1452,16 @@ def _handle_workspace_callback(
                 return
             selected = selected_destination_ids_from_callback(callback_query)
             if action == "pick" and len(parts) == 6:
-                destination_id = int(parts[4])
-                candidate_ids = {int(row["id"]) for row in candidates}
-                if destination_id not in candidate_ids:
+                move_key = str(parts[4])
+                candidate_keys = {
+                    str(row.get("move_key") or f"d{int(row['id'])}") for row in candidates
+                }
+                if move_key not in candidate_keys:
                     raise ValueError("کانال انتخاب‌شده قابل انتقال نیست.")
-                if destination_id in selected:
-                    selected.remove(destination_id)
+                if move_key in selected:
+                    selected.remove(move_key)
                 else:
-                    selected.add(destination_id)
+                    selected.add(move_key)
                 _ws_answer_callback(api_url, callback_id, "انتخاب به‌روزرسانی شد")
                 _ws_edit_message_keyboard(
                     api_url,
@@ -1450,9 +1470,16 @@ def _handle_workspace_callback(
                 )
                 return
             if action == "confirm":
+                native_ids = [int(key[1:]) for key in selected if key.startswith("d")]
+                legacy_keys = [key for key in selected if key.startswith("l")]
                 moved = move_destinations(
-                    database_module, user["id"], target_workspace_id, selected,
-                )
+                    database_module, user["id"], target_workspace_id, native_ids,
+                ) if native_ids else []
+                if legacy_keys:
+                    from core.legacy_workspace_compat import claim_legacy_destinations
+                    moved.extend(claim_legacy_destinations(
+                        database_module, user["id"], target_workspace_id, legacy_keys,
+                    ))
                 _ws_answer_callback(api_url, callback_id, "انتقال انجام شد")
                 _ws_send_message(
                     api_url,

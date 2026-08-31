@@ -218,8 +218,11 @@ def test_register_text_command_remains_available(monkeypatch):
     command_handler, db, sent = _load_command_handler(monkeypatch)
 
     assert command_handler.handle_command("/register", 1009) is True
-    assert db.get_tenant(1009) is not None
-    assert "ثبت‌نام شما با موفقیت انجام شد" in sent[-1][1]
+    assert db.get_tenant(1009) is None
+    user = db.get_user_by_telegram_id(1009)
+    assert user is not None
+    assert any("گروه رسانه‌ای" in message for _chat, message in sent)
+    assert all("تنظیمات موقتی" not in message for _chat, message in sent)
 
 
 def test_start_is_idempotent_and_does_not_duplicate_workspace(monkeypatch):
