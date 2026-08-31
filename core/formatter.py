@@ -700,9 +700,73 @@ def remove_source_signature(
                         )
                         changed = True
                         continue
+                    looks_like_adjacent_source_label = False
 
                     if (
-                        is_orphan_separator_line(
+                        source_title
+                        and neighbor < index
+                    ):
+                        candidate_label = (
+                            strip_trailing_source_icons(
+                                strip_leading_decoration(
+                                    normalize_invisible_characters(
+                                        candidate
+                                    )
+                                )
+                            )
+                            .strip()
+                            .lower()
+                        )
+
+                        source_label = (
+                            strip_trailing_source_icons(
+                                strip_leading_decoration(
+                                    normalize_invisible_characters(
+                                        str(source_title)
+                                    )
+                                )
+                            )
+                            .strip()
+                            .lower()
+                        )
+
+                        candidate_tokens = set(
+                            re.findall(
+                                r"[A-Za-z0-9_\u0600-\u06ff]+",
+                                candidate_label,
+                            )
+                        )
+
+                        source_tokens = set(
+                            re.findall(
+                                r"[A-Za-z0-9_\u0600-\u06ff]+",
+                                source_label,
+                            )
+                        )
+
+                        shared_tokens = (
+                            candidate_tokens
+                            & source_tokens
+                        )
+
+                        looks_like_adjacent_source_label = (
+                            len(shared_tokens) >= 2
+                            and bool(candidate_tokens)
+                            and (
+                                len(shared_tokens)
+                                / len(candidate_tokens)
+                            ) >= 0.75
+                            and len(candidate_label) <= (
+                                len(source_label) + 20
+                            )
+                            and not re.search(
+                                r"[.!؟?]$",
+                                candidate_label,
+                            )
+                        )
+                    if (
+                        looks_like_adjacent_source_label
+                        or is_orphan_separator_line(
                             candidate
                         )
                         or is_suspicious_footer_fragment(
