@@ -93,7 +93,7 @@ class MoveDb:
         if self.associations[3] not in workspace_ids:
             return []
         return [{**deepcopy(self.destination), "workspace_id": self.associations[3]}]
-    def move_canonical_destination_associations(self, ids, target):
+    def move_canonical_destination_associations(self, user_id, ids, target):
         assert ids == [3]
         self.associations[3] = target
         return [{"workspace_id": target, "destination_id": 3, "status": "active"}]
