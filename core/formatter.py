@@ -752,10 +752,7 @@ def remove_source_signature(
                         looks_like_adjacent_source_label = (
                             len(shared_tokens) >= 2
                             and bool(candidate_tokens)
-                            and (
-                                len(shared_tokens)
-                                / len(candidate_tokens)
-                            ) >= 0.75
+                            and candidate_tokens.issubset(source_tokens)
                             and len(candidate_label) <= (
                                 len(source_label) + 20
                             )
