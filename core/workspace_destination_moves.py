@@ -68,8 +68,10 @@ def move_destinations(database, user_id: int, target_workspace_id: int, destinat
         raise ValueError("اجازه مدیریت یکی از کانال‌های انتخاب‌شده را ندارید.")
     if canonical:
         database.move_canonical_destination_associations(
-            [row["id"] for row in moving], target_workspace_id
-        )
+    user_id,
+    [row["id"] for row in moving],
+    target_workspace_id,
+    )
         refreshed = database.list_canonical_publication_destinations(
             user_id, [target_workspace_id]
         )
