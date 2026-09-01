@@ -1,6 +1,9 @@
+import importlib
+import sys
+import types
 from types import SimpleNamespace
 
-import core.database as db
+import pytest
 
 
 class FakeQuery:
@@ -47,7 +50,52 @@ class FakeServiceSupabase:
         return self.query
 
 
+@pytest.fixture
+def db(monkeypatch):
+    fake_client = FakeServiceSupabase()
+
+    fake_supabase_module = types.ModuleType("supabase")
+    fake_supabase_module.create_client = (
+        lambda _url, _key: fake_client
+    )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "supabase",
+        fake_supabase_module,
+    )
+
+    monkeypatch.setenv(
+        "SUPABASE_URL",
+        "https://example.test",
+    )
+    monkeypatch.setenv(
+        "SUPABASE_KEY",
+        "test-anon-key",
+    )
+    monkeypatch.setenv(
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "test-service-role-key",
+    )
+
+    sys.modules.pop("core.database", None)
+
+    core_package = sys.modules.get("core")
+    if core_package is not None:
+        core_package.__dict__.pop(
+            "database",
+            None,
+        )
+
+    module = importlib.import_module(
+        "core.database"
+    )
+
+    return module
+
+
 def test_get_recent_duplicate_news_reads_only_requested_media(
+    db,
     monkeypatch,
 ):
     rows = [
@@ -63,7 +111,11 @@ def test_get_recent_duplicate_news_reads_only_requested_media(
     ]
 
     fake = FakeServiceSupabase(rows)
-    monkeypatch.setattr(db, "service_supabase", fake)
+    monkeypatch.setattr(
+        db,
+        "service_supabase",
+        fake,
+    )
 
     result = db.get_recent_duplicate_news(
         media_identity_id=7,
@@ -71,7 +123,9 @@ def test_get_recent_duplicate_news_reads_only_requested_media(
     )
 
     assert result == rows
-    assert fake.tables == ["duplicate_news_history"]
+    assert fake.tables == [
+        "duplicate_news_history"
+    ]
 
     assert (
         "eq",
@@ -89,10 +143,15 @@ def test_get_recent_duplicate_news_reads_only_requested_media(
 
 
 def test_get_recent_duplicate_news_clamps_limit(
+    db,
     monkeypatch,
 ):
     fake = FakeServiceSupabase([])
-    monkeypatch.setattr(db, "service_supabase", fake)
+    monkeypatch.setattr(
+        db,
+        "service_supabase",
+        fake,
+    )
 
     db.get_recent_duplicate_news(
         media_identity_id=3,
@@ -103,6 +162,7 @@ def test_get_recent_duplicate_news_clamps_limit(
 
 
 def test_record_duplicate_news_history_uses_logical_source_identity(
+    db,
     monkeypatch,
 ):
     returned = {
@@ -116,7 +176,11 @@ def test_record_duplicate_news_history_uses_logical_source_identity(
     }
 
     fake = FakeServiceSupabase([returned])
-    monkeypatch.setattr(db, "service_supabase", fake)
+    monkeypatch.setattr(
+        db,
+        "service_supabase",
+        fake,
+    )
 
     result = db.record_duplicate_news_history(
         media_identity_id=4,
@@ -128,7 +192,9 @@ def test_record_duplicate_news_history_uses_logical_source_identity(
     )
 
     assert result == returned
-    assert fake.tables == ["duplicate_news_history"]
+    assert fake.tables == [
+        "duplicate_news_history"
+    ]
 
     upsert_calls = [
         call
@@ -138,7 +204,9 @@ def test_record_duplicate_news_history_uses_logical_source_identity(
 
     assert len(upsert_calls) == 1
 
-    _, payload, on_conflict = upsert_calls[0]
+    _, payload, on_conflict = (
+        upsert_calls[0]
+    )
 
     assert payload == {
         "media_identity_id": 4,
@@ -156,6 +224,7 @@ def test_record_duplicate_news_history_uses_logical_source_identity(
 
 
 def test_record_duplicate_news_history_accepts_missing_actor(
+    db,
     monkeypatch,
 ):
     fake = FakeServiceSupabase(
@@ -168,7 +237,11 @@ def test_record_duplicate_news_history_accepts_missing_actor(
         ]
     )
 
-    monkeypatch.setattr(db, "service_supabase", fake)
+    monkeypatch.setattr(
+        db,
+        "service_supabase",
+        fake,
+    )
 
     result = db.record_duplicate_news_history(
         media_identity_id=5,
@@ -189,14 +262,22 @@ def test_record_duplicate_news_history_accepts_missing_actor(
 
     payload = upsert_call[1]
 
-    assert payload["actor_user_id"] is None
+    assert (
+        payload["actor_user_id"]
+        is None
+    )
 
 
 def test_record_duplicate_news_history_returns_none_without_row(
+    db,
     monkeypatch,
 ):
     fake = FakeServiceSupabase([])
-    monkeypatch.setattr(db, "service_supabase", fake)
+    monkeypatch.setattr(
+        db,
+        "service_supabase",
+        fake,
+    )
 
     result = db.record_duplicate_news_history(
         media_identity_id=6,
