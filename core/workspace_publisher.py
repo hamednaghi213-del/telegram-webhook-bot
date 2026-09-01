@@ -1503,7 +1503,7 @@ def _handle_workspace_callback(
                 )
                 return
             raise ValueError("عملیات انتقال نامعتبر است.")
-                except Exception as exc:
+         except Exception as exc:
             logger.exception(
                 "Workspace destination move failed | "
                 f"chat_id={chat_id} | callback_data={callback_data}"
