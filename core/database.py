@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 
 SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
+SUPABASE_SERVICE_ROLE_KEY: str = os.getenv(
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "",
+)
 
 # Retry Configuration
 MAX_RETRIES: int = 3
@@ -43,8 +47,27 @@ if not SUPABASE_KEY:
 try:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     logger.info("✅ Supabase client initialized")
+
+    # Privileged client is intentionally separate.
+    # Normal bot/database operations continue using the regular client.
+    # Only explicitly authorized server-side operations may use this client.
+    service_supabase = (
+        create_client(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+        )
+        if SUPABASE_SERVICE_ROLE_KEY
+        else None
+    )
+
+    if service_supabase is None:
+        logger.warning(
+            "⚠️ SUPABASE_SERVICE_ROLE_KEY is not configured | "
+            "privileged workspace operations are unavailable"
+        )
+
 except Exception as e:
-    logger.exception(f"❌ Failed to initialize Supabase: {e}")
+    logger.exception(f"❌ Failed to initialize DB: {e}")
     raise
 
 
@@ -1044,17 +1067,44 @@ def list_canonical_publication_destinations(
 
 @with_retry
 def move_canonical_destination_associations(
-    destination_ids: List[int], target_workspace_id: int,
+    user_id: int,
+    destination_ids: List[int],
+    target_workspace_id: int,
 ) -> List[Dict[str, Any]]:
-    """Atomically change group associations without changing physical rows."""
+    """
+    Atomically move canonical destination associations.
+
+    This operation is privileged:
+    - normal database traffic continues through the regular Supabase client
+    - this RPC uses the service-role client
+    - the RPC independently verifies workspace and media permissions
+    """
     ids = sorted({int(value) for value in destination_ids})
-    result = supabase.rpc("move_workspace_destination_memberships", {
-        "p_destination_ids": ids,
-        "p_target_workspace_id": int(target_workspace_id),
-    }).execute()
+
+    if not ids:
+        return []
+
+    if service_supabase is None:
+        raise RuntimeError(
+            "Secure workspace destination move is not configured"
+        )
+
+    result = service_supabase.rpc(
+        "move_workspace_destination_memberships_authorized",
+        {
+            "p_user_id": int(user_id),
+            "p_destination_ids": ids,
+            "p_target_workspace_id": int(target_workspace_id),
+        },
+    ).execute()
+
     rows = result.data or []
+
     if {int(row["destination_id"]) for row in rows} != set(ids):
-        raise RuntimeError("Canonical association move was incomplete")
+        raise RuntimeError(
+            "Canonical association move was incomplete"
+        )
+
     return rows
 
 
