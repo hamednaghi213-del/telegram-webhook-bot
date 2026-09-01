@@ -1606,7 +1606,7 @@ def test_create_workspace_starts_new_workspace_even_if_incomplete_exists(monkeyp
     assert len(db.workspaces) == 1
     assert user.get("pending_workspace_action") == "create_workspace_name"
 
-    assert ch_mod.handle_workspace_stateful_input(9303, "گروه جدید") is True
+    assert ch_mod.handle_workspace_stateful_input("گروه جدید", 9303) is True
     assert len(db.workspaces) == 2
     assert db.workspaces[-1]["name"] == "گروه جدید"
     assert db.workspaces[-1]["id"] != workspace["id"]
