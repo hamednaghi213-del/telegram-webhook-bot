@@ -722,47 +722,51 @@ def handle_workspaces(chat_id: int) -> bool:
 
 
 def handle_create_workspace(chat_id: int) -> bool:
-    """Resume an incomplete owned workspace, otherwise request a group name."""
+    """
+    Start creation of a brand-new workspace.
+
+    Important:
+    - This action must NEVER reuse or resume an existing incomplete workspace.
+    - Group identity is always a new workspace_id.
+    - Resuming an incomplete setup belongs to /setup, not to "create new group".
+    """
     if not _WORKSPACE_SETUP_ENABLED:
         send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
         return True
+
     try:
         user = get_user_by_telegram_id(chat_id)
         if not user:
-            user = get_or_create_user_by_telegram_id(chat_id, status="active")
+            user = get_or_create_user_by_telegram_id(
+                chat_id,
+                status="active",
+            )
 
-        # Reuse an unfinished owner workspace.  This makes repeated callback
-        # delivery idempotent while never modifying or converting the legacy
-        # tenant row.
-        owned_workspaces = list_owned_workspaces(
-            user["id"], include_inactive=True
-        )
-        workspace = next(
-            (
-                item for item in owned_workspaces
-                if (get_workspace_setup_state(item["id"]) or {}).get("step")
-                != "completed"
-            ),
+        database_module = importlib.import_module("core.database")
+
+        # Clear any stale create/rename intent before starting a new creation flow.
+        clear_pending = getattr(
+            database_module,
+            "clear_user_pending_workspace_action",
             None,
         )
-        if workspace is not None:
-            database_module = importlib.import_module("core.database")
-            clear_pending = getattr(database_module, "clear_user_pending_workspace_action", None)
-            if clear_pending:
-                clear_pending(user["id"])
-            getattr(database_module, "select_workspace", set_active_workspace)(
-                user["id"], workspace["id"]
-            )
-            start_setup(workspace["id"])
-            send_message(chat_id, "▶️ راه‌اندازی نیمه‌کاره ادامه پیدا می‌کند.")
-            handle_setup(chat_id)
-            return True
+        if clear_pending:
+            clear_pending(user["id"])
 
-        _begin_workspace_name_input(chat_id, user, "create_workspace_name")
+        # IMPORTANT:
+        # Do NOT inspect or resume incomplete owned workspaces here.
+        # "Create new group" must always create a brand-new workspace
+        # after receiving the new group name.
+        _begin_workspace_name_input(
+            chat_id,
+            user,
+            "create_workspace_name",
+        )
         return True
+
     except Exception:
-        logger.exception("Error creating workspace for legacy user")
-        send_message(chat_id, "❌ خطا در ایجاد رسانه جدید")
+        logger.exception("Error starting new workspace creation")
+        send_message(chat_id, "❌ خطا در ایجاد گروه رسانه‌ای جدید")
         return False
 
 
