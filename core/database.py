@@ -2230,3 +2230,92 @@ def set_active_legacy_context(user_id: int) -> Dict[str, Any]:
     if not preference:
         raise RuntimeError("Failed to persist legacy context")
     return preference
+
+# =========================================================
+# DUPLICATE NEWS HISTORY
+# =========================================================
+
+@with_retry
+def get_recent_duplicate_news(
+    media_identity_id: int,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """
+    Return recent logical publications for one Media Identity.
+
+    This is a privileged server-side read used only by
+    Duplicate News Guard.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Duplicate news history is not configured"
+        )
+
+    safe_limit = max(1, min(int(limit), 200))
+
+    result = (
+        service_supabase
+        .table("duplicate_news_history")
+        .select(
+            "id,media_identity_id,actor_user_id,"
+            "source_key,content_text,normalized_text,"
+            "fingerprint,published_at"
+        )
+        .eq("media_identity_id", int(media_identity_id))
+        .order("published_at", desc=True)
+        .limit(safe_limit)
+        .execute()
+    )
+
+    return result.data or []
+
+
+@with_retry
+def record_duplicate_news_history(
+    *,
+    media_identity_id: int,
+    actor_user_id: Optional[int],
+    source_key: str,
+    content_text: str,
+    normalized_text: str,
+    fingerprint: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Persist one logical publication for future duplicate checks.
+
+    The unique constraint on (media_identity_id, source_key)
+    prevents one logical publication from being recorded once
+    per Telegram/Bale destination.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Duplicate news history is not configured"
+        )
+
+    payload = {
+        "media_identity_id": int(media_identity_id),
+        "actor_user_id": (
+            int(actor_user_id)
+            if actor_user_id is not None
+            else None
+        ),
+        "source_key": str(source_key),
+        "content_text": str(content_text or ""),
+        "normalized_text": str(normalized_text or ""),
+        "fingerprint": str(fingerprint or ""),
+    }
+
+    result = (
+        service_supabase
+        .table("duplicate_news_history")
+        .upsert(
+            payload,
+            on_conflict="media_identity_id,source_key",
+        )
+        .execute()
+    )
+
+    if not result.data:
+        return None
+
+    return result.data[0]
