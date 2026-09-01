@@ -92,11 +92,13 @@ def normalize_duplicate_text(text: str) -> str:
     value = value.casefold()
 
     value = re.sub(
-        r"[^\w\s\u0600-\u06ff]",
+        r"[^\w\s]",
         " ",
         value,
         flags=re.UNICODE,
     )
+
+    value = value.replace("_", " ")
 
     value = re.sub(r"\s+", " ", value).strip()
 
