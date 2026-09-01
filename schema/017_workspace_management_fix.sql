@@ -176,7 +176,7 @@ ON FUNCTION public.move_workspace_destination_memberships_authorized(
     BIGINT[],
     BIGINT
 )
-TO anon;
+TO service_role;
 
 NOTIFY pgrst, 'reload schema';
 
