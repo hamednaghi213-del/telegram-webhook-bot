@@ -1592,17 +1592,24 @@ def test_one_hundred_completed_workspaces_allow_workspace_101(monkeypatch):
     assert db.workspaces[-1]["name"] == "گروه 101"
 
 
-def test_incomplete_workspace_is_resumed_and_duplicate_callback_is_idempotent(monkeypatch):
+def test_create_workspace_starts_new_workspace_even_if_incomplete_exists(monkeypatch):
     _, ch_mod, db, _ = _load_modules(monkeypatch)
     user = db.get_or_create_user_by_telegram_id(9303)
     workspace = db.create_workspace("نیمه کاره", user["id"])
-    db.upsert_workspace_setup_state(workspace["id"], "in_progress", "setup_branding")
+    db.upsert_workspace_setup_state(
+        workspace["id"],
+        "in_progress",
+        "setup_branding",
+    )
 
     assert ch_mod.handle_create_workspace(9303) is True
-    assert ch_mod.handle_create_workspace(9303) is True
     assert len(db.workspaces) == 1
-    assert user.get("pending_workspace_action") is None
-    assert db.get_active_workspace_preference(user["id"])["active_workspace_id"] == workspace["id"]
+    assert user.get("pending_workspace_action") == "create_workspace_name"
+
+    assert ch_mod.handle_workspace_stateful_input(9303, "گروه جدید") is True
+    assert len(db.workspaces) == 2
+    assert db.workspaces[-1]["name"] == "گروه جدید"
+    assert db.workspaces[-1]["id"] != workspace["id"]
 
 
 def test_rename_changes_only_workspace_name_and_cancel_clears_state(monkeypatch):
