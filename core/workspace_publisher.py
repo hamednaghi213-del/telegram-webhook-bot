@@ -1503,8 +1503,16 @@ def _handle_workspace_callback(
                 )
                 return
             raise ValueError("عملیات انتقال نامعتبر است.")
-        except (TypeError, ValueError) as exc:
-            _ws_answer_callback(api_url, callback_id, str(exc)[:180])
+                except Exception as exc:
+            logger.exception(
+                "Workspace destination move failed | "
+                f"chat_id={chat_id} | callback_data={callback_data}"
+            )
+            _ws_answer_callback(
+                api_url,
+                callback_id,
+                "❌ انتقال انجام نشد. لطفاً دوباره تلاش کنید.",
+            )
 
     elif callback_data.startswith("ws:rename:") and len(parts) >= 3:
         try:
