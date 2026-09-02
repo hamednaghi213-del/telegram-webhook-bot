@@ -63,6 +63,7 @@ def test_begin_persistent_attempt_claims_delivery(
     assert state is not None
     assert state.status == "sending"
     assert state.attempt == 2
+    assert state.persistent_delivery_id == 20
     assert state.error is None
 
     assert calls == {
