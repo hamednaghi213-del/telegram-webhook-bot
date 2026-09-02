@@ -872,9 +872,21 @@ def publish_prepared_content(
     all_succeeded = bool(results) and all(item.status == "succeeded" for item in results)
     any_succeeded = any(item.status == "succeeded" for item in results)
     all_terminal = bool(results) and all(item.status == "failed_terminal" for item in results)
-    store.mark_source(source_key, "succeeded" if all_succeeded else (
-        "partial" if any_succeeded else ("failed_terminal" if all_terminal else "failed")
-    ))
+    source_status = "succeeded" if all_succeeded else (
+        "partial" if any_succeeded else (
+            "failed_terminal" if all_terminal else "failed"
+        )
+    )
+
+    store.mark_source(source_key, source_status)
+
+    if hasattr(store, "begin_persistent_attempt"):
+        from core import database
+
+        database.mark_persistent_publication_source(
+            source_key=source_key,
+            status=source_status,
+        )
     return {
         "ok": all_succeeded,
         "results": results,
