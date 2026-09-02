@@ -128,3 +128,86 @@ def test_persistent_store_clamps_lease_seconds():
 
     assert low.lease_seconds == 30
     assert high.lease_seconds == 900
+
+def test_part_succeeded_persists_to_database(
+    monkeypatch,
+):
+    import core.database
+
+    calls = {}
+
+    monkeypatch.setattr(
+        core.database,
+        "claim_persistent_publication_delivery",
+        lambda **_kwargs: {
+            "claimed": True,
+            "source_id": 10,
+            "delivery_id": 20,
+            "status": "sending",
+            "attempt_count": 1,
+            "lease_expires_at": None,
+        },
+    )
+
+    def fake_record_success(**kwargs):
+        calls.update(kwargs)
+        return {
+            "delivery_id": kwargs["delivery_id"],
+            "part_key": kwargs["part_key"],
+            "status": "succeeded",
+        }
+
+    monkeypatch.setattr(
+        core.database,
+        "record_persistent_publication_part_success",
+        fake_record_success,
+    )
+
+    store = PersistentPublicationStateStore(
+        lease_owner="worker-test",
+    )
+
+    state = store.begin_persistent_attempt(
+        source_key="telegram:1:100",
+        target_identity=(
+            "telegram:external:farda_no"
+        ),
+        platform="telegram",
+        destination_chat_id="@farda_no",
+    )
+
+    assert state is not None
+    assert state.persistent_delivery_id == 20
+
+    store.part_succeeded(
+        "telegram:1:100",
+        "telegram:external:farda_no",
+        "primary",
+        message_id=501,
+        message_ids=(501, 502),
+        destination_chat_id="@farda_no",
+    )
+
+    assert calls == {
+        "delivery_id": 20,
+        "part_key": "primary",
+        "message_id": 501,
+        "message_ids": (501, 502),
+        "destination_chat_id": "@farda_no",
+    }
+
+    delivery = store.get_delivery(
+        "telegram:1:100",
+        "telegram:external:farda_no",
+    )
+
+    assert delivery is not None
+    assert "primary" in delivery.completed_parts
+    assert delivery.message_ids["primary"] == 501
+    assert delivery.all_message_ids["primary"] == (
+        501,
+        502,
+    )
+    assert delivery.message_chat_ids["primary"] == (
+        "@farda_no"
+    )
