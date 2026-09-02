@@ -2681,3 +2681,40 @@ def get_persistent_publication_part(
         return None
 
     return result.data[0]
+
+@with_retry
+def mark_persistent_publication_delivery_succeeded(
+    *,
+    delivery_id: int,
+) -> Dict[str, Any]:
+    """
+    Mark one persistent publication delivery as succeeded.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    payload = {
+        "status": "succeeded",
+        "last_error": None,
+        "lease_owner": None,
+        "lease_expires_at": None,
+    }
+
+    result = (
+        service_supabase
+        .table("publication_deliveries")
+        .update(payload)
+        .eq("id", int(delivery_id))
+        .execute()
+    )
+
+    rows = result.data or []
+
+    if not rows:
+        raise RuntimeError(
+            "publication delivery success returned no row"
+        )
+
+    return rows[0]
