@@ -437,4 +437,4 @@ class PersistentPublicationStateStore(
             error=str(error),
         )
 
-DEFAULT_PUBLICATION_STATE_STORE = PersistentPublicationStateStore()
+DEFAULT_PUBLICATION_STATE_STORE = InMemoryPublicationStateStore()
