@@ -376,3 +376,76 @@ def test_claim_persistent_publication_delivery(
         "p_lease_owner": "worker-test",
         "p_lease_seconds": 120,
     }
+
+def test_record_persistent_publication_part_success(
+    db,
+    monkeypatch,
+):
+    class FakeQuery:
+        def __init__(self):
+            self.table_name = None
+            self.payload = None
+            self.on_conflict = None
+
+        def table(self, name):
+            self.table_name = name
+            return self
+
+        def upsert(
+            self,
+            payload,
+            on_conflict=None,
+        ):
+            self.payload = payload
+            self.on_conflict = on_conflict
+            return self
+
+        def execute(self):
+            return SimpleNamespace(
+                data=[self.payload]
+            )
+
+    fake = FakeQuery()
+
+    monkeypatch.setattr(
+        db,
+        "service_supabase",
+        fake,
+    )
+
+    result = (
+        db.record_persistent_publication_part_success(
+            delivery_id=21,
+            part_key="primary",
+            message_id=501,
+            message_ids=(501, 502, 503),
+            destination_chat_id="@farda_no",
+        )
+    )
+
+    assert fake.table_name == (
+        "publication_delivery_parts"
+    )
+
+    assert fake.on_conflict == (
+        "delivery_id,part_key"
+    )
+
+    assert result["delivery_id"] == 21
+    assert result["part_key"] == "primary"
+    assert result["status"] == "succeeded"
+    assert result["message_id"] == 501
+
+    assert result["message_ids"] == [
+        501,
+        502,
+        503,
+    ]
+
+    assert result["destination_chat_id"] == (
+        "@farda_no"
+    )
+
+    assert result["last_error"] is None
+    assert result["lease_owner"] is None
+    assert result["lease_expires_at"] is None
