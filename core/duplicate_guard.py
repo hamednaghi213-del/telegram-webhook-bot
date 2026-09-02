@@ -307,12 +307,16 @@ def check_duplicate_against_history(
     *,
     media_identity_id: int,
     text: str,
+    source_key: Optional[str] = None,
     history_limit: int = 50,
     near_duplicate_threshold: float = DEFAULT_NEAR_DUPLICATE_THRESHOLD,
 ) -> DuplicateDecision:
     """
     Read recent publication history for one Media Identity
     and run Duplicate Guard against it.
+
+    The current logical publication is excluded by source_key
+    so retries never detect themselves as duplicates.
 
     This function is fail-open by design:
     any database or conversion failure returns "not duplicate".
@@ -324,6 +328,18 @@ def check_duplicate_against_history(
             media_identity_id=media_identity_id,
             limit=history_limit,
         )
+
+        current_source_key = str(source_key or "")
+
+        filtered_rows = [
+            row
+            for row in rows
+            if not (
+                current_source_key
+                and str(row.get("source_key") or "")
+                == current_source_key
+            )
+        ]
 
         candidates = [
             DuplicateCandidate(
@@ -347,7 +363,7 @@ def check_duplicate_against_history(
                     else None
                 ),
             )
-            for row in rows
+            for row in filtered_rows
             if row.get("media_identity_id") is not None
         ]
 
