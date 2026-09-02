@@ -264,22 +264,22 @@ class PersistentPublicationStateStore(
             target_identity,
         )
 
-       state.attempt = int(
-           claim.get("attempt_count") or 0
-       )
+               state.attempt = int(
+            claim.get("attempt_count") or 0
+        )
 
-       delivery_id = claim.get("delivery_id")
-       state.persistent_delivery_id = (
-           int(delivery_id)
-           if delivery_id is not None
-           else None
-       )
+        delivery_id = claim.get("delivery_id")
+        state.persistent_delivery_id = (
+            int(delivery_id)
+            if delivery_id is not None
+            else None
+        )
 
-       state.status = str(
-       claim.get("status") or "sending"
-       )
-       state.error = None
+        state.status = str(
+            claim.get("status") or "sending"
+        )
+        state.error = None
 
-       return state
+        return state
 
 DEFAULT_PUBLICATION_STATE_STORE = InMemoryPublicationStateStore()
