@@ -1,5 +1,18 @@
-import core.database as database
+import sys
+import types
+
 import core.duplicate_guard as duplicate_guard
+
+
+def _install_fake_database(monkeypatch, history_reader):
+    fake_database = types.ModuleType("core.database")
+    fake_database.get_recent_duplicate_news = history_reader
+
+    monkeypatch.setitem(
+        sys.modules,
+        "core.database",
+        fake_database,
+    )
 
 
 def test_history_exact_duplicate_is_detected(monkeypatch):
@@ -15,9 +28,8 @@ def test_history_exact_duplicate_is_detected(monkeypatch):
         }
     ]
 
-    monkeypatch.setattr(
-        database,
-        "get_recent_duplicate_news",
+    _install_fake_database(
+        monkeypatch,
         lambda media_identity_id, limit=50: rows,
     )
 
@@ -48,9 +60,8 @@ def test_history_near_duplicate_is_detected(monkeypatch):
         }
     ]
 
-    monkeypatch.setattr(
-        database,
-        "get_recent_duplicate_news",
+    _install_fake_database(
+        monkeypatch,
         lambda media_identity_id, limit=50: rows,
     )
 
@@ -84,9 +95,8 @@ def test_history_unrelated_news_is_not_duplicate(monkeypatch):
         }
     ]
 
-    monkeypatch.setattr(
-        database,
-        "get_recent_duplicate_news",
+    _install_fake_database(
+        monkeypatch,
         lambda media_identity_id, limit=50: rows,
     )
 
@@ -102,7 +112,9 @@ def test_history_unrelated_news_is_not_duplicate(monkeypatch):
     assert decision.match is None
 
 
-def test_history_reader_receives_requested_media_and_limit(monkeypatch):
+def test_history_reader_receives_requested_media_and_limit(
+    monkeypatch,
+):
     observed = {}
 
     def fake_history(media_identity_id, limit=50):
@@ -110,9 +122,8 @@ def test_history_reader_receives_requested_media_and_limit(monkeypatch):
         observed["limit"] = limit
         return []
 
-    monkeypatch.setattr(
-        database,
-        "get_recent_duplicate_news",
+    _install_fake_database(
+        monkeypatch,
         fake_history,
     )
 
@@ -133,9 +144,8 @@ def test_history_database_failure_is_fail_open(monkeypatch):
     def broken_history(*_args, **_kwargs):
         raise RuntimeError("database unavailable")
 
-    monkeypatch.setattr(
-        database,
-        "get_recent_duplicate_news",
+    _install_fake_database(
+        monkeypatch,
         broken_history,
     )
 
@@ -158,9 +168,8 @@ def test_malformed_history_row_is_fail_open(monkeypatch):
         }
     ]
 
-    monkeypatch.setattr(
-        database,
-        "get_recent_duplicate_news",
+    _install_fake_database(
+        monkeypatch,
         lambda media_identity_id, limit=50: rows,
     )
 
@@ -174,9 +183,8 @@ def test_malformed_history_row_is_fail_open(monkeypatch):
 
 
 def test_empty_history_is_safe(monkeypatch):
-    monkeypatch.setattr(
-        database,
-        "get_recent_duplicate_news",
+    _install_fake_database(
+        monkeypatch,
         lambda media_identity_id, limit=50: [],
     )
 
