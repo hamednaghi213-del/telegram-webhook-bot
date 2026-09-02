@@ -282,4 +282,43 @@ class PersistentPublicationStateStore(
 
         return state
 
+    def part_succeeded(
+        self,
+        source_key: str,
+        target_identity: str,
+        part: str,
+        message_id: Optional[int] = None,
+        message_ids: Optional[Tuple[int, ...]] = None,
+        destination_chat_id: Optional[str] = None,
+    ) -> None:
+        from core import database
+
+        super().part_succeeded(
+            source_key,
+            target_identity,
+            part,
+            message_id=message_id,
+            message_ids=message_ids,
+            destination_chat_id=destination_chat_id,
+        )
+
+        state = self.get_delivery(
+            source_key,
+            target_identity,
+        )
+
+        if (
+            state is None
+            or state.persistent_delivery_id is None
+        ):
+            return
+
+        database.record_persistent_publication_part_success(
+            delivery_id=state.persistent_delivery_id,
+            part_key=part,
+            message_id=message_id,
+            message_ids=message_ids,
+            destination_chat_id=destination_chat_id,
+        )
+
 DEFAULT_PUBLICATION_STATE_STORE = InMemoryPublicationStateStore()
