@@ -407,4 +407,34 @@ class PersistentPublicationStateStore(
             delivery_id=state.persistent_delivery_id,
         )
 
+    def mark_failed(
+        self,
+        source_key: str,
+        target_identity: str,
+        error: str,
+    ) -> None:
+        from core import database
+
+        super().mark_failed(
+            source_key,
+            target_identity,
+            error,
+        )
+
+        state = self.get_delivery(
+            source_key,
+            target_identity,
+        )
+
+        if (
+            state is None
+            or state.persistent_delivery_id is None
+        ):
+            return
+
+        database.mark_persistent_publication_delivery_failed(
+            delivery_id=state.persistent_delivery_id,
+            error=str(error),
+        )
+
 DEFAULT_PUBLICATION_STATE_STORE = InMemoryPublicationStateStore()
