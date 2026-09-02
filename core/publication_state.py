@@ -181,5 +181,96 @@ class InMemoryPublicationStateStore(PublicationStateStore):
             self._sources.clear()
             self._deliveries.clear()
 
+class PersistentPublicationStateStore(
+    InMemoryPublicationStateStore
+):
+    """
+    Hybrid durable publication state.
+
+    Atomic destination claims are persisted in Supabase.
+    Existing in-memory behaviour remains available for the
+    rest of the PublicationStateStore contract while durable
+    part/status persistence is added incrementally.
+    """
+
+    def __init__(
+        self,
+        *,
+        lease_owner: Optional[str] = None,
+        lease_seconds: int = 120,
+    ) -> None:
+        super().__init__()
+
+        self.lease_owner = (
+            str(lease_owner)
+            if lease_owner
+            else None
+        )
+
+        self.lease_seconds = max(
+            30,
+            min(
+                int(lease_seconds),
+                900,
+            ),
+        )
+
+    def begin_persistent_attempt(
+        self,
+        *,
+        source_key: str,
+        target_identity: str,
+        platform: str,
+        destination_chat_id: str = "",
+        workspace_id: Optional[int] = None,
+        destination_id: Optional[int] = None,
+        delivery_generation: int = 1,
+    ) -> Optional[DeliveryState]:
+        """
+        Atomically acquire the cross-worker delivery lease.
+
+        This method is intentionally separate from
+        begin_attempt() until the publication engine supplies
+        the destination metadata required by the persistent
+        claim RPC.
+        """
+        from core import database
+
+        claim = (
+            database
+            .claim_persistent_publication_delivery(
+                source_key=source_key,
+                canonical_identity=target_identity,
+                platform=platform,
+                destination_chat_id=(
+                    destination_chat_id
+                ),
+                workspace_id=workspace_id,
+                destination_id=destination_id,
+                delivery_generation=(
+                    delivery_generation
+                ),
+                lease_owner=self.lease_owner,
+                lease_seconds=self.lease_seconds,
+            )
+        )
+
+        if not bool(claim.get("claimed")):
+            return None
+
+        state = self.claim_destination(
+            source_key,
+            target_identity,
+        )
+
+        state.attempt = int(
+            claim.get("attempt_count") or 0
+        )
+        state.status = str(
+            claim.get("status") or "sending"
+        )
+        state.error = None
+
+        return state
 
 DEFAULT_PUBLICATION_STATE_STORE = InMemoryPublicationStateStore()
