@@ -321,4 +321,63 @@ class PersistentPublicationStateStore(
             destination_chat_id=destination_chat_id,
         )
 
+    def part_completed(
+        self,
+        source_key: str,
+        target_identity: str,
+        part: str,
+    ) -> bool:
+        from core import database
+
+        if super().part_completed(
+            source_key,
+            target_identity,
+            part,
+        ):
+            return True
+
+        state = self.get_delivery(
+            source_key,
+            target_identity,
+        )
+
+        if (
+            state is None
+            or state.persistent_delivery_id is None
+        ):
+            return False
+
+        persisted = database.get_persistent_publication_part(
+            delivery_id=state.persistent_delivery_id,
+            part_key=part,
+        )
+
+        if not persisted:
+            return False
+
+        if str(persisted.get("status") or "") != "succeeded":
+            return False
+
+        message_ids = tuple(
+            int(value)
+            for value in (
+                persisted.get("message_ids") or ()
+            )
+            if isinstance(value, int)
+            and not isinstance(value, bool)
+        )
+
+        super().part_succeeded(
+            source_key,
+            target_identity,
+            part,
+            message_id=persisted.get("message_id"),
+            message_ids=message_ids,
+            destination_chat_id=(
+                persisted.get("destination_chat_id")
+            ),
+        )
+
+        return True
+
 DEFAULT_PUBLICATION_STATE_STORE = InMemoryPublicationStateStore()
