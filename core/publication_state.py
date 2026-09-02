@@ -264,7 +264,7 @@ class PersistentPublicationStateStore(
             target_identity,
         )
 
-               state.attempt = int(
+        state.attempt = int(
             claim.get("attempt_count") or 0
         )
 
