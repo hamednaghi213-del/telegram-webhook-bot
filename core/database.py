@@ -1,7 +1,7 @@
 import os
 import logging
 import time
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional, Tuple
 from supabase import create_client
 
 logger = logging.getLogger(__name__)
@@ -2582,6 +2582,73 @@ def claim_persistent_publication_delivery(
     if not rows:
         raise RuntimeError(
             "claim_publication_delivery returned no row"
+        )
+
+    return rows[0]
+
+@with_retry
+def record_persistent_publication_part_success(
+    *,
+    delivery_id: int,
+    part_key: str,
+    message_id: Optional[int] = None,
+    message_ids: Optional[Tuple[int, ...]] = None,
+    destination_chat_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Persist one successfully delivered publication part.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    normalized_ids = [
+        int(value)
+        for value in (message_ids or ())
+        if isinstance(value, int)
+        and not isinstance(value, bool)
+    ]
+
+    payload = {
+        "delivery_id": int(delivery_id),
+        "part_key": str(part_key),
+        "status": "succeeded",
+        "message_id": (
+            int(message_id)
+            if message_id is not None
+            else None
+        ),
+        "message_ids": (
+            normalized_ids
+            if normalized_ids
+            else None
+        ),
+        "destination_chat_id": (
+            str(destination_chat_id)
+            if destination_chat_id is not None
+            else None
+        ),
+        "last_error": None,
+        "lease_owner": None,
+        "lease_expires_at": None,
+    }
+
+    result = (
+        service_supabase
+        .table("publication_delivery_parts")
+        .upsert(
+            payload,
+            on_conflict="delivery_id,part_key",
+        )
+        .execute()
+    )
+
+    rows = result.data or []
+
+    if not rows:
+        raise RuntimeError(
+            "publication part success returned no row"
         )
 
     return rows[0]
