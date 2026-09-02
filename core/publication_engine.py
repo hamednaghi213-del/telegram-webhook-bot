@@ -724,19 +724,19 @@ def publish_prepared_content(
             ))
             continue
         if hasattr(store, "begin_persistent_attempt"):
-    state = store.begin_persistent_attempt(
-        source_key=source_key,
-        target_identity=identity,
-        platform=target.platform,
-        destination_chat_id=target.external_id,
-        workspace_id=target.workspace_id,
-        destination_id=target.destination_id,
-    )
-else:
-    state = store.begin_attempt(
-        source_key,
-        identity,
-    )
+            state = store.begin_persistent_attempt(
+                source_key=source_key,
+                target_identity=identity,
+                platform=target.platform,
+                destination_chat_id=target.external_id,
+                workspace_id=target.workspace_id,
+                destination_id=target.destination_id,
+            )
+        else:
+            state = store.begin_attempt(
+                source_key,
+                identity,
+            )
         if state is None:
             current = store.get_delivery(source_key, identity)
             terminal = bool(current and current.status == "failed_terminal")
