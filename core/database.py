@@ -2319,3 +2319,190 @@ def record_duplicate_news_history(
         return None
 
     return result.data[0]
+
+# =========================================================
+# PERSISTENT PUBLICATION STATE
+# =========================================================
+
+@with_retry
+def get_persistent_publication_source(
+    source_key: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Return one persisted logical publication source.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    result = (
+        service_supabase
+        .table("publication_sources")
+        .select("*")
+        .eq("source_key", str(source_key))
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        return None
+
+    return result.data[0]
+
+
+@with_retry
+def ensure_persistent_publication_source(
+    *,
+    source_key: str,
+    actor_user_id: Optional[int] = None,
+    source_kind: str = "message",
+    delivery_generation: int = 1,
+) -> Optional[Dict[str, Any]]:
+    """
+    Create the logical publication source once.
+
+    The unique source_key constraint makes repeated webhook
+    delivery resolve to the same persisted source.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    payload = {
+        "source_key": str(source_key),
+        "actor_user_id": (
+            int(actor_user_id)
+            if actor_user_id is not None
+            else None
+        ),
+        "source_kind": str(source_kind or "message"),
+        "delivery_generation": max(
+            1,
+            int(delivery_generation),
+        ),
+    }
+
+    result = (
+        service_supabase
+        .table("publication_sources")
+        .upsert(
+            payload,
+            on_conflict="source_key",
+        )
+        .execute()
+    )
+
+    if result.data:
+        return result.data[0]
+
+    return get_persistent_publication_source(
+        source_key
+    )
+
+
+@with_retry
+def get_persistent_publication_delivery(
+    *,
+    source_id: int,
+    canonical_identity: str,
+    delivery_generation: int = 1,
+) -> Optional[Dict[str, Any]]:
+    """
+    Return one persisted destination delivery.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    result = (
+        service_supabase
+        .table("publication_deliveries")
+        .select("*")
+        .eq("source_id", int(source_id))
+        .eq(
+            "canonical_identity",
+            str(canonical_identity),
+        )
+        .eq(
+            "delivery_generation",
+            max(1, int(delivery_generation)),
+        )
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        return None
+
+    return result.data[0]
+
+
+@with_retry
+def ensure_persistent_publication_delivery(
+    *,
+    source_id: int,
+    canonical_identity: str,
+    platform: str,
+    destination_chat_id: str = "",
+    workspace_id: Optional[int] = None,
+    destination_id: Optional[int] = None,
+    delivery_generation: int = 1,
+) -> Optional[Dict[str, Any]]:
+    """
+    Create one physical destination delivery once.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    payload = {
+        "source_id": int(source_id),
+        "canonical_identity": str(
+            canonical_identity
+        ),
+        "platform": str(platform or ""),
+        "destination_chat_id": str(
+            destination_chat_id or ""
+        ),
+        "workspace_id": (
+            int(workspace_id)
+            if workspace_id is not None
+            else None
+        ),
+        "destination_id": (
+            int(destination_id)
+            if destination_id is not None
+            else None
+        ),
+        "delivery_generation": max(
+            1,
+            int(delivery_generation),
+        ),
+    }
+
+    result = (
+        service_supabase
+        .table("publication_deliveries")
+        .upsert(
+            payload,
+            on_conflict=(
+                "source_id,"
+                "canonical_identity,"
+                "delivery_generation"
+            ),
+        )
+        .execute()
+    )
+
+    if result.data:
+        return result.data[0]
+
+    return get_persistent_publication_delivery(
+        source_id=source_id,
+        canonical_identity=canonical_identity,
+        delivery_generation=delivery_generation,
+    )
