@@ -1,3 +1,4 @@
+import core.database as database
 import core.duplicate_guard as duplicate_guard
 
 
@@ -15,7 +16,8 @@ def test_history_exact_duplicate_is_detected(monkeypatch):
     ]
 
     monkeypatch.setattr(
-        "core.database.get_recent_duplicate_news",
+        database,
+        "get_recent_duplicate_news",
         lambda media_identity_id, limit=50: rows,
     )
 
@@ -47,7 +49,8 @@ def test_history_near_duplicate_is_detected(monkeypatch):
     ]
 
     monkeypatch.setattr(
-        "core.database.get_recent_duplicate_news",
+        database,
+        "get_recent_duplicate_news",
         lambda media_identity_id, limit=50: rows,
     )
 
@@ -82,7 +85,8 @@ def test_history_unrelated_news_is_not_duplicate(monkeypatch):
     ]
 
     monkeypatch.setattr(
-        "core.database.get_recent_duplicate_news",
+        database,
+        "get_recent_duplicate_news",
         lambda media_identity_id, limit=50: rows,
     )
 
@@ -107,7 +111,8 @@ def test_history_reader_receives_requested_media_and_limit(monkeypatch):
         return []
 
     monkeypatch.setattr(
-        "core.database.get_recent_duplicate_news",
+        database,
+        "get_recent_duplicate_news",
         fake_history,
     )
 
@@ -129,7 +134,8 @@ def test_history_database_failure_is_fail_open(monkeypatch):
         raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(
-        "core.database.get_recent_duplicate_news",
+        database,
+        "get_recent_duplicate_news",
         broken_history,
     )
 
@@ -153,7 +159,8 @@ def test_malformed_history_row_is_fail_open(monkeypatch):
     ]
 
     monkeypatch.setattr(
-        "core.database.get_recent_duplicate_news",
+        database,
+        "get_recent_duplicate_news",
         lambda media_identity_id, limit=50: rows,
     )
 
@@ -168,7 +175,8 @@ def test_malformed_history_row_is_fail_open(monkeypatch):
 
 def test_empty_history_is_safe(monkeypatch):
     monkeypatch.setattr(
-        "core.database.get_recent_duplicate_news",
+        database,
+        "get_recent_duplicate_news",
         lambda media_identity_id, limit=50: [],
     )
 
