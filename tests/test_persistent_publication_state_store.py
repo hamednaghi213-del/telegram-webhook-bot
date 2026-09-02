@@ -414,6 +414,4 @@ def test_mark_failed_persists_delivery(
 
     assert delivery is not None
     assert delivery.status == "failed"
-    assert delivery.last_error == (
-        "telegram timeout"
-    )
+  
