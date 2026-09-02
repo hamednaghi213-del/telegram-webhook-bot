@@ -20,6 +20,37 @@ logger = logging.getLogger(__name__)
 _state_store: PublicationStateStore = DEFAULT_PUBLICATION_STATE_STORE
 
 
+def _get_runtime_state_store() -> PublicationStateStore:
+    global _state_store
+
+    if not isinstance(
+        _state_store,
+        type(DEFAULT_PUBLICATION_STATE_STORE),
+    ):
+        return _state_store
+
+    try:
+        from core import database
+        from core.publication_state import (
+            InMemoryPublicationStateStore,
+            PersistentPublicationStateStore,
+        )
+
+        if (
+            isinstance(
+                _state_store,
+                InMemoryPublicationStateStore,
+            )
+            and database.service_supabase is not None
+        ):
+            _state_store = (
+                PersistentPublicationStateStore()
+            )
+    except Exception:
+        pass
+
+    return _state_store
+
 def _supports_return_result(sender) -> bool:
     try:
         return "return_result" in inspect.signature(sender).parameters
