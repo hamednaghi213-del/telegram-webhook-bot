@@ -2506,3 +2506,82 @@ def ensure_persistent_publication_delivery(
         canonical_identity=canonical_identity,
         delivery_generation=delivery_generation,
     )
+
+@with_retry
+def claim_persistent_publication_delivery(
+    *,
+    source_key: str,
+    canonical_identity: str,
+    platform: str,
+    destination_chat_id: str = "",
+    workspace_id: Optional[int] = None,
+    destination_id: Optional[int] = None,
+    delivery_generation: int = 1,
+    lease_owner: Optional[str] = None,
+    lease_seconds: int = 120,
+) -> Dict[str, Any]:
+    """
+    Atomically claim one logical destination delivery.
+
+    Returns the row produced by the service-role-only
+    claim_publication_delivery RPC.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    params = {
+        "p_source_key": str(source_key),
+        "p_canonical_identity": str(
+            canonical_identity
+        ),
+        "p_platform": str(platform or ""),
+        "p_destination_chat_id": str(
+            destination_chat_id or ""
+        ),
+        "p_workspace_id": (
+            int(workspace_id)
+            if workspace_id is not None
+            else None
+        ),
+        "p_destination_id": (
+            int(destination_id)
+            if destination_id is not None
+            else None
+        ),
+        "p_delivery_generation": max(
+            1,
+            int(delivery_generation),
+        ),
+        "p_lease_owner": (
+            str(lease_owner)
+            if lease_owner
+            else None
+        ),
+        "p_lease_seconds": max(
+            30,
+            min(
+                int(lease_seconds),
+                900,
+            ),
+        ),
+    }
+
+    result = (
+        service_supabase
+        .rpc(
+            "claim_publication_delivery",
+            params,
+        )
+        .execute()
+    )
+
+    rows = result.data or []
+
+    if not rows:
+        raise RuntimeError(
+            "claim_publication_delivery returned no row"
+        )
+
+    return rows[0]
