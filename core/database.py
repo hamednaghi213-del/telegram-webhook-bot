@@ -2652,3 +2652,32 @@ def record_persistent_publication_part_success(
         )
 
     return rows[0]
+
+@with_retry
+def get_persistent_publication_part(
+    *,
+    delivery_id: int,
+    part_key: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Read one persisted publication delivery part.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    result = (
+        service_supabase
+        .table("publication_delivery_parts")
+        .select("*")
+        .eq("delivery_id", int(delivery_id))
+        .eq("part_key", str(part_key))
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        return None
+
+    return result.data[0]
