@@ -28,6 +28,7 @@ class DeliveryState:
     source_key: str
     target_identity: str
     attempt: int = 0
+    persistent_delivery_id: Optional[int] = None
     status: str = "pending"
     completed_parts: Set[str] = field(default_factory=set)
     message_ids: Dict[str, int] = field(default_factory=dict)
@@ -263,14 +264,22 @@ class PersistentPublicationStateStore(
             target_identity,
         )
 
-        state.attempt = int(
-            claim.get("attempt_count") or 0
-        )
-        state.status = str(
-            claim.get("status") or "sending"
-        )
-        state.error = None
+       state.attempt = int(
+           claim.get("attempt_count") or 0
+       )
 
-        return state
+       delivery_id = claim.get("delivery_id")
+       state.persistent_delivery_id = (
+           int(delivery_id)
+           if delivery_id is not None
+           else None
+       )
+
+       state.status = str(
+       claim.get("status") or "sending"
+       )
+       state.error = None
+
+       return state
 
 DEFAULT_PUBLICATION_STATE_STORE = InMemoryPublicationStateStore()
