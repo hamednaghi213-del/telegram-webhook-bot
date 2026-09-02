@@ -394,6 +394,47 @@ def _unique_media_identity_ids(
     return sorted(media_ids)
 
 
+def _duplicate_decisions_for_targets(
+    prepared: PreparedContent,
+    targets: List[PublicationTarget],
+) -> Dict[int, Any]:
+    """
+    Check Duplicate News Guard once per canonical Media Identity.
+
+    Duplicate history is isolated by Media Identity, so Telegram/Bale
+    destinations of the same media produce only one duplicate check.
+
+    Any detector/database failure remains fail-open.
+    """
+    from core.duplicate_guard import check_duplicate_against_history
+
+    source_text = (
+        prepared.neutral_text
+        or prepared.main_text
+        or ""
+    ).strip()
+
+    if not source_text:
+        return {}
+
+    decisions: Dict[int, Any] = {}
+
+    for media_identity_id in _unique_media_identity_ids(targets):
+        try:
+            decisions[media_identity_id] = (
+                check_duplicate_against_history(
+                    media_identity_id=media_identity_id,
+                    text=source_text,
+                    source_key=prepared.publication_identity,
+                )
+            )
+        except Exception:
+            # Duplicate Guard must never break publication.
+            continue
+
+    return decisions
+
+
 def _shared_content_analysis(prepared: PreparedContent) -> PreparedContent:
     """Run AI-capable semantic analysis once, before target fan-out."""
     from core.caption_manager import analyze_content
