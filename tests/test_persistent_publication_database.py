@@ -509,3 +509,70 @@ def test_get_persistent_publication_part(
         "delivery_id": 21,
         "part_key": "primary",
     }
+
+def test_mark_persistent_publication_delivery_succeeded(
+    db,
+    monkeypatch,
+):
+    class FakeQuery:
+        def __init__(self):
+            self.table_name = None
+            self.payload = None
+            self.filters = {}
+
+        def table(self, name):
+            self.table_name = name
+            return self
+
+        def update(self, payload):
+            self.payload = payload
+            return self
+
+        def eq(self, key, value):
+            self.filters[key] = value
+            return self
+
+        def execute(self):
+            return SimpleNamespace(
+                data=[
+                    {
+                        "id": self.filters["id"],
+                        **self.payload,
+                    }
+                ]
+            )
+
+    fake = FakeQuery()
+
+    monkeypatch.setattr(
+        db,
+        "service_supabase",
+        fake,
+    )
+
+    result = (
+        db.mark_persistent_publication_delivery_succeeded(
+            delivery_id=21,
+        )
+    )
+
+    assert fake.table_name == (
+        "publication_deliveries"
+    )
+
+    assert fake.filters == {
+        "id": 21,
+    }
+
+    assert fake.payload == {
+        "status": "succeeded",
+        "last_error": None,
+        "lease_owner": None,
+        "lease_expires_at": None,
+    }
+
+    assert result["id"] == 21
+    assert result["status"] == "succeeded"
+    assert result["last_error"] is None
+    assert result["lease_owner"] is None
+    assert result["lease_expires_at"] is None
