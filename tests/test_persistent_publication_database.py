@@ -300,3 +300,79 @@ def test_persistent_publication_requires_service_role(
         db.get_persistent_publication_source(
             "telegram:1:999"
         )
+
+def test_claim_persistent_publication_delivery(
+    db,
+    monkeypatch,
+):
+    row = {
+        "claimed": True,
+        "source_id": 11,
+        "delivery_id": 21,
+        "status": "sending",
+        "attempt_count": 1,
+        "lease_expires_at": (
+            "2026-09-02T10:00:00+00:00"
+        ),
+    }
+
+    class FakeRpc:
+        def __init__(self):
+            self.name = None
+            self.params = None
+
+        def rpc(self, name, params):
+            self.name = name
+            self.params = params
+            return self
+
+        def execute(self):
+            return SimpleNamespace(
+                data=[row]
+            )
+
+    fake = FakeRpc()
+
+    monkeypatch.setattr(
+        db,
+        "service_supabase",
+        fake,
+    )
+
+    result = (
+        db.claim_persistent_publication_delivery(
+            source_key="telegram:1:101",
+            canonical_identity=(
+                "telegram:external:farda_no"
+            ),
+            platform="telegram",
+            destination_chat_id="@farda_no",
+            workspace_id=4,
+            destination_id=8,
+            delivery_generation=1,
+            lease_owner="worker-test",
+            lease_seconds=120,
+        )
+    )
+
+    assert result == row
+
+    assert fake.name == (
+        "claim_publication_delivery"
+    )
+
+    assert fake.params == {
+        "p_source_key": "telegram:1:101",
+        "p_canonical_identity": (
+            "telegram:external:farda_no"
+        ),
+        "p_platform": "telegram",
+        "p_destination_chat_id": (
+            "@farda_no"
+        ),
+        "p_workspace_id": 4,
+        "p_destination_id": 8,
+        "p_delivery_generation": 1,
+        "p_lease_owner": "worker-test",
+        "p_lease_seconds": 120,
+    }
