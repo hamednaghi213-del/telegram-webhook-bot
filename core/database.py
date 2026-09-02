@@ -2756,3 +2756,46 @@ def mark_persistent_publication_delivery_failed(
         )
 
     return rows[0]
+
+@with_retry
+def mark_persistent_publication_source(
+    *,
+    source_key: str,
+    status: str,
+    error: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Persist final/current state of one logical publication source.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    payload = {
+        "status": str(status),
+        "last_error": (
+            str(error)
+            if error is not None
+            else None
+        ),
+        "lease_owner": None,
+        "lease_expires_at": None,
+    }
+
+    result = (
+        service_supabase
+        .table("publication_sources")
+        .update(payload)
+        .eq("source_key", str(source_key))
+        .execute()
+    )
+
+    rows = result.data or []
+
+    if not rows:
+        raise RuntimeError(
+            "publication source update returned no row"
+        )
+
+    return rows[0]
