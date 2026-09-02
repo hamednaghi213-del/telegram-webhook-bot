@@ -211,3 +211,71 @@ def test_part_succeeded_persists_to_database(
     assert delivery.message_chat_ids["primary"] == (
         "@farda_no"
     )
+
+def test_part_completed_restores_persisted_success(
+    monkeypatch,
+):
+    import core.database
+
+    monkeypatch.setattr(
+        core.database,
+        "claim_persistent_publication_delivery",
+        lambda **_kwargs: {
+            "claimed": True,
+            "source_id": 10,
+            "delivery_id": 20,
+            "status": "sending",
+            "attempt_count": 2,
+            "lease_expires_at": None,
+        },
+    )
+
+    monkeypatch.setattr(
+        core.database,
+        "get_persistent_publication_part",
+        lambda **_kwargs: {
+            "delivery_id": 20,
+            "part_key": "primary",
+            "status": "succeeded",
+            "message_id": 501,
+            "message_ids": [501, 502],
+            "destination_chat_id": "@farda_no",
+        },
+    )
+
+    store = PersistentPublicationStateStore(
+        lease_owner="worker-test",
+    )
+
+    state = store.begin_persistent_attempt(
+        source_key="telegram:1:100",
+        target_identity=(
+            "telegram:external:farda_no"
+        ),
+        platform="telegram",
+        destination_chat_id="@farda_no",
+    )
+
+    assert state is not None
+
+    assert store.part_completed(
+        "telegram:1:100",
+        "telegram:external:farda_no",
+        "primary",
+    ) is True
+
+    delivery = store.get_delivery(
+        "telegram:1:100",
+        "telegram:external:farda_no",
+    )
+
+    assert delivery is not None
+    assert "primary" in delivery.completed_parts
+    assert delivery.message_ids["primary"] == 501
+    assert delivery.all_message_ids["primary"] == (
+        501,
+        502,
+    )
+    assert delivery.message_chat_ids["primary"] == (
+        "@farda_no"
+    )
