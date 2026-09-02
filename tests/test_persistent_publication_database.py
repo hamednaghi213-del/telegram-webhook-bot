@@ -449,3 +449,63 @@ def test_record_persistent_publication_part_success(
     assert result["last_error"] is None
     assert result["lease_owner"] is None
     assert result["lease_expires_at"] is None
+
+def test_get_persistent_publication_part(
+    db,
+    monkeypatch,
+):
+    row = {
+        "id": 31,
+        "delivery_id": 21,
+        "part_key": "primary",
+        "status": "succeeded",
+        "message_id": 501,
+        "message_ids": [501, 502],
+        "destination_chat_id": "@farda_no",
+    }
+
+    class FakeQuery:
+        def __init__(self):
+            self.filters = {}
+
+        def table(self, name):
+            assert name == (
+                "publication_delivery_parts"
+            )
+            return self
+
+        def select(self, _columns):
+            return self
+
+        def eq(self, key, value):
+            self.filters[key] = value
+            return self
+
+        def limit(self, value):
+            assert value == 1
+            return self
+
+        def execute(self):
+            return SimpleNamespace(
+                data=[row]
+            )
+
+    fake = FakeQuery()
+
+    monkeypatch.setattr(
+        db,
+        "service_supabase",
+        fake,
+    )
+
+    result = db.get_persistent_publication_part(
+        delivery_id=21,
+        part_key="primary",
+    )
+
+    assert result == row
+
+    assert fake.filters == {
+        "delivery_id": 21,
+        "part_key": "primary",
+    }
