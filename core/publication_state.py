@@ -380,4 +380,31 @@ class PersistentPublicationStateStore(
 
         return True
 
+    def mark_succeeded(
+        self,
+        source_key: str,
+        target_identity: str,
+    ) -> None:
+        from core import database
+
+        super().mark_succeeded(
+            source_key,
+            target_identity,
+        )
+
+        state = self.get_delivery(
+            source_key,
+            target_identity,
+        )
+
+        if (
+            state is None
+            or state.persistent_delivery_id is None
+        ):
+            return
+
+        database.mark_persistent_publication_delivery_succeeded(
+            delivery_id=state.persistent_delivery_id,
+        )
+
 DEFAULT_PUBLICATION_STATE_STORE = InMemoryPublicationStateStore()
