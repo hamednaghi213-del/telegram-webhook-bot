@@ -693,7 +693,7 @@ def publish_prepared_content(
     state_store: Optional[PublicationStateStore] = None,
 ) -> Dict[str, Any]:
     """Publish immutable prepared content with resumable per-part deliveries."""
-    store = state_store or _state_store
+    store = state_store or _get_runtime_state_store()
     if targets is None:
         targets, resolution_errors = resolve_publication_targets(chat_id)
     else:
