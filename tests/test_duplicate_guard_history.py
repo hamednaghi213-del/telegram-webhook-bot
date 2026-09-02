@@ -195,3 +195,31 @@ def test_empty_history_is_safe(monkeypatch):
 
     assert decision.duplicate is False
     assert decision.match is None
+
+def test_current_source_key_is_excluded_from_history(monkeypatch):
+    rows = [
+        {
+            "id": 105,
+            "media_identity_id": 7,
+            "actor_user_id": 2,
+            "source_key": "source:telegram:123",
+            "content_text": (
+                "وزیر خارجه ایران امروز با همتای روس خود دیدار کرد."
+            ),
+            "published_at": "2026-09-02T00:00:00Z",
+        }
+    ]
+
+    _install_fake_database(
+        monkeypatch,
+        lambda media_identity_id, limit=50: rows,
+    )
+
+    decision = duplicate_guard.check_duplicate_against_history(
+        media_identity_id=7,
+        text="وزیر خارجه ایران امروز با همتای روس خود دیدار کرد.",
+        source_key="source:telegram:123",
+    )
+
+    assert decision.duplicate is False
+    assert decision.match is None
