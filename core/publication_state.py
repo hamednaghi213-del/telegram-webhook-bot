@@ -437,4 +437,15 @@ class PersistentPublicationStateStore(
             error=str(error),
         )
 
-DEFAULT_PUBLICATION_STATE_STORE = InMemoryPublicationStateStore()
+def _build_default_publication_state_store():
+    from core import database
+
+    if database.service_supabase is not None:
+        return PersistentPublicationStateStore()
+
+    return InMemoryPublicationStateStore()
+
+
+DEFAULT_PUBLICATION_STATE_STORE = (
+    _build_default_publication_state_store()
+)
