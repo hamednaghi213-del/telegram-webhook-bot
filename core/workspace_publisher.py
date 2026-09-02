@@ -1916,13 +1916,12 @@ def _handle_workspace_callback(
             if d["id"] in selected_ids
         ]
 
-        clear_pending(chat_id)
-
         _ws_answer_callback(
             api_url,
             callback_id,
             "در حال انتشار...",
         )
+         clear_pending(chat_id)
 
         result = publish_to_destinations(
             api_url,
