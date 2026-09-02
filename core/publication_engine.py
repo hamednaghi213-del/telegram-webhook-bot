@@ -348,6 +348,52 @@ def _outcome_ok(outcome: Any) -> bool:
     return bool(outcome)
 
 
+def _unique_media_identity_ids(
+    targets: List[PublicationTarget],
+) -> List[int]:
+    """
+    Return unique canonical Media Identity IDs represented
+    by the publication targets.
+
+    Telegram/Bale destinations belonging to the same media
+    must produce one media identity only.
+    """
+    media_ids = set()
+
+    for target in targets:
+        destination_context = dict(
+            target.destination or {}
+        )
+
+        if not destination_context.get(
+            "_canonical_media"
+        ):
+            continue
+
+        media_identity = dict(
+            destination_context.get(
+                "media_identity"
+            )
+            or {}
+        )
+
+        media_identity_id = media_identity.get(
+            "id"
+        )
+
+        if media_identity_id is None:
+            continue
+
+        try:
+            media_ids.add(
+                int(media_identity_id)
+            )
+        except (TypeError, ValueError):
+            continue
+
+    return sorted(media_ids)
+
+
 def _shared_content_analysis(prepared: PreparedContent) -> PreparedContent:
     """Run AI-capable semantic analysis once, before target fan-out."""
     from core.caption_manager import analyze_content
