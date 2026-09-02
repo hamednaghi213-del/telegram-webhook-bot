@@ -435,6 +435,78 @@ def _duplicate_decisions_for_targets(
     return decisions
 
 
+def _duplicate_warning_payload(
+    decisions: Dict[int, Any],
+) -> Optional[Dict[str, Any]]:
+    """
+    Convert duplicate decisions into one Shared Engine warning payload.
+
+    This function only formats the warning contract.
+    It does not block or publish anything.
+    """
+    matches = []
+
+    for media_identity_id, decision in decisions.items():
+        if not getattr(decision, "duplicate", False):
+            continue
+
+        match = getattr(decision, "match", None)
+
+        matches.append(
+            {
+                "media_identity_id": media_identity_id,
+                "match_type": getattr(
+                    decision,
+                    "match_type",
+                    None,
+                ),
+                "similarity": float(
+                    getattr(
+                        decision,
+                        "similarity",
+                        0.0,
+                    )
+                    or 0.0
+                ),
+                "publication_id": (
+                    getattr(
+                        match,
+                        "publication_id",
+                        None,
+                    )
+                    if match is not None
+                    else None
+                ),
+                "actor_user_id": (
+                    getattr(
+                        match,
+                        "actor_user_id",
+                        None,
+                    )
+                    if match is not None
+                    else None
+                ),
+                "published_at": (
+                    getattr(
+                        match,
+                        "published_at",
+                        None,
+                    )
+                    if match is not None
+                    else None
+                ),
+            }
+        )
+
+    if not matches:
+        return None
+
+    return {
+        "duplicate_warning": True,
+        "matches": matches,
+    }
+
+
 def _shared_content_analysis(prepared: PreparedContent) -> PreparedContent:
     """Run AI-capable semantic analysis once, before target fan-out."""
     from core.caption_manager import analyze_content
