@@ -345,3 +345,75 @@ def test_mark_succeeded_persists_delivery(
 
     assert delivery is not None
     assert delivery.status == "succeeded"
+
+def test_mark_failed_persists_delivery(
+    monkeypatch,
+):
+    import core.database
+
+    calls = {}
+
+    monkeypatch.setattr(
+        core.database,
+        "claim_persistent_publication_delivery",
+        lambda **_kwargs: {
+            "claimed": True,
+            "source_id": 10,
+            "delivery_id": 20,
+            "status": "sending",
+            "attempt_count": 1,
+            "lease_expires_at": None,
+        },
+    )
+
+    def fake_mark_failed(**kwargs):
+        calls.update(kwargs)
+        return {
+            "id": kwargs["delivery_id"],
+            "status": "failed",
+            "last_error": kwargs["error"],
+        }
+
+    monkeypatch.setattr(
+        core.database,
+        "mark_persistent_publication_delivery_failed",
+        fake_mark_failed,
+    )
+
+    store = PersistentPublicationStateStore(
+        lease_owner="worker-test",
+    )
+
+    state = store.begin_persistent_attempt(
+        source_key="telegram:1:100",
+        target_identity=(
+            "telegram:external:farda_no"
+        ),
+        platform="telegram",
+        destination_chat_id="@farda_no",
+    )
+
+    assert state is not None
+    assert state.persistent_delivery_id == 20
+
+    store.mark_failed(
+        "telegram:1:100",
+        "telegram:external:farda_no",
+        "telegram timeout",
+    )
+
+    assert calls == {
+        "delivery_id": 20,
+        "error": "telegram timeout",
+    }
+
+    delivery = store.get_delivery(
+        "telegram:1:100",
+        "telegram:external:farda_no",
+    )
+
+    assert delivery is not None
+    assert delivery.status == "failed"
+    assert delivery.last_error == (
+        "telegram timeout"
+    )
