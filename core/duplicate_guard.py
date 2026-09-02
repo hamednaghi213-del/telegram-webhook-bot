@@ -302,3 +302,63 @@ def safe_check_duplicate(
         return DuplicateDecision(
             duplicate=False,
         )
+
+def check_duplicate_against_history(
+    *,
+    media_identity_id: int,
+    text: str,
+    history_limit: int = 50,
+    near_duplicate_threshold: float = DEFAULT_NEAR_DUPLICATE_THRESHOLD,
+) -> DuplicateDecision:
+    """
+    Read recent publication history for one Media Identity
+    and run Duplicate Guard against it.
+
+    This function is fail-open by design:
+    any database or conversion failure returns "not duplicate".
+    """
+    try:
+        from core.database import get_recent_duplicate_news
+
+        rows = get_recent_duplicate_news(
+            media_identity_id=media_identity_id,
+            limit=history_limit,
+        )
+
+        candidates = [
+            DuplicateCandidate(
+                publication_id=str(row.get("id")),
+                media_identity_id=int(
+                    row.get("media_identity_id")
+                ),
+                text=str(
+                    row.get("content_text")
+                    or row.get("normalized_text")
+                    or ""
+                ),
+                actor_user_id=(
+                    int(row["actor_user_id"])
+                    if row.get("actor_user_id") is not None
+                    else None
+                ),
+                published_at=(
+                    str(row["published_at"])
+                    if row.get("published_at") is not None
+                    else None
+                ),
+            )
+            for row in rows
+            if row.get("media_identity_id") is not None
+        ]
+
+        return safe_check_duplicate(
+            media_identity_id=media_identity_id,
+            text=text,
+            candidates=candidates,
+            near_duplicate_threshold=near_duplicate_threshold,
+        )
+
+    except Exception:
+        return DuplicateDecision(
+            duplicate=False,
+        )
