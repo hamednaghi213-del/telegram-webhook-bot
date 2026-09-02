@@ -1921,7 +1921,7 @@ def _handle_workspace_callback(
             callback_id,
             "در حال انتشار...",
         )
-         clear_pending(chat_id)
+        clear_pending(chat_id)
 
         result = publish_to_destinations(
             api_url,
