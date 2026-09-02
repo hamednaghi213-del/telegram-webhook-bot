@@ -41,6 +41,10 @@ def _get_runtime_state_store() -> PublicationStateStore:
                 _state_store,
                 InMemoryPublicationStateStore,
             )
+            and os.getenv(
+                "ENABLE_PERSISTENT_PUBLICATION_STATE",
+                "",
+            ).strip().lower() == "true"
             and database.service_supabase is not None
         ):
             _state_store = (
