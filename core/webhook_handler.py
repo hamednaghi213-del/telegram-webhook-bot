@@ -4013,6 +4013,148 @@ def handle_webhook() -> Tuple[
                     "callback_handled": bool(handled),
                 }, 200
 
+            callback_data = str(
+                callback_query.get(
+                    "data",
+                    ""
+                )
+                or ""
+            )
+
+            if callback_data.startswith(
+                "dup:publish:"
+            ):
+                callback_id = str(
+                    callback_query.get(
+                        "id",
+                        ""
+                    )
+                    or ""
+                )
+
+                user_id = (
+                    callback_query.get(
+                        "from",
+                        {}
+                    )
+                    .get(
+                        "id"
+                    )
+                )
+
+                token = (
+                    callback_data.split(
+                        ":",
+                        2
+                    )[2]
+                    if callback_data.count(":") >= 2
+                    else ""
+                )
+
+                if (
+                    user_id is None
+                    or not token
+                ):
+                    answer_callback_query(
+                        callback_id,
+                        "درخواست نامعتبر است."
+                    )
+
+                    return {
+                        "ok": True,
+                        "callback_handled": True,
+                    }, 200
+
+                try:
+                    from core.duplicate_pending import (
+                        consume_pending_duplicate,
+                    )
+
+                    from core.publication_engine import (
+                        publish_prepared_content,
+                    )
+
+                    pending = (
+                        consume_pending_duplicate(
+                            token=token,
+                            chat_id=int(
+                                user_id
+                            ),
+                        )
+                    )
+
+                    if pending is None:
+                        answer_callback_query(
+                            callback_id,
+                            (
+                                "این درخواست منقضی شده "
+                                "یا قبلاً استفاده شده است."
+                            ),
+                        )
+
+                        return {
+                            "ok": True,
+                            "callback_handled": True,
+                        }, 200
+
+                    answer_callback_query(
+                        callback_id,
+                        "در حال انتشار..."
+                    )
+
+                    result = (
+                        publish_prepared_content(
+                            chat_id=int(
+                                user_id
+                            ),
+                            api_url=API_URL,
+                            prepared=(
+                                pending.prepared
+                            ),
+                            targets=list(
+                                pending.targets
+                            ),
+                            allow_duplicate=True,
+                        )
+                    )
+
+                    _send_media_publication_acknowledgement(
+                        int(
+                            user_id
+                        ),
+                        result,
+                        (
+                            "✅ رسانه با تأیید شما "
+                            "منتشر شد."
+                        ),
+                    )
+
+                except Exception as e:
+                    logger.exception(
+                        f"[{req_id}] ❌ Duplicate override "
+                        f"callback failed | {e}"
+                    )
+
+                    answer_callback_query(
+                        callback_id,
+                        "انتشار با خطا روبرو شد."
+                    )
+
+                    send_message(
+                        int(
+                            user_id
+                        ),
+                        (
+                            "❌ انتشار دوباره رسانه "
+                            "انجام نشد."
+                        ),
+                    )
+
+                return {
+                    "ok": True,
+                    "callback_handled": True,
+                }, 200
+            
             # Workspace publication callbacks (Phase 4B)
             if str(
                 callback_query.get(
