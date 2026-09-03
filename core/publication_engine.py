@@ -711,6 +711,22 @@ def publish_prepared_content(
             unique_targets[identity] = target
     targets = list(unique_targets.values())
 
+    duplicate_decisions = _duplicate_decisions_for_targets(
+        prepared,
+        targets,
+    )
+    duplicate_warning = _duplicate_warning_payload(
+        duplicate_decisions
+    )
+
+    if duplicate_warning:
+        return {
+            "ok": False,
+            "results": [],
+            "errors": [],
+            **duplicate_warning,
+        }
+    
     analyzed = _shared_content_analysis(prepared)
     if (
         prepared.require_single_message
