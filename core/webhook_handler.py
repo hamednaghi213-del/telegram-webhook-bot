@@ -1838,18 +1838,92 @@ def _send_media_publication_acknowledgement(
     result: Any,
     success_message: str,
 ) -> None:
-    state = _publication_acknowledgement_state(result)
+    if (
+        isinstance(result, dict)
+        and result.get("duplicate_warning")
+    ):
+        token = (
+            result.get("duplicate_token")
+            or ""
+        )
+
+        matches = list(
+            result.get("matches")
+            or []
+        )
+
+        match_type = (
+            matches[0].get("match_type")
+            if matches
+            and isinstance(matches[0], dict)
+            else None
+        )
+
+        if match_type == "exact":
+            duplicate_text = (
+                "⚠️ این خبر قبلاً در این رسانه منتشر شده است."
+            )
+        else:
+            duplicate_text = (
+                "⚠️ این خبر بسیار شبیه خبری است که قبلاً "
+                "در این رسانه منتشر شده است."
+            )
+
+        if token:
+            send_message(
+                chat_id,
+                (
+                    f"{duplicate_text}\n\n"
+                    "اگر انتشار دوباره عمدی است، "
+                    "گزینه زیر را انتخاب کنید."
+                ),
+                reply_markup={
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": "✅ با این حال منتشر کن",
+                                "callback_data": (
+                                    f"dup:publish:{token}"
+                                ),
+                            }
+                        ]
+                    ]
+                },
+            )
+        else:
+            send_message(
+                chat_id,
+                (
+                    f"{duplicate_text}\n\n"
+                    "امکان تأیید انتشار دوباره در حال حاضر "
+                    "در دسترس نیست."
+                ),
+            )
+
+        return
+
+    state = _publication_acknowledgement_state(
+        result
+    )
+
     if state == "success":
         message = success_message
+
     elif state == "partial":
         message = (
             "⚠️ رسانه در برخی مقصدها منتشر شد، اما ارسال به "
             "یک یا چند مقصد با مشکل روبرو شد."
         )
-    else:
-        message = "❌ ارسال رسانه با مشکل روبرو شد."
-    send_message(chat_id, message)
 
+    else:
+        message = (
+            "❌ ارسال رسانه با مشکل روبرو شد."
+        )
+
+    send_message(
+        chat_id,
+        message,
+    )
 
 # =========================================================
 # LEGACY MEDIA
