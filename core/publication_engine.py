@@ -887,6 +887,75 @@ def publish_prepared_content(
             source_key=source_key,
             status=source_status,
         )
+
+    # Duplicate News Guard history:
+    # record one logical publication per canonical Media Identity,
+    # only after at least one destination has published successfully.
+    if any_succeeded:
+        try:
+            from core import database
+            from core.duplicate_guard import (
+                duplicate_fingerprint,
+                normalize_duplicate_text,
+            )
+
+            history_text = (
+                analyzed.neutral_text
+                or analyzed.main_text
+                or ""
+            ).strip()
+
+            if history_text:
+                user = database.get_user_by_telegram_id(
+                    chat_id
+                )
+                actor_user_id = (
+                    int(user["id"])
+                    if user and user.get("id") is not None
+                    else None
+                )
+
+                normalized_history_text = (
+                    normalize_duplicate_text(
+                        history_text
+                    )
+                )
+
+                history_fingerprint = (
+                    duplicate_fingerprint(
+                        history_text
+                    )
+                )
+
+                for media_identity_id in (
+                    _unique_media_identity_ids(
+                        targets
+                    )
+                ):
+                    try:
+                        database.record_duplicate_news_history(
+                            media_identity_id=media_identity_id,
+                            actor_user_id=actor_user_id,
+                            source_key=source_key,
+                            content_text=history_text,
+                            normalized_text=normalized_history_text,
+                            fingerprint=history_fingerprint,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Duplicate history write failed | "
+                            "media_identity_id=%s | source=%s",
+                            media_identity_id,
+                            source_key,
+                        )
+
+        except Exception:
+            # Duplicate Guard is strictly fail-open:
+            # publication success must never depend on history storage.
+            logger.exception(
+                "Duplicate history recording failed | source=%s",
+                source_key,
+            )
     return {
         "ok": all_succeeded,
         "results": results,
