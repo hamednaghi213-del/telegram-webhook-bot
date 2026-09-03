@@ -722,10 +722,31 @@ def publish_prepared_content(
         )
 
         if duplicate_warning:
+            try:
+                from core.duplicate_pending import (
+                    create_pending_duplicate,
+                )
+
+                duplicate_token = create_pending_duplicate(
+                    chat_id=chat_id,
+                    prepared=prepared,
+                    targets=targets,
+                )
+
+            except Exception:
+                # Duplicate warning itself must remain safe even if
+                # temporary override state cannot be created.
+                logger.exception(
+                    "Duplicate pending creation failed | source=%s",
+                    prepared.publication_identity,
+                )
+                duplicate_token = None
+
             return {
                 "ok": False,
                 "results": [],
                 "errors": [],
+                "duplicate_token": duplicate_token,
                 **duplicate_warning,
             }
     
