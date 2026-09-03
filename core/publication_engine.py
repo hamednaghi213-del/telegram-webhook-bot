@@ -695,6 +695,7 @@ def publish_prepared_content(
     prepared: PreparedContent,
     targets: Optional[List[PublicationTarget]] = None,
     state_store: Optional[PublicationStateStore] = None,
+    allow_duplicate: bool = False,
 ) -> Dict[str, Any]:
     """Publish immutable prepared content with resumable per-part deliveries."""
     store = state_store or _get_runtime_state_store()
@@ -711,21 +712,22 @@ def publish_prepared_content(
             unique_targets[identity] = target
     targets = list(unique_targets.values())
 
-    duplicate_decisions = _duplicate_decisions_for_targets(
-        prepared,
-        targets,
-    )
-    duplicate_warning = _duplicate_warning_payload(
-        duplicate_decisions
-    )
+    if not allow_duplicate:
+        duplicate_decisions = _duplicate_decisions_for_targets(
+            prepared,
+            targets,
+        )
+        duplicate_warning = _duplicate_warning_payload(
+            duplicate_decisions
+        )
 
-    if duplicate_warning:
-        return {
-            "ok": False,
-            "results": [],
-            "errors": [],
-            **duplicate_warning,
-        }
+        if duplicate_warning:
+            return {
+                "ok": False,
+                "results": [],
+                "errors": [],
+                **duplicate_warning,
+            }
     
     analyzed = _shared_content_analysis(prepared)
     if (
