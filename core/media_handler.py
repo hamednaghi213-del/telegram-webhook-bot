@@ -3308,21 +3308,21 @@ def _scheduled_process(
         f"elapsed={elapsed:.2f}s"
     )
 
-        with group_lock:
-            current = pending_groups.get(group_key)
+    with group_lock:
+        current = pending_groups.get(group_key)
 
-            if not current:
-                return
+        if not current:
+            return
 
-            media_generation = int(
-                current.get("generation", 0) or 0
-            )
-
-        process_media_group(
-            media_group_id,
-            chat_id,
-            expected_generation=media_generation,
+        media_generation = int(
+            current.get("generation", 0) or 0
         )
+
+    process_media_group(
+        media_group_id,
+        chat_id,
+        expected_generation=media_generation,
+    )
 
 
 # =========================================================
