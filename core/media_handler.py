@@ -2794,6 +2794,51 @@ def process_media_group(
                 source_key=f"tg:{chat_id}:album:{media_group_id}:generation:{delivery_generation}",
             ),
         )
+
+        if shared_result.get("duplicate_warning"):
+            from core.webhook_handler import (
+                _send_media_publication_acknowledgement,
+            )
+
+            _send_media_publication_acknowledgement(
+                chat_id,
+                shared_result,
+                "✅ آلبوم شما در کانال منتشر شد.",
+            )
+
+            timer_to_cancel = None
+
+            with group_lock:
+                live_group = pending_groups.get(group_key)
+
+                if live_group:
+                    live_group["state"] = "duplicate_pending"
+                    live_group["is_processing"] = False
+
+                    pending_groups.pop(
+                        group_key,
+                        None,
+                    )
+
+                    timer_to_cancel = group_timers.pop(
+                        group_key,
+                        None,
+                    )
+
+            if timer_to_cancel:
+                try:
+                    timer_to_cancel.cancel()
+                except Exception:
+                    pass
+
+            logger.info(
+                "⚠️ Media Group duplicate pending user confirmation | "
+                "group=%s",
+                media_group_id,
+            )
+
+            return True
+        
         if shared_result.get("ok"):
             timer_to_cancel = None
             should_schedule = False
@@ -3263,11 +3308,21 @@ def _scheduled_process(
         f"elapsed={elapsed:.2f}s"
     )
 
-    process_media_group(
-        media_group_id,
-        chat_id,
-        expected_generation=current_generation,
-    )
+        with group_lock:
+            current = pending_groups.get(group_key)
+
+            if not current:
+                return
+
+            media_generation = int(
+                current.get("generation", 0) or 0
+            )
+
+        process_media_group(
+            media_group_id,
+            chat_id,
+            expected_generation=media_generation,
+        )
 
 
 # =========================================================
