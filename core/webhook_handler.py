@@ -1359,7 +1359,8 @@ def publish_prepared_text(
     source_key: str = "",
     files: Optional[List[Dict[str, Any]]] = None,
     require_single_message: bool = False,
-) -> bool:
+    return_result: bool = False,
+) -> Any:
 
     try:
 
@@ -1381,6 +1382,9 @@ def publish_prepared_text(
                 source_key=source_key,
             ),
         )
+        if return_result:
+            return shared_result
+
         return bool(shared_result.get("ok"))
 
         # Kept below temporarily as a source-compatible reference during the
@@ -2171,7 +2175,8 @@ def process_text_message(
         Dict[str, Any]
     ] = None,
     source_key: str = "",
-) -> bool:
+    return_result: bool = False,
+) -> Any:
 
     try:
 
@@ -2207,6 +2212,7 @@ def process_text_message(
             ),
             neutral_text=prepared.get("neutral_text"),
             source_key=source_key,
+            return_result=return_result,
         )
 
     except Exception as e:
@@ -4883,22 +4889,18 @@ def handle_webhook() -> Tuple[
                     "forward_source"
                 ] = forward_source
 
-            success = (
+            result = (
                 process_text_message(
-                    **kwargs
+                    **kwargs,
+                    return_result=True,
                 )
             )
 
-            if success:
-
-                send_message(
-                    chat_id,
-                    (
-                        "✅ خبر شما در کانال "
-                        "منتشر شد."
-                    )
-                )
-
+            _send_media_publication_acknowledgement(
+                chat_id,
+                result,
+                "✅ خبر شما در کانال منتشر شد.",
+            )
             else:
 
                 send_message(
