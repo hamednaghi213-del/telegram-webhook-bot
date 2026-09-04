@@ -4901,15 +4901,6 @@ def handle_webhook() -> Tuple[
                 result,
                 "✅ خبر شما در کانال منتشر شد.",
             )
-            else:
-
-                send_message(
-                    chat_id,
-                    (
-                        "❌ ارسال خبر به کانال "
-                        "با مشکل روبرو شد."
-                    )
-                )
 
             return {
                 "ok":
