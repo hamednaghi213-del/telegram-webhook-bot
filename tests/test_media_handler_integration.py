@@ -908,11 +908,12 @@ def test_text_webhook_path():
         webhook_handler.handle_webhook()
 
     mock_text.assert_called_once_with(
-        chat_id=1001,
-        text="خبر متنی",
-        entities=[],
-        source_key="tg:1001:message:4",
-    )
+    chat_id=1001,
+    text="خبر متنی",
+    entities=[],
+    source_key="tg:1001:message:4",
+    return_result=True,
+)
 
 
 # =========================================================
