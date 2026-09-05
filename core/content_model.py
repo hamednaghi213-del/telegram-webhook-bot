@@ -29,45 +29,116 @@ class IncomingContentEnvelope:
 def deep_freeze(value: Any) -> Any:
     """Recursively detach and freeze values received from Telegram/DB payloads."""
     if isinstance(value, Mapping):
-        return MappingProxyType({key: deep_freeze(item) for key, item in value.items()})
+        return MappingProxyType(
+            {
+                key: deep_freeze(item)
+                for key, item in value.items()
+            }
+        )
+
     if isinstance(value, (list, tuple)):
         return tuple(deep_freeze(item) for item in value)
+
     if isinstance(value, (set, frozenset)):
         return frozenset(deep_freeze(item) for item in value)
+
     return value
 
 
-def _freeze_mapping(value: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+def _freeze_mapping(
+    value: Optional[Mapping[str, Any]]
+) -> Mapping[str, Any]:
     return deep_freeze(dict(value or {}))
 
 
-def _freeze_mapping_sequence(values) -> Tuple[Mapping[str, Any], ...]:
-    return tuple(_freeze_mapping(value) for value in (values or ()))
+def _freeze_mapping_sequence(
+    values
+) -> Tuple[Mapping[str, Any], ...]:
+    return tuple(
+        _freeze_mapping(value)
+        for value in (values or ())
+    )
 
 
 @dataclass(frozen=True)
 class PreparedContent:
     main_text: str = ""
     neutral_text: str = ""
-    blockquote_blocks: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
-    expandable_blocks: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
-    other_entities: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
-    files: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
+
+    blockquote_blocks: Tuple[
+        Mapping[str, Any], ...
+    ] = field(default_factory=tuple)
+
+    expandable_blocks: Tuple[
+        Mapping[str, Any], ...
+    ] = field(default_factory=tuple)
+
+    other_entities: Tuple[
+        Mapping[str, Any], ...
+    ] = field(default_factory=tuple)
+
+    files: Tuple[
+        Mapping[str, Any], ...
+    ] = field(default_factory=tuple)
+
+    # Transport-neutral presentation hint.
+    #
+    # Examples:
+    #   ""          -> ordinary media / album behavior
+    #   "slideshow" -> preserve slideshow presentation where supported
+    #   "collage"   -> preserve collage presentation where supported
+    #
+    # Platform executors decide whether and how to represent it.
+    media_presentation: str = ""
+
     editorial_finalized: bool = False
     require_single_message: bool = False
     source_key: str = ""
-    publication_id: str = field(default_factory=lambda: uuid4().hex)
+
+    publication_id: str = field(
+        default_factory=lambda: uuid4().hex
+    )
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "blockquote_blocks", _freeze_mapping_sequence(self.blockquote_blocks))
-        object.__setattr__(self, "expandable_blocks", _freeze_mapping_sequence(self.expandable_blocks))
-        object.__setattr__(self, "other_entities", _freeze_mapping_sequence(self.other_entities))
-        object.__setattr__(self, "files", _freeze_mapping_sequence(self.files))
+        object.__setattr__(
+            self,
+            "blockquote_blocks",
+            _freeze_mapping_sequence(
+                self.blockquote_blocks
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "expandable_blocks",
+            _freeze_mapping_sequence(
+                self.expandable_blocks
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "other_entities",
+            _freeze_mapping_sequence(
+                self.other_entities
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "files",
+            _freeze_mapping_sequence(
+                self.files
+            ),
+        )
 
     @property
     def publication_identity(self) -> str:
         """Stable identity for this immutable instance and all of its retries."""
-        return self.source_key or f"ephemeral:{self.publication_id}"
+        return (
+            self.source_key
+            or f"ephemeral:{self.publication_id}"
+        )
 
 
 @dataclass(frozen=True)
@@ -78,17 +149,28 @@ class PublicationTarget:
     external_id: str
     workspace_id: Optional[int] = None
     destination_id: Optional[int] = None
-    destination: Dict[str, Any] = field(default_factory=dict)
+
+    destination: Dict[str, Any] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "destination", _freeze_mapping(self.destination))
+        object.__setattr__(
+            self,
+            "destination",
+            _freeze_mapping(self.destination),
+        )
 
 
 @dataclass(frozen=True)
 class ExecutorResult:
     success: bool
     primary_message_id: Optional[int] = None
-    message_ids: Tuple[int, ...] = field(default_factory=tuple)
+
+    message_ids: Tuple[int, ...] = field(
+        default_factory=tuple
+    )
+
     status_code: Optional[int] = None
     error: Optional[str] = None
     raw_result: Any = None
@@ -102,10 +184,21 @@ class DeliveryResult:
     workspace_id: Optional[int]
     destination_id: Optional[int]
     destination_chat_id: str
+
     primary_message_id: Optional[int] = None
-    message_ids: Tuple[int, ...] = field(default_factory=tuple)
-    blockquote_message_ids: Tuple[int, ...] = field(default_factory=tuple)
-    followup_message_ids: Tuple[int, ...] = field(default_factory=tuple)
+
+    message_ids: Tuple[int, ...] = field(
+        default_factory=tuple
+    )
+
+    blockquote_message_ids: Tuple[int, ...] = field(
+        default_factory=tuple
+    )
+
+    followup_message_ids: Tuple[int, ...] = field(
+        default_factory=tuple
+    )
+
     status: str = "pending"
     error: Optional[str] = None
     status_code: Optional[int] = None
