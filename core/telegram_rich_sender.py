@@ -31,6 +31,7 @@ IMPORTANT:
 
 import logging
 
+from collections.abc import Mapping
 from typing import (
     Any,
     Dict,
@@ -57,17 +58,6 @@ SUPPORTED_RICH_PRESENTATIONS = {
 
 # =========================================================
 # SUPPORTED MEDIA TYPES
-# =========================================================
-#
-# Telegram Bot API 10.3 InputRichBlock media types.
-#
-# Incoming normalized files use:
-#
-# {
-#     "type": "photo",
-#     "file_id": "..."
-# }
-#
 # =========================================================
 
 SUPPORTED_RICH_MEDIA_TYPES = {
@@ -179,7 +169,6 @@ def build_input_media(
         or normalized_type
         not in SUPPORTED_RICH_MEDIA_TYPES
     ):
-
         logger.warning(
             "⚠️ Unsupported Telegram Rich media type | "
             f"type={normalized_type or '-'}"
@@ -188,7 +177,6 @@ def build_input_media(
         return None
 
     if not normalized_file_id:
-
         logger.warning(
             "⚠️ Telegram Rich media has empty file_id | "
             f"type={normalized_type}"
@@ -213,18 +201,21 @@ def build_input_media(
 # =========================================================
 
 def build_media_block(
-    file: Dict[str, Any]
+    file: Mapping[str, Any]
 ) -> Optional[Dict[str, Any]]:
     """
     Convert one normalized shared media item into one
     Telegram InputRichBlock media block.
+
+    PreparedContent deep-freezes media dictionaries into
+    MappingProxyType, so this boundary accepts any Mapping
+    rather than requiring a mutable dict.
     """
 
     if not isinstance(
         file,
-        dict
+        Mapping
     ):
-
         logger.warning(
             "⚠️ Invalid Telegram Rich media item | "
             f"type={type(file).__name__}"
@@ -259,7 +250,6 @@ def build_media_block(
         media_type
         not in SUPPORTED_RICH_MEDIA_TYPES
     ):
-
         logger.warning(
             "⚠️ Unsupported Telegram Rich block media | "
             f"type={media_type or '-'}"
@@ -294,7 +284,7 @@ def build_media_block(
 # =========================================================
 
 def build_presentation_block(
-    files: List[Dict[str, Any]],
+    files: List[Mapping[str, Any]],
     presentation: str,
     caption: str = "",
 ) -> Optional[Dict[str, Any]]:
@@ -312,7 +302,6 @@ def build_presentation_block(
     )
 
     if not normalized_presentation:
-
         logger.warning(
             "⚠️ Telegram Rich presentation unsupported | "
             f"presentation={presentation or '-'}"
@@ -328,7 +317,6 @@ def build_presentation_block(
         files
         or []
     ):
-
         block = (
             build_media_block(
                 file
@@ -336,13 +324,11 @@ def build_presentation_block(
         )
 
         if block is not None:
-
             media_blocks.append(
                 block
             )
 
     if not media_blocks:
-
         logger.error(
             "❌ Telegram Rich presentation has no "
             "supported media blocks"
@@ -370,7 +356,6 @@ def build_presentation_block(
     )
 
     if normalized_caption:
-
         presentation_block[
             "caption"
         ] = {
@@ -386,7 +371,7 @@ def build_presentation_block(
 # =========================================================
 
 def build_input_rich_message(
-    files: List[Dict[str, Any]],
+    files: List[Mapping[str, Any]],
     presentation: str,
     caption: str = "",
     is_rtl: Optional[bool] = None,
@@ -419,7 +404,6 @@ def build_input_rich_message(
     }
 
     if is_rtl is not None:
-
         rich_message[
             "is_rtl"
         ] = bool(
@@ -441,7 +425,6 @@ def _response_json(
         return {}
 
     try:
-
         payload = (
             response.json()
         )
@@ -450,11 +433,9 @@ def _response_json(
             payload,
             dict
         ):
-
             return payload
 
     except Exception:
-
         pass
 
     return {}
@@ -476,15 +457,12 @@ def _extract_error(
     status_code = None
 
     if response is not None:
-
         try:
-
             status_code = int(
                 response.status_code
             )
 
         except Exception:
-
             status_code = None
 
     error_code = (
@@ -499,15 +477,12 @@ def _extract_error(
     )
 
     try:
-
         if error_code is not None:
-
             error_code = int(
                 error_code
             )
 
     except Exception:
-
         error_code = None
 
     description = ""
@@ -516,7 +491,6 @@ def _extract_error(
         payload,
         dict
     ):
-
         description = (
             str(
                 payload.get(
@@ -531,7 +505,6 @@ def _extract_error(
         not description
         and response is None
     ):
-
         description = (
             "Telegram sendRichMessage "
             "returned no response"
@@ -541,7 +514,6 @@ def _extract_error(
         not description
         and status_code is not None
     ):
-
         description = (
             f"Telegram sendRichMessage "
             f"HTTP {status_code}"
@@ -559,7 +531,7 @@ def _extract_error(
 # =========================================================
 
 def send_rich_media_to_channel(
-    files: List[Dict[str, Any]],
+    files: List[Mapping[str, Any]],
     presentation: str,
     caption: str = "",
     channel_id: Optional[str] = None,
@@ -592,7 +564,6 @@ def send_rich_media_to_channel(
     )
 
     if not normalized_presentation:
-
         return ExecutorResult(
             success=False,
             error=(
@@ -604,7 +575,6 @@ def send_rich_media_to_channel(
         )
 
     if not files:
-
         return ExecutorResult(
             success=False,
             error=(
@@ -630,7 +600,6 @@ def send_rich_media_to_channel(
     )
 
     if rich_message is None:
-
         return ExecutorResult(
             success=False,
             error=(
@@ -642,7 +611,6 @@ def send_rich_media_to_channel(
         )
 
     try:
-
         from core import (
             media_handler
         )
@@ -657,7 +625,6 @@ def send_rich_media_to_channel(
         )
 
         if not effective_channel_id:
-
             logger.error(
                 "❌ Telegram Rich destination "
                 "channel_id is not configured"
@@ -712,7 +679,6 @@ def send_rich_media_to_channel(
         )
 
         if ok:
-
             result = (
                 response_payload.get(
                     "result"
@@ -726,7 +692,6 @@ def send_rich_media_to_channel(
                 result,
                 dict
             ):
-
                 raw_message_id = (
                     result.get(
                         "message_id"
@@ -734,15 +699,12 @@ def send_rich_media_to_channel(
                 )
 
                 try:
-
                     if raw_message_id is not None:
-
                         message_id = int(
                             raw_message_id
                         )
 
                 except Exception:
-
                     message_id = None
 
             logger.info(
@@ -823,7 +785,6 @@ def send_rich_media_to_channel(
         )
 
     except Exception as e:
-
         logger.exception(
             "❌ Telegram Rich Message exception | "
             f"presentation="
