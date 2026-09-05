@@ -99,6 +99,37 @@ MEDIA_BLOCK_TYPES: Set[str] = {
 
 
 # =========================================================
+# RICH MEDIA NAVIGATION HINTS
+# =========================================================
+#
+# These are short UI instructions commonly placed in a
+# Rich Message alongside slideshow/collage media.
+#
+# They are interaction/navigation instructions, not the
+# editorial body of the news.
+#
+# Detection is deliberately conservative:
+# - removal happens only if slideshow/collage exists
+# - only exact short standalone phrases are removed
+# - longer body sentences are preserved
+# =========================================================
+
+RICH_MEDIA_NAVIGATION_HINTS: Set[str] = {
+    "ورق بزنید",
+    "ورق بزن",
+    "اسلاید بعد",
+    "اسلاید بعدی",
+    "برای ادامه ورق بزنید",
+    "برای دیدن تصاویر ورق بزنید",
+    "برای مشاهده تصاویر ورق بزنید",
+    "swipe",
+    "swipe left",
+    "swipe right",
+    "swipe to see more",
+}
+
+
+# =========================================================
 # RICH TEXT TYPES THAT MAP TO TELEGRAM MESSAGE ENTITIES
 # =========================================================
 
@@ -513,7 +544,6 @@ def parse_rich_text(
 
         # -------------------------------------------------
         # Custom Emoji
-        # No nested "text" field.
         # -------------------------------------------------
 
         if (
@@ -593,7 +623,7 @@ def parse_rich_text(
             return
 
         # -------------------------------------------------
-        # Anchor itself has no visible text.
+        # Anchor
         # -------------------------------------------------
 
         if rich_type == "anchor":
@@ -651,7 +681,6 @@ def parse_rich_text(
 
         else:
 
-            # Future-safe visible fallback.
             for fallback_key in (
                 "alternative_text",
                 "expression",
@@ -823,21 +852,6 @@ def parse_rich_text(
             })
 
             return
-
-        # -------------------------------------------------
-        # Other RichText types intentionally preserve text:
-        #
-        # date_time
-        # subscript
-        # superscript
-        # marked
-        # bank_card_number
-        # anchor_link
-        # reference
-        # reference_link
-        #
-        # Current PreparedContent has no exact equivalent.
-        # -------------------------------------------------
 
     walk(
         rich_text
@@ -1113,8 +1127,6 @@ def _extract_photo_file_id(
 
         return None
 
-    # Telegram PhotoSize arrays normally progress
-    # from smaller to larger sizes.
     return str(
         valid_sizes[
             -1
@@ -1231,7 +1243,6 @@ def _consume_media_block(
             )
         )
 
-        # Existing publication model uses "voice".
         normalized_type = "voice"
 
     elif block_type == "animation":
@@ -1244,8 +1255,6 @@ def _consume_media_block(
             )
         )
 
-        # Keep Telegram semantic type.
-        # Destination adapter may later decide its fallback.
         normalized_type = "animation"
 
     caption_text, caption_entities = (
@@ -1296,8 +1305,6 @@ def _consume_media_block(
             f"type={block_type}"
         )
 
-    # Rich media caption is content.
-    # Add it once to the shared text representation.
     if caption_text:
 
         _append_main_text(
@@ -1619,7 +1626,6 @@ def _walk_block(
             f"type={block_type}"
         )
 
-        # Future-safe attempt to retain visible content.
         fallback_text, fallback_entities = (
             parse_rich_text(
                 block.get(
@@ -1691,12 +1697,10 @@ def _walk_block(
 
     if block_type == "divider":
 
-        # Preserve semantic separation without inserting
-        # decorative characters that could affect cleanup.
         return
 
     # =====================================================
-    # BLOCK MATHEMATICAL EXPRESSION
+    # MATHEMATICAL EXPRESSION
     # =====================================================
 
     if (
@@ -1726,7 +1730,6 @@ def _walk_block(
 
     if block_type == "anchor":
 
-        # Anchor is navigation metadata, not visible content.
         return
 
     # =====================================================
@@ -1803,7 +1806,6 @@ def _walk_block(
                     depth + 1
                 )
 
-            # Merge side-effects.
             state.block_count += (
                 child_state.block_count
             )
@@ -1911,8 +1913,6 @@ def _walk_block(
                     quote_text.strip(),
             })
 
-        # Media or nested special content in quote
-        # must not disappear.
         state.files.extend(
             quote_state.files
         )
@@ -1946,7 +1946,6 @@ def _walk_block(
 
     # =====================================================
     # EXPANDABLE BLOCKQUOTE
-    # Bot API 10.3 representation uses RichText directly.
     # =====================================================
 
     if (
@@ -1996,8 +1995,6 @@ def _walk_block(
 
     # =====================================================
     # PULLQUOTE
-    # Normalize to ordinary blockquote because current
-    # PreparedContent has no pullquote-specific field.
     # =====================================================
 
     if block_type == "pullquote":
@@ -2208,8 +2205,6 @@ def _walk_block(
 
     if block_type == "thinking":
 
-        # Thinking is transient/AI presentation metadata.
-        # Preserve visible text only if Telegram includes it.
         text, entities = (
             parse_rich_text(
                 block.get(
@@ -2227,6 +2222,120 @@ def _walk_block(
             )
 
         return
+
+
+# =========================================================
+# NORMALIZE NAVIGATION HINT
+# =========================================================
+
+def _normalize_navigation_hint(
+    text: str
+) -> str:
+
+    value = (
+        str(
+            text
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+
+    # Remove common UI emoji/symbol decoration around
+    # navigation instructions.
+    value = value.strip(
+        " \t\r\n"
+        "➡⬅👉👈"
+        "🔽🔼✨⭐"
+        "◀▶"
+        "✅☑️"
+        "🟢🔵"
+    )
+
+    return (
+        " ".join(
+            value.split()
+        )
+    )
+
+
+# =========================================================
+# REMOVE SLIDESHOW / COLLAGE UI HINT
+# =========================================================
+
+def _remove_rich_media_navigation_hint(
+    state: _WalkState
+) -> None:
+    """
+    Remove short standalone Rich Message navigation instructions
+    such as 'ورق بزنید' when slideshow/collage media exists.
+
+    This belongs to the Telegram input adapter because the phrase
+    controls Telegram presentation rather than representing the
+    editorial content itself.
+    """
+
+    if not (
+        state.has_slideshow
+        or state.has_collage
+    ):
+
+        return
+
+    if not state.main_parts:
+
+        return
+
+    cleaned_parts: List[
+        Tuple[
+            str,
+            List[
+                Dict[str, Any]
+            ]
+        ]
+    ] = []
+
+    removed_count = 0
+
+    for text, entities in (
+        state.main_parts
+    ):
+
+        normalized = (
+            _normalize_navigation_hint(
+                text
+            )
+        )
+
+        if (
+            normalized
+            in RICH_MEDIA_NAVIGATION_HINTS
+            and len(
+                normalized
+            ) <= 40
+        ):
+
+            removed_count += 1
+
+            continue
+
+        cleaned_parts.append(
+            (
+                text,
+                entities
+            )
+        )
+
+    if removed_count:
+
+        state.main_parts = (
+            cleaned_parts
+        )
+
+        logger.info(
+            "🧹 Rich media navigation hint removed | "
+            f"count={removed_count}"
+        )
 
 
 # =========================================================
@@ -2252,10 +2361,10 @@ def _assemble_main_text(
 
     current_offset = 0
 
-    for index, (
+    for (
         text,
         entities
-    ) in enumerate(
+    ) in (
         state.main_parts
     ):
 
@@ -2468,15 +2577,21 @@ def parse_rich_message(
 
             break
 
+    # -----------------------------------------------------
+    # Telegram UI-only navigation text must not enter
+    # the shared editorial/publication content.
+    # -----------------------------------------------------
+
+    _remove_rich_media_navigation_hint(
+        state
+    )
+
     main_text, entities = (
         _assemble_main_text(
             state
         )
     )
 
-    # Telegram's documented character limit is UTF-8 based.
-    # We don't silently truncate here because content loss in
-    # an editorial/news pipeline is unacceptable.
     utf8_size = len(
         main_text.encode(
             "utf-8"
