@@ -4545,281 +4545,386 @@ def handle_webhook() -> Tuple[
                         waiting_review.review_id
                 }, 200
 
-        # =================================================
-        # TELEGRAM RICH MESSAGE
-        # =================================================
-        #
-        # Telegram Bot API 10.1+
-        #
-        # Rich Messages are normalized here at the Telegram
-        # input boundary and then passed into the existing
-        # Shared Publication Engine.
-        #
-        # Publication, branding, duplicate detection,
-        # editorial logic and destination routing MUST NOT
-        # be duplicated in the Rich Message parser.
-        # =================================================
+    # =================================================
+    # TELEGRAM RICH MESSAGE
+    # =================================================
+    #
+    # Telegram Bot API 10.1+
+    #
+    # Rich Messages are normalized here at the Telegram
+    # input boundary and then passed into the existing
+    # Shared Publication Engine.
+    #
+    # Publication, branding, duplicate detection,
+    # editorial logic and destination routing MUST NOT
+    # be duplicated in the Rich Message parser.
+    # =================================================
 
-        try:
+    try:
 
-            from core.telegram_rich_message import (
-                is_rich_message,
-                parse_rich_message_from_message
+        from core.telegram_rich_message import (
+            is_rich_message,
+            parse_rich_message_from_message
+        )
+
+        if is_rich_message(
+            msg
+        ):
+
+            rich_content = (
+                parse_rich_message_from_message(
+                    msg
+                )
             )
 
-            if is_rich_message(
-                msg
+            rich_text = (
+                str(
+                    rich_content.main_text
+                    or ""
+                )
+            )
+
+            rich_files = list(
+                rich_content.files
+                or []
+            )
+
+            rich_blockquotes = list(
+                rich_content.blockquote_blocks
+                or []
+            )
+
+            rich_expandable = list(
+                rich_content.expandable_blocks
+                or []
+            )
+
+            rich_entities = list(
+                rich_content.other_entities
+                or []
+            )
+
+            logger.info(
+                f"[{req_id}] 🧩 RICH-MESSAGE-DETECTED | "
+                f"text={len(rich_text)} | "
+                f"files={len(rich_files)} | "
+                f"blockquote={len(rich_blockquotes)} | "
+                f"expandable={len(rich_expandable)} | "
+                f"blocks={rich_content.block_count} | "
+                f"slideshow={rich_content.has_slideshow} | "
+                f"collage={rich_content.has_collage} | "
+                f"unsupported="
+                f"{rich_content.unsupported_blocks or '-'}"
+            )
+
+            # -----------------------------------------
+            # EMPTY RICH MESSAGE
+            # -----------------------------------------
+
+            if (
+                not rich_text.strip()
+                and not rich_files
+                and not rich_blockquotes
+                and not rich_expandable
             ):
 
-                rich_content = (
-                    parse_rich_message_from_message(
-                        msg
-                    )
-                )
-
-                rich_text = (
-                    str(
-                        rich_content.main_text
-                        or ""
-                    )
-                )
-
-                rich_files = list(
-                    rich_content.files
-                    or []
-                )
-
-                rich_blockquotes = list(
-                    rich_content.blockquote_blocks
-                    or []
-                )
-
-                rich_expandable = list(
-                    rich_content.expandable_blocks
-                    or []
-                )
-
-                rich_entities = list(
-                    rich_content.other_entities
-                    or []
-                )
-
-                logger.info(
-                    f"[{req_id}] 🧩 RICH-MESSAGE-DETECTED | "
-                    f"text={len(rich_text)} | "
-                    f"files={len(rich_files)} | "
-                    f"blockquote={len(rich_blockquotes)} | "
-                    f"expandable={len(rich_expandable)} | "
+                logger.warning(
+                    f"[{req_id}] ⚠️ EMPTY-RICH-MESSAGE | "
                     f"blocks={rich_content.block_count} | "
-                    f"slideshow={rich_content.has_slideshow} | "
-                    f"collage={rich_content.has_collage} | "
-                    f"unsupported="
-                    f"{rich_content.unsupported_blocks or '-'}"
+                    f"types={rich_content.raw_block_types}"
                 )
 
-                # -----------------------------------------
-                # Empty Rich Message
-                # -----------------------------------------
+                send_message(
+                    chat_id,
+                    "❌ محتوای این پیام قابل استخراج نیست."
+                )
 
-                if (
-                    not rich_text.strip()
-                    and not rich_files
-                    and not rich_blockquotes
-                    and not rich_expandable
-                ):
+                return {
+                    "ok": True,
+                    "rich_message": True,
+                    "empty": True
+                }, 200
 
-                    logger.warning(
-                        f"[{req_id}] ⚠️ EMPTY-RICH-MESSAGE | "
-                        f"blocks={rich_content.block_count} | "
-                        f"types={rich_content.raw_block_types}"
+            # -----------------------------------------
+            # EXPLICIT EDITORIAL TAG
+            # -----------------------------------------
+
+            forced_content_type = None
+
+            publication_text = (
+                rich_text
+            )
+
+            publication_entities = list(
+                rich_entities
+                or []
+            )
+
+            if rich_text.strip():
+
+                (
+                    forced_content_type,
+                    publication_text,
+                    removed_prefix_length
+                ) = (
+                    detect_editorial_admin_tag(
+                        rich_text
+                    )
+                )
+
+                if forced_content_type:
+
+                    publication_entities = (
+                        shift_entities_after_prefix_removal(
+                            publication_entities,
+                            removed_prefix_length
+                        )
                     )
 
-                    send_message(
-                        chat_id,
-                        "❌ محتوای این پیام قابل استخراج نیست."
+                    logger.info(
+                        f"[{req_id}] "
+                        f"🏷️ RICH-EXPLICIT-EDITORIAL | "
+                        f"user={chat_id} | "
+                        f"type={forced_content_type} | "
+                        f"removed_prefix="
+                        f"{removed_prefix_length}"
+                    )
+
+            # -----------------------------------------
+            # EDITORIAL REVIEW
+            #
+            # Editorial path already calls the existing
+            # prepare_text_content() pipeline internally,
+            # including the shared source cleaner.
+            # -----------------------------------------
+
+            if forced_content_type:
+
+                queued_for_review = (
+                    try_queue_editorial_text_review(
+                        chat_id=chat_id,
+                        text=publication_text,
+                        entities=(
+                            publication_entities
+                        ),
+                        forward_source=(
+                            forward_source
+                            if forward_source.get(
+                                "is_forwarded"
+                            )
+                            else None
+                        ),
+                        forced_content_type=(
+                            forced_content_type
+                        ),
+                        media_files=(
+                            rich_files
+                        ),
+                        source_key=(
+                            incoming_source_key
+                        )
+                    )
+                )
+
+                if queued_for_review:
+
+                    logger.info(
+                        f"[{req_id}] "
+                        f"📝 Rich Message held for "
+                        f"editorial approval | "
+                        f"user={chat_id} | "
+                        f"type={forced_content_type}"
                     )
 
                     return {
                         "ok": True,
                         "rich_message": True,
-                        "empty": True
+                        "editorial_review": True
                     }, 200
 
-                # -----------------------------------------
-                # Explicit editorial tag
-                # Rich Message text follows the same policy
-                # as ordinary Telegram text.
-                # -----------------------------------------
+            # -----------------------------------------
+            # SHARED SOURCE CLEANUP
+            # -----------------------------------------
+            #
+            # Rich Message input MUST use the same
+            # preparation / source-cleanup path as
+            # normal Telegram text.
+            #
+            # No Rich-specific cleaner is introduced.
+            # -----------------------------------------
 
-                forced_content_type = None
-                publication_text = (
-                    rich_text
-                )
-
-                publication_entities = (
-                    rich_entities
-                )
-
-                if rich_text.strip():
-
-                    (
-                        forced_content_type,
-                        publication_text,
-                        removed_prefix_length
-                    ) = (
-                        detect_editorial_admin_tag(
-                            rich_text
+            prepared_rich = (
+                prepare_text_content(
+                    text=(
+                        publication_text
+                    ),
+                    entities=(
+                        publication_entities
+                    ),
+                    forward_source=(
+                        forward_source
+                        if forward_source.get(
+                            "is_forwarded"
                         )
-                    )
-
-                    if forced_content_type:
-
-                        publication_entities = (
-                            shift_entities_after_prefix_removal(
-                                publication_entities,
-                                removed_prefix_length
-                            )
-                        )
-
-                        logger.info(
-                            f"[{req_id}] "
-                            f"🏷️ RICH-EXPLICIT-EDITORIAL | "
-                            f"user={chat_id} | "
-                            f"type={forced_content_type} | "
-                            f"removed_prefix="
-                            f"{removed_prefix_length}"
-                        )
-
-                # -----------------------------------------
-                # Editorial Review
-                #
-                # Rich media is passed as media_files so the
-                # existing shared editorial pipeline keeps
-                # the media attached to the review.
-                # -----------------------------------------
-
-                if forced_content_type:
-
-                    queued_for_review = (
-                        try_queue_editorial_text_review(
-                            chat_id=chat_id,
-                            text=publication_text,
-                            entities=(
-                                publication_entities
-                            ),
-                            forward_source=(
-                                forward_source
-                                if forward_source.get(
-                                    "is_forwarded"
-                                )
-                                else None
-                            ),
-                            forced_content_type=(
-                                forced_content_type
-                            ),
-                            media_files=(
-                                rich_files
-                            ),
-                            source_key=(
-                                incoming_source_key
-                            )
-                        )
-                    )
-
-                    if queued_for_review:
-
-                        logger.info(
-                            f"[{req_id}] "
-                            f"📝 Rich Message held for "
-                            f"editorial approval | "
-                            f"user={chat_id} | "
-                            f"type={forced_content_type}"
-                        )
-
-                        return {
-                            "ok": True,
-                            "rich_message": True,
-                            "editorial_review": True
-                        }, 200
-
-                # -----------------------------------------
-                # Normal Rich Message publication
-                #
-                # Go directly into PreparedContent and the
-                # existing Shared Publication Engine.
-                # -----------------------------------------
-
-                rich_result = (
-                    publish_prepared_text(
-                        chat_id=chat_id,
-                        main_text=(
-                            publication_text
-                        ),
-                        blockquote_blocks=(
-                            rich_blockquotes
-                        ),
-                        expandable_blocks=(
-                            rich_expandable
-                        ),
-                        other_entities=(
-                            publication_entities
-                        ),
-                        neutral_text=(
-                            publication_text
-                        ),
-                        source_key=(
-                            incoming_source_key
-                        ),
-                        files=(
-                            rich_files
-                        ),
-                        return_result=True
+                        else None
                     )
                 )
-
-                _send_media_publication_acknowledgement(
-                    chat_id,
-                    rich_result,
-                    (
-                        "✅ پیام Rich شما "
-                        "در کانال منتشر شد."
-                    )
-                )
-
-                return {
-                    "ok": True,
-                    "rich_message": True
-                }, 200
-
-        except ImportError as e:
-
-            logger.exception(
-                f"[{req_id}] "
-                f"❌ Rich Message parser import failed | "
-                f"{e}"
             )
 
-        except Exception as e:
-
-            logger.exception(
-                f"[{req_id}] "
-                f"❌ Rich Message processing failed | "
-                f"{e}"
+            cleaned_main_text = (
+                prepared_rich.get(
+                    "main_text",
+                    ""
+                )
+                or ""
             )
 
-            send_message(
+            cleaned_neutral_text = (
+                prepared_rich.get(
+                    "neutral_text",
+                    cleaned_main_text
+                )
+                or cleaned_main_text
+            )
+
+            cleaned_entities = list(
+                prepared_rich.get(
+                    "other_entities",
+                    []
+                )
+                or []
+            )
+
+            # -----------------------------------------
+            # PRESERVE RICH-NATIVE QUOTATIONS
+            # -----------------------------------------
+            #
+            # prepare_text_content() can extract
+            # blockquotes from ordinary Telegram
+            # MessageEntity data.
+            #
+            # Rich Message quotations were already
+            # extracted directly from RichBlock objects.
+            # Preserve both.
+            # -----------------------------------------
+
+            shared_blockquotes = list(
+                prepared_rich.get(
+                    "blockquote_blocks",
+                    []
+                )
+                or []
+            )
+
+            shared_expandable = list(
+                prepared_rich.get(
+                    "expandable_blocks",
+                    []
+                )
+                or []
+            )
+
+            final_blockquotes = (
+                shared_blockquotes
+                + rich_blockquotes
+            )
+
+            final_expandable = (
+                shared_expandable
+                + rich_expandable
+            )
+
+            logger.info(
+                f"[{req_id}] "
+                f"🧹 RICH-SOURCE-CLEANUP | "
+                f"before={len(publication_text)} | "
+                f"after={len(cleaned_main_text)} | "
+                f"source_title="
+                f"{forward_source.get('source_title') or '-'} | "
+                f"source_username="
+                f"{forward_source.get('source_username') or '-'}"
+            )
+
+            # -----------------------------------------
+            # NORMAL RICH MESSAGE PUBLICATION
+            # -----------------------------------------
+            #
+            # From this point onward Rich Message has
+            # become the same neutral PreparedContent
+            # used by the Shared Publication Engine.
+            # -----------------------------------------
+
+            rich_result = (
+                publish_prepared_text(
+                    chat_id=chat_id,
+                    main_text=(
+                        cleaned_main_text
+                    ),
+                    blockquote_blocks=(
+                        final_blockquotes
+                    ),
+                    expandable_blocks=(
+                        final_expandable
+                    ),
+                    other_entities=(
+                        cleaned_entities
+                    ),
+                    neutral_text=(
+                        cleaned_neutral_text
+                    ),
+                    source_key=(
+                        incoming_source_key
+                    ),
+                    files=(
+                        rich_files
+                    ),
+                    return_result=True
+                )
+            )
+
+            _send_media_publication_acknowledgement(
                 chat_id,
+                rich_result,
                 (
-                    "❌ خطا در پردازش پیام "
-                    "Rich تلگرام."
+                    "✅ پیام Rich شما "
+                    "در کانال منتشر شد."
                 )
             )
 
             return {
                 "ok": True,
-                "rich_message": True,
-                "error": str(e)
+                "rich_message": True
             }, 200
+
+    except ImportError as e:
+
+        logger.exception(
+            f"[{req_id}] "
+            f"❌ Rich Message parser import failed | "
+            f"{e}"
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"[{req_id}] "
+            f"❌ Rich Message processing failed | "
+            f"{e}"
+        )
+
+        send_message(
+            chat_id,
+            (
+                "❌ خطا در پردازش پیام "
+                "Rich تلگرام."
+            )
+        )
+
+        return {
+            "ok": True,
+            "rich_message": True,
+            "error": str(e)
+        }, 200
         
         # =================================================
         # MEDIA INFO
