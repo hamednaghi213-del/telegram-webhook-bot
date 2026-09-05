@@ -1358,6 +1358,7 @@ def publish_prepared_text(
     neutral_text: Optional[str] = None,
     source_key: str = "",
     files: Optional[List[Dict[str, Any]]] = None,
+    media_presentation: str = "",
     require_single_message: bool = False,
     return_result: bool = False,
 ) -> Any:
@@ -1377,6 +1378,7 @@ def publish_prepared_text(
                 expandable_blocks=list(expandable_blocks or []),
                 other_entities=list(other_entities or []),
                 files=list(files or []),
+                media_presentation=media_presentation,
                 editorial_finalized=editorial_finalized,
                 require_single_message=require_single_message,
                 source_key=source_key,
@@ -4848,6 +4850,15 @@ def handle_webhook() -> Tuple[
                         ),
                         files=(
                             rich_files
+                        ),
+                        media_presentation=(
+                            "slideshow"
+                            if rich_content.has_slideshow
+                            else (
+                                "collage"
+                                if rich_content.has_collage
+                                else ""
+                            )
                         ),
                         return_result=True
                     )
