@@ -105,10 +105,7 @@ def test_parses_slideshow_with_photo_and_video():
     assert result.has_slideshow is True
     assert result.has_collage is False
 
-    assert result.main_text == (
-        "ورق بزنید\n\n"
-        "شرح خبر"
-    )
+    assert result.main_text == "شرح خبر"
 
     assert result.files == [
         {
