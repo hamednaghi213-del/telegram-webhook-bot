@@ -120,12 +120,8 @@ def _target_content_and_branding(
         target.destination or {}
     )
 
-    if destination_context.get(
-        "_canonical_media"
-    ):
-        from core.canonical_media import (
-            resolve_media_branding,
-        )
+    if destination_context.get("_canonical_media"):
+        from core.canonical_media import resolve_media_branding
         from core.publication_icons import (
             format_with_icons,
             format_with_profile,
@@ -134,15 +130,11 @@ def _target_content_and_branding(
 
         resolved = resolve_media_branding(
             dict(
-                destination_context.get(
-                    "media_identity"
-                )
+                destination_context.get("media_identity")
                 or {}
             ),
             dict(
-                destination_context.get(
-                    "destination_branding"
-                )
+                destination_context.get("destination_branding")
                 or {}
             ),
         )
@@ -153,12 +145,8 @@ def _target_content_and_branding(
                 resolved.get("hashtag"),
                 resolved.get("channel_tag"),
                 (
-                    resolved.get(
-                        "custom_footer"
-                    )
-                    if resolved.get(
-                        "footer_enabled"
-                    )
+                    resolved.get("custom_footer")
+                    if resolved.get("footer_enabled")
                     else ""
                 ),
             )
@@ -168,9 +156,7 @@ def _target_content_and_branding(
         branding = "\n".join(parts)
 
         profile = (
-            resolved.get(
-                "publication_profile"
-            )
+            resolved.get("publication_profile")
             or {}
         )
 
@@ -184,9 +170,7 @@ def _target_content_and_branding(
 
         else:
             icons = normalize_icons(
-                resolved.get(
-                    "publication_icons"
-                )
+                resolved.get("publication_icons")
                 or []
             )
 
@@ -242,13 +226,11 @@ def _target_content_and_branding(
         target.workspace_id
     )
 
-    branding = (
-        compose_destination_branding(
-            int(target.destination_id),
-            workspace_id,
-            get_destination_branding,
-            get_workspace_branding,
-        )
+    branding = compose_destination_branding(
+        int(target.destination_id),
+        workspace_id,
+        get_destination_branding,
+        get_workspace_branding,
     )
 
     workspace_branding = (
@@ -311,18 +293,8 @@ def _normalize_executor_result(
         return outcome
 
     ok = _outcome_ok(outcome)
-
-    message_id = (
-        _message_id_from_outcome(
-            outcome
-        )
-    )
-
-    message_ids = (
-        _message_ids_from_outcome(
-            outcome
-        )
-    )
+    message_id = _message_id_from_outcome(outcome)
+    message_ids = _message_ids_from_outcome(outcome)
 
     status_code = None
     error_code = None
@@ -346,32 +318,13 @@ def _normalize_executor_result(
         candidate,
         dict,
     ):
-        status_code = (
-            candidate.get(
-                "status_code"
-            )
-        )
-
-        error_code = (
-            candidate.get(
-                "error_code"
-            )
-        )
-
+        status_code = candidate.get("status_code")
+        error_code = candidate.get("error_code")
         error = (
-            candidate.get(
-                "error"
-            )
-            or candidate.get(
-                "description"
-            )
+            candidate.get("error")
+            or candidate.get("description")
         )
-
-        operation = (
-            candidate.get(
-                "operation"
-            )
-        )
+        operation = candidate.get("operation")
 
     if (
         isinstance(
@@ -427,28 +380,20 @@ def _message_ids_from_outcome(
         candidate,
         dict,
     ):
-        values = (
-            candidate.get(
-                "message_ids"
-            )
+        values = candidate.get(
+            "message_ids"
         )
 
         if (
             values is None
             and isinstance(
-                candidate.get(
-                    "result"
-                ),
+                candidate.get("result"),
                 list,
             )
         ):
             values = [
-                item.get(
-                    "message_id"
-                )
-                for item in candidate[
-                    "result"
-                ]
+                item.get("message_id")
+                for item in candidate["result"]
                 if isinstance(
                     item,
                     dict,
@@ -476,10 +421,8 @@ def _message_ids_from_outcome(
     if normalized:
         return normalized
 
-    primary = (
-        _message_id_from_outcome(
-            outcome
-        )
+    primary = _message_id_from_outcome(
+        outcome
     )
 
     return (
@@ -497,122 +440,89 @@ def _send_text_target(
 ):
 
     messages = list(
-        plan.get(
-            "messages"
-        )
+        plan.get("messages")
         or []
     )
 
     modes = list(
-        plan.get(
-            "message_parse_modes"
-        )
+        plan.get("message_parse_modes")
         or []
     )
 
     blockquotes = list(
-        plan.get(
-            "blockquote_messages"
-        )
+        plan.get("blockquote_messages")
         or []
     )
 
     if target.platform == "telegram":
 
         if target.kind == "legacy":
-            from core.webhook_handler import (
-                send_to_channel,
-            )
+            from core.webhook_handler import send_to_channel
 
             for index, message in enumerate(
                 messages
             ):
                 if message:
-
                     if _supports_return_result(
                         send_to_channel
                     ):
-                        outcome = (
-                            send_to_channel(
-                                message,
-                                parse_mode=(
-                                    modes[index]
-                                    if index
-                                    < len(modes)
-                                    else None
-                                ),
-                                return_result=True,
-                            )
+                        outcome = send_to_channel(
+                            message,
+                            parse_mode=(
+                                modes[index]
+                                if index < len(modes)
+                                else None
+                            ),
+                            return_result=True,
                         )
-
                     else:
-                        outcome = (
-                            send_to_channel(
-                                message,
-                                parse_mode=(
-                                    modes[index]
-                                    if index
-                                    < len(modes)
-                                    else None
-                                ),
-                            )
+                        outcome = send_to_channel(
+                            message,
+                            parse_mode=(
+                                modes[index]
+                                if index < len(modes)
+                                else None
+                            ),
                         )
 
                     if not _outcome_ok(
                         outcome
                     ):
-                        return (
-                            _normalize_executor_result(
-                                outcome
-                            )
+                        return _normalize_executor_result(
+                            outcome
                         )
 
-                    last_outcome = (
-                        outcome
-                    )
+                    last_outcome = outcome
 
             for message in blockquotes:
-
                 if message:
-
                     if _supports_return_result(
                         send_to_channel
                     ):
-                        outcome = (
-                            send_to_channel(
-                                message,
-                                parse_mode="HTML",
-                                return_result=True,
-                            )
+                        outcome = send_to_channel(
+                            message,
+                            parse_mode="HTML",
+                            return_result=True,
                         )
-
                     else:
-                        outcome = (
-                            send_to_channel(
-                                message,
-                                parse_mode="HTML",
-                            )
+                        outcome = send_to_channel(
+                            message,
+                            parse_mode="HTML",
                         )
 
                     if not _outcome_ok(
                         outcome
                     ):
-                        return (
-                            _normalize_executor_result(
-                                outcome
-                            )
+                        return _normalize_executor_result(
+                            outcome
                         )
 
-                    last_outcome = (
-                        outcome
-                    )
+                    last_outcome = outcome
 
-            return (
-                _normalize_executor_result(
-                    locals().get(
-                        "last_outcome",
-                        True,
-                    )
+            return _normalize_executor_result(
+                locals().get(
+                    "last_outcome",
+                    True,
                 )
             )
 
@@ -626,50 +536,39 @@ def _send_text_target(
             messages
         ):
             if message:
-
                 try:
-                    outcome = (
-                        _send_text_to_destination(
-                            api_url,
-                            target.external_id,
-                            message,
-                            parse_mode=(
-                                modes[index]
-                                if index
-                                < len(modes)
-                                else None
-                            ),
-                        )
-                    )
-
-                except TypeError:
-                    outcome = (
-                        _send_text_to_destination(
-                            api_url,
-                            target.external_id,
-                            message,
-                        )
-                    )
-
-                if not _outcome_ok(
-                    outcome
-                ):
-                    return outcome
-
-                last_outcome = (
-                    outcome
-                )
-
-        for message in blockquotes:
-
-            if message:
-                outcome = (
-                    _send_text_to_destination(
+                    outcome = _send_text_to_destination(
                         api_url,
                         target.external_id,
                         message,
-                        parse_mode="HTML",
+                        parse_mode=(
+                            modes[index]
+                            if index < len(modes)
+                            else None
+                        ),
                     )
+
+                except TypeError:
+                    outcome = _send_text_to_destination(
+                        api_url,
+                        target.external_id,
+                        message,
+                    )
+
+                if not _outcome_ok(
+                    outcome
+                ):
+                    return outcome
+
+                last_outcome = outcome
+
+        for message in blockquotes:
+            if message:
+                outcome = _send_text_to_destination(
+                    api_url,
+                    target.external_id,
+                    message,
+                    parse_mode="HTML",
                 )
 
                 if not _outcome_ok(
@@ -677,14 +576,11 @@ def _send_text_target(
                 ):
                     return outcome
 
-        return (
-            _normalize_executor_result(
-                last_outcome
-            )
+        return _normalize_executor_result(
+            last_outcome
         )
 
     if target.kind == "legacy":
-
         from core.bale_forwarder import (
             send_to_bale_for_user,
         )
@@ -708,7 +604,6 @@ def _send_text_target(
                         return_result=True,
                     )
                 )
-
             else:
                 outcomes.append(
                     send_to_bale_for_user(
@@ -717,18 +612,16 @@ def _send_text_target(
                     )
                 )
 
-        return (
-            _normalize_executor_result(
-                outcomes[-1]
-                if (
-                    outcomes
-                    and all(
-                        _outcome_ok(item)
-                        for item in outcomes
-                    )
+        return _normalize_executor_result(
+            outcomes[-1]
+            if (
+                outcomes
+                and all(
+                    _outcome_ok(item)
+                    for item in outcomes
                 )
-                else False
             )
+            else False
         )
 
     token = os.getenv(
@@ -763,7 +656,6 @@ def _send_text_target(
                     return_result=True,
                 )
             )
-
         else:
             outcomes.append(
                 send_text_to_bale(
@@ -773,18 +665,16 @@ def _send_text_target(
                 )
             )
 
-    return (
-        _normalize_executor_result(
-            outcomes[-1]
-            if (
-                outcomes
-                and all(
-                    _outcome_ok(item)
-                    for item in outcomes
-                )
+    return _normalize_executor_result(
+        outcomes[-1]
+        if (
+            outcomes
+            and all(
+                _outcome_ok(item)
+                for item in outcomes
             )
-            else False
         )
+        else False
     )
 
 
@@ -794,16 +684,20 @@ def _send_media_target(
     target: PublicationTarget,
     files: List[Dict[str, Any]],
     plan: Dict[str, Any],
-    media_presentation: str = "",
 ):
+
+    media_presentation = str(
+        plan.get(
+            "_media_presentation",
+            "",
+        )
+        or ""
+    )
 
     if target.platform == "telegram":
 
         normalized_presentation = (
-            str(
-                media_presentation
-                or ""
-            )
+            media_presentation
             .strip()
             .lower()
         )
@@ -817,68 +711,56 @@ def _send_media_target(
                 send_rich_media_to_channel,
             )
 
-            outcome = (
-                send_rich_media_to_channel(
-                    files=files,
-                    presentation=(
-                        normalized_presentation
-                    ),
-                    caption=(
-                        plan.get(
-                            "media_caption",
-                            "",
-                        )
-                        or ""
-                    ),
-                    channel_id=(
-                        None
-                        if target.kind
-                        == "legacy"
-                        else target.external_id
-                    ),
-                    api_url=(
-                        None
-                        if target.kind
-                        == "legacy"
-                        else api_url
-                    ),
-                )
+            outcome = send_rich_media_to_channel(
+                files=files,
+                presentation=(
+                    normalized_presentation
+                ),
+                caption=(
+                    plan.get(
+                        "media_caption",
+                        "",
+                    )
+                    or ""
+                ),
+                channel_id=(
+                    None
+                    if target.kind == "legacy"
+                    else target.external_id
+                ),
+                api_url=(
+                    None
+                    if target.kind == "legacy"
+                    else api_url
+                ),
             )
 
-            return (
-                _normalize_executor_result(
-                    outcome
-                )
+            return _normalize_executor_result(
+                outcome
             )
 
         from core.media_handler import (
             execute_telegram_plan,
         )
 
-        outcome = (
-            execute_telegram_plan(
-                files,
-                plan,
-                channel_id=(
-                    None
-                    if target.kind
-                    == "legacy"
-                    else target.external_id
-                ),
-                api_url=(
-                    None
-                    if target.kind
-                    == "legacy"
-                    else api_url
-                ),
-                return_result=True,
-            )
+        outcome = execute_telegram_plan(
+            files,
+            plan,
+            channel_id=(
+                None
+                if target.kind == "legacy"
+                else target.external_id
+            ),
+            api_url=(
+                None
+                if target.kind == "legacy"
+                else api_url
+            ),
+            return_result=True,
         )
 
-        normalized = (
-            _normalize_executor_result(
-                outcome
-            )
+        normalized = _normalize_executor_result(
+            outcome
         )
 
         if (
@@ -908,19 +790,16 @@ def _send_media_target(
         return normalized
 
     if target.kind == "legacy":
-
         from core.media_handler import (
             execute_bale_plan,
         )
 
-        return (
-            _normalize_executor_result(
-                execute_bale_plan(
-                    chat_id,
-                    files,
-                    plan,
-                    return_result=True,
-                )
+        return _normalize_executor_result(
+            execute_bale_plan(
+                chat_id,
+                files,
+                plan,
+                return_result=True,
             )
         )
 
@@ -949,43 +828,33 @@ def _send_media_target(
     )
 
     if len(files) > 1:
-
-        ok = (
-            send_media_group_to_bale(
-                chat_id,
-                files,
-                caption,
-                bale_channel=(
-                    target.external_id
-                ),
-                bale_token=token,
-                return_result=True,
-            )
+        ok = send_media_group_to_bale(
+            chat_id,
+            files,
+            caption,
+            bale_channel=(
+                target.external_id
+            ),
+            bale_token=token,
+            return_result=True,
         )
 
     else:
-
         item = files[0]
 
         sender = {
             "photo":
                 send_photo_to_bale,
-
             "video":
                 send_video_to_bale,
-
             "document":
                 send_document_to_bale,
-
             "voice":
                 send_document_to_bale,
-
             "audio":
                 send_document_to_bale,
         }.get(
-            item.get(
-                "type"
-            )
+            item.get("type")
         )
 
         ok = (
@@ -993,9 +862,7 @@ def _send_media_target(
                 target.external_id,
                 token,
                 caption,
-                item.get(
-                    "file_id"
-                ),
+                item.get("file_id"),
                 return_result=True,
             )
             if sender
@@ -1005,10 +872,8 @@ def _send_media_target(
     if not _outcome_ok(
         ok
     ):
-        return (
-            _normalize_executor_result(
-                ok
-            )
+        return _normalize_executor_result(
+            ok
         )
 
     for message in (
@@ -1025,7 +890,6 @@ def _send_media_target(
             or []
         )
     ):
-
         if (
             message
             and send_text_to_bale(
@@ -1037,10 +901,8 @@ def _send_media_target(
         ):
             return False
 
-    return (
-        _normalize_executor_result(
-            ok
-        )
+    return _normalize_executor_result(
+        ok
     )
 
 
@@ -1052,35 +914,26 @@ def _message_id_from_outcome(
         outcome,
         ExecutorResult,
     ):
-        return (
-            outcome.primary_message_id
-        )
+        return outcome.primary_message_id
 
     if isinstance(
         outcome,
         dict,
     ):
-        value = (
-            outcome.get(
-                "message_id"
-            )
+        value = outcome.get(
+            "message_id"
         )
 
         if (
             value is None
             and isinstance(
-                outcome.get(
-                    "result"
-                ),
+                outcome.get("result"),
                 dict,
             )
         ):
             value = (
-                outcome[
-                    "result"
-                ].get(
-                    "message_id"
-                )
+                outcome["result"]
+                .get("message_id")
             )
 
         return (
@@ -1100,10 +953,8 @@ def _message_id_from_outcome(
             dict,
         )
     ):
-        return (
-            _message_id_from_outcome(
-                outcome[2]
-            )
+        return _message_id_from_outcome(
+            outcome[2]
         )
 
     return None
@@ -1117,10 +968,8 @@ def _chat_id_from_outcome(
         outcome,
         ExecutorResult,
     ):
-        return (
-            _chat_id_from_outcome(
-                outcome.raw_result
-            )
+        return _chat_id_from_outcome(
+            outcome.raw_result
         )
 
     if (
@@ -1130,10 +979,8 @@ def _chat_id_from_outcome(
         )
         and len(outcome) > 2
     ):
-        return (
-            _chat_id_from_outcome(
-                outcome[2]
-            )
+        return _chat_id_from_outcome(
+            outcome[2]
         )
 
     if isinstance(
@@ -1141,22 +988,16 @@ def _chat_id_from_outcome(
         dict,
     ):
         result = (
-            outcome.get(
-                "result"
-            )
+            outcome.get("result")
             if isinstance(
-                outcome.get(
-                    "result"
-                ),
+                outcome.get("result"),
                 dict,
             )
             else outcome
         )
 
         chat = (
-            result.get(
-                "chat"
-            )
+            result.get("chat")
             if isinstance(
                 result,
                 dict,
@@ -1165,9 +1006,7 @@ def _chat_id_from_outcome(
         )
 
         value = (
-            chat.get(
-                "id"
-            )
+            chat.get("id")
             if isinstance(
                 chat,
                 dict,
@@ -1215,7 +1054,9 @@ def _outcome_ok(
             )
         )
 
-    return bool(outcome)
+    return bool(
+        outcome
+    )
 
 
 def _unique_media_identity_ids(
@@ -1232,7 +1073,6 @@ def _unique_media_identity_ids(
     media_ids = set()
 
     for target in targets:
-
         destination_context = dict(
             target.destination
             or {}
@@ -1251,9 +1091,7 @@ def _unique_media_identity_ids(
         )
 
         media_identity_id = (
-            media_identity.get(
-                "id"
-            )
+            media_identity.get("id")
         )
 
         if media_identity_id is None:
@@ -1265,7 +1103,6 @@ def _unique_media_identity_ids(
                     media_identity_id
                 )
             )
-
         except (
             TypeError,
             ValueError,
@@ -1303,17 +1140,13 @@ def _duplicate_decisions_for_targets(
     if not source_text:
         return {}
 
-    decisions: Dict[
-        int,
-        Any,
-    ] = {}
+    decisions: Dict[int, Any] = {}
 
     for media_identity_id in (
         _unique_media_identity_ids(
             targets
         )
     ):
-
         try:
             decisions[
                 media_identity_id
@@ -1328,9 +1161,7 @@ def _duplicate_decisions_for_targets(
                     ),
                 )
             )
-
         except Exception:
-            # Duplicate Guard must never break publication.
             continue
 
     return decisions
@@ -1395,8 +1226,7 @@ def _duplicate_warning_payload(
                             "publication_id",
                             None,
                         )
-                        if match
-                        is not None
+                        if match is not None
                         else None
                     ),
 
@@ -1407,8 +1237,7 @@ def _duplicate_warning_payload(
                             "actor_user_id",
                             None,
                         )
-                        if match
-                        is not None
+                        if match is not None
                         else None
                     ),
 
@@ -1419,8 +1248,7 @@ def _duplicate_warning_payload(
                             "published_at",
                             None,
                         )
-                        if match
-                        is not None
+                        if match is not None
                         else None
                     ),
             }
@@ -1454,9 +1282,7 @@ def _shared_content_analysis(
 
     detached_texts = [
         str(
-            block.get(
-                "text"
-            )
+            block.get("text")
             or ""
         )
         for block in (
@@ -1473,10 +1299,6 @@ def _shared_content_analysis(
         )
         if item
     )
-
-    # The stable planner only invokes Smart Summary when platform capacity is
-    # exceeded. Editorial approval finalizes the review decision, but a long
-    # approved original still has to fit the requested single-message output.
 
     threshold = (
         996
@@ -1508,7 +1330,6 @@ def _shared_content_analysis(
     )
 
     if prepared.files:
-
         candidate = str(
             plan.telegram.get(
                 "media_caption"
@@ -1532,7 +1353,6 @@ def _shared_content_analysis(
         )
 
     else:
-
         messages = list(
             (
                 plan.text.get(
@@ -1565,7 +1385,6 @@ def _shared_content_analysis(
         and len(candidate)
         < len(publishable_text)
     ):
-
         summarized_main = str(
             semantic_summary.get(
                 "main_text"
@@ -1611,7 +1430,6 @@ def _shared_content_analysis(
         and len(candidate)
         < len(publishable_text)
     ):
-
         return replace(
             prepared,
             main_text=candidate,
@@ -1654,7 +1472,6 @@ def _execute_delivery_part(
     if part_kind == "primary":
 
         if prepared.files:
-
             primary_plan = dict(
                 platform_plan
             )
@@ -1667,6 +1484,12 @@ def _execute_delivery_part(
                 "blockquote_messages"
             ] = []
 
+            primary_plan[
+                "_media_presentation"
+            ] = (
+                prepared.media_presentation
+            )
+
             return _send_media_target(
                 chat_id,
                 api_url,
@@ -1675,9 +1498,6 @@ def _execute_delivery_part(
                     prepared.files
                 ),
                 primary_plan,
-                media_presentation=(
-                    prepared.media_presentation
-                ),
             )
 
         messages = list(
@@ -1748,8 +1568,7 @@ def _execute_delivery_part(
                 messages[index],
                 (
                     modes[index]
-                    if index
-                    < len(modes)
+                    if index < len(modes)
                     else None
                 ),
             ),
@@ -1844,20 +1663,14 @@ def publish_prepared_content(
     )
 
     if targets is None:
-
         (
             targets,
             resolution_errors,
-        ) = (
-            resolve_publication_targets(
-                chat_id
-            )
+        ) = resolve_publication_targets(
+            chat_id
         )
-
     else:
         resolution_errors = []
-
-    # Defensive dedup also protects explicit target lists passed by adapters.
 
     unique_targets: Dict[
         str,
@@ -1865,7 +1678,6 @@ def publish_prepared_content(
     ] = {}
 
     for target in targets:
-
         identity = (
             canonical_target_identity(
                 target
@@ -1896,7 +1708,6 @@ def publish_prepared_content(
     )
 
     if not allow_duplicate:
-
         duplicate_decisions = (
             _duplicate_decisions_for_targets(
                 prepared,
@@ -1911,7 +1722,6 @@ def publish_prepared_content(
         )
 
         if duplicate_warning:
-
             try:
                 from core.duplicate_pending import (
                     create_pending_duplicate,
@@ -1926,28 +1736,19 @@ def publish_prepared_content(
                 )
 
             except Exception:
-
                 logger.exception(
-                    "Duplicate pending creation failed | "
-                    "source=%s",
+                    "Duplicate pending creation failed | source=%s",
                     prepared.publication_identity,
                 )
 
                 duplicate_token = None
 
             return {
-                "ok":
-                    False,
-
-                "results":
-                    [],
-
-                "errors":
-                    [],
-
+                "ok": False,
+                "results": [],
+                "errors": [],
                 "duplicate_token":
                     duplicate_token,
-
                 **duplicate_warning,
             }
 
@@ -1969,7 +1770,6 @@ def publish_prepared_content(
             else 4096
         )
     ):
-
         logger.error(
             "Editorial single-message publication blocked | "
             "source=%s | reason=summary_unavailable",
@@ -1977,16 +1777,11 @@ def publish_prepared_content(
         )
 
         return {
-            "ok":
-                False,
-
-            "results":
-                [],
-
-            "errors":
-                [
-                    "editorial_summary_unavailable"
-                ],
+            "ok": False,
+            "results": [],
+            "errors": [
+                "editorial_summary_unavailable"
+            ],
         }
 
     source_key = (
@@ -2026,13 +1821,10 @@ def publish_prepared_content(
     for target in targets:
 
         if (
-            target.kind
-            == "legacy"
-            and target.platform
-            == "bale"
+            target.kind == "legacy"
+            and target.platform == "bale"
             and legacy_telegram_failed
         ):
-
             results.append(
                 DeliveryResult(
                     target.platform,
@@ -2066,7 +1858,6 @@ def publish_prepared_content(
         )
 
         if state.status == "succeeded":
-
             results.append(
                 DeliveryResult(
                     target.platform,
@@ -2118,7 +1909,6 @@ def publish_prepared_content(
             store,
             "begin_persistent_attempt",
         ):
-
             state = (
                 store.begin_persistent_attempt(
                     source_key=source_key,
@@ -2135,9 +1925,7 @@ def publish_prepared_content(
                     ),
                 )
             )
-
         else:
-
             state = (
                 store.begin_attempt(
                     source_key,
@@ -2146,7 +1934,6 @@ def publish_prepared_content(
             )
 
         if state is None:
-
             current = (
                 store.get_delivery(
                     source_key,
@@ -2193,15 +1980,10 @@ def publish_prepared_content(
             continue
 
         try:
-
             from core.caption_manager import (
                 analyze_content,
                 suppress_smart_summary,
             )
-
-            # A legacy Telegram+Bale pair shares the same semantic/branding
-            # input. Build it once so branding callbacks and caption planning
-            # are not repeated merely because two platform executors exist.
 
             content_key = (
                 target.kind,
@@ -2221,7 +2003,6 @@ def publish_prepared_content(
             )
 
             if cached_content is None:
-
                 cached_content = (
                     _target_content_and_branding(
                         chat_id,
@@ -2270,9 +2051,7 @@ def publish_prepared_content(
             )
 
             if plan is None:
-
                 with suppress_smart_summary():
-
                     plan = analyze_content(
                         main_text=main_text,
                         blockquote_blocks=list(
@@ -2321,7 +2100,6 @@ def publish_prepared_content(
                 analyzed,
                 platform_plan,
             ):
-
                 if store.part_completed(
                     source_key,
                     identity,
@@ -2344,7 +2122,6 @@ def publish_prepared_content(
                 if not _outcome_ok(
                     outcome
                 ):
-
                     detail = (
                         _normalize_executor_result(
                             outcome
@@ -2367,14 +2144,11 @@ def publish_prepared_content(
                     )
 
                     if (
-                        target.kind
-                        == "legacy"
+                        target.kind == "legacy"
                         and target.platform
                         == "telegram"
                     ):
-                        legacy_telegram_failed = (
-                            True
-                        )
+                        legacy_telegram_failed = True
 
                     break
 
@@ -2394,7 +2168,6 @@ def publish_prepared_content(
                 )
 
             if error is None:
-
                 store.mark_succeeded(
                     source_key,
                     identity,
@@ -2483,7 +2256,6 @@ def publish_prepared_content(
             )
 
         except Exception as exc:
-
             store.mark_failed(
                 source_key,
                 identity,
@@ -2491,18 +2263,13 @@ def publish_prepared_content(
             )
 
             if (
-                target.kind
-                == "legacy"
-                and target.platform
-                == "telegram"
+                target.kind == "legacy"
+                and target.platform == "telegram"
             ):
-                legacy_telegram_failed = (
-                    True
-                )
+                legacy_telegram_failed = True
 
             logger.exception(
-                "Publication target failed | "
-                "target=%s | %s",
+                "Publication target failed | target=%s | %s",
                 target.key,
                 exc,
             )
@@ -2578,7 +2345,6 @@ def publish_prepared_content(
         store,
         "begin_persistent_attempt",
     ):
-
         from core import database
 
         database.mark_persistent_publication_source(
@@ -2586,12 +2352,7 @@ def publish_prepared_content(
             status=source_status,
         )
 
-    # Duplicate News Guard history:
-    # record one logical publication per canonical Media Identity,
-    # only after at least one destination has published successfully.
-
     if any_succeeded:
-
         try:
             from core import database
             from core.duplicate_guard import (
@@ -2606,22 +2367,15 @@ def publish_prepared_content(
             ).strip()
 
             if history_text:
-
-                user = (
-                    database.get_user_by_telegram_id(
-                        chat_id
-                    )
+                user = database.get_user_by_telegram_id(
+                    chat_id
                 )
 
                 actor_user_id = (
-                    int(
-                        user["id"]
-                    )
+                    int(user["id"])
                     if (
                         user
-                        and user.get(
-                            "id"
-                        )
+                        and user.get("id")
                         is not None
                     )
                     else None
@@ -2644,7 +2398,6 @@ def publish_prepared_content(
                         targets
                     )
                 ):
-
                     try:
                         database.record_duplicate_news_history(
                             media_identity_id=(
@@ -2668,7 +2421,6 @@ def publish_prepared_content(
                         )
 
                     except Exception:
-
                         logger.exception(
                             "Duplicate history write failed | "
                             "media_identity_id=%s | source=%s",
@@ -2677,13 +2429,8 @@ def publish_prepared_content(
                         )
 
         except Exception:
-
-            # Duplicate Guard is strictly fail-open:
-            # publication success must never depend on history storage.
-
             logger.exception(
-                "Duplicate history recording failed | "
-                "source=%s",
+                "Duplicate history recording failed | source=%s",
                 source_key,
             )
 
