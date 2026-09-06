@@ -4173,6 +4173,10 @@ def handle_webhook() -> Tuple[
 
                 try:
 
+                    from core.external_review_execution import (
+                        execute_external_review_decision
+                    )
+
                     from core.external_review_telegram import (
                         handle_external_review_telegram_callback
                     )
@@ -4185,6 +4189,13 @@ def handle_webhook() -> Tuple[
                             ),
                             send_message=(
                                 send_message
+                            ),
+                            api_url=(
+                                API_URL
+                                or ""
+                            ),
+                            execute_decision=(
+                                execute_external_review_decision
                             ),
                             req_id=req_id,
                         )
