@@ -298,7 +298,7 @@ class ExternalContentResolver:
         try:
             content = (
                 self.social_adapter
-                .resolve(
+                .extract(
                     url
                 )
             )
