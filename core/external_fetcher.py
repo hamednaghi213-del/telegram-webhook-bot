@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 
 from dataclasses import dataclass, field
@@ -145,21 +146,153 @@ class FetchResult:
 
     @property
     def text(self) -> str:
-        encoding = (
-            self.encoding.strip()
-            or "utf-8"
+        """
+        Decode fetched textual content conservatively.
+
+        Some HTTP servers omit charset information or cause Requests
+        to fall back to a Western single-byte encoding even when the
+        actual document is UTF-8.
+
+        Prefer BOM and document-declared charset information first.
+        When the HTTP encoding is absent or looks like a common
+        Latin-1 fallback, prefer UTF-8 when the bytes are valid UTF-8.
+
+        This logic is source-neutral and performs no translation.
+        """
+
+        content = self.content or b""
+
+        if not content:
+            return ""
+
+        # -------------------------------------------------
+        # BOM
+        # -------------------------------------------------
+
+        if content.startswith(
+            b"\xef\xbb\xbf"
+        ):
+            return content.decode(
+                "utf-8-sig",
+                errors="replace",
+            )
+
+        if (
+            content.startswith(
+                b"\xff\xfe"
+            )
+            or content.startswith(
+                b"\xfe\xff"
+            )
+        ):
+            try:
+                return content.decode(
+                    "utf-16",
+                    errors="strict",
+                )
+            except UnicodeError:
+                pass
+
+        # -------------------------------------------------
+        # HTML / XML declared charset
+        # -------------------------------------------------
+
+        head = content[:8192]
+
+        head_ascii = head.decode(
+            "ascii",
+            errors="ignore",
         )
 
+        charset_match = re.search(
+            (
+                r"""(?i)charset\s*=\s*"""
+                r"""["']?\s*([a-z0-9._-]+)"""
+            ),
+            head_ascii,
+        )
+
+        declared_encoding = (
+            charset_match.group(1).strip()
+            if charset_match
+            else ""
+        )
+
+        if declared_encoding:
+            try:
+                return content.decode(
+                    declared_encoding,
+                    errors="strict",
+                )
+            except (
+                LookupError,
+                UnicodeError,
+            ):
+                pass
+
+        # -------------------------------------------------
+        # HTTP / Requests encoding
+        # -------------------------------------------------
+
+        response_encoding = (
+            self.encoding
+            .strip()
+            .lower()
+        )
+
+        weak_encodings = {
+            "",
+            "iso-8859-1",
+            "latin-1",
+            "latin1",
+            "windows-1252",
+            "cp1252",
+        }
+
+        # Requests commonly uses ISO-8859-1 for HTTP text when
+        # no reliable charset is supplied. Before accepting that
+        # fallback, check whether the payload is valid UTF-8.
+        if response_encoding in weak_encodings:
+            try:
+                return content.decode(
+                    "utf-8",
+                    errors="strict",
+                )
+            except UnicodeError:
+                pass
+
+        if response_encoding:
+            try:
+                return content.decode(
+                    response_encoding,
+                    errors="strict",
+                )
+            except (
+                LookupError,
+                UnicodeError,
+            ):
+                pass
+
+        # -------------------------------------------------
+        # Deterministic fallbacks
+        # -------------------------------------------------
+
         try:
-            return self.content.decode(
-                encoding,
-                errors="replace",
-            )
-        except LookupError:
-            return self.content.decode(
+            return content.decode(
                 "utf-8",
-                errors="replace",
+                errors="strict",
             )
+        except UnicodeError:
+            pass
+
+        return content.decode(
+            (
+                response_encoding
+                if response_encoding
+                else "utf-8"
+            ),
+            errors="replace",
+        )
 
 
 def canonicalize_external_url(url: str) -> str:
@@ -169,6 +302,7 @@ def canonicalize_external_url(url: str) -> str:
     This intentionally removes URL fragments because fragments are
     never sent to an HTTP server.
     """
+
     if not isinstance(url, str):
         raise UnsafeExternalURL(
             "external URL must be a string"
@@ -227,7 +361,11 @@ def canonicalize_external_url(url: str) -> str:
             "external URL has no hostname"
         )
 
-    hostname = hostname.rstrip(".").lower()
+    hostname = (
+        hostname
+        .rstrip(".")
+        .lower()
+    )
 
     if not hostname:
         raise UnsafeExternalURL(
@@ -235,10 +373,10 @@ def canonicalize_external_url(url: str) -> str:
         )
 
     try:
-        hostname_ascii = hostname.encode(
-            "idna"
-        ).decode(
-            "ascii"
+        hostname_ascii = (
+            hostname
+            .encode("idna")
+            .decode("ascii")
         )
     except UnicodeError as exc:
         raise UnsafeExternalURL(
@@ -265,7 +403,10 @@ def canonicalize_external_url(url: str) -> str:
     else:
         rendered_host = hostname_ascii
 
-    if port is not None and port != default_port:
+    if (
+        port is not None
+        and port != default_port
+    ):
         netloc = (
             f"{rendered_host}:{port}"
         )
@@ -309,7 +450,8 @@ def _is_forbidden_hostname(
     hostname: str,
 ) -> bool:
     normalized = (
-        hostname.rstrip(".")
+        hostname
+        .rstrip(".")
         .lower()
     )
 
@@ -336,11 +478,12 @@ def _validate_ip_address(
             "resolved address is invalid"
         ) from exc
 
-    # External ingestion may contact only globally routable
-    # public addresses.
     if not ip.is_global:
         raise UnsafeExternalURL(
-            f"external URL resolves to non-public address: {ip}"
+            (
+                "external URL resolves to "
+                f"non-public address: {ip}"
+            )
         )
 
     if (
@@ -352,7 +495,10 @@ def _validate_ip_address(
         or ip.is_unspecified
     ):
         raise UnsafeExternalURL(
-            f"external URL resolves to forbidden address: {ip}"
+            (
+                "external URL resolves to "
+                f"forbidden address: {ip}"
+            )
         )
 
 
@@ -360,6 +506,7 @@ def _resolve_and_validate_host(
     hostname: str,
     port: int,
 ) -> Tuple[str, ...]:
+
     if _is_forbidden_hostname(
         hostname
     ):
@@ -367,7 +514,6 @@ def _resolve_and_validate_host(
             "localhost destinations are not allowed"
         )
 
-    # Literal IP addresses do not need DNS.
     try:
         literal_ip = ipaddress.ip_address(
             hostname
@@ -392,7 +538,10 @@ def _resolve_and_validate_host(
         )
     except socket.gaierror as exc:
         raise ExternalFetchNetworkError(
-            "external hostname could not be resolved"
+            (
+                "external hostname could "
+                "not be resolved"
+            )
         ) from exc
 
     addresses = []
@@ -414,12 +563,12 @@ def _resolve_and_validate_host(
 
     if not addresses:
         raise ExternalFetchNetworkError(
-            "external hostname returned no usable addresses"
+            (
+                "external hostname returned "
+                "no usable addresses"
+            )
         )
 
-    # If even one returned address is private/internal, reject the
-    # hostname entirely. This avoids choosing an apparently public
-    # address while the same hostname also points into private space.
     for address in addresses:
         _validate_ip_address(
             address
@@ -434,7 +583,10 @@ def _normalize_content_type(
     raw_content_type: str,
 ) -> str:
     return (
-        str(raw_content_type or "")
+        str(
+            raw_content_type
+            or ""
+        )
         .split(
             ";",
             1,
@@ -448,12 +600,17 @@ def _content_type_is_allowed(
     content_type: str,
     allowed_content_types: Iterable[str],
 ) -> bool:
-    normalized = content_type.lower()
+
+    normalized = (
+        content_type.lower()
+    )
 
     for allowed in allowed_content_types:
-        pattern = str(
-            allowed
-        ).strip().lower()
+        pattern = (
+            str(allowed)
+            .strip()
+            .lower()
+        )
 
         if not pattern:
             continue
@@ -498,6 +655,7 @@ class SafeExternalFetcher:
             requests.Session
         ] = None,
     ) -> None:
+
         self.policy = (
             policy
             or FetchPolicy()
@@ -516,6 +674,7 @@ class SafeExternalFetcher:
         self,
         url: str,
     ) -> str:
+
         canonical = (
             canonicalize_external_url(
                 url
@@ -535,9 +694,15 @@ class SafeExternalFetcher:
             canonical
         )
 
-        if port not in self.policy.allowed_ports:
+        if (
+            port
+            not in self.policy.allowed_ports
+        ):
             raise UnsafeExternalURL(
-                f"external port is not allowed: {port}"
+                (
+                    "external port is "
+                    f"not allowed: {port}"
+                )
             )
 
         _resolve_and_validate_host(
@@ -564,6 +729,7 @@ class SafeExternalFetcher:
         allowed_content_types supports exact MIME types and simple
         wildcards such as "image/*" or "video/*".
         """
+
         accepted_types = frozenset(
             allowed_content_types
             or _DEFAULT_HTML_CONTENT_TYPES
@@ -571,7 +737,10 @@ class SafeExternalFetcher:
 
         if not accepted_types:
             raise ValueError(
-                "allowed_content_types cannot be empty"
+                (
+                    "allowed_content_types "
+                    "cannot be empty"
+                )
             )
 
         byte_limit = (
@@ -611,9 +780,7 @@ class SafeExternalFetcher:
                         "User-Agent": (
                             self.policy.user_agent
                         ),
-                        "Accept": (
-                            "*/*"
-                        ),
+                        "Accept": "*/*",
                     },
                     timeout=(
                         self.policy.connect_timeout,
@@ -622,6 +789,7 @@ class SafeExternalFetcher:
                     allow_redirects=False,
                     stream=True,
                 )
+
             except requests.RequestException as exc:
                 raise ExternalFetchNetworkError(
                     "external request failed"
@@ -644,7 +812,10 @@ class SafeExternalFetcher:
 
                     if not location:
                         raise ExternalFetchHTTPError(
-                            "redirect response has no Location header"
+                            (
+                                "redirect response "
+                                "has no Location header"
+                            )
                         )
 
                     if (
@@ -652,7 +823,10 @@ class SafeExternalFetcher:
                         >= self.policy.max_redirects
                     ):
                         raise ExternalFetchHTTPError(
-                            "external redirect limit exceeded"
+                            (
+                                "external redirect "
+                                "limit exceeded"
+                            )
                         )
 
                     next_url = urljoin(
@@ -660,8 +834,6 @@ class SafeExternalFetcher:
                         location,
                     )
 
-                    # Validation occurs before the next request.
-                    # Canonicalizing here also removes fragments.
                     next_url = (
                         canonicalize_external_url(
                             next_url
@@ -681,7 +853,11 @@ class SafeExternalFetcher:
                     < 300
                 ):
                     raise ExternalFetchHTTPError(
-                        f"unexpected external HTTP status: {status_code}"
+                        (
+                            "unexpected external "
+                            "HTTP status: "
+                            f"{status_code}"
+                        )
                     )
 
                 content_type = (
@@ -695,7 +871,10 @@ class SafeExternalFetcher:
 
                 if not content_type:
                     raise UnsupportedExternalContentType(
-                        "external response has no Content-Type"
+                        (
+                            "external response has "
+                            "no Content-Type"
+                        )
                     )
 
                 if not _content_type_is_allowed(
@@ -703,7 +882,11 @@ class SafeExternalFetcher:
                     accepted_types,
                 ):
                     raise UnsupportedExternalContentType(
-                        f"external content type is not allowed: {content_type}"
+                        (
+                            "external content type "
+                            "is not allowed: "
+                            f"{content_type}"
+                        )
                     )
 
                 raw_content_length = (
@@ -729,7 +912,10 @@ class SafeExternalFetcher:
                         > byte_limit
                     ):
                         raise ExternalResponseTooLarge(
-                            "external response exceeds byte limit"
+                            (
+                                "external response "
+                                "exceeds byte limit"
+                            )
                         )
 
                 chunks = []
@@ -747,7 +933,10 @@ class SafeExternalFetcher:
 
                     if total_size > byte_limit:
                         raise ExternalResponseTooLarge(
-                            "external response exceeds byte limit"
+                            (
+                                "external response "
+                                "exceeds byte limit"
+                            )
                         )
 
                     chunks.append(
@@ -774,10 +963,18 @@ class SafeExternalFetcher:
                 }
 
                 return FetchResult(
-                    requested_url=requested_url,
-                    final_url=current_url,
-                    status_code=status_code,
-                    content_type=content_type,
+                    requested_url=(
+                        requested_url
+                    ),
+                    final_url=(
+                        current_url
+                    ),
+                    status_code=(
+                        status_code
+                    ),
+                    content_type=(
+                        content_type
+                    ),
                     content=body,
                     encoding=encoding,
                     redirect_chain=tuple(
@@ -789,7 +986,9 @@ class SafeExternalFetcher:
             finally:
                 response.close()
 
-        # Defensive guard. The loop should always return or raise.
         raise ExternalFetchHTTPError(
-            "external fetch ended unexpectedly"
+            (
+                "external fetch ended "
+                "unexpectedly"
+            )
         )
