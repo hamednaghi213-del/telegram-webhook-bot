@@ -1,6 +1,7 @@
 import pytest
 
 from core.external_content_model import (
+    ExternalMedia,
     NormalizedExternalContent,
 )
 from core.external_content_review import (
@@ -10,7 +11,7 @@ from core.external_content_review import (
 from core.external_review_callback import (
     EXTERNAL_REVIEW_CALLBACK_PREFIX,
     ExternalReviewCallbackError,
-    _build_selection,
+    _build_final_selection,
     _parse_indexes,
     handle_external_review_callback,
 )
@@ -47,6 +48,36 @@ def _content():
         ),
         source_name="Example",
         extraction_confidence=0.95,
+        media=(
+            ExternalMedia(
+                type="image",
+                source_url=(
+                    "https://example.com/1.jpg"
+                ),
+                position=0,
+            ),
+            ExternalMedia(
+                type="image",
+                source_url=(
+                    "https://example.com/2.jpg"
+                ),
+                position=1,
+            ),
+            ExternalMedia(
+                type="image",
+                source_url=(
+                    "https://example.com/3.jpg"
+                ),
+                position=2,
+            ),
+            ExternalMedia(
+                type="image",
+                source_url=(
+                    "https://example.com/4.jpg"
+                ),
+                position=3,
+            ),
+        ),
     )
 
 
@@ -100,6 +131,7 @@ def test_foreign_callback_is_not_handled():
     assert result.completed is False
     assert result.decision is None
     assert result.cancelled is None
+    assert result.pending is None
 
 
 def test_empty_callback_is_not_handled():
@@ -168,7 +200,7 @@ def test_invalid_indexes_are_rejected(
 
 
 # =========================================================
-# SELECTION MAPPING
+# FINAL SELECTION MAPPING
 # =========================================================
 
 
@@ -204,8 +236,18 @@ def test_review_action_maps_to_mode(
     action,
     expected_mode,
 ):
-    selection = _build_selection(
-        action=action
+    controller = _controller()
+
+    pending = _create_pending(
+        controller
+    )
+
+    selection = (
+        _build_final_selection(
+            action=action,
+            argument="",
+            pending=pending,
+        )
     )
 
     assert (
@@ -213,11 +255,25 @@ def test_review_action_maps_to_mode(
         == expected_mode
     )
 
+    assert (
+        selection.media_mode
+        == ExternalMediaMode.DEFAULT
+    )
+
 
 def test_paragraph_action_maps_indexes():
-    selection = _build_selection(
-        action="paragraphs",
-        argument="0,2",
+    controller = _controller()
+
+    pending = _create_pending(
+        controller
+    )
+
+    selection = (
+        _build_final_selection(
+            action="paragraphs",
+            argument="0,2",
+            pending=pending,
+        )
     )
 
     assert (
@@ -230,10 +286,35 @@ def test_paragraph_action_maps_indexes():
         == (0, 2)
     )
 
+    assert (
+        selection.media_mode
+        == ExternalMediaMode.DEFAULT
+    )
 
-def test_no_media_action_maps_media_mode():
-    selection = _build_selection(
-        action="nomedia"
+
+def test_explicit_no_media_maps_to_none():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    pending = (
+        controller.state_store
+        .update_media_selection(
+            review_id="review-1",
+            chat_id=12345,
+            selected_media_indexes=(),
+            explicit=True,
+        )
+    )
+
+    selection = (
+        _build_final_selection(
+            action="standard",
+            argument="",
+            pending=pending,
+        )
     )
 
     assert (
@@ -241,11 +322,35 @@ def test_no_media_action_maps_media_mode():
         == ExternalMediaMode.NONE
     )
 
+    assert (
+        selection.media_indexes
+        == ()
+    )
 
-def test_media_action_maps_indexes():
-    selection = _build_selection(
-        action="media",
-        argument="0,2",
+
+def test_explicit_media_maps_to_selected():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    pending = (
+        controller.state_store
+        .update_media_selection(
+            review_id="review-1",
+            chat_id=12345,
+            selected_media_indexes=(0, 2),
+            explicit=True,
+        )
+    )
+
+    selection = (
+        _build_final_selection(
+            action="standard",
+            argument="",
+            pending=pending,
+        )
     )
 
     assert (
@@ -260,12 +365,309 @@ def test_media_action_maps_indexes():
 
 
 def test_unknown_action_is_rejected():
+    controller = _controller()
+
+    pending = _create_pending(
+        controller
+    )
+
     with pytest.raises(
         ExternalReviewCallbackError
     ):
-        _build_selection(
-            action="unknown"
+        _build_final_selection(
+            action="unknown",
+            argument="",
+            pending=pending,
         )
+
+
+# =========================================================
+# MEDIA STATE — NON TERMINAL
+# =========================================================
+
+
+def test_first_media_callback_creates_custom_selection():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    result = (
+        handle_external_review_callback(
+            callback_data=(
+                "extrev:media:"
+                "review-1:1"
+            ),
+            chat_id=12345,
+            controller=controller,
+        )
+    )
+
+    assert result.handled is True
+    assert result.completed is False
+    assert result.state_updated is True
+
+    assert result.decision is None
+    assert result.cancelled is None
+    assert result.pending is not None
+
+    assert (
+        result.pending
+        .media_selection_explicit
+        is True
+    )
+
+    assert (
+        result.pending
+        .selected_media_indexes
+        == (1,)
+    )
+
+
+def test_multiple_media_callbacks_accumulate_selection():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    handle_external_review_callback(
+        callback_data=(
+            "extrev:media:"
+            "review-1:1"
+        ),
+        chat_id=12345,
+        controller=controller,
+    )
+
+    result = (
+        handle_external_review_callback(
+            callback_data=(
+                "extrev:media:"
+                "review-1:3"
+            ),
+            chat_id=12345,
+            controller=controller,
+        )
+    )
+
+    assert result.pending is not None
+
+    assert (
+        result.pending
+        .selected_media_indexes
+        == (1, 3)
+    )
+
+
+def test_media_callback_can_toggle_existing_selection_off():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    handle_external_review_callback(
+        callback_data=(
+            "extrev:media:"
+            "review-1:1"
+        ),
+        chat_id=12345,
+        controller=controller,
+    )
+
+    handle_external_review_callback(
+        callback_data=(
+            "extrev:media:"
+            "review-1:3"
+        ),
+        chat_id=12345,
+        controller=controller,
+    )
+
+    result = (
+        handle_external_review_callback(
+            callback_data=(
+                "extrev:media:"
+                "review-1:1"
+            ),
+            chat_id=12345,
+            controller=controller,
+        )
+    )
+
+    assert (
+        result.pending
+        .selected_media_indexes
+        == (3,)
+    )
+
+
+def test_media_callback_accepts_multiple_indexes():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    result = (
+        handle_external_review_callback(
+            callback_data=(
+                "extrev:media:"
+                "review-1:0,2,3"
+            ),
+            chat_id=12345,
+            controller=controller,
+        )
+    )
+
+    assert result.pending is not None
+
+    assert (
+        result.pending
+        .selected_media_indexes
+        == (0, 2, 3)
+    )
+
+
+def test_media_callback_rejects_out_of_range_index():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    with pytest.raises(
+        ExternalReviewCallbackError
+    ):
+        handle_external_review_callback(
+            callback_data=(
+                "extrev:media:"
+                "review-1:9"
+            ),
+            chat_id=12345,
+            controller=controller,
+        )
+
+
+def test_nomedia_callback_is_non_terminal():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    result = (
+        handle_external_review_callback(
+            callback_data=(
+                "extrev:nomedia:"
+                "review-1"
+            ),
+            chat_id=12345,
+            controller=controller,
+        )
+    )
+
+    assert result.handled is True
+    assert result.completed is False
+    assert result.state_updated is True
+
+    assert result.decision is None
+    assert result.pending is not None
+
+    assert (
+        result.pending
+        .media_selection_explicit
+        is True
+    )
+
+    assert (
+        result.pending
+        .selected_media_indexes
+        == ()
+    )
+
+
+def test_media_state_survives_until_final_action():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    handle_external_review_callback(
+        callback_data=(
+            "extrev:media:"
+            "review-1:0"
+        ),
+        chat_id=12345,
+        controller=controller,
+    )
+
+    handle_external_review_callback(
+        callback_data=(
+            "extrev:media:"
+            "review-1:2"
+        ),
+        chat_id=12345,
+        controller=controller,
+    )
+
+    result = (
+        handle_external_review_callback(
+            callback_data=(
+                "extrev:standard:"
+                "review-1"
+            ),
+            chat_id=12345,
+            controller=controller,
+        )
+    )
+
+    assert result.decision is not None
+
+    assert (
+        result.decision
+        .review
+        .selected_media_indexes
+        == (0, 2)
+    )
+
+
+def test_nomedia_state_survives_until_final_action():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    handle_external_review_callback(
+        callback_data=(
+            "extrev:nomedia:"
+            "review-1"
+        ),
+        chat_id=12345,
+        controller=controller,
+    )
+
+    result = (
+        handle_external_review_callback(
+            callback_data=(
+                "extrev:standard:"
+                "review-1"
+            ),
+            chat_id=12345,
+            controller=controller,
+        )
+    )
+
+    assert result.decision is not None
+
+    assert (
+        result.decision.review.media
+        == ()
+    )
 
 
 # =========================================================
@@ -563,6 +965,44 @@ def test_callback_cannot_consume_another_chat_review():
     assert pending.chat_id == 111
 
 
+def test_media_callback_cannot_modify_another_chat_review():
+    controller = _controller()
+
+    _create_pending(
+        controller,
+        chat_id=111,
+    )
+
+    with pytest.raises(
+        Exception
+    ):
+        handle_external_review_callback(
+            callback_data=(
+                "extrev:media:"
+                "review-1:0"
+            ),
+            chat_id=222,
+            controller=controller,
+        )
+
+    pending = (
+        controller.get_pending(
+            review_id="review-1",
+            chat_id=111,
+        )
+    )
+
+    assert (
+        pending.media_selection_explicit
+        is False
+    )
+
+    assert (
+        pending.selected_media_indexes
+        == ()
+    )
+
+
 # =========================================================
 # INVALID CALLBACKS
 # =========================================================
@@ -627,3 +1067,27 @@ def test_callback_handler_has_no_publication_side_effect():
         result,
         "delivery_result",
     )
+
+
+def test_media_callback_has_no_publication_decision():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    result = (
+        handle_external_review_callback(
+            callback_data=(
+                "extrev:media:"
+                "review-1:2"
+            ),
+            chat_id=12345,
+            controller=controller,
+        )
+    )
+
+    assert result.handled is True
+    assert result.decision is None
+    assert result.completed is False
+    assert result.pending is not None
