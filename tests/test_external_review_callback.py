@@ -299,8 +299,18 @@ def test_standard_callback_produces_decision():
     assert result.cancelled is None
 
     assert (
-        result.decision.review.mode
-        == ExternalReviewMode.STANDARD
+        result.decision.review.title
+        == "عنوان خبر"
+    )
+
+    assert (
+        result.decision.review.lead
+        == "لید خبر"
+    )
+
+    assert (
+        "پاراگراف اول"
+        in result.decision.review.body
     )
 
 
@@ -420,8 +430,9 @@ def test_paragraph_callback_applies_selection():
     )
 
     assert (
-        result.decision.review.mode
-        == ExternalReviewMode.PARAGRAPHS
+        result.decision.review
+        .selected_paragraph_indexes
+        == (0, 2)
     )
 
     assert (
