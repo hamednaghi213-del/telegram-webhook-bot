@@ -9,11 +9,11 @@ from core.external_content_model import (
     NormalizedExternalContent,
 )
 from core.external_content_review import (
+    ExternalContentPreview,
     ExternalReviewResult,
     ExternalReviewSelection,
     apply_external_review_selection,
     build_external_content_preview,
-    ExternalContentPreview,
 )
 from core.external_review_state import (
     DEFAULT_EXTERNAL_REVIEW_STATE_STORE,
@@ -107,8 +107,9 @@ class ExternalReviewController:
         ] = None,
     ) -> None:
         self.state_store = (
-            state_store
-            or DEFAULT_EXTERNAL_REVIEW_STATE_STORE
+            DEFAULT_EXTERNAL_REVIEW_STATE_STORE
+            if state_store is None
+            else state_store
         )
 
     # -----------------------------------------------------
