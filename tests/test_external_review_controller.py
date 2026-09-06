@@ -149,7 +149,7 @@ def test_get_preview_uses_existing_review_engine():
 # =========================================================
 
 
-def test_standard_selection_consumes_pending_review():
+def test_standard_selection_preserves_pending_until_success():
     controller, store = _controller()
 
     content = _content()
@@ -182,6 +182,42 @@ def test_standard_selection_consumes_pending_review():
     assert len(
         decision.review.media
     ) == 2
+
+    pending = store.get_by_id(
+        "review-1"
+    )
+
+    assert pending is not None
+    assert pending.chat_id == 100
+
+    assert (
+        store.get_for_chat(100)
+        is not None
+    )
+
+
+def test_consume_after_success_removes_pending_review():
+    controller, store = _controller()
+
+    controller.create_pending(
+        review_id="review-1",
+        chat_id=100,
+        content=_content(),
+    )
+
+    controller.apply_selection(
+        review_id="review-1",
+        chat_id=100,
+    )
+
+    consumed = (
+        controller.consume_after_success(
+            review_id="review-1",
+            chat_id=100,
+        )
+    )
+
+    assert consumed.review_id == "review-1"
 
     assert (
         store.get_by_id("review-1")
@@ -336,6 +372,10 @@ def test_short_mode_preserves_shared_summary_signal():
         decision.requires_editorial_rewrite
         is False
     )
+
+    assert len(
+        decision.review.media
+    ) == 2
 
 
 def test_editorial_mode_preserves_shared_editorial_signal():
@@ -511,6 +551,29 @@ def test_wrong_chat_cannot_consume_review():
         ExternalReviewNotFound,
     ):
         controller.apply_selection(
+            review_id="review-1",
+            chat_id=200,
+        )
+
+    assert (
+        store.get_by_id("review-1")
+        is not None
+    )
+
+
+def test_wrong_chat_cannot_consume_after_success():
+    controller, store = _controller()
+
+    controller.create_pending(
+        review_id="review-1",
+        chat_id=100,
+        content=_content(),
+    )
+
+    with pytest.raises(
+        ExternalReviewNotFound,
+    ):
+        controller.consume_after_success(
             review_id="review-1",
             chat_id=200,
         )
