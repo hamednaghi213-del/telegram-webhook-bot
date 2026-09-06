@@ -5,3 +5,5 @@ gunicorn==21.2.0
 telethon==1.36.0
 deep-translator==1.11.4
 supabase==2.5.1
+trafilatura==2.2.0
+py3langid==0.3.0
