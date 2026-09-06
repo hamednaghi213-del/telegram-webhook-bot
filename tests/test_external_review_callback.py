@@ -18,6 +18,7 @@ from core.external_review_controller import (
     ExternalReviewController,
 )
 from core.external_review_state import (
+    ExternalReviewNotFound,
     ExternalReviewStateStore,
 )
 
@@ -298,7 +299,7 @@ def test_standard_callback_produces_decision():
     assert result.cancelled is None
 
     assert (
-        result.decision.selection.mode
+        result.decision.review.mode
         == ExternalReviewMode.STANDARD
     )
 
@@ -318,12 +319,13 @@ def test_standard_callback_consumes_pending_review():
         controller=controller,
     )
 
-    assert (
+    with pytest.raises(
+        ExternalReviewNotFound
+    ):
         controller.get_pending(
-            chat_id=12345
+            review_id="review-1",
+            chat_id=12345,
         )
-        is None
-    )
 
 
 # =========================================================
@@ -354,7 +356,7 @@ def test_short_callback_preserves_smart_summary_signal():
     )
 
     assert (
-        result.decision.review
+        result.decision
         .requires_smart_summary
         is True
     )
@@ -383,7 +385,7 @@ def test_editorial_callback_preserves_editorial_signal():
     )
 
     assert (
-        result.decision.review
+        result.decision
         .requires_editorial_rewrite
         is True
     )
@@ -394,7 +396,7 @@ def test_editorial_callback_preserves_editorial_signal():
 # =========================================================
 
 
-def test_paragraph_callback_passes_selection():
+def test_paragraph_callback_applies_selection():
     controller = _controller()
 
     _create_pending(
@@ -418,9 +420,23 @@ def test_paragraph_callback_passes_selection():
     )
 
     assert (
-        result.decision.selection
-        .paragraph_indexes
-        == (0, 2)
+        result.decision.review.mode
+        == ExternalReviewMode.PARAGRAPHS
+    )
+
+    assert (
+        "پاراگراف اول"
+        in result.decision.review.body
+    )
+
+    assert (
+        "پاراگراف سوم"
+        in result.decision.review.body
+    )
+
+    assert (
+        "پاراگراف دوم"
+        not in result.decision.review.body
     )
 
 
@@ -453,12 +469,13 @@ def test_cancel_callback_cancels_pending_review():
     assert result.cancelled is not None
     assert result.decision is None
 
-    assert (
+    with pytest.raises(
+        ExternalReviewNotFound
+    ):
         controller.get_pending(
-            chat_id=12345
+            review_id="review-1",
+            chat_id=12345,
         )
-        is None
-    )
 
 
 # =========================================================
@@ -487,11 +504,13 @@ def test_callback_cannot_consume_another_chat_review():
 
     pending = (
         controller.get_pending(
-            chat_id=111
+            review_id="review-1",
+            chat_id=111,
         )
     )
 
     assert pending is not None
+    assert pending.chat_id == 111
 
 
 # =========================================================
@@ -530,7 +549,7 @@ def test_malformed_external_callback_is_rejected(
 
 
 # =========================================================
-# NO SIDE EFFECT OUTSIDE REVIEW
+# NO PUBLICATION SIDE EFFECT
 # =========================================================
 
 
@@ -554,7 +573,6 @@ def test_callback_handler_has_no_publication_side_effect():
     assert result.handled is True
     assert result.decision is not None
 
-    # Publication belongs to the later integration boundary.
     assert not hasattr(
         result,
         "delivery_result",
