@@ -39,12 +39,16 @@ def _content():
         ),
         media=(
             ExternalMedia(
-                url="https://example.com/1.jpg",
-                media_type="photo",
+                type="photo",
+                source_url=(
+                    "https://example.com/1.jpg"
+                ),
             ),
             ExternalMedia(
-                url="https://example.com/2.jpg",
-                media_type="photo",
+                type="photo",
+                source_url=(
+                    "https://example.com/2.jpg"
+                ),
             ),
         ),
         original_language="en",
@@ -417,7 +421,8 @@ def test_selected_media():
     ) == 1
 
     assert (
-        decision.review.media[0].url
+        decision.review.media[0]
+        .source_url
         == "https://example.com/2.jpg"
     )
 
