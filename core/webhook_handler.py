@@ -4162,6 +4162,65 @@ def handle_webhook() -> Tuple[
                     "ok": True,
                     "callback_handled": True,
                 }, 200
+
+            # =================================================
+            # EXTERNAL CONTENT REVIEW CALLBACK
+            # =================================================
+
+            if callback_data.startswith(
+                "extrev:"
+            ):
+
+                try:
+
+                    from core.external_review_telegram import (
+                        handle_external_review_telegram_callback
+                    )
+
+                    handled = (
+                        handle_external_review_telegram_callback(
+                            callback_query=callback_query,
+                            answer_callback_query=(
+                                answer_callback_query
+                            ),
+                            send_message=(
+                                send_message
+                            ),
+                            req_id=req_id,
+                        )
+                    )
+
+                except Exception as e:
+
+                    logger.exception(
+                        f"[{req_id}] ❌ External review "
+                        f"callback routing failed | {e}"
+                    )
+
+                    handled = True
+
+                    callback_id = str(
+                        callback_query.get(
+                            "id",
+                            ""
+                        )
+                        or ""
+                    )
+
+                    answer_callback_query(
+                        callback_id,
+                        (
+                            "خطا در پردازش "
+                            "پیش‌نمایش مطلب."
+                        )
+                    )
+
+                return {
+                    "ok": True,
+                    "callback_handled": bool(
+                        handled
+                    ),
+                }, 200
             
             # Workspace publication callbacks (Phase 4B)
             if str(
