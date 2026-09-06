@@ -39,6 +39,10 @@ def handle_external_review_telegram_callback(
     controller: Optional[
         ExternalReviewController
     ] = None,
+    api_url: str = "",
+    execute_decision: Optional[
+        Callable[..., Any]
+    ] = None,
     req_id: str = "",
 ) -> bool:
     """
@@ -51,8 +55,11 @@ def handle_external_review_telegram_callback(
         True:
             callback belongs to external review and was consumed.
 
-    This adapter intentionally does not publish content.
-    Publication remains a separate integration boundary.
+    Standard approved decisions may be executed through the injected
+    shared external-review execution boundary.
+
+    SHORT and EDITORIAL_REWRITE remain fail-closed until their existing
+    shared transformation services are executed.
     """
 
     if not isinstance(
@@ -138,7 +145,10 @@ def handle_external_review_telegram_callback(
 
         answer_callback_query(
             callback_id,
-            "این پیش‌نمایش منقضی شده یا دیگر در دسترس نیست.",
+            (
+                "این پیش‌نمایش منقضی شده "
+                "یا دیگر در دسترس نیست."
+            ),
         )
 
         return True
@@ -169,17 +179,71 @@ def handle_external_review_telegram_callback(
 
         return True
 
-    answer_callback_query(
-        callback_id,
-        "انتخاب ثبت شد.",
-    )
-
     decision = (
         result.decision
     )
 
     review = (
         decision.review
+    )
+
+    # =====================================================
+    # OPTIONAL EXECUTION BOUNDARY
+    # =====================================================
+
+    if execute_decision is not None:
+
+        try:
+            execution = (
+                execute_decision(
+                    decision=decision,
+                    api_url=api_url,
+                )
+            )
+
+        except Exception as exc:
+            logger.exception(
+                (
+                    "[%s] External review "
+                    "execution failed | %s"
+                ),
+                req_id,
+                exc,
+            )
+
+            answer_callback_query(
+                callback_id,
+                "انتشار مطلب با خطا روبرو شد.",
+            )
+
+            return True
+
+        if getattr(
+            execution,
+            "published",
+            False,
+        ):
+            answer_callback_query(
+                callback_id,
+                "منتشر شد.",
+            )
+
+            send_message(
+                int(
+                    user_id
+                ),
+                "✅ مطلب با موفقیت منتشر شد.",
+            )
+
+            return True
+
+    # =====================================================
+    # REVIEW SIGNALS
+    # =====================================================
+
+    answer_callback_query(
+        callback_id,
+        "انتخاب ثبت شد.",
     )
 
     if (
@@ -213,6 +277,10 @@ def handle_external_review_telegram_callback(
         )
 
         return True
+
+    # =====================================================
+    # REVIEW PREVIEW
+    # =====================================================
 
     preview_parts = []
 
