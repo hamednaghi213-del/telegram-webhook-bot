@@ -43,6 +43,9 @@ def handle_external_review_telegram_callback(
     execute_decision: Optional[
         Callable[..., Any]
     ] = None,
+    queue_editorial_review: Optional[
+        Callable[..., Any]
+    ] = None,
     req_id: str = "",
 ) -> bool:
     """
@@ -58,8 +61,11 @@ def handle_external_review_telegram_callback(
     Standard approved decisions may be executed through the injected
     shared external-review execution boundary.
 
-    SHORT and EDITORIAL_REWRITE remain fail-closed until their existing
-    shared transformation services are executed.
+    EDITORIAL_REWRITE is routed through the existing shared editorial
+    review/pending flow when queue_editorial_review is provided.
+
+    SHORT remains fail-closed until the existing shared Smart Summary
+    transformation service is executed.
     """
 
     if not isinstance(
@@ -238,17 +244,17 @@ def handle_external_review_telegram_callback(
             return True
 
     # =====================================================
-    # REVIEW SIGNALS
+    # SMART SUMMARY SIGNAL
     # =====================================================
-
-    answer_callback_query(
-        callback_id,
-        "انتخاب ثبت شد.",
-    )
 
     if (
         decision.requires_smart_summary
     ):
+        answer_callback_query(
+            callback_id,
+            "انتخاب ثبت شد.",
+        )
+
         send_message(
             int(
                 user_id
@@ -262,25 +268,130 @@ def handle_external_review_telegram_callback(
 
         return True
 
+    # =====================================================
+    # SHARED EDITORIAL FLOW
+    # =====================================================
+
     if (
         decision.requires_editorial_rewrite
     ):
-        send_message(
-            int(
-                user_id
-            ),
-            (
-                "✅ بازنویسی تحریریه انتخاب شد.\n\n"
-                "مطلب برای پردازش در مسیر مشترک "
-                "تحریریه آماده است."
-            ),
+        answer_callback_query(
+            callback_id,
+            "انتخاب ثبت شد.",
         )
+
+        if queue_editorial_review is None:
+            send_message(
+                int(
+                    user_id
+                ),
+                (
+                    "⚠️ مسیر تحریریه در حال حاضر "
+                    "در دسترس نیست."
+                ),
+            )
+
+            return True
+
+        review_parts = []
+
+        if review.title:
+            review_parts.append(
+                str(
+                    review.title
+                ).strip()
+            )
+
+        if review.lead:
+            review_parts.append(
+                str(
+                    review.lead
+                ).strip()
+            )
+
+        if review.body:
+            review_parts.append(
+                str(
+                    review.body
+                ).strip()
+            )
+
+        editorial_text = "\n\n".join(
+            part
+            for part in review_parts
+            if part
+        ).strip()
+
+        if not editorial_text:
+            send_message(
+                int(
+                    user_id
+                ),
+                (
+                    "⚠️ متنی برای بازنویسی "
+                    "تحریریه وجود ندارد."
+                ),
+            )
+
+            return True
+
+        try:
+            queued = (
+                queue_editorial_review(
+                    chat_id=int(
+                        user_id
+                    ),
+                    text=editorial_text,
+                    entities=[],
+                    forced_content_type=(
+                        "news_analysis"
+                    ),
+                )
+            )
+
+        except Exception as exc:
+            logger.exception(
+                (
+                    "[%s] External editorial "
+                    "queue failed | %s"
+                ),
+                req_id,
+                exc,
+            )
+
+            send_message(
+                int(
+                    user_id
+                ),
+                (
+                    "⚠️ ایجاد بررسی تحریریه "
+                    "با خطا روبرو شد."
+                ),
+            )
+
+            return True
+
+        if not queued:
+            send_message(
+                int(
+                    user_id
+                ),
+                (
+                    "⚠️ بررسی تحریریه "
+                    "ایجاد نشد."
+                ),
+            )
 
         return True
 
     # =====================================================
     # REVIEW PREVIEW
     # =====================================================
+
+    answer_callback_query(
+        callback_id,
+        "انتخاب ثبت شد.",
+    )
 
     preview_parts = []
 
