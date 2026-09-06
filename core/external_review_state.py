@@ -44,6 +44,10 @@ EXTERNAL_REVIEW_TABLE = (
     "external_review_state"
 )
 
+EXTERNAL_REVIEW_UI_STATE_KEY = (
+    "__external_review_ui_state__"
+)
+
 
 # =========================================================
 # ERRORS
@@ -91,6 +95,20 @@ class PendingExternalReview:
     One external-content review waiting for user action.
 
     This state is intentionally platform-neutral.
+
+    Media selection is review-state, not publication-state.
+
+    selected_media_indexes:
+        Persistent indexes selected by the user.
+
+    media_selection_explicit=False:
+        The user has not changed the default media choice.
+
+    media_selection_explicit=True with indexes:
+        The user explicitly selected those media items.
+
+    media_selection_explicit=True with empty indexes:
+        The user explicitly selected "no media".
     """
 
     review_id: str
@@ -98,6 +116,13 @@ class PendingExternalReview:
     content: NormalizedExternalContent
     created_at: float
     expires_at: float
+
+    selected_media_indexes: Tuple[
+        int,
+        ...,
+    ] = ()
+
+    media_selection_explicit: bool = False
 
     @property
     def expired(
@@ -297,6 +322,110 @@ def _content_to_dict(
     }
 
 
+def _content_with_review_state_to_dict(
+    content: NormalizedExternalContent,
+    *,
+    selected_media_indexes: Tuple[
+        int,
+        ...,
+    ] = (),
+    media_selection_explicit: bool = False,
+) -> Dict[str, Any]:
+    """
+    Serialize external content plus review-only UI state.
+
+    Review UI state is stored inside the existing JSON content column,
+    avoiding a schema migration while remaining durable across workers.
+    """
+
+    payload = _content_to_dict(
+        content
+    )
+
+    payload[
+        EXTERNAL_REVIEW_UI_STATE_KEY
+    ] = {
+        "selected_media_indexes": [
+            int(index)
+            for index
+            in selected_media_indexes
+        ],
+        "media_selection_explicit": bool(
+            media_selection_explicit
+        ),
+    }
+
+    return payload
+
+
+def _review_state_from_content_dict(
+    value: Mapping[str, Any],
+) -> Tuple[
+    Tuple[int, ...],
+    bool,
+]:
+    raw_state = (
+        value.get(
+            EXTERNAL_REVIEW_UI_STATE_KEY,
+            {},
+        )
+        or {}
+    )
+
+    if not isinstance(
+        raw_state,
+        Mapping,
+    ):
+        return (
+            (),
+            False,
+        )
+
+    raw_indexes = (
+        raw_state.get(
+            "selected_media_indexes",
+            [],
+        )
+        or []
+    )
+
+    indexes = []
+
+    for item in raw_indexes:
+        try:
+            index = int(
+                item
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            continue
+
+        if index < 0:
+            continue
+
+        if index in indexes:
+            continue
+
+        indexes.append(
+            index
+        )
+
+    return (
+        tuple(
+            indexes
+        ),
+        bool(
+            raw_state.get(
+                "media_selection_explicit",
+                False,
+            )
+        ),
+    )
+
+
 def _content_from_dict(
     value: Mapping[str, Any],
 ) -> NormalizedExternalContent:
@@ -421,6 +550,76 @@ def _content_from_dict(
             or {}
         ),
     )
+
+
+# =========================================================
+# MEDIA SELECTION NORMALIZATION
+# =========================================================
+
+
+def _normalize_media_indexes(
+    indexes: Tuple[
+        int,
+        ...,
+    ],
+) -> Tuple[
+    int,
+    ...,
+]:
+    normalized = []
+
+    for item in (
+        indexes
+        or ()
+    ):
+        try:
+            index = int(
+                item
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise ExternalReviewStateError(
+                "selected media index is invalid"
+            ) from exc
+
+        if index < 0:
+            raise ExternalReviewStateError(
+                "selected media index must be >= 0"
+            )
+
+        if index in normalized:
+            continue
+
+        normalized.append(
+            index
+        )
+
+    return tuple(
+        normalized
+    )
+
+
+def _validate_media_indexes(
+    pending: PendingExternalReview,
+    indexes: Tuple[
+        int,
+        ...,
+    ],
+) -> None:
+    media_count = len(
+        pending.content.media
+    )
+
+    if any(
+        index >= media_count
+        for index in indexes
+    ):
+        raise ExternalReviewStateError(
+            "selected media index is out of range"
+        )
 
 
 # =========================================================
@@ -806,6 +1005,72 @@ class ExternalReviewStateStore:
             return pending
 
     # -----------------------------------------------------
+    # MEDIA SELECTION
+    # -----------------------------------------------------
+
+    def update_media_selection(
+        self,
+        *,
+        review_id: str,
+        chat_id: int,
+        selected_media_indexes: Tuple[
+            int,
+            ...,
+        ],
+        explicit: bool = True,
+    ) -> PendingExternalReview:
+        normalized_indexes = (
+            _normalize_media_indexes(
+                selected_media_indexes
+            )
+        )
+
+        with self._lock:
+            pending = self.require(
+                review_id=review_id,
+                chat_id=chat_id,
+            )
+
+            _validate_media_indexes(
+                pending,
+                normalized_indexes,
+            )
+
+            updated = PendingExternalReview(
+                review_id=(
+                    pending.review_id
+                ),
+                chat_id=(
+                    pending.chat_id
+                ),
+                content=(
+                    pending.content
+                ),
+                created_at=(
+                    pending.created_at
+                ),
+                expires_at=(
+                    pending.expires_at
+                ),
+                selected_media_indexes=(
+                    normalized_indexes
+                ),
+                media_selection_explicit=bool(
+                    explicit
+                ),
+            )
+
+            self._by_chat[
+                updated.chat_id
+            ] = updated
+
+            self._by_id[
+                updated.review_id
+            ] = updated
+
+            return updated
+
+    # -----------------------------------------------------
     # COMPLETE / CANCEL
     # -----------------------------------------------------
 
@@ -993,6 +1258,13 @@ class PersistentExternalReviewStateStore:
                 "stored external review content is invalid"
             )
 
+        (
+            selected_media_indexes,
+            media_selection_explicit,
+        ) = _review_state_from_content_dict(
+            content_value
+        )
+
         return PendingExternalReview(
             review_id=str(
                 row.get(
@@ -1024,6 +1296,12 @@ class PersistentExternalReviewStateStore:
                         "expires_at"
                     )
                 )
+            ),
+            selected_media_indexes=(
+                selected_media_indexes
+            ),
+            media_selection_explicit=(
+                media_selection_explicit
             ),
         )
 
@@ -1235,7 +1513,7 @@ class PersistentExternalReviewStateStore:
                 normalized_chat_id
             ),
             "content": (
-                _content_to_dict(
+                _content_with_review_state_to_dict(
                     content
                 )
             ),
@@ -1374,6 +1652,114 @@ class PersistentExternalReviewStateStore:
             )
 
         return pending
+
+    # -----------------------------------------------------
+    # MEDIA SELECTION
+    # -----------------------------------------------------
+
+    def update_media_selection(
+        self,
+        *,
+        review_id: str,
+        chat_id: int,
+        selected_media_indexes: Tuple[
+            int,
+            ...,
+        ],
+        explicit: bool = True,
+    ) -> PendingExternalReview:
+        pending = self.require(
+            review_id=review_id,
+            chat_id=chat_id,
+        )
+
+        normalized_indexes = (
+            _normalize_media_indexes(
+                selected_media_indexes
+            )
+        )
+
+        _validate_media_indexes(
+            pending,
+            normalized_indexes,
+        )
+
+        payload = {
+            "content": (
+                _content_with_review_state_to_dict(
+                    pending.content,
+                    selected_media_indexes=(
+                        normalized_indexes
+                    ),
+                    media_selection_explicit=bool(
+                        explicit
+                    ),
+                )
+            )
+        }
+
+        try:
+            response = (
+                self._table()
+                .update(
+                    payload
+                )
+                .eq(
+                    "review_id",
+                    pending.review_id,
+                )
+                .eq(
+                    "chat_id",
+                    pending.chat_id,
+                )
+                .execute()
+            )
+
+        except Exception as exc:
+            raise ExternalReviewPersistenceError(
+                (
+                    "failed to update persistent "
+                    "external review media selection"
+                )
+            ) from exc
+
+        rows = (
+            getattr(
+                response,
+                "data",
+                None,
+            )
+            or []
+        )
+
+        if rows:
+            return self._row_to_pending(
+                rows[0]
+            )
+
+        return PendingExternalReview(
+            review_id=(
+                pending.review_id
+            ),
+            chat_id=(
+                pending.chat_id
+            ),
+            content=(
+                pending.content
+            ),
+            created_at=(
+                pending.created_at
+            ),
+            expires_at=(
+                pending.expires_at
+            ),
+            selected_media_indexes=(
+                normalized_indexes
+            ),
+            media_selection_explicit=bool(
+                explicit
+            ),
+        )
 
     # -----------------------------------------------------
     # COMPLETE / CANCEL
