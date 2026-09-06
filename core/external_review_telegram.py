@@ -63,7 +63,9 @@ def handle_external_review_telegram_callback(
 
         create pending
             ↓
-        apply selection
+        optionally update media selection
+            ↓
+        choose final content mode
             ↓
         execute decision
             ↓
@@ -71,16 +73,23 @@ def handle_external_review_telegram_callback(
             ↓
         consume pending state
 
+    Media selection is NON-TERMINAL.
+
+    These actions only update review state:
+
+        media
+        nomedia
+
+    They MUST NOT:
+      - publish
+      - summarize
+      - run Editorial
+      - consume pending state
+
+    Final actions such as standard / short / headline / lead /
+    editorial inherit the persistent media selection.
+
     A failed execution must NOT consume the pending review.
-
-    Standard approved decisions may be executed through the injected
-    shared external-review execution boundary.
-
-    EDITORIAL_REWRITE is routed through the existing shared editorial
-    review/pending flow when queue_editorial_review is provided.
-
-    SHORT remains fail-closed until the existing shared Smart Summary
-    transformation service is executed.
     """
 
     if not isinstance(
@@ -183,6 +192,10 @@ def handle_external_review_telegram_callback(
     if not result.handled:
         return False
 
+    # =====================================================
+    # CANCEL
+    # =====================================================
+
     if result.cancelled is not None:
         answer_callback_query(
             callback_id,
@@ -197,6 +210,75 @@ def handle_external_review_telegram_callback(
         )
 
         return True
+
+    # =====================================================
+    # NON-TERMINAL MEDIA STATE UPDATE
+    # =====================================================
+
+    if result.state_updated:
+        pending = (
+            result.pending
+        )
+
+        answer_callback_query(
+            callback_id,
+            result.message
+            or "انتخاب تصویر ثبت شد.",
+        )
+
+        if pending is None:
+            return True
+
+        if (
+            pending.media_selection_explicit
+            and not pending.selected_media_indexes
+        ):
+            send_message(
+                int(
+                    user_id
+                ),
+                (
+                    "🚫 حالت بدون تصویر انتخاب شد.\n\n"
+                    "حالا یکی از حالت‌های انتشار "
+                    "مثل استاندارد، کوتاه یا تحریریه "
+                    "را انتخاب کنید."
+                ),
+            )
+
+            return True
+
+        if pending.selected_media_indexes:
+            selected_numbers = ", ".join(
+                str(index + 1)
+                for index
+                in pending.selected_media_indexes
+            )
+
+            send_message(
+                int(
+                    user_id
+                ),
+                (
+                    "🖼 تصاویر انتخاب‌شده: "
+                    f"{selected_numbers}\n\n"
+                    "می‌توانید تصاویر دیگری را هم "
+                    "اضافه یا حذف کنید، سپس حالت "
+                    "انتشار را انتخاب کنید."
+                ),
+            )
+
+            return True
+
+        answer_callback_query(
+            callback_id,
+            "انتخاب رسانه ثبت شد.",
+        )
+
+        return True
+
+    # =====================================================
+    # FINAL DECISION REQUIRED
+    # =====================================================
 
     if result.decision is None:
         answer_callback_query(
@@ -239,9 +321,13 @@ def handle_external_review_telegram_callback(
             )
 
             # IMPORTANT:
-            # Do not consume the pending review here.
-            # The user must be able to retry after a transient
-            # transformation/publication failure.
+            # Pending state remains intact.
+            # This preserves both:
+            #   - selected content mode
+            #   - persistent media selection
+            #
+            # The user can retry after transformation or
+            # publication failure.
             answer_callback_query(
                 callback_id,
                 "انتشار مطلب با خطا روبرو شد.",
@@ -257,14 +343,6 @@ def handle_external_review_telegram_callback(
             # =================================================
             # CONSUME ONLY AFTER SUCCESSFUL PUBLICATION
             # =================================================
-            #
-            # The real publication has already succeeded.
-            # Pending state is removed only now.
-            #
-            # This fixes the staging regression where the pending
-            # review was deleted before Smart Summary/publication
-            # completed and therefore disappeared after a failure.
-            # =================================================
 
             try:
                 resolved_controller.consume_after_success(
@@ -273,8 +351,9 @@ def handle_external_review_telegram_callback(
                 )
 
             except Exception as exc:
-                # Publication has already succeeded, so this is a
-                # state-cleanup failure, not a publication failure.
+                # Publication has already succeeded.
+                # Cleanup failure must not be reported as
+                # publication failure.
                 logger.exception(
                     (
                         "[%s] External review published but "
