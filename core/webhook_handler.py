@@ -4197,6 +4197,9 @@ def handle_webhook() -> Tuple[
                             execute_decision=(
                                 execute_external_review_decision
                             ),
+                            queue_editorial_review=(
+                                try_queue_editorial_text_review
+                            ),
                             req_id=req_id,
                         )
                     )
