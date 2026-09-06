@@ -314,20 +314,59 @@ def test_standard_callback_produces_decision():
     )
 
 
-def test_standard_callback_consumes_pending_review():
+def test_standard_callback_preserves_pending_until_execution_success():
     controller = _controller()
 
     _create_pending(
         controller
     )
 
-    handle_external_review_callback(
+    result = handle_external_review_callback(
         callback_data=(
             "extrev:standard:review-1"
         ),
         chat_id=12345,
         controller=controller,
     )
+
+    assert result.handled is True
+    assert result.decision is not None
+
+    pending = controller.get_pending(
+        review_id="review-1",
+        chat_id=12345,
+    )
+
+    assert pending is not None
+    assert pending.review_id == "review-1"
+    assert pending.chat_id == 12345
+
+
+def test_standard_callback_can_be_consumed_after_success():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    result = handle_external_review_callback(
+        callback_data=(
+            "extrev:standard:review-1"
+        ),
+        chat_id=12345,
+        controller=controller,
+    )
+
+    assert result.decision is not None
+
+    consumed = (
+        controller.consume_after_success(
+            review_id="review-1",
+            chat_id=12345,
+        )
+    )
+
+    assert consumed.review_id == "review-1"
 
     with pytest.raises(
         ExternalReviewNotFound
