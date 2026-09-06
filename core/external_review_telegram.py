@@ -16,6 +16,7 @@ from core.external_review_callback import (
     handle_external_review_callback,
 )
 from core.external_review_controller import (
+    DEFAULT_EXTERNAL_REVIEW_CONTROLLER,
     ExternalReviewController,
 )
 
@@ -56,7 +57,21 @@ def handle_external_review_telegram_callback(
             callback does not belong to external review.
 
         True:
-            callback belongs to external review and was consumed.
+            callback belongs to external review and was handled.
+
+    Lifecycle rule:
+
+        create pending
+            ↓
+        apply selection
+            ↓
+        execute decision
+            ↓
+        publication succeeds
+            ↓
+        consume pending state
+
+    A failed execution must NOT consume the pending review.
 
     Standard approved decisions may be executed through the injected
     shared external-review execution boundary.
@@ -117,6 +132,12 @@ def handle_external_review_telegram_callback(
 
         return True
 
+    resolved_controller = (
+        controller
+        if controller is not None
+        else DEFAULT_EXTERNAL_REVIEW_CONTROLLER
+    )
+
     try:
         result = (
             handle_external_review_callback(
@@ -124,7 +145,7 @@ def handle_external_review_telegram_callback(
                 chat_id=int(
                     user_id
                 ),
-                controller=controller,
+                controller=resolved_controller,
             )
         )
 
@@ -217,6 +238,10 @@ def handle_external_review_telegram_callback(
                 exc,
             )
 
+            # IMPORTANT:
+            # Do not consume the pending review here.
+            # The user must be able to retry after a transient
+            # transformation/publication failure.
             answer_callback_query(
                 callback_id,
                 "انتشار مطلب با خطا روبرو شد.",
@@ -229,6 +254,61 @@ def handle_external_review_telegram_callback(
             "published",
             False,
         ):
+            # =================================================
+            # CONSUME ONLY AFTER SUCCESSFUL PUBLICATION
+            # =================================================
+            #
+            # The real publication has already succeeded.
+            # Pending state is removed only now.
+            #
+            # This fixes the staging regression where the pending
+            # review was deleted before Smart Summary/publication
+            # completed and therefore disappeared after a failure.
+            # =================================================
+
+            try:
+                resolved_controller.consume_after_success(
+                    review_id=decision.review_id,
+                    chat_id=decision.chat_id,
+                )
+
+            except Exception as exc:
+                # Publication has already succeeded, so this is a
+                # state-cleanup failure, not a publication failure.
+                logger.exception(
+                    (
+                        "[%s] External review published but "
+                        "pending-state cleanup failed | "
+                        "review_id=%s chat_id=%s | %s"
+                    ),
+                    req_id,
+                    decision.review_id,
+                    decision.chat_id,
+                    exc,
+                )
+
+                answer_callback_query(
+                    callback_id,
+                    (
+                        "منتشر شد، اما پاک‌سازی "
+                        "وضعیت بررسی کامل نشد."
+                    ),
+                )
+
+                send_message(
+                    int(
+                        user_id
+                    ),
+                    (
+                        "✅ مطلب با موفقیت منتشر شد.\n\n"
+                        "⚠️ وضعیت بررسی به‌طور کامل "
+                        "پاک نشد؛ از ارسال دوباره "
+                        "همین انتخاب خودداری کنید."
+                    ),
+                )
+
+                return True
+
             answer_callback_query(
                 callback_id,
                 "منتشر شد.",
