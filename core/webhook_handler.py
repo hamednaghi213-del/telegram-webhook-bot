@@ -4649,7 +4649,7 @@ def handle_webhook() -> Tuple[
                         preview_parts.append(
                             "\n\n".join(
                                 external_preview
-                                .paragraphs[:3]
+                                .paragraphs
                             )
                         )
 
@@ -4884,126 +4884,6 @@ def handle_webhook() -> Tuple[
                         )
                     }
                     
-                    # =====================================
-                    # VISUAL REVIEW PREVIEW
-                    # =====================================
-
-                    preview_media = tuple(
-                        (
-                            external_resolution
-                            .content
-                            .media
-                        )
-                        or ()
-                    )
-
-                    hero_media_url = ""
-
-                    for media_item in preview_media:
-
-                        media_type = str(
-                            getattr(
-                                media_item,
-                                "type",
-                                "",
-                            )
-                            or ""
-                        ).strip().lower()
-
-                        source_url = str(
-                            getattr(
-                                media_item,
-                                "source_url",
-                                "",
-                            )
-                            or ""
-                        ).strip()
-
-                        if (
-                            media_type == "photo"
-                            and source_url
-                        ):
-                            hero_media_url = (
-                                source_url
-                            )
-
-                            break
-
-                    # =====================================
-                    # SEND HERO IMAGE
-                    #
-                    # The image is intentionally sent as a
-                    # separate Telegram message.
-                    #
-                    # This avoids Telegram's photo-caption
-                    # length limit while keeping the full
-                    # review text + inline keyboard intact.
-                    #
-                    # If Telegram cannot fetch the remote
-                    # image URL, preview gracefully falls
-                    # back to text-only mode.
-                    # =====================================
-
-                    if (
-                        hero_media_url
-                        and API_URL
-                    ):
-
-                        try:
-
-                            photo_response = (
-                                requests.post(
-                                    (
-                                        f"{API_URL}"
-                                        "/sendPhoto"
-                                    ),
-                                    json={
-                                        "chat_id": chat_id,
-                                        "photo": (
-                                            hero_media_url
-                                        ),
-                                    },
-                                    timeout=20,
-                                )
-                            )
-
-                            photo_response.raise_for_status()
-
-                            photo_payload = (
-                                photo_response.json()
-                            )
-
-                            if not photo_payload.get(
-                                "ok"
-                            ):
-                                raise RuntimeError(
-                                    (
-                                        "Telegram sendPhoto "
-                                        "returned ok=false"
-                                    )
-                                )
-
-                            logger.info(
-                                (
-                                    f"[{req_id}] 🖼 External "
-                                    f"review hero preview sent | "
-                                    f"review_id="
-                                    f"{external_review_id}"
-                                )
-                            )
-
-                        except Exception as e:
-
-                            logger.warning(
-                                (
-                                    f"[{req_id}] ⚠️ External "
-                                    f"review hero preview failed | "
-                                    f"review_id="
-                                    f"{external_review_id} | "
-                                    f"{e}"
-                                )
-                            )
-
                     # =====================================
                     # SEND REVIEW TEXT + KEYBOARD
                     # =====================================
