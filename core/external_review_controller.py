@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import (
+    Any,
+    Optional,
+)
 
 from core.external_content_model import (
     NormalizedExternalContent,
@@ -17,7 +20,6 @@ from core.external_content_review import (
 )
 from core.external_review_state import (
     DEFAULT_EXTERNAL_REVIEW_STATE_STORE,
-    ExternalReviewStateStore,
     PendingExternalReview,
 )
 
@@ -49,8 +51,12 @@ class ExternalReviewDecision:
     """
     Final deterministic decision for one pending external review.
 
-    The controller does not publish anything. The caller may pass
-    `content` and `review` to the existing external publication service.
+    The controller does not publish anything.
+
+    IMPORTANT:
+    A valid selection does not mean publication succeeded.
+    Pending state therefore remains available until the caller
+    explicitly confirms successful execution.
     """
 
     review_id: str
@@ -89,7 +95,7 @@ class ExternalReviewController:
       - expose preview data
       - apply deterministic user selection
       - cancel pending review
-      - consume state only after a valid selection
+      - explicitly consume state after successful execution
 
     It deliberately does NOT:
       - publish
@@ -97,13 +103,27 @@ class ExternalReviewController:
       - summarize
       - perform Editorial AI work
       - translate
+
+    State lifecycle:
+
+        create_pending
+              ↓
+        apply_selection
+              ↓
+        decision returned
+              ↓
+        publication/execution
+              ↓
+        consume_after_success
+
+    If execution fails, pending state remains available.
     """
 
     def __init__(
         self,
         *,
         state_store: Optional[
-            ExternalReviewStateStore
+            Any
         ] = None,
     ) -> None:
         self.state_store = (
@@ -177,10 +197,21 @@ class ExternalReviewController:
         """
         Validate and apply a review selection.
 
-        Important:
-        pending state is removed only AFTER selection validation succeeds.
-        Invalid paragraph/media indexes therefore cannot destroy the
-        user's pending review.
+        IMPORTANT:
+
+        Pending state is NOT removed here.
+
+        A valid review selection can still fail later because of:
+
+          - Smart Summary
+          - Editorial processing
+          - media acquisition/materialization
+          - Shared Publication Engine
+          - Telegram/Bale delivery
+          - network errors
+
+        Therefore selection and successful execution are separate
+        lifecycle steps.
         """
 
         pending = self.get_pending(
@@ -195,7 +226,10 @@ class ExternalReviewController:
             NormalizedExternalContent,
         ):
             raise ExternalReviewContentUnavailable(
-                "pending external review content is unavailable"
+                (
+                    "pending external review "
+                    "content is unavailable"
+                )
             )
 
         review = (
@@ -205,17 +239,59 @@ class ExternalReviewController:
             )
         )
 
-        # Consume only after the selection has been successfully applied.
-        consumed = self.state_store.pop(
-            review_id=review_id,
-            chat_id=chat_id,
-        )
+        # =================================================
+        # DO NOT POP HERE
+        # =================================================
+        #
+        # Previously this method removed the pending record
+        # immediately after validating the user's selection.
+        #
+        # That caused the review to disappear even when the
+        # following execution failed.
+        #
+        # Example observed in real staging:
+        #
+        #   callback
+        #       ↓
+        #   selection valid
+        #       ↓
+        #   DELETE external_review_state
+        #       ↓
+        #   Smart Summary failed
+        #       ↓
+        #   preview permanently lost
+        #
+        # The record must survive until execution succeeds.
+        # =================================================
 
         return ExternalReviewDecision(
-            review_id=consumed.review_id,
-            chat_id=consumed.chat_id,
-            content=consumed.content,
+            review_id=pending.review_id,
+            chat_id=pending.chat_id,
+            content=pending.content,
             review=review,
+        )
+
+    # -----------------------------------------------------
+    # SUCCESSFUL EXECUTION
+    # -----------------------------------------------------
+
+    def consume_after_success(
+        self,
+        *,
+        review_id: str,
+        chat_id: int,
+    ) -> PendingExternalReview:
+        """
+        Consume a pending review only after the caller has confirmed
+        that review execution/publication completed successfully.
+
+        This explicit method keeps state lifecycle independent from
+        selection validation.
+        """
+
+        return self.state_store.pop(
+            review_id=review_id,
+            chat_id=chat_id,
         )
 
     # -----------------------------------------------------
@@ -231,6 +307,9 @@ class ExternalReviewController:
         """
         Explicitly cancel one owned pending review.
 
+        Cancellation is intentionally destructive because it is an
+        explicit user decision.
+
         Ownership is checked before state removal.
         """
 
@@ -238,6 +317,11 @@ class ExternalReviewController:
             review_id=review_id,
             chat_id=chat_id,
         )
+
+
+# =========================================================
+# DEFAULT CONTROLLER
+# =========================================================
 
 
 DEFAULT_EXTERNAL_REVIEW_CONTROLLER = (
