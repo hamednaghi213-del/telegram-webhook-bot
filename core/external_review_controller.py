@@ -1,635 +1,447 @@
-import pytest
+"""Controller joining pending external reviews with review selections."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from typing import Optional
 
 from core.external_content_model import (
-    ExternalMedia,
+
     NormalizedExternalContent,
+
 )
+
 from core.external_content_review import (
-    ExternalMediaMode,
-    ExternalReviewError,
-    ExternalReviewMode,
+
+    ExternalContentPreview,
+
+    ExternalReviewResult,
+
     ExternalReviewSelection,
+
+    apply_external_review_selection,
+
+    build_external_content_preview,
+
 )
-from core.external_review_controller import (
-    ExternalReviewController,
-)
+
 from core.external_review_state import (
-    ExternalReviewNotFound,
+
+    DEFAULT_EXTERNAL_REVIEW_STATE_STORE,
+
     ExternalReviewStateStore,
+
+    PendingExternalReview,
+
 )
 
-
-# =========================================================
-# HELPERS
 # =========================================================
 
-
-def _content():
-    return NormalizedExternalContent(
-        source_type="web_article",
-        source_url="https://example.com/news/1",
-        canonical_url="https://example.com/news/1",
-        content_type="article",
-        title="Main headline",
-        lead="Main lead",
-        body=(
-            "Paragraph one.\n\n"
-            "Paragraph two.\n\n"
-            "Paragraph three."
-        ),
-        media=(
-            ExternalMedia(
-                type="photo",
-                source_url=(
-                    "https://example.com/1.jpg"
-                ),
-            ),
-            ExternalMedia(
-                type="photo",
-                source_url=(
-                    "https://example.com/2.jpg"
-                ),
-            ),
-        ),
-        original_language="en",
-        extraction_confidence=0.95,
-    )
-
-
-def _controller():
-    store = ExternalReviewStateStore(
-        ttl_seconds=60,
-    )
-
-    return (
-        ExternalReviewController(
-            state_store=store,
-        ),
-        store,
-    )
-
+# ERRORS
 
 # =========================================================
-# CREATE / READ
-# =========================================================
 
+class ExternalReviewControllerError(
 
-def test_create_pending_review():
-    controller, store = _controller()
+    RuntimeError
 
-    content = _content()
+):
 
-    pending = controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=content,
-    )
+    """Base error for external review controller."""
 
-    assert pending.review_id == "review-1"
-    assert pending.chat_id == 100
-    assert pending.content is content
+class ExternalReviewContentUnavailable(
 
-    assert (
-        store.get_by_id("review-1")
-        is pending
-    )
+    ExternalReviewControllerError
 
+):
 
-def test_get_pending_review():
-    controller, _store = _controller()
-
-    created = controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=_content(),
-    )
-
-    result = controller.get_pending(
-        review_id="review-1",
-        chat_id=100,
-    )
-
-    assert result is created
-
+    """Raised when a pending review has no usable content."""
 
 # =========================================================
-# PREVIEW
-# =========================================================
 
-
-def test_get_preview_uses_existing_review_engine():
-    controller, _store = _controller()
-
-    controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=_content(),
-    )
-
-    preview = controller.get_preview(
-        review_id="review-1",
-        chat_id=100,
-    )
-
-    assert preview.title == "Main headline"
-    assert preview.lead == "Main lead"
-
-    assert preview.paragraphs == (
-        "Paragraph one.",
-        "Paragraph two.",
-        "Paragraph three.",
-    )
-
-    assert preview.media_count == 2
-    assert preview.original_language == "en"
-
+# RESULT
 
 # =========================================================
-# STANDARD DECISION
-# =========================================================
 
+@dataclass(frozen=True)
 
-def test_standard_selection_preserves_pending_until_success():
-    controller, store = _controller()
+class ExternalReviewDecision:
 
-    content = _content()
+    """
 
-    controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=content,
-    )
-
-    decision = controller.apply_selection(
-        review_id="review-1",
-        chat_id=100,
-    )
-
-    assert decision.review_id == "review-1"
-    assert decision.chat_id == 100
-    assert decision.content is content
+    Deterministic decision for one pending external review.
 
-    assert (
-        decision.review.title
-        == "Main headline"
-    )
+    The controller does not publish anything. The caller may pass
 
-    assert (
-        decision.review.body
-        == content.body
-    )
-
-    assert len(
-        decision.review.media
-    ) == 2
-
-    # IMPORTANT:
-    # A valid selection must not consume pending state.
-    # Publication may still fail later.
-
-    pending = store.get_by_id(
-        "review-1"
-    )
-
-    assert pending is not None
-    assert pending.chat_id == 100
-
-    assert (
-        store.get_for_chat(100)
-        is not None
-    )
-
-
-def test_consume_after_success_removes_pending_review():
-    controller, store = _controller()
-
-    controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=_content(),
-    )
-
-    controller.apply_selection(
-        review_id="review-1",
-        chat_id=100,
-    )
-
-    consumed = (
-        controller.consume_after_success(
-            review_id="review-1",
-            chat_id=100,
-        )
-    )
-
-    assert consumed.review_id == "review-1"
-
-    assert (
-        store.get_by_id("review-1")
-        is None
-    )
-
-    assert (
-        store.get_for_chat(100)
-        is None
-    )
-
-
-# =========================================================
-# TEXT MODES
-# =========================================================
-
-
-def test_headline_only_selection():
-    controller, _store = _controller()
-
-    controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=_content(),
-    )
-
-    decision = controller.apply_selection(
-        review_id="review-1",
-        chat_id=100,
-        selection=ExternalReviewSelection(
-            mode=(
-                ExternalReviewMode
-                .HEADLINE_ONLY
-            ),
-        ),
-    )
-
-    assert (
-        decision.review.title
-        == "Main headline"
-    )
-
-    assert decision.review.lead == ""
-    assert decision.review.body == ""
-
-
-def test_headline_lead_selection():
-    controller, _store = _controller()
-
-    controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=_content(),
-    )
-
-    decision = controller.apply_selection(
-        review_id="review-1",
-        chat_id=100,
-        selection=ExternalReviewSelection(
-            mode=(
-                ExternalReviewMode
-                .HEADLINE_LEAD
-            ),
-        ),
-    )
-
-    assert (
-        decision.review.title
-        == "Main headline"
-    )
-
-    assert (
-        decision.review.lead
-        == "Main lead"
-    )
-
-    assert decision.review.body == ""
-
-
-def test_selected_paragraphs():
-    controller, _store = _controller()
-
-    controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=_content(),
-    )
-
-    decision = controller.apply_selection(
-        review_id="review-1",
-        chat_id=100,
-        selection=ExternalReviewSelection(
-            mode=(
-                ExternalReviewMode
-                .PARAGRAPHS
-            ),
-            paragraph_indexes=(
-                0,
-                2,
-            ),
-        ),
-    )
-
-    assert (
-        decision.review.body
-        == (
-            "Paragraph one.\n\n"
-            "Paragraph three."
-        )
-    )
-
-    assert (
-        decision.review
-        .selected_paragraph_indexes
-        == (
-            0,
-            2,
-        )
-    )
-
-
-# =========================================================
-# SHARED TRANSFORMATION SIGNALS
-# =========================================================
-
-
-def test_short_mode_preserves_shared_summary_signal():
-    controller, _store = _controller()
-
-    controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=_content(),
-    )
-
-    decision = controller.apply_selection(
-        review_id="review-1",
-        chat_id=100,
-        selection=ExternalReviewSelection(
-            mode=(
-                ExternalReviewMode.SHORT
-            ),
-        ),
-    )
-
-    assert (
-        decision.requires_smart_summary
-        is True
-    )
-
-    assert (
-        decision.requires_editorial_rewrite
-        is False
-    )
-
-
-def test_editorial_mode_preserves_shared_editorial_signal():
-    controller, _store = _controller()
-
-    controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=_content(),
-    )
-
-    decision = controller.apply_selection(
-        review_id="review-1",
-        chat_id=100,
-        selection=ExternalReviewSelection(
-            mode=(
-                ExternalReviewMode
-                .EDITORIAL_REWRITE
-            ),
-        ),
-    )
-
-    assert (
-        decision.requires_editorial_rewrite
-        is True
-    )
-
-    assert (
-        decision.requires_smart_summary
-        is False
-    )
-
-
-# =========================================================
-# MEDIA SELECTION
-# =========================================================
-
-
-def test_no_media_selection():
-    controller, _store = _controller()
-
-    controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=_content(),
-    )
-
-    decision = controller.apply_selection(
-        review_id="review-1",
-        chat_id=100,
-        selection=ExternalReviewSelection(
-            media_mode=(
-                ExternalMediaMode.NONE
-            ),
-        ),
-    )
-
-    assert decision.review.media == ()
-
-
-def test_selected_media():
-    controller, _store = _controller()
-
-    controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=_content(),
-    )
-
-    decision = controller.apply_selection(
-        review_id="review-1",
-        chat_id=100,
-        selection=ExternalReviewSelection(
-            media_mode=(
-                ExternalMediaMode.SELECTED
-            ),
-            media_indexes=(1,),
-        ),
-    )
-
-    assert len(
-        decision.review.media
-    ) == 1
-
-    assert (
-        decision.review.media[0]
-        .source_url
-        == "https://example.com/2.jpg"
-    )
-
-    assert (
-        decision.review
-        .selected_media_indexes
-        == (1,)
-    )
-
-
-# =========================================================
-# FAIL-CLOSED STATE
-# =========================================================
-
-
-def test_invalid_paragraph_selection_does_not_consume_pending():
-    controller, store = _controller()
-
-    controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=_content(),
-    )
-
-    with pytest.raises(
-        ExternalReviewError,
-    ):
-        controller.apply_selection(
-            review_id="review-1",
-            chat_id=100,
-            selection=ExternalReviewSelection(
-                mode=(
-                    ExternalReviewMode
-                    .PARAGRAPHS
-                ),
-                paragraph_indexes=(99,),
-            ),
+    `content` and `review` to the existing external publication service.
+
+    """
+
+    review_id: str
+
+    chat_id: int
+
+    content: NormalizedExternalContent
+
+    review: ExternalReviewResult
+
+    @property
+
+    def requires_smart_summary(
+
+        self,
+
+    ) -> bool:
+
+        return bool(
+
+            self.review.requires_smart_summary
+
         )
 
-    assert (
-        store.get_by_id("review-1")
-        is not None
-    )
+    @property
 
+    def requires_editorial_rewrite(
 
-def test_invalid_media_selection_does_not_consume_pending():
-    controller, store = _controller()
+        self,
 
-    controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=_content(),
-    )
+    ) -> bool:
 
-    with pytest.raises(
-        ExternalReviewError,
-    ):
-        controller.apply_selection(
-            review_id="review-1",
-            chat_id=100,
-            selection=ExternalReviewSelection(
-                media_mode=(
-                    ExternalMediaMode
-                    .SELECTED
-                ),
-                media_indexes=(99,),
-            ),
+        return bool(
+
+            self.review.requires_editorial_rewrite
+
         )
 
-    assert (
-        store.get_by_id("review-1")
-        is not None
-    )
+# =========================================================
 
+# CONTROLLER
 
-def test_wrong_chat_cannot_consume_review():
-    controller, store = _controller()
+# =========================================================
 
-    controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=_content(),
-    )
+class ExternalReviewController:
 
-    with pytest.raises(
-        ExternalReviewNotFound,
-    ):
-        controller.apply_selection(
-            review_id="review-1",
-            chat_id=200,
+    """
+
+    Platform-neutral controller for pending external-content review.
+
+    Responsibilities:
+
+      - create pending review state
+
+      - expose preview data
+
+      - apply deterministic user selection
+
+      - cancel pending review
+
+      - consume state only after successful execution
+
+    It deliberately does NOT:
+
+      - publish
+
+      - send Telegram/Bale messages
+
+      - summarize
+
+      - perform Editorial AI work
+
+      - translate
+
+    Important lifecycle rule:
+
+      applying a valid selection MUST NOT remove pending state.
+
+    The execution layer may still fail after the selection has been
+
+    validated, for example because Smart Summary, Editorial processing,
+
+    media acquisition, or publication fails.
+
+    Pending state is therefore consumed explicitly only after successful
+
+    execution by calling `consume_after_success`.
+
+    """
+
+    def __init__(
+
+        self,
+
+        *,
+
+        state_store: Optional[
+
+            ExternalReviewStateStore
+
+        ] = None,
+
+    ) -> None:
+
+        self.state_store = (
+
+            state_store
+
+            or DEFAULT_EXTERNAL_REVIEW_STATE_STORE
+
         )
 
-    assert (
-        store.get_by_id("review-1")
-        is not None
-    )
+    # -----------------------------------------------------
 
+    # CREATE
 
-# =========================================================
-# CANCEL
-# =========================================================
+    # -----------------------------------------------------
 
+    def create_pending(
 
-def test_cancel_consumes_owned_pending_review():
-    controller, store = _controller()
+        self,
 
-    controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=_content(),
-    )
+        *,
 
-    cancelled = controller.cancel(
-        review_id="review-1",
-        chat_id=100,
-    )
+        review_id: str,
 
-    assert cancelled.review_id == "review-1"
+        chat_id: int,
 
-    assert (
-        store.get_by_id("review-1")
-        is None
-    )
+        content: NormalizedExternalContent,
 
+        replace_existing: bool = False,
 
-def test_wrong_chat_cannot_cancel_review():
-    controller, store = _controller()
+    ) -> PendingExternalReview:
 
-    controller.create_pending(
-        review_id="review-1",
-        chat_id=100,
-        content=_content(),
-    )
+        return self.state_store.create(
 
-    with pytest.raises(
-        ExternalReviewNotFound,
-    ):
-        controller.cancel(
-            review_id="review-1",
-            chat_id=200,
+            review_id=review_id,
+
+            chat_id=chat_id,
+
+            content=content,
+
+            replace_existing=replace_existing,
+
         )
 
-    assert (
-        store.get_by_id("review-1")
-        is not None
-    )
+    # -----------------------------------------------------
 
+    # READ / PREVIEW
 
-# =========================================================
-# NO SIDE EFFECTS
-# =========================================================
+    # -----------------------------------------------------
 
+    def get_pending(
 
-def test_controller_has_no_publication_methods():
-    controller, _store = _controller()
+        self,
 
-    assert not hasattr(
-        controller,
-        "publish",
-    )
+        *,
 
-    assert not hasattr(
-        controller,
-        "send",
-    )
+        review_id: str,
 
-    assert not hasattr(
-        controller,
-        "translate",
-    )
+        chat_id: int,
+
+    ) -> PendingExternalReview:
+
+        return self.state_store.require(
+
+            review_id=review_id,
+
+            chat_id=chat_id,
+
+        )
+
+    def get_preview(
+
+        self,
+
+        *,
+
+        review_id: str,
+
+        chat_id: int,
+
+    ) -> ExternalContentPreview:
+
+        pending = self.get_pending(
+
+            review_id=review_id,
+
+            chat_id=chat_id,
+
+        )
+
+        return build_external_content_preview(
+
+            pending.content
+
+        )
+
+    # -----------------------------------------------------
+
+    # DECISION
+
+    # -----------------------------------------------------
+
+    def apply_selection(
+
+        self,
+
+        *,
+
+        review_id: str,
+
+        chat_id: int,
+
+        selection: Optional[
+
+            ExternalReviewSelection
+
+        ] = None,
+
+    ) -> ExternalReviewDecision:
+
+        """
+
+        Validate and apply a review selection.
+
+        Pending state is intentionally preserved here.
+
+        A valid selection only creates a deterministic decision.
+
+        Execution may still fail later, so consuming state at this
+
+        point would make the preview unusable after a recoverable
+
+        publication or transformation failure.
+
+        """
+
+        pending = self.get_pending(
+
+            review_id=review_id,
+
+            chat_id=chat_id,
+
+        )
+
+        content = pending.content
+
+        if not isinstance(
+
+            content,
+
+            NormalizedExternalContent,
+
+        ):
+
+            raise ExternalReviewContentUnavailable(
+
+                "pending external review content is unavailable"
+
+            )
+
+        review = (
+
+            apply_external_review_selection(
+
+                content,
+
+                selection,
+
+            )
+
+        )
+
+        return ExternalReviewDecision(
+
+            review_id=pending.review_id,
+
+            chat_id=pending.chat_id,
+
+            content=content,
+
+            review=review,
+
+        )
+
+    # -----------------------------------------------------
+
+    # SUCCESSFUL EXECUTION CONSUMPTION
+
+    # -----------------------------------------------------
+
+    def consume_after_success(
+
+        self,
+
+        *,
+
+        review_id: str,
+
+        chat_id: int,
+
+    ) -> PendingExternalReview:
+
+        """
+
+        Remove pending state after successful execution.
+
+        Ownership is revalidated by the state store before removal.
+
+        This method must be called only after the external review
+
+        decision has completed its required transformation/publication
+
+        successfully.
+
+        """
+
+        return self.state_store.pop(
+
+            review_id=review_id,
+
+            chat_id=chat_id,
+
+        )
+
+    # -----------------------------------------------------
+
+    # CANCEL
+
+    # -----------------------------------------------------
+
+    def cancel(
+
+        self,
+
+        *,
+
+        review_id: str,
+
+        chat_id: int,
+
+    ) -> PendingExternalReview:
+
+        """
+
+        Explicitly cancel one owned pending review.
+
+        Cancellation intentionally consumes the pending state because
+
+        it is an explicit terminal action by the user.
+
+        Ownership is checked before state removal.
+
+        """
+
+        return self.state_store.pop(
+
+            review_id=review_id,
+
+            chat_id=chat_id,
+
+        )
+
+DEFAULT_EXTERNAL_REVIEW_CONTROLLER = (
+
+    ExternalReviewController()
+
+)
