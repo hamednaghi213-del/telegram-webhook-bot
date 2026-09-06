@@ -4505,6 +4505,327 @@ def handle_webhook() -> Tuple[
                 "ok": True
             }, 200
 
+        # =================================================
+        # STANDALONE EXTERNAL CONTENT URL
+        # =================================================
+
+        if command_text.strip():
+
+            try:
+
+                from uuid import uuid4
+
+                from core.external_content_resolver import (
+                    ExternalContentResolver,
+                    extract_single_external_url,
+                )
+
+                from core.external_review_controller import (
+                    ExternalReviewController,
+                )
+
+                external_url = (
+                    extract_single_external_url(
+                        command_text
+                    )
+                )
+
+                if external_url:
+
+                    # External ingestion is available only after the normal
+                    # user/tenant gate has been resolved. It never bypasses
+                    # onboarding, commands, pending Editorial, or workspace
+                    # stateful input.
+
+                    if not tenant:
+                        send_message(
+                            chat_id,
+                            (
+                                "❌ ابتدا تنظیمات رسانه خود را "
+                                "تکمیل کنید."
+                            ),
+                        )
+
+                        return {
+                            "ok": True,
+                            "external_content": False,
+                            "reason": "tenant_required",
+                        }, 200
+
+                    try:
+
+                        external_resolution = (
+                            ExternalContentResolver()
+                            .resolve(
+                                external_url
+                            )
+                        )
+
+                    except Exception as e:
+
+                        logger.exception(
+                            (
+                                f"[{req_id}] ❌ External content "
+                                f"resolution failed | {e}"
+                            )
+                        )
+
+                        send_message(
+                            chat_id,
+                            (
+                                "❌ استخراج این لینک ممکن نشد.\n\n"
+                                "ممکن است صفحه در دسترس نباشد، "
+                                "محتوای قابل استخراج نداشته باشد "
+                                "یا منبع نیازمند دسترسی ویژه باشد."
+                            ),
+                        )
+
+                        return {
+                            "ok": True,
+                            "external_content": True,
+                            "external_resolved": False,
+                        }, 200
+
+                    if not (
+                        external_resolution
+                        .is_publishable_candidate
+                    ):
+                        send_message(
+                            chat_id,
+                            (
+                                "⚠️ محتوای کافی و قابل اتکایی "
+                                "برای آماده‌سازی خبر از این لینک "
+                                "استخراج نشد."
+                            ),
+                        )
+
+                        return {
+                            "ok": True,
+                            "external_content": True,
+                            "external_resolved": True,
+                            "external_publishable": False,
+                        }, 200
+
+                    external_review_id = (
+                        uuid4().hex
+                    )
+
+                    external_controller = (
+                        ExternalReviewController()
+                    )
+
+                    external_controller.create_pending(
+                        review_id=external_review_id,
+                        chat_id=chat_id,
+                        content=(
+                            external_resolution
+                            .content
+                        ),
+                        replace_existing=True,
+                    )
+
+                    external_preview = (
+                        external_controller.get_preview(
+                            review_id=(
+                                external_review_id
+                            ),
+                            chat_id=chat_id,
+                        )
+                    )
+
+                    preview_parts = []
+
+                    if external_preview.title:
+                        preview_parts.append(
+                            external_preview.title
+                        )
+
+                    if external_preview.lead:
+                        preview_parts.append(
+                            external_preview.lead
+                        )
+
+                    if external_preview.paragraphs:
+                        preview_parts.append(
+                            "\n\n".join(
+                                external_preview
+                                .paragraphs[:3]
+                            )
+                        )
+
+                    preview_text = (
+                        "\n\n".join(
+                            part
+                            for part in preview_parts
+                            if part
+                        )
+                        .strip()
+                    )
+
+                    if len(preview_text) > 3000:
+                        preview_text = (
+                            preview_text[:2997]
+                            .rstrip()
+                            + "..."
+                        )
+
+                    source_line = ""
+
+                    if (
+                        external_preview
+                        .source_name
+                    ):
+                        source_line = (
+                            "\n\n"
+                            "منبع: "
+                            f"{external_preview.source_name}"
+                        )
+
+                    confidence_line = (
+                        "\n"
+                        "اطمینان استخراج: "
+                        f"{round(external_preview.extraction_confidence * 100)}٪"
+                    )
+
+                    warning_line = ""
+
+                    if external_preview.warnings:
+                        warning_line = (
+                            "\n"
+                            "⚠️ استخراج نیازمند بررسی است."
+                        )
+
+                    review_message = (
+                        "🔎 پیش‌نمایش مطلب\n\n"
+                        f"{preview_text}"
+                        f"{source_line}"
+                        f"{confidence_line}"
+                        f"{warning_line}"
+                    ).strip()
+
+                    review_keyboard = {
+                        "inline_keyboard": [
+                            [
+                                {
+                                    "text": "✅ استاندارد",
+                                    "callback_data": (
+                                        "extrev:standard:"
+                                        f"{external_review_id}"
+                                    ),
+                                },
+                                {
+                                    "text": "✂️ کوتاه",
+                                    "callback_data": (
+                                        "extrev:short:"
+                                        f"{external_review_id}"
+                                    ),
+                                },
+                            ],
+                            [
+                                {
+                                    "text": "📰 تیتر",
+                                    "callback_data": (
+                                        "extrev:headline:"
+                                        f"{external_review_id}"
+                                    ),
+                                },
+                                {
+                                    "text": "📝 تیتر و لید",
+                                    "callback_data": (
+                                        "extrev:lead:"
+                                        f"{external_review_id}"
+                                    ),
+                                },
+                            ],
+                            [
+                                {
+                                    "text": "🖼 بدون رسانه",
+                                    "callback_data": (
+                                        "extrev:nomedia:"
+                                        f"{external_review_id}"
+                                    ),
+                                },
+                                {
+                                    "text": "✍️ بازنویسی تحریریه",
+                                    "callback_data": (
+                                        "extrev:editorial:"
+                                        f"{external_review_id}"
+                                    ),
+                                },
+                            ],
+                            [
+                                {
+                                    "text": "❌ لغو",
+                                    "callback_data": (
+                                        "extrev:cancel:"
+                                        f"{external_review_id}"
+                                    ),
+                                },
+                            ],
+                        ]
+                    }
+
+                    try:
+
+                        send_message(
+                            chat_id,
+                            review_message,
+                            reply_markup=(
+                                review_keyboard
+                            ),
+                        )
+
+                    except TypeError:
+
+                        # Compatibility with legacy/test send_message
+                        # wrappers that do not expose reply_markup.
+                        send_message(
+                            chat_id,
+                            review_message,
+                        )
+
+                    logger.info(
+                        (
+                            f"[{req_id}] ✅ External content "
+                            f"review created | "
+                            f"review_id={external_review_id} | "
+                            f"source_kind="
+                            f"{external_resolution.source_kind.value}"
+                        )
+                    )
+
+                    return {
+                        "ok": True,
+                        "external_content": True,
+                        "external_resolved": True,
+                        "external_publishable": True,
+                        "external_review": True,
+                        "review_id": external_review_id,
+                    }, 200
+
+            except Exception as e:
+
+                logger.exception(
+                    (
+                        f"[{req_id}] ❌ External content "
+                        f"ingestion failed | {e}"
+                    )
+                )
+
+                send_message(
+                    chat_id,
+                    (
+                        "❌ خطا در آماده‌سازی لینک. "
+                        "لطفاً دوباره تلاش کنید."
+                    ),
+                )
+
+                return {
+                    "ok": True,
+                    "external_content": True,
+                    "external_error": True,
+                }, 200
+        
         workspace_context_active = False
         workspace_targets_selected = False
         legacy_target_selected = bool(tenant and tenant.get("telegram_channel"))
