@@ -314,45 +314,10 @@ def publish_reviewed_external_content(
             "state_store"
         ] = state_store
 
-    try:
-        result = publish_prepared_content(
-            *args,
-            **kwargs,
-        )
-
-    except TypeError:
-        # Compatibility with older/current signatures where optional
-        # arguments may be positional.
-        if (
-            targets is not None
-            and state_store is not None
-        ):
-            result = (
-                publish_prepared_content(
-                    chat_id,
-                    api_url,
-                    prepared,
-                    list(
-                        targets
-                    ),
-                    state_store,
-                )
-            )
-
-        elif targets is not None:
-            result = (
-                publish_prepared_content(
-                    chat_id,
-                    api_url,
-                    prepared,
-                    list(
-                        targets
-                    ),
-                )
-            )
-
-        else:
-            raise
+    result = publish_prepared_content(
+        *args,
+        **kwargs,
+    )
 
     return ExternalPublicationResult(
         bridge=bridge,
