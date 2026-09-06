@@ -4695,76 +4695,194 @@ def handle_webhook() -> Tuple[
                             "⚠️ استخراج نیازمند بررسی است."
                         )
 
+                    # =====================================
+                    # EXTRACTED MEDIA SUMMARY
+                    # =====================================
+
+                    media_count = (
+                        external_preview
+                        .media_count
+                    )
+
+                    media_line = ""
+
+                    if media_count == 1:
+                        media_line = (
+                            "\n"
+                            "🖼 یک تصویر برای این مطلب "
+                            "شناسایی شد."
+                        )
+
+                    elif media_count > 1:
+                        media_line = (
+                            "\n"
+                            f"🖼 {media_count} تصویر برای "
+                            "این مطلب شناسایی شد."
+                        )
+
+                    else:
+                        media_line = (
+                            "\n"
+                            "🖼 تصویر معتبری برای این "
+                            "مطلب شناسایی نشد."
+                        )
+
                     review_message = (
                         "🔎 پیش‌نمایش مطلب\n\n"
                         f"{preview_text}"
                         f"{source_line}"
                         f"{confidence_line}"
+                        f"{media_line}"
                         f"{warning_line}"
                     ).strip()
 
-                    review_keyboard = {
-                        "inline_keyboard": [
+                    # =====================================
+                    # REVIEW KEYBOARD
+                    # =====================================
+
+                    review_rows = [
+                        [
+                            {
+                                "text": "✅ استاندارد",
+                                "callback_data": (
+                                    "extrev:standard:"
+                                    f"{external_review_id}"
+                                ),
+                            },
+                            {
+                                "text": "✂️ کوتاه",
+                                "callback_data": (
+                                    "extrev:short:"
+                                    f"{external_review_id}"
+                                ),
+                            },
+                        ],
+                        [
+                            {
+                                "text": "📰 تیتر",
+                                "callback_data": (
+                                    "extrev:headline:"
+                                    f"{external_review_id}"
+                                ),
+                            },
+                            {
+                                "text": "📝 تیتر و لید",
+                                "callback_data": (
+                                    "extrev:lead:"
+                                    f"{external_review_id}"
+                                ),
+                            },
+                        ],
+                    ]
+
+                    # =====================================
+                    # MEDIA OPTIONS
+                    # =====================================
+
+                    if media_count > 0:
+
+                        # Standard publication already keeps the
+                        # extracted media by default.
+                        #
+                        # These buttons allow the user to explicitly
+                        # choose the main image or remove all media.
+
+                        review_rows.append(
                             [
                                 {
-                                    "text": "✅ استاندارد",
+                                    "text": "🖼 تصویر اصلی",
                                     "callback_data": (
-                                        "extrev:standard:"
-                                        f"{external_review_id}"
+                                        "extrev:media:"
+                                        f"{external_review_id}:0"
                                     ),
                                 },
                                 {
-                                    "text": "✂️ کوتاه",
-                                    "callback_data": (
-                                        "extrev:short:"
-                                        f"{external_review_id}"
-                                    ),
-                                },
-                            ],
-                            [
-                                {
-                                    "text": "📰 تیتر",
-                                    "callback_data": (
-                                        "extrev:headline:"
-                                        f"{external_review_id}"
-                                    ),
-                                },
-                                {
-                                    "text": "📝 تیتر و لید",
-                                    "callback_data": (
-                                        "extrev:lead:"
-                                        f"{external_review_id}"
-                                    ),
-                                },
-                            ],
-                            [
-                                {
-                                    "text": "🖼 بدون رسانه",
+                                    "text": "🚫 بدون تصویر",
                                     "callback_data": (
                                         "extrev:nomedia:"
                                         f"{external_review_id}"
                                     ),
                                 },
-                                {
-                                    "text": "✍️ بازنویسی تحریریه",
-                                    "callback_data": (
-                                        "extrev:editorial:"
-                                        f"{external_review_id}"
-                                    ),
-                                },
-                            ],
-                            [
-                                {
-                                    "text": "❌ لغو",
-                                    "callback_data": (
-                                        "extrev:cancel:"
-                                        f"{external_review_id}"
-                                    ),
-                                },
-                            ],
-                        ]
-                    }
+                            ]
+                        )
 
+                        # If several article images were extracted,
+                        # expose a few explicit choices without
+                        # overflowing Telegram callback_data limits.
+                        #
+                        # Index 0 is the extractor's best/main image.
+
+                        additional_media_buttons = []
+
+                        max_extra_images = min(
+                            media_count,
+                            4,
+                        )
+
+                        for media_index in range(
+                            1,
+                            max_extra_images,
+                        ):
+                            additional_media_buttons.append(
+                                {
+                                    "text": (
+                                        "🖼 "
+                                        f"تصویر {media_index + 1}"
+                                    ),
+                                    "callback_data": (
+                                        "extrev:media:"
+                                        f"{external_review_id}:"
+                                        f"{media_index}"
+                                    ),
+                                }
+                            )
+
+                        if additional_media_buttons:
+
+                            # Maximum two buttons per row keeps the
+                            # mobile review keyboard readable.
+                            for index in range(
+                                0,
+                                len(
+                                    additional_media_buttons
+                                ),
+                                2,
+                            ):
+                                review_rows.append(
+                                    additional_media_buttons[
+                                        index:index + 2
+                                    ]
+                                )
+
+                    review_rows.append(
+                        [
+                            {
+                                "text": "✍️ بازنویسی تحریریه",
+                                "callback_data": (
+                                    "extrev:editorial:"
+                                    f"{external_review_id}"
+                                ),
+                            },
+                        ]
+                    )
+
+                    review_rows.append(
+                        [
+                            {
+                                "text": "❌ لغو",
+                                "callback_data": (
+                                    "extrev:cancel:"
+                                    f"{external_review_id}"
+                                ),
+                            },
+                        ]
+                    )
+
+                    review_keyboard = {
+                        "inline_keyboard": (
+                            review_rows
+                        )
+                    }
                     try:
 
                         send_message(
@@ -4890,11 +5008,11 @@ def handle_webhook() -> Tuple[
                 "text",
                 ""
             )
+
             or ""
         )
 
         if pure_text.strip():
-
             try:
 
                 from core.editorial_pending import (
