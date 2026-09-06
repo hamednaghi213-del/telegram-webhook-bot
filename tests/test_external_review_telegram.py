@@ -343,10 +343,22 @@ def test_editorial_callback_reports_shared_editorial_path():
 
     assert handled is True
 
+    assert answers == [
+        (
+            "cb-1",
+            "انتخاب ثبت شد.",
+        )
+    ]
+
     assert len(messages) == 1
 
     assert (
-        "مسیر مشترک تحریریه"
+        "مسیر تحریریه در حال حاضر"
+        in messages[0][0][1]
+    )
+
+    assert (
+        "در دسترس نیست"
         in messages[0][0][1]
     )
 
