@@ -1621,10 +1621,251 @@ class WebArticleExtractor:
             },
         )
 
+        html = result.text
+        final_url = result.final_url
+
+        # -------------------------------------------------
+        # HTML / JavaScript transfer-page recovery
+        # -------------------------------------------------
+        #
+        # Some news sites return HTTP 200 for short links and then
+        # redirect inside the HTML instead of issuing an HTTP 3xx.
+        #
+        # Any discovered destination is fetched again only through
+        # SafeExternalFetcher, so SSRF / DNS / port / redirect
+        # protections remain in force.
+        # -------------------------------------------------
+
+        redirect_url = ""
+
+        head = html[:50000]
+
+        # -------------------------------------------------
+        # META REFRESH
+        # -------------------------------------------------
+
+        meta_refresh_patterns = (
+            (
+                r"""(?is)<meta[^>]+"""
+                r"""http-equiv\s*=\s*["']?refresh["']?"""
+                r"""[^>]+content\s*=\s*["']"""
+                r"""[^"']*url\s*=\s*([^"'>;]+)"""
+            ),
+            (
+                r"""(?is)<meta[^>]+"""
+                r"""content\s*=\s*["']"""
+                r"""[^"']*url\s*=\s*([^"'>;]+)"""
+                r"""["'][^>]+"""
+                r"""http-equiv\s*=\s*["']?refresh["']?"""
+            ),
+        )
+
+        for pattern in meta_refresh_patterns:
+            match = re.search(
+                pattern,
+                head,
+            )
+
+            if not match:
+                continue
+
+            redirect_url = _absolute_public_url(
+                match.group(1),
+                final_url,
+            )
+
+            if redirect_url:
+                break
+
+        # -------------------------------------------------
+        # JAVASCRIPT REDIRECT
+        # -------------------------------------------------
+
+        if not redirect_url:
+            javascript_patterns = (
+                (
+                    r"""(?is)window\.location"""
+                    r"""(?:\.href)?\s*=\s*"""
+                    r"""["']([^"']+)["']"""
+                ),
+                (
+                    r"""(?is)location\.href"""
+                    r"""\s*=\s*"""
+                    r"""["']([^"']+)["']"""
+                ),
+                (
+                    r"""(?is)location\.replace"""
+                    r"""\(\s*["']([^"']+)["']\s*\)"""
+                ),
+                (
+                    r"""(?is)window\.location\.replace"""
+                    r"""\(\s*["']([^"']+)["']\s*\)"""
+                ),
+                (
+                    r"""(?is)location\.assign"""
+                    r"""\(\s*["']([^"']+)["']\s*\)"""
+                ),
+                (
+                    r"""(?is)window\.location\.assign"""
+                    r"""\(\s*["']([^"']+)["']\s*\)"""
+                ),
+            )
+
+            for pattern in javascript_patterns:
+                match = re.search(
+                    pattern,
+                    head,
+                )
+
+                if not match:
+                    continue
+
+                redirect_url = _absolute_public_url(
+                    match.group(1),
+                    final_url,
+                )
+
+                if redirect_url:
+                    break
+
+        # -------------------------------------------------
+        # SIMPLE TRANSFER LINKS
+        # -------------------------------------------------
+        #
+        # Some interstitials have no meta refresh but contain one
+        # obvious destination anchor. Only use this fallback when the
+        # page itself looks like a transfer page.
+        # -------------------------------------------------
+
+        transfer_probe = (
+            _clean_text(
+                html[:20000]
+            )
+            .lower()
+        )
+
+        transfer_markers = (
+            "transferring to the website",
+            "redirecting to the website",
+            "redirecting...",
+            "در حال انتقال به",
+            "در حال هدایت به",
+            "در حال انتقال به سایت",
+        )
+
+        looks_like_transfer_page = any(
+            marker in transfer_probe
+            for marker in transfer_markers
+        )
+
+        if (
+            not redirect_url
+            and looks_like_transfer_page
+        ):
+            href_matches = re.findall(
+                (
+                    r"""(?is)<a[^>]+"""
+                    r"""href\s*=\s*["']([^"']+)["']"""
+                ),
+                head,
+            )
+
+            current_host = (
+                urlsplit(
+                    final_url
+                ).hostname
+                or ""
+            ).lower()
+
+            for href in href_matches:
+                candidate = _absolute_public_url(
+                    href,
+                    final_url,
+                )
+
+                if not candidate:
+                    continue
+
+                candidate_host = (
+                    urlsplit(
+                        candidate
+                    ).hostname
+                    or ""
+                ).lower()
+
+                # Ignore empty/self/navigation anchors. An external or
+                # meaningfully different article URL is preferred.
+                if candidate == final_url:
+                    continue
+
+                if not candidate_host:
+                    continue
+
+                if (
+                    candidate_host == current_host
+                    and urlsplit(candidate).path
+                    in {
+                        "",
+                        "/",
+                    }
+                ):
+                    continue
+
+                redirect_url = candidate
+                break
+
+        # -------------------------------------------------
+        # SAFE SECOND FETCH
+        # -------------------------------------------------
+
+        if (
+            redirect_url
+            and redirect_url != final_url
+        ):
+            redirected_result = (
+                self.fetcher.fetch(
+                    redirect_url,
+                    allowed_content_types={
+                        "text/html",
+                        "application/xhtml+xml",
+                    },
+                )
+            )
+
+            html = redirected_result.text
+            final_url = (
+                redirected_result.final_url
+            )
+
+            transfer_probe = (
+                _clean_text(
+                    html[:20000]
+                )
+                .lower()
+            )
+
+            looks_like_transfer_page = any(
+                marker in transfer_probe
+                for marker in transfer_markers
+            )
+
+        # -------------------------------------------------
+        # FAIL CLOSED ON UNRESOLVED INTERSTITIAL
+        # -------------------------------------------------
+
+        if looks_like_transfer_page:
+            raise WebArticleExtractionError(
+                (
+                    "web page is a transfer/interstitial "
+                    "page and no usable article destination "
+                    "could be resolved"
+                )
+            )
+
         return self.extract_from_html(
-            result.text,
+            html,
             source_url=result.requested_url,
-            final_url=result.final_url,
+            final_url=final_url,
         )
 
     def extract_from_html(
