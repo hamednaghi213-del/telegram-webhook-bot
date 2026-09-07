@@ -28,7 +28,7 @@ from core.external_review_controller import (
     ExternalReviewDecision,
 )
 from core.smart_summarizer import (
-    DEFAULT_TEXT_TARGET,
+    DEFAULT_CAPTION_TARGET,
     summarize_text_safely,
 )
 
@@ -175,6 +175,12 @@ def _apply_shared_smart_summary(
     The existing Gemini provider is injected into the existing shared
     Smart Summary engine.
 
+    SHORT uses the caption-safe target because reviewed external
+    content may be published together with selected media.
+
+    Aggressive reduction is opt-in only for this explicit SHORT path.
+    The shared Smart Summary defaults remain unchanged everywhere else.
+
     No second summarization implementation exists here.
 
     Fail closed:
@@ -203,11 +209,12 @@ def _apply_shared_smart_summary(
             summarize_text_safely(
                 original_text=original_text,
                 target_length=(
-                    DEFAULT_TEXT_TARGET
+                    DEFAULT_CAPTION_TARGET
                 ),
                 summarizer=(
                     summarize_with_gemini
                 ),
+                aggressive_max_reduction_ratio=0.80,
             )
         )
 
@@ -347,6 +354,7 @@ def execute_external_review_decision(
         Review
         -> existing Gemini provider
         -> existing shared Smart Summary
+        -> caption-safe target
         -> External Publication Service
         -> PreparedContent
         -> Shared Publication Engine
