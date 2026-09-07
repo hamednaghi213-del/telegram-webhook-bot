@@ -12,7 +12,6 @@ from typing import (
     Any,
 )
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -22,38 +21,41 @@ logger = logging.getLogger(__name__)
 # معماری:
 #
 # 1. متن کوتاه
-#    → بدون AI
+# → بدون AI
 #
 # 2. کاهش معمولی تا 40٪
-#    → مستقیم وارد خلاصه‌سازی امن می‌شود.
+# → مستقیم وارد خلاصه‌سازی امن می‌شود.
 #
 # 3. کاهش بیشتر از 40٪
-#    → AI ابتدا نوع و حساسیت محتوا را تشخیص می‌دهد.
+# → AI ابتدا نوع و حساسیت محتوا را تشخیص می‌دهد.
 #
 # 4. خبر عادی
-#    → امکان فشرده‌سازی عمیق‌تر
+# → امکان فشرده‌سازی عمیق‌تر
 #
 # 5. متن حساس
-#    → سیاست محافظه‌کارانه
+# → سیاست محافظه‌کارانه
 #
 # 6. خروجی در تمام حالت‌ها
-#    → Validator ضدتحریف
+# → Validator ضدتحریف
 #
 # 7. AI باید فقط به اندازه لازم متن را کوتاه کند.
 #
 # 8. خروجی باید تا حد امکان نزدیک Target باشد.
 #
 # 9. اگر خروجی بیش از حد کوتاه باشد
-#    → یک Retry کنترل‌شده برای استفاده بیشتر از ظرفیت
+# → یک Retry کنترل‌شده برای استفاده بیشتر از ظرفیت
 #
 # 10. اگر خروجی کمی از Target عبور کند
-#     → یک Retry کنترل‌شده برای کوتاه‌تر شدن
+# → یک Retry کنترل‌شده برای کوتاه‌تر شدن
 #
 # 11. اختلاف جزئی 1 تا 2 کاراکتر با کف مطلوب
-#     → قابل قبول است.
+# → قابل قبول است.
 #
 # 12. شکست AI / Validation
-#     → متن اصلی دقیقاً حفظ می‌شود.
+# → متن اصلی دقیقاً حفظ می‌شود.
+#
+# 13. فشرده‌سازی عمیق‌تر
+# → فقط به‌صورت opt-in و با پارامتر صریح مجاز است.
 # =========================================================
 
 
@@ -71,32 +73,6 @@ MINIMUM_SUMMARY_LENGTH = 80
 
 # =========================================================
 # TARGET UTILIZATION POLICY
-#
-# مثال:
-#
-# Target = 816
-#
-# Minimum preferred:
-#
-# ceil(816 * 0.90) = 735
-#
-# با تلورانس دو کاراکتری:
-#
-# effective minimum = 733
-#
-# خروجی:
-#
-# 790 → مناسب
-# 760 → مناسب
-# 735 → مناسب
-# 734 → مناسب
-# 733 → مناسب
-# 528 → بیش از حد کوتاه → Retry
-#
-# هدف:
-#
-# استفاده حداکثری و منطقی از ظرفیت،
-# بدون پرگویی مصنوعی.
 # =========================================================
 
 SUMMARY_TARGET_MIN_UTILIZATION = 0.90
@@ -183,25 +159,15 @@ CERTAINTY_MARKERS = {
 
 @dataclass
 class SummaryResult:
-
     success: bool
-
     original_text: str
-
     summary_text: str
-
     target_length: int
-
     original_length: int
-
     summary_length: int
-
     reduction_ratio: float
-
     validation_passed: bool
-
     reason: str
-
     metadata: Dict[str, Any]
 
 
@@ -212,7 +178,6 @@ class SummaryResult:
 def normalize_text(
     text: Optional[str]
 ) -> str:
-
     if not text:
         return ""
 
@@ -228,7 +193,6 @@ def normalize_text(
 def preserve_original_text(
     text: Optional[str]
 ) -> str:
-
     if text is None:
         return ""
 
@@ -244,7 +208,6 @@ def preserve_original_text(
 def text_length(
     text: Optional[str]
 ) -> int:
-
     return len(
         preserve_original_text(
             text
@@ -260,7 +223,6 @@ def needs_summarization(
     text: str,
     target_length: int
 ) -> bool:
-
     raw_text = preserve_original_text(
         text
     )
@@ -285,7 +247,6 @@ def calculate_reduction_ratio(
     original_text: str,
     summary_text: str
 ) -> float:
-
     original_text = normalize_text(
         original_text
     )
@@ -319,7 +280,6 @@ def calculate_required_reduction_ratio(
     original_length: int,
     target_length: int
 ) -> float:
-
     if original_length <= 0:
         return 0.0
 
@@ -345,7 +305,6 @@ def calculate_required_reduction_ratio(
 def calculate_minimum_target_length(
     target_length: int
 ) -> int:
-
     if target_length <= 0:
         return 0
 
@@ -366,7 +325,6 @@ def calculate_minimum_target_length(
 def calculate_effective_minimum_target_length(
     target_length: int
 ) -> int:
-
     preferred_minimum = (
         calculate_minimum_target_length(
             target_length
@@ -387,7 +345,6 @@ def summary_underfills_target(
     summary_text: str,
     target_length: int
 ) -> bool:
-
     summary_text = normalize_text(
         summary_text
     )
@@ -417,7 +374,6 @@ def summary_underfills_target(
 def extract_numbers(
     text: str
 ) -> Set[str]:
-
     text = normalize_text(
         text
     )
@@ -446,7 +402,6 @@ def extract_numbers(
 def extract_mentions(
     text: str
 ) -> Set[str]:
-
     text = normalize_text(
         text
     )
@@ -469,7 +424,6 @@ def extract_mentions(
 def extract_hashtags(
     text: str
 ) -> Set[str]:
-
     text = normalize_text(
         text
     )
@@ -492,7 +446,6 @@ def extract_hashtags(
 def extract_urls(
     text: str
 ) -> Set[str]:
-
     text = normalize_text(
         text
     )
@@ -516,7 +469,6 @@ def extract_urls(
 def extract_certainty_markers(
     text: str
 ) -> Set[str]:
-
     text = normalize_text(
         text
     )
@@ -536,7 +488,6 @@ def extract_certainty_markers(
             marker.lower()
             in normalized_lower
         ):
-
             found.add(
                 marker
             )
@@ -551,7 +502,6 @@ def extract_certainty_markers(
 def extract_protected_facts(
     text: str
 ) -> Dict[str, Set[str]]:
-
     return {
         "numbers": extract_numbers(
             text
@@ -581,7 +531,6 @@ def detect_new_numbers(
     original_text: str,
     summary_text: str
 ) -> Set[str]:
-
     original_numbers = (
         extract_numbers(
             original_text
@@ -605,7 +554,6 @@ def detect_new_numbers(
 # =========================================================
 
 def build_content_classification_instruction() -> str:
-
     return (
         "وظیفه شما فقط تشخیص میزان حساسیت این متن "
         "برای خلاصه‌سازی خبری است. "
@@ -639,7 +587,6 @@ def build_content_classification_instruction() -> str:
 def parse_content_classification(
     value: Optional[str]
 ) -> str:
-
     value = (
         normalize_text(
             value
@@ -648,28 +595,24 @@ def parse_content_classification(
     )
 
     if not value:
-
         return CONTENT_TYPE_UNCERTAIN
 
     if (
         "SENSITIVE_CONTENT"
         in value
     ):
-
         return CONTENT_TYPE_SENSITIVE
 
     if (
         "NORMAL_NEWS"
         in value
     ):
-
         return CONTENT_TYPE_NORMAL
 
     if (
         "UNCERTAIN"
         in value
     ):
-
         return CONTENT_TYPE_UNCERTAIN
 
     return CONTENT_TYPE_UNCERTAIN
@@ -686,7 +629,6 @@ def classify_content_with_ai(
         str
     ]
 ) -> str:
-
     instruction = (
         build_content_classification_instruction()
     )
@@ -729,12 +671,10 @@ def classify_content_with_ai(
 def get_max_reduction_for_content_type(
     content_type: str
 ) -> float:
-
     if (
         content_type
         == CONTENT_TYPE_NORMAL
     ):
-
         return (
             NORMAL_NEWS_MAX_REDUCTION_RATIO
         )
@@ -743,7 +683,6 @@ def get_max_reduction_for_content_type(
         content_type
         == CONTENT_TYPE_SENSITIVE
     ):
-
         return (
             SENSITIVE_CONTENT_MAX_REDUCTION_RATIO
         )
@@ -768,7 +707,6 @@ def validate_summary(
         CONTENT_TYPE_UNCERTAIN
     )
 ) -> Dict[str, Any]:
-
     original_text = normalize_text(
         original_text
     )
@@ -782,13 +720,11 @@ def validate_summary(
     warnings: List[str] = []
 
     if not original_text:
-
         errors.append(
             "original_text_empty"
         )
 
     if not summary_text:
-
         errors.append(
             "summary_text_empty"
         )
@@ -798,7 +734,6 @@ def validate_summary(
         and len(summary_text)
         > target_length
     ):
-
         errors.append(
             "summary_exceeds_target"
         )
@@ -810,7 +745,6 @@ def validate_summary(
         and len(original_text)
         >= MINIMUM_SUMMARY_LENGTH
     ):
-
         warnings.append(
             "summary_very_short"
         )
@@ -826,14 +760,9 @@ def validate_summary(
         reduction_ratio
         > max_reduction_ratio
     ):
-
         errors.append(
             "reduction_too_aggressive"
         )
-
-    # =====================================================
-    # NUMBERS
-    # =====================================================
 
     original_numbers = (
         extract_numbers(
@@ -858,7 +787,6 @@ def validate_summary(
     )
 
     if new_numbers:
-
         errors.append(
             "new_numbers_detected"
         )
@@ -868,14 +796,9 @@ def validate_summary(
         == CONTENT_TYPE_SENSITIVE
         and missing_numbers
     ):
-
         errors.append(
             "sensitive_numbers_lost"
         )
-
-    # =====================================================
-    # MENTIONS
-    # =====================================================
 
     original_mentions = (
         extract_mentions(
@@ -895,14 +818,9 @@ def validate_summary(
     )
 
     if new_mentions:
-
         errors.append(
             "new_mentions_detected"
         )
-
-    # =====================================================
-    # URLs
-    # =====================================================
 
     original_urls = (
         extract_urls(
@@ -922,14 +840,9 @@ def validate_summary(
     )
 
     if new_urls:
-
         errors.append(
             "new_urls_detected"
         )
-
-    # =====================================================
-    # CERTAINTY / ATTRIBUTION
-    # =====================================================
 
     original_markers = (
         extract_certainty_markers(
@@ -947,7 +860,6 @@ def validate_summary(
         original_markers
         and not summary_markers
     ):
-
         errors.append(
             "certainty_markers_lost"
         )
@@ -957,42 +869,31 @@ def validate_summary(
             len(errors)
             == 0
         ),
-
         "errors": errors,
-
         "warnings": warnings,
-
         "content_type":
             content_type,
-
         "max_reduction_ratio":
             max_reduction_ratio,
-
         "reduction_ratio":
             reduction_ratio,
-
         "new_numbers": sorted(
             new_numbers
         ),
-
         "missing_numbers": sorted(
             missing_numbers
         ),
-
         "original_numbers": sorted(
             original_numbers
         ),
-
         "summary_numbers": sorted(
             summary_numbers
         ),
-
         "original_certainty_markers": (
             sorted(
                 original_markers
             )
         ),
-
         "summary_certainty_markers": (
             sorted(
                 summary_markers
@@ -1010,14 +911,12 @@ def build_summarization_instruction(
     content_type: str = CONTENT_TYPE_NORMAL,
     minimum_length: Optional[int] = None
 ) -> str:
-
     sensitive_instruction = ""
 
     if (
         content_type
         == CONTENT_TYPE_SENSITIVE
     ):
-
         sensitive_instruction = (
             "این متن از نوع حساس تشخیص داده شده است. "
             "در حذف جزئیات بسیار محافظه‌کار باش. "
@@ -1026,7 +925,6 @@ def build_summarization_instruction(
         )
 
     if minimum_length is None:
-
         minimum_length = (
             calculate_minimum_target_length(
                 target_length
@@ -1118,7 +1016,6 @@ def build_underfill_retry_instruction(
     minimum_length: int,
     content_type: str
 ) -> str:
-
     base_instruction = (
         build_summarization_instruction(
             target_length=target_length,
@@ -1159,7 +1056,6 @@ def should_retry_overshoot(
     generated: str,
     target_length: int
 ) -> bool:
-
     if not SUMMARY_RETRY_ENABLED:
         return False
 
@@ -1177,7 +1073,6 @@ def should_retry_overshoot(
     if set(errors) != {
         "summary_exceeds_target"
     }:
-
         return False
 
     if len(generated) <= target_length:
@@ -1191,7 +1086,6 @@ def should_retry_underfill(
     generated: str,
     target_length: int
 ) -> bool:
-
     if not SUMMARY_RETRY_ENABLED:
         return False
 
@@ -1202,7 +1096,6 @@ def should_retry_underfill(
         generated,
         target_length
     ):
-
         return False
 
     errors = set(
@@ -1212,25 +1105,6 @@ def should_retry_underfill(
         )
         or []
     )
-
-    # =====================================================
-    # Underfill Retry فقط وقتی مجاز است که:
-    #
-    # 1. هیچ خطای Fact Safety وجود نداشته باشد
-    #
-    # یا
-    #
-    # 2. تنها خطا reduction_too_aggressive باشد.
-    #
-    # خطاهایی مثل:
-    #
-    # new_numbers_detected
-    # new_mentions_detected
-    # new_urls_detected
-    # certainty_markers_lost
-    #
-    # با Retry پوشانده نمی‌شوند.
-    # =====================================================
 
     allowed_errors = {
         "reduction_too_aggressive"
@@ -1242,7 +1116,6 @@ def should_retry_underfill(
             allowed_errors
         )
     ):
-
         return False
 
     return True
@@ -1253,7 +1126,6 @@ def should_retry_summary(
     generated: str,
     target_length: int
 ) -> bool:
-
     return (
         should_retry_overshoot(
             validation=validation,
@@ -1279,7 +1151,6 @@ def calculate_retry_target(
     generated_length: int,
     effective_max_reduction_ratio: float
 ) -> Optional[int]:
-
     if original_length <= 0:
         return None
 
@@ -1307,10 +1178,6 @@ def calculate_retry_target(
         - retry_margin
     )
 
-    # =====================================================
-    # POLICY FLOOR
-    # =====================================================
-
     policy_min_target = math.ceil(
         original_length
         * (
@@ -1329,7 +1196,6 @@ def calculate_retry_target(
         retry_target
         >= current_target
     ):
-
         return None
 
     return retry_target
@@ -1350,9 +1216,11 @@ def summarize_text_safely(
     ] = None,
     max_reduction_ratio: float = (
         DEFAULT_MAX_REDUCTION_RATIO
-    )
+    ),
+    aggressive_max_reduction_ratio: Optional[
+        float
+    ] = None,
 ) -> SummaryResult:
-
     raw_original_text = (
         preserve_original_text(
             original_text
@@ -1498,12 +1366,75 @@ def summarize_text_safely(
     )
 
     # =====================================================
+    # EFFECTIVE ABSOLUTE REDUCTION LIMIT
+    #
+    # Default behavior remains unchanged at 60%.
+    # A deeper limit is available only when the caller
+    # explicitly opts in.
+    # =====================================================
+
+    effective_absolute_max_reduction_ratio = (
+        ABSOLUTE_MAX_REDUCTION_RATIO
+    )
+
+    if (
+        aggressive_max_reduction_ratio
+        is not None
+    ):
+        try:
+            requested_aggressive_limit = float(
+                aggressive_max_reduction_ratio
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            requested_aggressive_limit = -1.0
+
+        if (
+            requested_aggressive_limit
+            <= 0.0
+            or requested_aggressive_limit
+            >= 1.0
+        ):
+            return SummaryResult(
+                success=False,
+                original_text=raw_original_text,
+                summary_text=raw_original_text,
+                target_length=target_length,
+                original_length=original_length,
+                summary_length=original_length,
+                reduction_ratio=0.0,
+                validation_passed=False,
+                reason=(
+                    "invalid_aggressive_reduction_limit"
+                ),
+                metadata={
+                    "summarizer_called": False,
+                    "classifier_called": False,
+                    "retry_called": False,
+                    "retry_reason": None,
+                    "content_type": (
+                        CONTENT_TYPE_UNCERTAIN
+                    ),
+                    "aggressive_max_reduction_ratio": (
+                        aggressive_max_reduction_ratio
+                    ),
+                }
+            )
+
+        effective_absolute_max_reduction_ratio = max(
+            ABSOLUTE_MAX_REDUCTION_RATIO,
+            requested_aggressive_limit,
+        )
+
+    # =====================================================
     # ABSOLUTE HARD LIMIT
     # =====================================================
 
     if (
         required_reduction_ratio
-        >= ABSOLUTE_MAX_REDUCTION_RATIO
+        >= effective_absolute_max_reduction_ratio
     ):
 
         logger.warning(
@@ -1511,7 +1442,7 @@ def summarize_text_safely(
             f"required_reduction="
             f"{required_reduction_ratio:.3f} | "
             f"absolute_max="
-            f"{ABSOLUTE_MAX_REDUCTION_RATIO:.3f}"
+            f"{effective_absolute_max_reduction_ratio:.3f}"
         )
 
         return SummaryResult(
@@ -1529,7 +1460,10 @@ def summarize_text_safely(
                     required_reduction_ratio
                 ),
                 "effective_max_reduction_ratio": (
-                    ABSOLUTE_MAX_REDUCTION_RATIO
+                    effective_absolute_max_reduction_ratio
+                ),
+                "effective_absolute_max_reduction_ratio": (
+                    effective_absolute_max_reduction_ratio
                 ),
                 "summarizer_called": False,
                 "classifier_called": False,
@@ -1554,8 +1488,17 @@ def summarize_text_safely(
     )
 
     if (
+        aggressive_max_reduction_ratio
+        is not None
+    ):
+        effective_max_reduction_ratio = max(
+            effective_max_reduction_ratio,
+            effective_absolute_max_reduction_ratio,
+        )
+
+    if (
         required_reduction_ratio
-        > max_reduction_ratio
+        > effective_max_reduction_ratio
     ):
 
         classifier_called = True
@@ -1616,6 +1559,9 @@ def summarize_text_safely(
                     "effective_max_reduction_ratio": (
                         effective_max_reduction_ratio
                     ),
+                    "effective_absolute_max_reduction_ratio": (
+                        effective_absolute_max_reduction_ratio
+                    ),
                     "summarizer_called": False,
                     "classifier_called": True,
                     "retry_called": False,
@@ -1642,11 +1588,6 @@ def summarize_text_safely(
         )
     )
 
-    # The requested target is selected within the content-policy reduction
-    # limit, while the provider is explicitly allowed to use a small
-    # underfill band. Validate that accepted band consistently: otherwise a
-    # response which obeys the target instruction can be rejected solely
-    # because it lands a few characters below the exact target.
     validation_max_reduction_ratio = (
         effective_max_reduction_ratio
     )
@@ -1660,7 +1601,7 @@ def summarize_text_safely(
     ):
 
         validation_max_reduction_ratio = min(
-            ABSOLUTE_MAX_REDUCTION_RATIO,
+            effective_absolute_max_reduction_ratio,
             max(
                 effective_max_reduction_ratio,
                 calculate_required_reduction_ratio(
@@ -1728,6 +1669,9 @@ def summarize_text_safely(
                 ),
                 "effective_max_reduction_ratio": (
                     effective_max_reduction_ratio
+                ),
+                "effective_absolute_max_reduction_ratio": (
+                    effective_absolute_max_reduction_ratio
                 ),
                 "minimum_target_length": (
                     minimum_target_length
@@ -1854,6 +1798,9 @@ def summarize_text_safely(
                     ),
                     "effective_max_reduction_ratio": (
                         effective_max_reduction_ratio
+                    ),
+                    "effective_absolute_max_reduction_ratio": (
+                        effective_absolute_max_reduction_ratio
                     )
                 }
             )
@@ -1913,7 +1860,6 @@ def summarize_text_safely(
             )
 
             if not retry_fill_ok:
-
                 retry_errors.append(
                     "summary_underfills_target"
                 )
@@ -1975,6 +1921,9 @@ def summarize_text_safely(
                     ),
                     "effective_max_reduction_ratio": (
                         effective_max_reduction_ratio
+                    ),
+                    "effective_absolute_max_reduction_ratio": (
+                        effective_absolute_max_reduction_ratio
                     ),
                     "required_reduction_ratio": (
                         required_reduction_ratio
@@ -2091,6 +2040,9 @@ def summarize_text_safely(
                         ),
                         "effective_max_reduction_ratio": (
                             effective_max_reduction_ratio
+                        ),
+                        "effective_absolute_max_reduction_ratio": (
+                            effective_absolute_max_reduction_ratio
                         )
                     }
                 )
@@ -2178,6 +2130,9 @@ def summarize_text_safely(
                         "effective_max_reduction_ratio": (
                             effective_max_reduction_ratio
                         ),
+                        "effective_absolute_max_reduction_ratio": (
+                            effective_absolute_max_reduction_ratio
+                        ),
                         "required_reduction_ratio": (
                             required_reduction_ratio
                         )
@@ -2239,6 +2194,9 @@ def summarize_text_safely(
                 "effective_max_reduction_ratio": (
                     effective_max_reduction_ratio
                 ),
+                "effective_absolute_max_reduction_ratio": (
+                    effective_absolute_max_reduction_ratio
+                ),
                 "required_reduction_ratio": (
                     required_reduction_ratio
                 )
@@ -2278,6 +2236,8 @@ def summarize_text_safely(
         f"{reduction_ratio:.3f} | "
         f"max_allowed="
         f"{effective_max_reduction_ratio:.3f} | "
+        f"absolute_max="
+        f"{effective_absolute_max_reduction_ratio:.3f} | "
         f"retry={retry_called} | "
         f"retry_reason={retry_reason or '-'}"
     )
@@ -2331,6 +2291,12 @@ def summarize_text_safely(
             ),
             "effective_max_reduction_ratio": (
                 effective_max_reduction_ratio
+            ),
+            "effective_absolute_max_reduction_ratio": (
+                effective_absolute_max_reduction_ratio
+            ),
+            "aggressive_max_reduction_ratio": (
+                aggressive_max_reduction_ratio
             ),
             "required_reduction_ratio": (
                 required_reduction_ratio
