@@ -21,16 +21,13 @@ from core.external_media_materializer import (
     MaterializedExternalMedia,
 )
 
-
 # =========================================================
 # CONFIG
 # =========================================================
 
-
 EXTERNAL_MEDIA_STAGING_CHAT_ENV = (
     "EXTERNAL_MEDIA_STAGING_CHAT_ID"
 )
-
 
 # =========================================================
 # HELPERS
@@ -434,10 +431,37 @@ class TelegramExternalMediaMaterializer:
                 "ok"
             )
         ):
+            error_code = (
+                payload.get(
+                    "error_code"
+                )
+            )
+
+            description = str(
+                payload.get(
+                    "description"
+                )
+                or ""
+            ).strip()
+
+            error_details = (
+                f"status={response.status_code}"
+            )
+
+            if error_code is not None:
+                error_details += (
+                    f" | error_code={error_code}"
+                )
+
+            if description:
+                error_details += (
+                    f" | description={description}"
+                )
+
             raise ExternalMediaUploadError(
                 (
                     "Telegram staging rejected media "
-                    f"with status={response.status_code}"
+                    f"with {error_details}"
                 )
             )
 
