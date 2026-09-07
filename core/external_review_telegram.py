@@ -297,7 +297,255 @@ def handle_external_review_telegram_callback(
     )
 
     # =====================================================
+    # SHARED EDITORIAL FLOW
+    #
+    # Editorial rewrite is intentionally handled BEFORE
+    # normal publication execution.
+    #
+    # It must:
+    #   - preserve the selected media
+    #   - materialize selected external media
+    #   - create a Shared Editorial pending review
+    #   - NOT publish immediately
+    #   - transfer ownership only after queue success
+    # =====================================================
+
+    if (
+        decision.requires_editorial_rewrite
+    ):
+        answer_callback_query(
+            callback_id,
+            "انتخاب ثبت شد.",
+        )
+
+        if queue_editorial_review is None:
+            send_message(
+                int(
+                    user_id
+                ),
+                (
+                    "⚠️ مسیر تحریریه در حال حاضر "
+                    "در دسترس نیست."
+                ),
+            )
+
+            return True
+
+        review_parts = []
+
+        if review.title:
+            review_parts.append(
+                str(
+                    review.title
+                ).strip()
+            )
+
+        if review.lead:
+            review_parts.append(
+                str(
+                    review.lead
+                ).strip()
+            )
+
+        if review.body:
+            review_parts.append(
+                str(
+                    review.body
+                ).strip()
+            )
+
+        editorial_text = "\n\n".join(
+            part
+            for part in review_parts
+            if part
+        ).strip()
+
+        if not editorial_text:
+            send_message(
+                int(
+                    user_id
+                ),
+                (
+                    "⚠️ متنی برای بازنویسی "
+                    "تحریریه وجود ندارد."
+                ),
+            )
+
+            return True
+
+        # =================================================
+        # PRESERVE SELECTED EXTERNAL MEDIA
+        # =================================================
+        #
+        # review.media contains exactly the media inherited
+        # from the persistent External Review selection.
+        #
+        # External media is still transport-neutral here.
+        # Before handing it to the existing Editorial Pending
+        # flow, it must be converted to PreparedContent-style
+        # media mappings containing reusable Telegram file_id.
+        #
+        # This staging/materialization step does NOT publish
+        # anything to a destination.
+        # =================================================
+
+        editorial_media_files = []
+
+        if review.media:
+
+            try:
+                from core.external_media_factory import (
+                    build_external_media_materializer,
+                )
+
+                media_materializer = (
+                    build_external_media_materializer(
+                        api_url=api_url,
+                    )
+                )
+
+                editorial_media_files = list(
+                    media_materializer.build_prepared_files(
+                        review.media
+                    )
+                )
+
+            except Exception as exc:
+                logger.exception(
+                    (
+                        "[%s] External editorial media "
+                        "materialization failed | "
+                        "review_id=%s | %s"
+                    ),
+                    req_id,
+                    decision.review_id,
+                    exc,
+                )
+
+                answer_callback_query(
+                    callback_id,
+                    (
+                        "آماده‌سازی تصاویر برای "
+                        "بازنویسی تحریریه ناموفق بود."
+                    ),
+                )
+
+                send_message(
+                    int(
+                        user_id
+                    ),
+                    (
+                        "⚠️ تصاویر انتخاب‌شده آماده نشدند.\n\n"
+                        "متن و انتخاب تصاویر شما محفوظ است "
+                        "و می‌توانید دوباره تلاش کنید."
+                    ),
+                )
+
+                return True
+
+        # =================================================
+        # QUEUE INTO EXISTING SHARED EDITORIAL FLOW
+        # =================================================
+
+        try:
+            queued = (
+                queue_editorial_review(
+                    chat_id=int(
+                        user_id
+                    ),
+                    text=editorial_text,
+                    entities=[],
+                    forced_content_type=(
+                        "news_analysis"
+                    ),
+                    media_files=(
+                        editorial_media_files
+                    ),
+                    source_key=(
+                        f"external:"
+                        f"{decision.review_id}"
+                    ),
+                )
+            )
+
+        except Exception as exc:
+            logger.exception(
+                (
+                    "[%s] External editorial "
+                    "queue failed | %s"
+                ),
+                req_id,
+                exc,
+            )
+
+            send_message(
+                int(
+                    user_id
+                ),
+                (
+                    "⚠️ ایجاد بررسی تحریریه "
+                    "با خطا روبرو شد."
+                ),
+            )
+
+            return True
+
+        if not queued:
+            send_message(
+                int(
+                    user_id
+                ),
+                (
+                    "⚠️ بررسی تحریریه "
+                    "ایجاد نشد."
+                ),
+            )
+
+            return True
+
+        # =================================================
+        # OWNERSHIP TRANSFER
+        # =================================================
+        #
+        # Shared Editorial Pending now owns:
+        #   - text
+        #   - selected media
+        #   - confirmation lifecycle
+        #
+        # The original External Review pending state must
+        # therefore be consumed only AFTER the Editorial
+        # review has been created successfully.
+        # =================================================
+
+        try:
+            resolved_controller.consume_after_success(
+                review_id=decision.review_id,
+                chat_id=decision.chat_id,
+            )
+
+        except Exception as exc:
+            logger.exception(
+                (
+                    "[%s] External review transferred to "
+                    "Editorial but source pending cleanup "
+                    "failed | review_id=%s | %s"
+                ),
+                req_id,
+                decision.review_id,
+                exc,
+            )
+
+        return True
+
+    # =====================================================
     # OPTIONAL EXECUTION BOUNDARY
+    #
+    # All normal final modes are executed through the
+    # established External Review -> Shared Engine bridge.
+    #
+    # Editorial rewrite was intentionally intercepted above
+    # because it must create another confirmation preview
+    # instead of publishing immediately.
     # =====================================================
 
     if execute_decision is not None:
@@ -424,122 +672,6 @@ def handle_external_review_telegram_callback(
                 "خلاصه‌سازی آماده است."
             ),
         )
-
-        return True
-
-    # =====================================================
-    # SHARED EDITORIAL FLOW
-    # =====================================================
-
-    if (
-        decision.requires_editorial_rewrite
-    ):
-        answer_callback_query(
-            callback_id,
-            "انتخاب ثبت شد.",
-        )
-
-        if queue_editorial_review is None:
-            send_message(
-                int(
-                    user_id
-                ),
-                (
-                    "⚠️ مسیر تحریریه در حال حاضر "
-                    "در دسترس نیست."
-                ),
-            )
-
-            return True
-
-        review_parts = []
-
-        if review.title:
-            review_parts.append(
-                str(
-                    review.title
-                ).strip()
-            )
-
-        if review.lead:
-            review_parts.append(
-                str(
-                    review.lead
-                ).strip()
-            )
-
-        if review.body:
-            review_parts.append(
-                str(
-                    review.body
-                ).strip()
-            )
-
-        editorial_text = "\n\n".join(
-            part
-            for part in review_parts
-            if part
-        ).strip()
-
-        if not editorial_text:
-            send_message(
-                int(
-                    user_id
-                ),
-                (
-                    "⚠️ متنی برای بازنویسی "
-                    "تحریریه وجود ندارد."
-                ),
-            )
-
-            return True
-
-        try:
-            queued = (
-                queue_editorial_review(
-                    chat_id=int(
-                        user_id
-                    ),
-                    text=editorial_text,
-                    entities=[],
-                    forced_content_type=(
-                        "news_analysis"
-                    ),
-                )
-            )
-
-        except Exception as exc:
-            logger.exception(
-                (
-                    "[%s] External editorial "
-                    "queue failed | %s"
-                ),
-                req_id,
-                exc,
-            )
-
-            send_message(
-                int(
-                    user_id
-                ),
-                (
-                    "⚠️ ایجاد بررسی تحریریه "
-                    "با خطا روبرو شد."
-                ),
-            )
-
-            return True
-
-        if not queued:
-            send_message(
-                int(
-                    user_id
-                ),
-                (
-                    "⚠️ بررسی تحریریه "
-                    "ایجاد نشد."
-                ),
-            )
 
         return True
 
