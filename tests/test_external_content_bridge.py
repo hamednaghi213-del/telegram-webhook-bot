@@ -668,7 +668,103 @@ def test_collage_presentation_is_preserved():
     )
 
 
-def test_mixed_media_presentation_falls_back_to_normal_media():
+def test_multiple_plain_photos_default_to_slideshow():
+    """
+    Ordinary web extractors usually return gallery images without
+    Telegram-specific presentation metadata.
+
+    A deliberate multi-image review selection must still become a
+    slideshow before entering the Shared Publication Engine.
+    """
+
+    media = (
+        _media(
+            url="https://example.com/1.jpg",
+            position=1,
+            presentation="",
+        ),
+        _media(
+            url="https://example.com/2.jpg",
+            position=2,
+            presentation="",
+        ),
+        _media(
+            url="https://example.com/3.jpg",
+            position=3,
+            presentation="",
+        ),
+    )
+
+    result = build_external_prepared_content(
+        _content(
+            media=media
+        ),
+        _review(
+            media=media
+        ),
+        prepared_files=(
+            {
+                "type": "photo",
+                "file_id": "file-1",
+            },
+            {
+                "type": "photo",
+                "file_id": "file-2",
+            },
+            {
+                "type": "photo",
+                "file_id": "file-3",
+            },
+        ),
+    )
+
+    assert (
+        result.prepared_content.media_presentation
+        == "slideshow"
+    )
+
+    assert len(
+        result.prepared_content.files
+    ) == 3
+
+
+def test_single_plain_photo_does_not_force_slideshow():
+    media = (
+        _media(
+            url="https://example.com/1.jpg",
+            position=1,
+            presentation="",
+        ),
+    )
+
+    result = build_external_prepared_content(
+        _content(
+            media=media
+        ),
+        _review(
+            media=media
+        ),
+        prepared_files=(
+            {
+                "type": "photo",
+                "file_id": "file-1",
+            },
+        ),
+    )
+
+    assert (
+        result.prepared_content.media_presentation
+        == ""
+    )
+
+
+def test_partial_explicit_slideshow_is_preserved():
+    """
+    If one selected item already declares slideshow and the remaining
+    selected visual items have no conflicting presentation, preserve the
+    explicit slideshow intent.
+    """
+
     media = (
         _media(
             url="https://example.com/1.jpg",
@@ -706,6 +802,85 @@ def test_mixed_media_presentation_falls_back_to_normal_media():
         == "slideshow"
     )
 
+
+def test_conflicting_explicit_presentations_fall_back_to_normal_media():
+    media = (
+        _media(
+            url="https://example.com/1.jpg",
+            position=1,
+            presentation="slideshow",
+        ),
+        _media(
+            url="https://example.com/2.jpg",
+            position=2,
+            presentation="collage",
+        ),
+    )
+
+    result = build_external_prepared_content(
+        _content(
+            media=media
+        ),
+        _review(
+            media=media
+        ),
+        prepared_files=(
+            {
+                "type": "photo",
+                "file_id": "file-1",
+            },
+            {
+                "type": "photo",
+                "file_id": "file-2",
+            },
+        ),
+    )
+
+    assert (
+        result.prepared_content.media_presentation
+        == ""
+    )
+
+
+def test_non_visual_multi_media_does_not_force_slideshow():
+    from core.external_content_model import ExternalMedia
+
+    media = (
+        ExternalMedia(
+            type="photo",
+            source_url="https://example.com/1.jpg",
+            position=1,
+        ),
+        ExternalMedia(
+            type="document",
+            source_url="https://example.com/report.pdf",
+            position=2,
+        ),
+    )
+
+    result = build_external_prepared_content(
+        _content(
+            media=media
+        ),
+        _review(
+            media=media
+        ),
+        prepared_files=(
+            {
+                "type": "photo",
+                "file_id": "file-1",
+            },
+            {
+                "type": "document",
+                "file_id": "file-2",
+            },
+        ),
+    )
+
+    assert (
+        result.prepared_content.media_presentation
+        == ""
+    )
 
 # =========================================================
 # SHARED ENGINE SIGNALS
