@@ -4906,36 +4906,36 @@ def handle_webhook() -> Tuple[
                         1,
                         media_count,
                     ):
-                            additional_media_buttons.append(
-                                {
-                                    "text": (
-                                        "🖼 "
-                                        f"تصویر {media_index + 1}"
-                                    ),
-                                    "callback_data": (
-                                        "extrev:media:"
-                                        f"{external_review_id}:"
-                                        f"{media_index}"
-                                    ),
-                                }
-                            )
-
-                        if additional_media_buttons:
-
-                            # Maximum two buttons per row keeps the
-                            # mobile review keyboard readable.
-                            for index in range(
-                                0,
-                                len(
-                                    additional_media_buttons
+                        additional_media_buttons.append(
+                            {
+                                "text": (
+                                    "🖼 "
+                                    f"تصویر {media_index + 1}"
                                 ),
-                                2,
-                            ):
-                                review_rows.append(
-                                    additional_media_buttons[
-                                        index:index + 2
-                                    ]
-                                )
+                                "callback_data": (
+                                    "extrev:media:"
+                                    f"{external_review_id}:"
+                                    f"{media_index}"
+                                ),
+                            }
+                        )
+
+                    if additional_media_buttons:
+
+                        # Maximum two buttons per row keeps the
+                        # mobile review keyboard readable.
+                        for index in range(
+                            0,
+                            len(
+                                additional_media_buttons
+                            ),
+                            2,
+                        ):
+                            review_rows.append(
+                                additional_media_buttons[
+                                    index:index + 2
+                                ]
+                            )
 
                     review_rows.append(
                         [
