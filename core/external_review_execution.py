@@ -10,6 +10,10 @@ from typing import (
     Optional,
 )
 
+from core.ai_summarizer_provider import (
+    gemini_provider_configured,
+    summarize_with_gemini,
+)
 from core.external_media_factory import (
     build_external_media_materializer,
 )
@@ -168,9 +172,14 @@ def _apply_shared_smart_summary(
     """
     Apply the project's existing Smart Summary to a SHORT decision.
 
+    The existing Gemini provider is injected into the existing shared
+    Smart Summary engine.
+
+    No second summarization implementation exists here.
+
     Fail closed:
-    if the shared summarizer cannot produce a validated summary,
-    nothing is published.
+    if Gemini is not configured, fails, or the shared validator rejects
+    the result, nothing is published.
     """
 
     original_text = (
@@ -184,11 +193,21 @@ def _apply_shared_smart_summary(
             "external review has no text to summarize"
         )
 
+    if not gemini_provider_configured():
+        raise ExternalReviewExecutionError(
+            "Gemini summarizer provider is not configured"
+        )
+
     try:
         outcome = (
             summarize_text_safely(
                 original_text=original_text,
-                target_length=DEFAULT_TEXT_TARGET,
+                target_length=(
+                    DEFAULT_TEXT_TARGET
+                ),
+                summarizer=(
+                    summarize_with_gemini
+                ),
             )
         )
 
@@ -326,6 +345,7 @@ def execute_external_review_decision(
 
     SHORT:
         Review
+        -> existing Gemini provider
         -> existing shared Smart Summary
         -> External Publication Service
         -> PreparedContent
