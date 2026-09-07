@@ -4662,12 +4662,96 @@ def handle_webhook() -> Tuple[
                         .strip()
                     )
 
-                    if len(preview_text) > 3000:
-                        preview_text = (
-                            preview_text[:2997]
-                            .rstrip()
-                            + "..."
+                # =====================================
+                # FULL PREVIEW CHUNKING
+                # =====================================
+                #
+                # Preserve the complete extracted article.
+                # Long previews are split into several
+                # Telegram messages instead of truncation.
+                # =====================================
+
+                preview_chunks = []
+
+                remaining_preview = (
+                    preview_text
+                    or ""
+                ).strip()
+
+                PREVIEW_CHUNK_LIMIT = 3000
+
+                while remaining_preview:
+
+                    if len(
+                        remaining_preview
+                    ) <= PREVIEW_CHUNK_LIMIT:
+
+                        preview_chunks.append(
+                            remaining_preview
                         )
+
+                        break
+
+                    split_at = (
+                        remaining_preview.rfind(
+                            "\n\n",
+                            0,
+                            PREVIEW_CHUNK_LIMIT,
+                        )
+                    )
+
+                    if split_at <= 0:
+
+                        split_at = (
+                            remaining_preview.rfind(
+                                "\n",
+                                0,
+                                PREVIEW_CHUNK_LIMIT,
+                            )
+                        )
+
+                    if split_at <= 0:
+
+                        split_at = (
+                            remaining_preview.rfind(
+                                " ",
+                                0,
+                                PREVIEW_CHUNK_LIMIT,
+                            )
+                        )
+
+                    if split_at <= 0:
+
+                        split_at = (
+                            PREVIEW_CHUNK_LIMIT
+                        )
+
+                    chunk = (
+                        remaining_preview[
+                            :split_at
+                        ]
+                        .strip()
+                    )
+
+                    if chunk:
+
+                        preview_chunks.append(
+                            chunk
+                        )
+
+                    remaining_preview = (
+                        remaining_preview[
+                            split_at:
+                        ]
+                        .strip()
+                    )
+
+                if not preview_chunks:
+
+                    preview_chunks = [
+                        preview_text
+                        or ""
+                    ]
 
                     source_line = ""
 
@@ -4812,17 +4896,16 @@ def handle_webhook() -> Tuple[
                         #
                         # Index 0 is the extractor's best/main image.
 
-                        additional_media_buttons = []
+                    additional_media_buttons = []
 
-                        max_extra_images = min(
-                            media_count,
-                            4,
-                        )
+                    # All extracted images remain selectable.
+                    # The persistent review state already
+                    # supports multi-image selection.
 
-                        for media_index in range(
-                            1,
-                            max_extra_images,
-                        ):
+                    for media_index in range(
+                        1,
+                        media_count,
+                    ):
                             additional_media_buttons.append(
                                 {
                                     "text": (
@@ -4884,27 +4967,88 @@ def handle_webhook() -> Tuple[
                         )
                     }
                     
-                    # =====================================
-                    # SEND REVIEW TEXT + KEYBOARD
-                    # =====================================
+                # =====================================
+                # SEND FULL REVIEW + KEYBOARD
+                # =====================================
+                #
+                # Long articles are sent completely.
+                # Only the final preview message receives
+                # the action keyboard.
+                # =====================================
 
-                    try:
+                metadata_text = (
+                    f"{source_line}"
+                    f"{confidence_line}"
+                    f"{media_line}"
+                    f"{warning_line}"
+                ).strip()
 
-                        send_message(
-                            chat_id,
-                            review_message,
-                            reply_markup=(
-                                review_keyboard
-                            ),
+                for preview_index, preview_chunk in enumerate(
+                    preview_chunks
+                ):
+
+                    is_first_preview = (
+                        preview_index == 0
+                    )
+
+                    is_last_preview = (
+                        preview_index
+                        == len(
+                            preview_chunks
+                        ) - 1
+                    )
+
+                    if is_first_preview:
+
+                        heading = (
+                            "🔎 پیش‌نمایش مطلب"
                         )
 
-                    except TypeError:
+                    else:
 
-                        # Compatibility with legacy/test send_message
-                        # wrappers that do not expose reply_markup.
+                        heading = (
+                            "🔎 ادامه پیش‌نمایش"
+                        )
+
+                    current_review_message = (
+                        f"{heading}\n\n"
+                        f"{preview_chunk}"
+                    ).strip()
+
+                    if (
+                        is_last_preview
+                        and metadata_text
+                    ):
+
+                        current_review_message = (
+                            f"{current_review_message}"
+                            f"\n\n{metadata_text}"
+                        ).strip()
+
+                    if is_last_preview:
+
+                        try:
+
+                            send_message(
+                                chat_id,
+                                current_review_message,
+                                reply_markup=(
+                                    review_keyboard
+                                ),
+                            )
+
+                        except TypeError:
+
+                            send_message(
+                                chat_id,
+                                current_review_message,
+                            )
+
+                    else:
+
                         send_message(
                             chat_id,
-                            review_message,
+                            current_review_message,
                         )
                     logger.info(
                         (
