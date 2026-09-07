@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from typing import Optional
 
 from core.external_fetcher import (
@@ -16,21 +18,25 @@ from core.telegram_external_media_materializer import (
     TelegramExternalMediaMaterializer,
 )
 
-
 # =========================================================
 # DEFAULT LIMITS
 # =========================================================
-
 
 DEFAULT_EXTERNAL_MEDIA_MAX_BYTES = (
     25 * 1024 * 1024
 )
 
+# =========================================================
+# ENVIRONMENT
+# =========================================================
+
+EXTERNAL_MEDIA_STAGING_CHAT_ID_ENV = (
+    "EXTERNAL_MEDIA_STAGING_CHAT_ID"
+)
 
 # =========================================================
 # FACTORY
 # =========================================================
-
 
 def build_external_media_materializer(
     *,
@@ -57,6 +63,10 @@ def build_external_media_materializer(
         -> PreparedContent.files
 
     This factory does not publish anything to a destination.
+
+    staging_chat_id resolution:
+        1. explicit argument
+        2. EXTERNAL_MEDIA_STAGING_CHAT_ID environment variable
     """
 
     normalized_api_url = str(
@@ -68,6 +78,28 @@ def build_external_media_materializer(
         raise ValueError(
             "api_url is required"
         )
+
+    # =====================================================
+    # STAGING CHAT
+    # =====================================================
+
+    resolved_staging_chat_id = str(
+        staging_chat_id
+        or os.getenv(
+            EXTERNAL_MEDIA_STAGING_CHAT_ID_ENV,
+            "",
+        )
+        or ""
+    ).strip()
+
+    if not resolved_staging_chat_id:
+        raise ValueError(
+            "external media staging chat is not configured"
+        )
+
+    # =====================================================
+    # LIMITS
+    # =====================================================
 
     resolved_max_bytes = int(
         max_bytes
@@ -87,6 +119,10 @@ def build_external_media_materializer(
             "timeout_seconds must be > 0"
         )
 
+    # =====================================================
+    # FETCHER
+    # =====================================================
+
     if fetcher is None:
         fetcher = SafeExternalFetcher(
             policy=FetchPolicy(
@@ -96,16 +132,24 @@ def build_external_media_materializer(
             )
         )
 
+    # =====================================================
+    # ACQUIRER
+    # =====================================================
+
     acquirer = ExternalMediaAcquirer(
         fetcher=fetcher,
         max_bytes=resolved_max_bytes,
     )
 
+    # =====================================================
+    # TELEGRAM STAGING TRANSPORT
+    # =====================================================
+
     telegram_transport = (
         TelegramExternalMediaMaterializer(
             api_url=normalized_api_url,
             staging_chat_id=(
-                staging_chat_id
+                resolved_staging_chat_id
             ),
             timeout_seconds=(
                 resolved_timeout
@@ -113,6 +157,10 @@ def build_external_media_materializer(
             session=telegram_session,
         )
     )
+
+    # =====================================================
+    # MATERIALIZER
+    # =====================================================
 
     return ExternalMediaMaterializer(
         acquirer=acquirer,
