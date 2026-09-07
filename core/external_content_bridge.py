@@ -310,15 +310,111 @@ def _validate_prepared_files(
     )
 
 
+def _normalize_review_media_type(
+    value: Any,
+) -> str:
+    """
+    Normalize external media types only for presentation decisions.
+
+    Publication transport conversion remains owned by the existing
+    materialization boundary.
+    """
+
+    media_type = str(
+        value
+        or ""
+    ).strip().lower()
+
+    aliases = {
+        "image": "photo",
+        "picture": "photo",
+        "jpg": "photo",
+        "jpeg": "photo",
+        "png": "photo",
+        "movie": "video",
+        "reel": "video",
+    }
+
+    return aliases.get(
+        media_type,
+        media_type,
+    )
+
+
+def _can_default_to_slideshow(
+    review: ExternalReviewResult,
+) -> bool:
+    """
+    Decide whether a multi-selection can safely use slideshow semantics.
+
+    The fallback is intentionally conservative:
+
+      - at least two selected media items
+      - every item must be photo or video
+
+    Documents, audio, voice and unknown future media types are left to the
+    normal Shared Engine media path.
+    """
+
+    media = tuple(
+        review.media
+        or ()
+    )
+
+    if len(media) < 2:
+        return False
+
+    supported_types = {
+        "photo",
+        "video",
+    }
+
+    for item in media:
+        media_type = (
+            _normalize_review_media_type(
+                getattr(
+                    item,
+                    "type",
+                    "",
+                )
+            )
+        )
+
+        if media_type not in supported_types:
+            return False
+
+    return True
+
+
 def _resolve_media_presentation(
     review: ExternalReviewResult,
 ) -> str:
     """
-    Preserve Rich slideshow/collage semantics only when the selected media
-    consistently declares the same presentation.
+    Resolve the semantic media presentation for reviewed external content.
+
+    Rules:
+
+    1. Preserve an explicit slideshow/collage presentation when selected
+       media declares one consistent supported presentation.
+
+    2. If no explicit presentation exists and the user selected two or more
+       compatible visual items, default to slideshow.
+
+       This is important for ordinary web articles: extracted gallery images
+       usually do not carry Telegram-specific presentation metadata, but a
+       deliberate multi-image review selection should still enter the
+       project's established Rich Slideshow path.
+
+    3. Single media and unsupported mixed media remain on the normal media
+       publication path.
     """
 
-    if not review.media:
+    media = tuple(
+        review.media
+        or ()
+    )
+
+    if not media:
         return ""
 
     presentations = {
@@ -326,7 +422,7 @@ def _resolve_media_presentation(
             item.presentation
             or ""
         ).strip().lower()
-        for item in review.media
+        for item in media
         if str(
             item.presentation
             or ""
@@ -335,20 +431,24 @@ def _resolve_media_presentation(
 
     if len(
         presentations
-    ) != 1:
-        return ""
-
-    presentation = next(
-        iter(
-            presentations
+    ) == 1:
+        presentation = next(
+            iter(
+                presentations
+            )
         )
-    )
 
-    if presentation in (
-        "slideshow",
-        "collage",
-    ):
-        return presentation
+        if presentation in (
+            "slideshow",
+            "collage",
+        ):
+            return presentation
+
+    if not presentations:
+        if _can_default_to_slideshow(
+            review
+        ):
+            return "slideshow"
 
     return ""
 
