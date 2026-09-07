@@ -2051,11 +2051,34 @@ def summarize_text_safely(
                 retry_generated
             )
 
+            # =================================================
+            # IMPORTANT:
+            #
+            # retry_target is only an INTERNAL provider target.
+            #
+            # The actual publication contract is still the
+            # caller's original target_length.
+            #
+            # Example:
+            #
+            # caller target = 940
+            # first output  = 969
+            # retry target  = 865
+            # retry output  = 940
+            #
+            # 940 is valid for the caller and must not be
+            # rejected merely because it is greater than the
+            # internal retry target of 865.
+            #
+            # All other fact-safety and reduction validators
+            # remain active.
+            # =================================================
+
             retry_validation = (
                 validate_summary(
                     original_text=raw_original_text,
                     summary_text=retry_generated,
-                    target_length=retry_target,
+                    target_length=target_length,
                     max_reduction_ratio=(
                         validation_max_reduction_ratio
                     ),
@@ -2075,6 +2098,7 @@ def summarize_text_safely(
                     f"content_type={content_type} | "
                     f"first_target={target_length} | "
                     f"retry_target={retry_target} | "
+                    f"validation_target={target_length} | "
                     f"output={len(generated)}"
                 )
 
@@ -2086,6 +2110,7 @@ def summarize_text_safely(
                     f"errors="
                     f"{retry_validation['errors']} | "
                     f"retry_target={retry_target} | "
+                    f"validation_target={target_length} | "
                     f"output="
                     f"{len(retry_generated)}"
                 )
@@ -2123,6 +2148,9 @@ def summarize_text_safely(
                         ),
                         "retry_target": (
                             retry_target
+                        ),
+                        "retry_validation_target": (
+                            target_length
                         ),
                         "content_type": (
                             content_type
