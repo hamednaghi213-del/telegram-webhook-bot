@@ -728,6 +728,32 @@ def test_multiple_plain_photos_default_to_slideshow():
     ) == 3
 
 
+def test_extracted_cover_and_gallery_default_to_slideshow():
+    media = (
+        _media(
+            url="https://example.com/1.jpg",
+            position=0,
+            presentation="cover",
+        ),
+        _media(
+            url="https://example.com/2.jpg",
+            position=1,
+            presentation="gallery",
+        ),
+    )
+
+    result = build_external_prepared_content(
+        _content(media=media),
+        _review(media=media),
+        prepared_files=(
+            {"type": "photo", "file_id": "file-1"},
+            {"type": "photo", "file_id": "file-2"},
+        ),
+    )
+
+    assert result.prepared_content.media_presentation == "slideshow"
+
+
 def test_single_plain_photo_does_not_force_slideshow():
     media = (
         _media(

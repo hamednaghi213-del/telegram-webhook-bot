@@ -192,7 +192,7 @@ def test_media_toggle_edits_control_message_in_place():
     assert answers == [
         (
             "cb-1",
-            "تصاویر انتخاب‌شده: 1",
+            "تصاویر آلبوم انتشار: 1",
         )
     ]
 
@@ -203,7 +203,7 @@ def test_media_toggle_edits_control_message_in_place():
     assert len(edits) == 1
     assert edits[0]["message_id"] == 555
     assert edits[0]["chat_id"] == 12345
-    assert "تصاویر انتخاب‌شده: 1" in edits[0]["text"]
+    assert "تصاویر آلبوم انتشار: 1" in edits[0]["text"]
     assert "inline_keyboard" in edits[0]["reply_markup"]
 
     # No extra free-standing message was sent.
@@ -245,7 +245,7 @@ def test_media_toggle_without_staging_keeps_control_edit():
     edits = api.payloads("editMessageText")
 
     assert len(edits) == 1
-    assert "تصاویر انتخاب‌شده: 2" in edits[0]["text"]
+    assert "تصاویر آلبوم انتشار: 2" in edits[0]["text"]
     assert "sendPhoto" not in api.methods()
     assert "sendMediaGroup" not in api.methods()
 
@@ -327,7 +327,7 @@ def test_edit_failure_falls_back_to_single_control_message():
     sends = api.payloads("sendMessage")
 
     assert len(sends) == 1
-    assert "تصاویر انتخاب‌شده: 1" in sends[0]["text"]
+    assert "تصاویر آلبوم انتشار: 1" in sends[0]["text"]
 
     # The fallback control message identity is persisted.
     pending = controller.get_pending(

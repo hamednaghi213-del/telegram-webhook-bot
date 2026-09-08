@@ -545,7 +545,7 @@ def handle_external_review_callback(
             )
 
             message = (
-                "تصاویر انتخاب‌شده: "
+                "تصاویر آلبوم انتشار: "
                 f"{human_indexes}"
             )
 
