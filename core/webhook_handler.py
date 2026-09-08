@@ -1037,6 +1037,101 @@ def try_handle_waiting_external_review_manual_image(
     }, 200
 
 
+def try_handle_waiting_external_review_text_edit(
+    *,
+    chat_id: int,
+    msg: Dict[str, Any],
+    req_id: str,
+) -> Optional[Tuple[Dict[str, Any], int]]:
+    """
+    Intercept a free-text message while a SHORT or PARAGRAPHS draft is
+    waiting for replacement text (requested via the "✍️ ویرایش متن"
+    button). Replaces `draft_text` on the pending review; nothing is
+    published from here.
+    """
+
+    try:
+        from core.external_review_controller import (
+            ExternalReviewController,
+        )
+        from core.external_review_telegram import (
+            refresh_external_review_preview,
+        )
+    except Exception:
+        return None
+
+    controller = ExternalReviewController()
+    pending = controller.state_store.get_for_chat(
+        chat_id
+    )
+
+    if (
+        pending is None
+        or not pending.awaiting_edit_text
+    ):
+        return None
+
+    text = str(
+        msg.get(
+            "text",
+            "",
+        )
+        or ""
+    ).strip()
+
+    if not text:
+        send_message(
+            chat_id,
+            (
+                "⏳ هنوز منتظر متن جایگزین شما هستم. "
+                "لطفاً یک پیام متنی ارسال کنید."
+            ),
+        )
+
+        return {
+            "ok": True,
+            "external_review_text_edit": False,
+            "review_id": pending.review_id,
+            "waiting": True,
+        }, 200
+
+    updated = (
+        controller.state_store
+        .update_review_stage(
+            review_id=pending.review_id,
+            chat_id=chat_id,
+            draft_text=text,
+            awaiting_edit_text=False,
+        )
+    )
+
+    refresh_external_review_preview(
+        pending=updated,
+        chat_id=chat_id,
+        telegram_api=telegram_api,
+        controller=controller,
+        req_id=req_id,
+    )
+
+    send_message(
+        chat_id,
+        "✅ متن جایگزین ثبت شد.",
+    )
+
+    logger.info(
+        (
+            f"[{req_id}] ✍️ External review draft text "
+            f"replaced | review_id={updated.review_id}"
+        )
+    )
+
+    return {
+        "ok": True,
+        "external_review_text_edit": True,
+        "review_id": updated.review_id,
+    }, 200
+
+
 # =========================================================
 # SEND MESSAGE TO USER
 # =========================================================
@@ -4727,6 +4822,17 @@ def handle_webhook() -> Tuple[
 
         if external_review_manual_result is not None:
             return external_review_manual_result
+
+        external_review_text_edit_result = (
+            try_handle_waiting_external_review_text_edit(
+                chat_id=chat_id,
+                msg=msg,
+                req_id=req_id,
+            )
+        )
+
+        if external_review_text_edit_result is not None:
+            return external_review_text_edit_result
 
         # =================================================
         # STANDALONE EXTERNAL CONTENT URL

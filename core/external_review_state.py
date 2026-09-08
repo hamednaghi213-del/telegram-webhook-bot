@@ -78,6 +78,38 @@ _VALID_MANUAL_IMAGE_SOURCES = (
     MANUAL_IMAGE_SOURCE_NONE,
 )
 
+# Review-stage values.
+#
+# "select" (default):
+#     the main mode-selection surface (standard / short / headline /
+#     paragraphs / editorial / media / cancel).
+#
+# "short_preview":
+#     a caption-safe SHORT draft has been generated and is waiting for
+#     explicit approve / edit / regenerate / cancel. Nothing is
+#     published while in this stage.
+#
+# "paragraph_select":
+#     the user is picking paragraphs across a paginated, persistent
+#     true multi-select surface. Nothing is published while in this
+#     stage.
+#
+# "paragraph_preview":
+#     the selected paragraphs have been assembled into a draft
+#     (original headline + selected paragraphs, in source order) and
+#     are waiting for explicit approve / edit / cancel.
+REVIEW_STAGE_SELECT = "select"
+REVIEW_STAGE_SHORT_PREVIEW = "short_preview"
+REVIEW_STAGE_PARAGRAPH_SELECT = "paragraph_select"
+REVIEW_STAGE_PARAGRAPH_PREVIEW = "paragraph_preview"
+
+_VALID_REVIEW_STAGES = (
+    REVIEW_STAGE_SELECT,
+    REVIEW_STAGE_SHORT_PREVIEW,
+    REVIEW_STAGE_PARAGRAPH_SELECT,
+    REVIEW_STAGE_PARAGRAPH_PREVIEW,
+)
+
 
 def _normalize_media_presentation_mode(
     value: Any,
@@ -132,6 +164,58 @@ def _normalize_manual_image_file_id(
         return ""
 
     return file_id
+
+
+def _normalize_review_stage(
+    value: Any,
+) -> str:
+    """
+    Normalize a review-stage value.
+
+    Fails closed to REVIEW_STAGE_SELECT for any unrecognized, missing,
+    or malformed value so old persisted JSON without this field keeps
+    behaving exactly as before (the main selection surface).
+    """
+
+    normalized = str(
+        value
+        or ""
+    ).strip().lower()
+
+    if normalized in _VALID_REVIEW_STAGES:
+        return normalized
+
+    return REVIEW_STAGE_SELECT
+
+
+def _normalize_draft_text(
+    value: Any,
+) -> str:
+    return str(
+        value
+        or ""
+    )
+
+
+def _normalize_paragraph_page(
+    value: Any,
+) -> int:
+    try:
+        page = int(
+            value
+            or 0
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return 0
+
+    if page < 0:
+        return 0
+
+    return page
 
 
 # =========================================================
@@ -238,6 +322,32 @@ class PendingExternalReview:
     manual_image_waiting:
         The review is waiting for the next same-chat photo upload and
         must intercept it before ordinary publication routing.
+
+    review_stage:
+        One of REVIEW_STAGE_SELECT (default), REVIEW_STAGE_SHORT_PREVIEW,
+        REVIEW_STAGE_PARAGRAPH_SELECT, REVIEW_STAGE_PARAGRAPH_PREVIEW.
+        Drives which review surface is currently rendered.
+
+    draft_text:
+        The currently previewed/editable text for SHORT or PARAGRAPHS
+        (original headline plus selected paragraphs, in source order)
+        while review_stage is a "_preview" stage. Approving publishes
+        exactly this text; nothing is published before an explicit
+        approve.
+
+    paragraph_selected_indexes:
+        Persistent, paginated, true multi-select paragraph indexes for
+        REVIEW_STAGE_PARAGRAPH_SELECT / REVIEW_STAGE_PARAGRAPH_PREVIEW.
+        Selections persist across page changes.
+
+    paragraph_page:
+        The currently displayed page of the paginated paragraph
+        selector.
+
+    awaiting_edit_text:
+        The review is waiting for the next same-chat text message to
+        replace `draft_text` and must intercept it before ordinary
+        publication routing.
     """
 
     review_id: str
@@ -277,6 +387,19 @@ class PendingExternalReview:
 
     manual_image_waiting: bool = False
 
+    review_stage: str = REVIEW_STAGE_SELECT
+
+    draft_text: str = ""
+
+    paragraph_selected_indexes: Tuple[
+        int,
+        ...,
+    ] = ()
+
+    paragraph_page: int = 0
+
+    awaiting_edit_text: bool = False
+
     def __post_init__(
         self,
     ) -> None:
@@ -306,6 +429,41 @@ class PendingExternalReview:
             "manual_image_waiting",
             bool(
                 self.manual_image_waiting
+            ),
+        )
+        object.__setattr__(
+            self,
+            "review_stage",
+            _normalize_review_stage(
+                self.review_stage
+            ),
+        )
+        object.__setattr__(
+            self,
+            "draft_text",
+            _normalize_draft_text(
+                self.draft_text
+            ),
+        )
+        object.__setattr__(
+            self,
+            "paragraph_selected_indexes",
+            _normalize_media_indexes(
+                self.paragraph_selected_indexes
+            ),
+        )
+        object.__setattr__(
+            self,
+            "paragraph_page",
+            _normalize_paragraph_page(
+                self.paragraph_page
+            ),
+        )
+        object.__setattr__(
+            self,
+            "awaiting_edit_text",
+            bool(
+                self.awaiting_edit_text
             ),
         )
 
@@ -639,6 +797,14 @@ def _content_with_review_state_to_dict(
     ),
     manual_image_file_id: str = "",
     manual_image_waiting: bool = False,
+    review_stage: str = REVIEW_STAGE_SELECT,
+    draft_text: str = "",
+    paragraph_selected_indexes: Tuple[
+        int,
+        ...,
+    ] = (),
+    paragraph_page: int = 0,
+    awaiting_edit_text: bool = False,
 ) -> Dict[str, Any]:
     """
     Serialize external content plus review-only UI state.
@@ -702,6 +868,29 @@ def _content_with_review_state_to_dict(
         "manual_image_waiting": bool(
             manual_image_waiting
         ),
+        "review_stage": (
+            _normalize_review_stage(
+                review_stage
+            )
+        ),
+        "draft_text": (
+            _normalize_draft_text(
+                draft_text
+            )
+        ),
+        "paragraph_selected_indexes": [
+            int(index)
+            for index
+            in paragraph_selected_indexes
+        ],
+        "paragraph_page": (
+            _normalize_paragraph_page(
+                paragraph_page
+            )
+        ),
+        "awaiting_edit_text": bool(
+            awaiting_edit_text
+        ),
     }
 
     return payload
@@ -720,6 +909,11 @@ def _review_state_from_content_dict(
     str,
     str,
     str,
+    bool,
+    str,
+    str,
+    Tuple[int, ...],
+    int,
     bool,
 ]:
     raw_state = (
@@ -746,6 +940,11 @@ def _review_state_from_content_dict(
             MEDIA_PRESENTATION_MODE_NORMAL,
             MANUAL_IMAGE_SOURCE_PRIMARY,
             "",
+            False,
+            REVIEW_STAGE_SELECT,
+            "",
+            (),
+            0,
             False,
         )
 
@@ -778,6 +977,38 @@ def _review_state_from_content_dict(
             continue
 
         indexes.append(
+            index
+        )
+
+    raw_paragraph_indexes = (
+        raw_state.get(
+            "paragraph_selected_indexes",
+            [],
+        )
+        or []
+    )
+
+    paragraph_indexes = []
+
+    for item in raw_paragraph_indexes:
+        try:
+            index = int(
+                item
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            continue
+
+        if index < 0:
+            continue
+
+        if index in paragraph_indexes:
+            continue
+
+        paragraph_indexes.append(
             index
         )
 
@@ -827,6 +1058,30 @@ def _review_state_from_content_dict(
         bool(
             raw_state.get(
                 "manual_image_waiting",
+                False,
+            )
+        ),
+        _normalize_review_stage(
+            raw_state.get(
+                "review_stage"
+            )
+        ),
+        _normalize_draft_text(
+            raw_state.get(
+                "draft_text"
+            )
+        ),
+        tuple(
+            paragraph_indexes
+        ),
+        _normalize_paragraph_page(
+            raw_state.get(
+                "paragraph_page"
+            )
+        ),
+        bool(
+            raw_state.get(
+                "awaiting_edit_text",
                 False,
             )
         ),
@@ -1026,6 +1281,32 @@ def _validate_media_indexes(
     ):
         raise ExternalReviewStateError(
             "selected media index is out of range"
+        )
+
+
+def _validate_paragraph_indexes(
+    pending: PendingExternalReview,
+    indexes: Tuple[
+        int,
+        ...,
+    ],
+) -> None:
+    from core.external_content_review import (
+        split_external_paragraphs,
+    )
+
+    paragraph_count = len(
+        split_external_paragraphs(
+            pending.content.body
+        )
+    )
+
+    if any(
+        index >= paragraph_count
+        for index in indexes
+    ):
+        raise ExternalReviewStateError(
+            "selected paragraph index is out of range"
         )
 
 
@@ -1650,6 +1931,102 @@ class ExternalReviewStateStore:
             return updated
 
     # -----------------------------------------------------
+    # REVIEW STAGE (SHORT / PARAGRAPHS draft lifecycle)
+    # -----------------------------------------------------
+
+    def update_review_stage(
+        self,
+        *,
+        review_id: str,
+        chat_id: int,
+        review_stage: Optional[
+            str
+        ] = None,
+        draft_text: Optional[
+            str
+        ] = None,
+        paragraph_selected_indexes: Optional[
+            Tuple[int, ...]
+        ] = None,
+        paragraph_page: Optional[
+            int
+        ] = None,
+        awaiting_edit_text: Optional[
+            bool
+        ] = None,
+    ) -> PendingExternalReview:
+        """
+        Non-terminal, state-only transition for the SHORT / PARAGRAPHS
+        preview lifecycle (select -> draft preview -> approve/edit/
+        regenerate/cancel). Never publishes anything.
+        """
+
+        with self._lock:
+            pending = self.require(
+                review_id=review_id,
+                chat_id=chat_id,
+            )
+
+            normalized_paragraph_indexes = (
+                pending.paragraph_selected_indexes
+                if paragraph_selected_indexes is None
+                else _normalize_media_indexes(
+                    paragraph_selected_indexes
+                )
+            )
+
+            if paragraph_selected_indexes is not None:
+                _validate_paragraph_indexes(
+                    pending,
+                    normalized_paragraph_indexes,
+                )
+
+            updated = _replace_pending(
+                pending,
+                review_stage=(
+                    pending.review_stage
+                    if review_stage is None
+                    else _normalize_review_stage(
+                        review_stage
+                    )
+                ),
+                draft_text=(
+                    pending.draft_text
+                    if draft_text is None
+                    else _normalize_draft_text(
+                        draft_text
+                    )
+                ),
+                paragraph_selected_indexes=(
+                    normalized_paragraph_indexes
+                ),
+                paragraph_page=(
+                    pending.paragraph_page
+                    if paragraph_page is None
+                    else _normalize_paragraph_page(
+                        paragraph_page
+                    )
+                ),
+                awaiting_edit_text=(
+                    pending.awaiting_edit_text
+                    if awaiting_edit_text is None
+                    else bool(
+                        awaiting_edit_text
+                    )
+                ),
+            )
+
+            self._by_chat[
+                updated.chat_id
+            ] = updated
+
+            self._by_id[
+                updated.review_id
+            ] = updated
+
+            return updated
+
+    # -----------------------------------------------------
     # COMPLETE / CANCEL
     # -----------------------------------------------------
 
@@ -1847,6 +2224,11 @@ class PersistentExternalReviewStateStore:
             manual_image_source,
             manual_image_file_id,
             manual_image_waiting,
+            review_stage,
+            draft_text,
+            paragraph_selected_indexes,
+            paragraph_page,
+            awaiting_edit_text,
         ) = _review_state_from_content_dict(
             content_value,
             media_count=len(
@@ -1918,6 +2300,21 @@ class PersistentExternalReviewStateStore:
             ),
             manual_image_waiting=(
                 manual_image_waiting
+            ),
+            review_stage=(
+                review_stage
+            ),
+            draft_text=(
+                draft_text
+            ),
+            paragraph_selected_indexes=(
+                paragraph_selected_indexes
+            ),
+            paragraph_page=(
+                paragraph_page
+            ),
+            awaiting_edit_text=(
+                awaiting_edit_text
             ),
         )
 
@@ -2334,6 +2731,21 @@ class PersistentExternalReviewStateStore:
                     manual_image_waiting=(
                         pending.manual_image_waiting
                     ),
+                    review_stage=(
+                        pending.review_stage
+                    ),
+                    draft_text=(
+                        pending.draft_text
+                    ),
+                    paragraph_selected_indexes=(
+                        pending.paragraph_selected_indexes
+                    ),
+                    paragraph_page=(
+                        pending.paragraph_page
+                    ),
+                    awaiting_edit_text=(
+                        pending.awaiting_edit_text
+                    ),
                 )
             )
         }
@@ -2450,6 +2862,21 @@ class PersistentExternalReviewStateStore:
                     ),
                     manual_image_waiting=(
                         pending.manual_image_waiting
+                    ),
+                    review_stage=(
+                        pending.review_stage
+                    ),
+                    draft_text=(
+                        pending.draft_text
+                    ),
+                    paragraph_selected_indexes=(
+                        pending.paragraph_selected_indexes
+                    ),
+                    paragraph_page=(
+                        pending.paragraph_page
+                    ),
+                    awaiting_edit_text=(
+                        pending.awaiting_edit_text
                     ),
                 )
             )
@@ -2584,6 +3011,21 @@ class PersistentExternalReviewStateStore:
                     manual_image_waiting=(
                         pending.manual_image_waiting
                     ),
+                    review_stage=(
+                        pending.review_stage
+                    ),
+                    draft_text=(
+                        pending.draft_text
+                    ),
+                    paragraph_selected_indexes=(
+                        pending.paragraph_selected_indexes
+                    ),
+                    paragraph_page=(
+                        pending.paragraph_page
+                    ),
+                    awaiting_edit_text=(
+                        pending.awaiting_edit_text
+                    ),
                 )
             )
         }
@@ -2703,6 +3145,21 @@ class PersistentExternalReviewStateStore:
                             manual_image_waiting
                         )
                     ),
+                    review_stage=(
+                        pending.review_stage
+                    ),
+                    draft_text=(
+                        pending.draft_text
+                    ),
+                    paragraph_selected_indexes=(
+                        pending.paragraph_selected_indexes
+                    ),
+                    paragraph_page=(
+                        pending.paragraph_page
+                    ),
+                    awaiting_edit_text=(
+                        pending.awaiting_edit_text
+                    ),
                 )
             )
         }
@@ -2768,6 +3225,196 @@ class PersistentExternalReviewStateStore:
                 else bool(
                     manual_image_waiting
                 )
+            ),
+        )
+
+    # -----------------------------------------------------
+    # REVIEW STAGE (SHORT / PARAGRAPHS draft lifecycle)
+    # -----------------------------------------------------
+
+    def update_review_stage(
+        self,
+        *,
+        review_id: str,
+        chat_id: int,
+        review_stage: Optional[
+            str
+        ] = None,
+        draft_text: Optional[
+            str
+        ] = None,
+        paragraph_selected_indexes: Optional[
+            Tuple[int, ...]
+        ] = None,
+        paragraph_page: Optional[
+            int
+        ] = None,
+        awaiting_edit_text: Optional[
+            bool
+        ] = None,
+    ) -> PendingExternalReview:
+        """
+        Non-terminal, state-only transition for the SHORT / PARAGRAPHS
+        preview lifecycle (select -> draft preview -> approve/edit/
+        regenerate/cancel). Never publishes anything.
+        """
+
+        pending = self.require(
+            review_id=review_id,
+            chat_id=chat_id,
+        )
+
+        normalized_paragraph_indexes = (
+            pending.paragraph_selected_indexes
+            if paragraph_selected_indexes is None
+            else _normalize_media_indexes(
+                paragraph_selected_indexes
+            )
+        )
+
+        if paragraph_selected_indexes is not None:
+            _validate_paragraph_indexes(
+                pending,
+                normalized_paragraph_indexes,
+            )
+
+        normalized_review_stage = (
+            pending.review_stage
+            if review_stage is None
+            else _normalize_review_stage(
+                review_stage
+            )
+        )
+
+        normalized_draft_text = (
+            pending.draft_text
+            if draft_text is None
+            else _normalize_draft_text(
+                draft_text
+            )
+        )
+
+        normalized_paragraph_page = (
+            pending.paragraph_page
+            if paragraph_page is None
+            else _normalize_paragraph_page(
+                paragraph_page
+            )
+        )
+
+        normalized_awaiting_edit_text = (
+            pending.awaiting_edit_text
+            if awaiting_edit_text is None
+            else bool(
+                awaiting_edit_text
+            )
+        )
+
+        payload = {
+            "content": (
+                _content_with_review_state_to_dict(
+                    pending.content,
+                    selected_media_indexes=(
+                        pending.selected_media_indexes
+                    ),
+                    media_selection_explicit=(
+                        pending.media_selection_explicit
+                    ),
+                    preview_message_id=(
+                        pending.preview_message_id
+                    ),
+                    preview_media_message_ids=(
+                        pending.preview_media_message_ids
+                    ),
+                    preview_media_file_ids=(
+                        pending.preview_media_file_ids
+                    ),
+                    media_presentation_mode=(
+                        pending.media_presentation_mode
+                    ),
+                    manual_image_source=(
+                        pending.manual_image_source
+                    ),
+                    manual_image_file_id=(
+                        pending.manual_image_file_id
+                    ),
+                    manual_image_waiting=(
+                        pending.manual_image_waiting
+                    ),
+                    review_stage=(
+                        normalized_review_stage
+                    ),
+                    draft_text=(
+                        normalized_draft_text
+                    ),
+                    paragraph_selected_indexes=(
+                        normalized_paragraph_indexes
+                    ),
+                    paragraph_page=(
+                        normalized_paragraph_page
+                    ),
+                    awaiting_edit_text=(
+                        normalized_awaiting_edit_text
+                    ),
+                )
+            )
+        }
+
+        try:
+            response = (
+                self._table()
+                .update(
+                    payload
+                )
+                .eq(
+                    "review_id",
+                    pending.review_id,
+                )
+                .eq(
+                    "chat_id",
+                    pending.chat_id,
+                )
+                .execute()
+            )
+
+        except Exception as exc:
+            raise ExternalReviewPersistenceError(
+                (
+                    "failed to update persistent "
+                    "external review stage"
+                )
+            ) from exc
+
+        rows = (
+            getattr(
+                response,
+                "data",
+                None,
+            )
+            or []
+        )
+
+        if rows:
+            return self._row_to_pending(
+                rows[0]
+            )
+
+        return _replace_pending(
+            pending,
+            review_stage=(
+                normalized_review_stage
+            ),
+            draft_text=(
+                normalized_draft_text
+            ),
+            paragraph_selected_indexes=(
+                normalized_paragraph_indexes
+            ),
+            paragraph_page=(
+                normalized_paragraph_page
+            ),
+            awaiting_edit_text=(
+                normalized_awaiting_edit_text
             ),
         )
 

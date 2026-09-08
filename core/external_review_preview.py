@@ -237,31 +237,6 @@ def _selection_status_line(
     )
 
 
-def _presentation_mode_status_line(
-    *,
-    media_count: int,
-    media_presentation_mode: str,
-) -> str:
-    if media_count <= 1:
-        return ""
-
-    normalized_mode = str(
-        media_presentation_mode
-        or ""
-    ).strip().lower()
-
-    if normalized_mode == "album":
-        return (
-            "🖼 حالت انتشار: آلبوم "
-            "(ارسال گروهی تصاویر)."
-        )
-
-    return (
-        "🖼 حالت انتشار: عادی "
-        "(اسلایدشو پیش‌فرض)."
-    )
-
-
 def _media_count_line(
     media_count: int,
 ) -> str:
@@ -302,13 +277,25 @@ def build_external_review_keyboard(
     manual_image_waiting: bool = False,
 ) -> dict:
     """
-    Build the review inline keyboard.
+    Build the simplified review inline keyboard.
+
+    Only high-level, non-technical choices are exposed:
+      - content mode (standard / short / headline / headline+lead /
+        paragraphs / editorial rewrite)
+      - image source (trusted automatic primary image / no image /
+        one manual add-or-replace button)
+      - cancel
+
+    Per-candidate media buttons and the album/normal presentation
+    toggle are intentionally not rendered. Their callback actions
+    ("media", "nomedia", "mode") remain supported for backward
+    compatibility but are considered internal/technical and are no
+    longer surfaced on the keyboard.
 
     Callback data format is unchanged:
 
         extrev:<action>:<review_id>
-        extrev:media:<review_id>:<index>
-        extrev:mode:<review_id>:<normal|album>
+        extrev:manual:<review_id>:<waiting|cancel|replace|primary|none>
     """
 
     review_rows = [
@@ -340,6 +327,15 @@ def build_external_review_keyboard(
                 "text": "📝 تیتر و لید",
                 "callback_data": (
                     "extrev:lead:"
+                    f"{review_id}"
+                ),
+            },
+        ],
+        [
+            {
+                "text": "📄 پاراگراف‌ها",
+                "callback_data": (
+                    "extrev:para_start:"
                     f"{review_id}"
                 ),
             },
@@ -386,158 +382,65 @@ def build_external_review_keyboard(
         ]
     )
 
+    # =====================================================
+    # SINGLE MANUAL ADD/REPLACE BUTTON
+    #
+    # One dynamic button replaces the previous two-button manual
+    # image flow (separate "waiting" + "replace" buttons):
+    #   - no manual image yet, not waiting -> "add" (starts waiting)
+    #   - waiting for the next photo -> "cancel waiting"
+    #   - manual image captured and active -> "replace" (re-enters
+    #     waiting to capture a new photo)
+    #   - manual image captured but not currently active -> "restore"
+    #     (reactivates the previously captured photo without a new
+    #     upload)
+    # =====================================================
+
+    if manual_image_waiting:
+        manual_button = {
+            "text": "⏳ لغو انتظار عکس",
+            "callback_data": (
+                "extrev:manual:"
+                f"{review_id}:cancel"
+            ),
+        }
+
+    elif (
+        manual_has_file
+        and manual_image_source
+        == MANUAL_IMAGE_SOURCE_REPLACE
+    ):
+        manual_button = {
+            "text": "🔁 تصویر دستی ✅",
+            "callback_data": (
+                "extrev:manual:"
+                f"{review_id}:waiting"
+            ),
+        }
+
+    elif manual_has_file:
+        manual_button = {
+            "text": "🔁 بازگرداندن تصویر دستی",
+            "callback_data": (
+                "extrev:manual:"
+                f"{review_id}:replace"
+            ),
+        }
+
+    else:
+        manual_button = {
+            "text": "➕ افزودن تصویر دستی",
+            "callback_data": (
+                "extrev:manual:"
+                f"{review_id}:waiting"
+            ),
+        }
+
     review_rows.append(
         [
-            {
-                "text": (
-                    "⏳ لغو انتظار عکس"
-                    if manual_image_waiting
-                    else "📥 انتظار برای عکس"
-                ),
-                "callback_data": (
-                    "extrev:manual:"
-                    f"{review_id}:"
-                    f"{'cancel' if manual_image_waiting else 'waiting'}"
-                ),
-            },
-            {
-                "text": (
-                    "🔁 تصویر دستی ✅"
-                    if (
-                        manual_has_file
-                        and manual_image_source
-                        == MANUAL_IMAGE_SOURCE_REPLACE
-                    )
-                    else "🔁 تصویر دستی"
-                ),
-                "callback_data": (
-                    "extrev:manual:"
-                    f"{review_id}:replace"
-                ),
-            },
+            manual_button,
         ]
     )
-
-    if media_count > 0:
-        selected_set = set(
-            selected_media_indexes
-            or ()
-        )
-
-        def media_label(
-            base: str,
-            index: int,
-        ) -> str:
-            if (
-                media_selection_explicit
-                and index in selected_set
-            ):
-                return f"{base} ✅"
-
-            return base
-
-        review_rows.append(
-            [
-                {
-                    "text": media_label(
-                        "🖼 تصویر استخراجی",
-                        0,
-                    ),
-                    "callback_data": (
-                        "extrev:media:"
-                        f"{review_id}:0"
-                    ),
-                },
-                {
-                    "text": (
-                        "🚫 رسانه استخراجی ✅"
-                        if (
-                            media_selection_explicit
-                            and not selected_media_indexes
-                        )
-                        else "🚫 رسانه استخراجی"
-                    ),
-                    "callback_data": (
-                        "extrev:nomedia:"
-                        f"{review_id}"
-                    ),
-                },
-            ]
-        )
-
-        additional_media_buttons = []
-
-        for media_index in range(
-            1,
-            media_count,
-        ):
-            additional_media_buttons.append(
-                {
-                    "text": media_label(
-                        (
-                            "🖼 "
-                            f"تصویر {media_index + 1}"
-                        ),
-                        media_index,
-                    ),
-                    "callback_data": (
-                        "extrev:media:"
-                        f"{review_id}:"
-                        f"{media_index}"
-                    ),
-                }
-            )
-
-        if additional_media_buttons:
-            for index in range(
-                0,
-                len(
-                    additional_media_buttons
-                ),
-                2,
-            ):
-                review_rows.append(
-                    additional_media_buttons[
-                        index:index + 2
-                    ]
-                )
-
-        if media_count > 1:
-            normalized_mode = str(
-                media_presentation_mode
-                or ""
-            ).strip().lower()
-
-            is_album = (
-                normalized_mode == "album"
-            )
-
-            review_rows.append(
-                [
-                    {
-                        "text": (
-                            "🖼 آلبوم ✅"
-                            if is_album
-                            else "🖼 آلبوم"
-                        ),
-                        "callback_data": (
-                            "extrev:mode:"
-                            f"{review_id}:album"
-                        ),
-                    },
-                    {
-                        "text": (
-                            "🖼 عادی ✅"
-                            if not is_album
-                            else "🖼 عادی"
-                        ),
-                        "callback_data": (
-                            "extrev:mode:"
-                            f"{review_id}:normal"
-                        ),
-                    },
-                ]
-            )
 
     review_rows.append(
         [
@@ -653,20 +556,6 @@ def build_external_review_preview(
             selection_status
         )
 
-    presentation_mode_status = (
-        _presentation_mode_status_line(
-            media_count=media_count,
-            media_presentation_mode=(
-                media_presentation_mode
-            ),
-        )
-    )
-
-    if presentation_mode_status:
-        metadata_parts.append(
-            presentation_mode_status
-        )
-
     metadata_text = "\n".join(
         part
         for part in metadata_parts
@@ -780,3 +669,656 @@ def build_external_review_preview(
         media=selected_media,
         media_file_ids=media_file_ids,
     )
+
+
+# =========================================================
+# SHORT / PARAGRAPHS DRAFT PREVIEW (approve / edit / cancel)
+#
+# Both SHORT (caption-safe Smart Summary) and PARAGRAPHS (paginated,
+# persistent true multi-select) route through this shared draft
+# preview surface once a draft body has been assembled. Nothing is
+# published while a draft is shown; the user must explicitly approve.
+# =========================================================
+
+
+PARAGRAPH_PAGE_SIZE = 6
+
+
+def _draft_heading_and_metadata(
+    preview: ExternalContentPreview,
+    *,
+    heading: str,
+    awaiting_edit_text: bool,
+) -> Tuple[str, str]:
+    metadata_parts = []
+
+    if preview.title:
+        metadata_parts.append(
+            "تیتر اصلی: "
+            f"{preview.title}"
+        )
+
+    if preview.source_name:
+        metadata_parts.append(
+            "منبع: "
+            f"{preview.source_name}"
+        )
+
+    if awaiting_edit_text:
+        metadata_parts.append(
+            "⏳ منتظر متن جایگزین شما هستم."
+        )
+
+    metadata_text = "\n".join(
+        part
+        for part in metadata_parts
+        if part
+    ).strip()
+
+    return heading, metadata_text
+
+
+def build_external_review_short_keyboard(
+    *,
+    review_id: str,
+    awaiting_edit_text: bool = False,
+) -> dict:
+    """
+    Approve / edit / regenerate / cancel keyboard for a SHORT draft.
+
+    Nothing publishes until "approve" is pressed explicitly.
+    """
+
+    rows = [
+        [
+            {
+                "text": "✅ تأیید و انتشار",
+                "callback_data": (
+                    "extrev:short_approve:"
+                    f"{review_id}"
+                ),
+            },
+        ],
+        [
+            {
+                "text": (
+                    "⏳ منتظر متن شما ..."
+                    if awaiting_edit_text
+                    else "✍️ ویرایش متن"
+                ),
+                "callback_data": (
+                    "extrev:short_edit:"
+                    f"{review_id}"
+                ),
+            },
+            {
+                "text": "🔄 بازتولید",
+                "callback_data": (
+                    "extrev:short_regenerate:"
+                    f"{review_id}"
+                ),
+            },
+        ],
+        [
+            {
+                "text": "❌ لغو",
+                "callback_data": (
+                    "extrev:cancel:"
+                    f"{review_id}"
+                ),
+            },
+        ],
+    ]
+
+    return {
+        "inline_keyboard": rows
+    }
+
+
+def build_external_review_short_preview(
+    *,
+    review_id: str,
+    content: NormalizedExternalContent,
+    preview: ExternalContentPreview,
+    draft_text: str,
+    awaiting_edit_text: bool = False,
+    selected_media_indexes: Tuple[int, ...] = (),
+    media_selection_explicit: bool = False,
+    manual_image_source: str = (
+        MANUAL_IMAGE_SOURCE_PRIMARY
+    ),
+    manual_image_file_id: str = "",
+) -> ExternalReviewPreviewView:
+    """
+    Render the SHORT caption-safe draft awaiting explicit approval.
+
+    Shows the original headline and source alongside the generated
+    draft so the admin can verify faithfulness before approving.
+    Nothing is published until "approve" is pressed.
+    """
+
+    heading, metadata_text = (
+        _draft_heading_and_metadata(
+            preview,
+            heading="✂️ پیش‌نمایش نسخه کوتاه (تأیید نشده)",
+            awaiting_edit_text=(
+                awaiting_edit_text
+            ),
+        )
+    )
+
+    body_text = str(
+        draft_text
+        or ""
+    ).strip()
+
+    reserved = (
+        len(heading)
+        + len(metadata_text)
+        + 8
+    )
+
+    body_budget = max(
+        CONTROL_TEXT_LIMIT - reserved,
+        0,
+    )
+
+    capped_body = (
+        _truncate_preserving_words(
+            body_text,
+            body_budget,
+        )
+    )
+
+    text_parts = [heading]
+
+    if capped_body:
+        text_parts.append(
+            capped_body
+        )
+
+    if metadata_text:
+        text_parts.append(
+            metadata_text
+        )
+
+    text = "\n\n".join(
+        text_parts
+    ).strip()
+
+    reply_markup = (
+        build_external_review_short_keyboard(
+            review_id=review_id,
+            awaiting_edit_text=(
+                awaiting_edit_text
+            ),
+        )
+    )
+
+    selected_media, media_file_ids = _selected_media(
+        content,
+        selected_media_indexes=(
+            selected_media_indexes
+        ),
+        media_selection_explicit=(
+            media_selection_explicit
+        ),
+        manual_image_source=(
+            manual_image_source
+        ),
+        manual_image_file_id=(
+            manual_image_file_id
+        ),
+    )
+
+    return ExternalReviewPreviewView(
+        review_id=review_id,
+        text=text,
+        reply_markup=reply_markup,
+        media=selected_media,
+        media_file_ids=media_file_ids,
+    )
+
+
+# =========================================================
+# PARAGRAPH SELECTION (paginated, persistent, true multi-select)
+# =========================================================
+
+
+def build_external_review_paragraph_select_keyboard(
+    *,
+    review_id: str,
+    paragraph_count: int,
+    paragraph_page: int,
+    paragraph_selected_indexes: Tuple[int, ...],
+    page_size: int = PARAGRAPH_PAGE_SIZE,
+) -> dict:
+    """
+    Paginated, persistent, true multi-select paragraph keyboard.
+
+    Selections persist across page changes (they are stored on the
+    pending review, not on the rendered keyboard). Confirming with no
+    paragraph selected is blocked by the caller.
+    """
+
+    page_count = max(
+        1,
+        (
+            paragraph_count
+            + page_size
+            - 1
+        )
+        // page_size,
+    )
+
+    normalized_page = max(
+        0,
+        min(
+            paragraph_page,
+            page_count - 1,
+        ),
+    )
+
+    selected_set = set(
+        paragraph_selected_indexes
+        or ()
+    )
+
+    start = normalized_page * page_size
+    end = min(
+        start + page_size,
+        paragraph_count,
+    )
+
+    rows = []
+
+    for index in range(start, end):
+        checked = (
+            index in selected_set
+        )
+
+        rows.append(
+            [
+                {
+                    "text": (
+                        f"{'✅' if checked else '⬜'} "
+                        f"پاراگراف {index + 1}"
+                    ),
+                    "callback_data": (
+                        "extrev:para_toggle:"
+                        f"{review_id}:{index}"
+                    ),
+                },
+            ]
+        )
+
+    if page_count > 1:
+        pagination_row = []
+
+        if normalized_page > 0:
+            pagination_row.append(
+                {
+                    "text": "◀ قبلی",
+                    "callback_data": (
+                        "extrev:para_page:"
+                        f"{review_id}:"
+                        f"{normalized_page - 1}"
+                    ),
+                }
+            )
+
+        pagination_row.append(
+            {
+                "text": (
+                    f"صفحه {normalized_page + 1}"
+                    f"/{page_count}"
+                ),
+                "callback_data": (
+                    "extrev:para_page:"
+                    f"{review_id}:"
+                    f"{normalized_page}"
+                ),
+            }
+        )
+
+        if normalized_page < page_count - 1:
+            pagination_row.append(
+                {
+                    "text": "بعدی ▶",
+                    "callback_data": (
+                        "extrev:para_page:"
+                        f"{review_id}:"
+                        f"{normalized_page + 1}"
+                    ),
+                }
+            )
+
+        rows.append(
+            pagination_row
+        )
+
+    rows.append(
+        [
+            {
+                "text": (
+                    "✅ تأیید انتخاب "
+                    f"({len(selected_set)})"
+                ),
+                "callback_data": (
+                    "extrev:para_confirm:"
+                    f"{review_id}"
+                ),
+            },
+        ]
+    )
+
+    rows.append(
+        [
+            {
+                "text": "❌ لغو",
+                "callback_data": (
+                    "extrev:cancel:"
+                    f"{review_id}"
+                ),
+            },
+        ]
+    )
+
+    return {
+        "inline_keyboard": rows
+    }
+
+
+def build_external_review_paragraph_select_view(
+    *,
+    review_id: str,
+    content: NormalizedExternalContent,
+    preview: ExternalContentPreview,
+    paragraph_page: int = 0,
+    paragraph_selected_indexes: Tuple[int, ...] = (),
+    selected_media_indexes: Tuple[int, ...] = (),
+    media_selection_explicit: bool = False,
+    manual_image_source: str = (
+        MANUAL_IMAGE_SOURCE_PRIMARY
+    ),
+    manual_image_file_id: str = "",
+    page_size: int = PARAGRAPH_PAGE_SIZE,
+) -> ExternalReviewPreviewView:
+    """
+    Render the paginated, persistent, true multi-select paragraph
+    picker. Nothing is published from this surface; confirming with
+    at least one paragraph selected moves to the draft preview.
+    """
+
+    paragraphs = preview.paragraphs
+
+    page_count = max(
+        1,
+        (
+            len(paragraphs)
+            + page_size
+            - 1
+        )
+        // page_size,
+    )
+
+    normalized_page = max(
+        0,
+        min(
+            paragraph_page,
+            page_count - 1,
+        ),
+    )
+
+    start = normalized_page * page_size
+    end = min(
+        start + page_size,
+        len(paragraphs),
+    )
+
+    heading = (
+        "📄 انتخاب پاراگراف‌ها "
+        f"(صفحه {normalized_page + 1}"
+        f"/{page_count})"
+    )
+
+    numbered_paragraphs = "\n\n".join(
+        f"{index + 1}. {paragraphs[index]}"
+        for index in range(start, end)
+    )
+
+    metadata_parts = []
+
+    if preview.title:
+        metadata_parts.append(
+            "تیتر اصلی: "
+            f"{preview.title}"
+        )
+
+    if preview.source_name:
+        metadata_parts.append(
+            "منبع: "
+            f"{preview.source_name}"
+        )
+
+    if not paragraph_selected_indexes:
+        metadata_parts.append(
+            "حداقل یک پاراگراف را انتخاب کنید."
+        )
+
+    metadata_text = "\n".join(
+        metadata_parts
+    ).strip()
+
+    text_parts = [heading]
+
+    if numbered_paragraphs:
+        text_parts.append(
+            numbered_paragraphs
+        )
+
+    if metadata_text:
+        text_parts.append(
+            metadata_text
+        )
+
+    text = "\n\n".join(
+        text_parts
+    ).strip()
+
+    reply_markup = (
+        build_external_review_paragraph_select_keyboard(
+            review_id=review_id,
+            paragraph_count=len(
+                paragraphs
+            ),
+            paragraph_page=(
+                normalized_page
+            ),
+            paragraph_selected_indexes=(
+                paragraph_selected_indexes
+            ),
+            page_size=page_size,
+        )
+    )
+
+    selected_media, media_file_ids = _selected_media(
+        content,
+        selected_media_indexes=(
+            selected_media_indexes
+        ),
+        media_selection_explicit=(
+            media_selection_explicit
+        ),
+        manual_image_source=(
+            manual_image_source
+        ),
+        manual_image_file_id=(
+            manual_image_file_id
+        ),
+    )
+
+    return ExternalReviewPreviewView(
+        review_id=review_id,
+        text=text,
+        reply_markup=reply_markup,
+        media=selected_media,
+        media_file_ids=media_file_ids,
+    )
+
+
+def build_external_review_paragraph_keyboard(
+    *,
+    review_id: str,
+    awaiting_edit_text: bool = False,
+) -> dict:
+    """
+    Approve / edit / cancel keyboard for a PARAGRAPHS draft.
+
+    No regenerate button: paragraph selection is deterministic, not
+    AI-generated.
+    """
+
+    rows = [
+        [
+            {
+                "text": "✅ تأیید و انتشار",
+                "callback_data": (
+                    "extrev:para_approve:"
+                    f"{review_id}"
+                ),
+            },
+        ],
+        [
+            {
+                "text": (
+                    "⏳ منتظر متن شما ..."
+                    if awaiting_edit_text
+                    else "✍️ ویرایش متن"
+                ),
+                "callback_data": (
+                    "extrev:para_edit:"
+                    f"{review_id}"
+                ),
+            },
+        ],
+        [
+            {
+                "text": "❌ لغو",
+                "callback_data": (
+                    "extrev:cancel:"
+                    f"{review_id}"
+                ),
+            },
+        ],
+    ]
+
+    return {
+        "inline_keyboard": rows
+    }
+
+
+def build_external_review_paragraph_preview(
+    *,
+    review_id: str,
+    content: NormalizedExternalContent,
+    preview: ExternalContentPreview,
+    draft_text: str,
+    awaiting_edit_text: bool = False,
+    selected_media_indexes: Tuple[int, ...] = (),
+    media_selection_explicit: bool = False,
+    manual_image_source: str = (
+        MANUAL_IMAGE_SOURCE_PRIMARY
+    ),
+    manual_image_file_id: str = "",
+) -> ExternalReviewPreviewView:
+    """
+    Render the assembled PARAGRAPHS draft (original headline plus the
+    selected paragraphs, in source order) awaiting explicit approval.
+    """
+
+    heading, metadata_text = (
+        _draft_heading_and_metadata(
+            preview,
+            heading=(
+                "📄 پیش‌نمایش پاراگراف‌های "
+                "انتخابی (تأیید نشده)"
+            ),
+            awaiting_edit_text=(
+                awaiting_edit_text
+            ),
+        )
+    )
+
+    body_text = str(
+        draft_text
+        or ""
+    ).strip()
+
+    reserved = (
+        len(heading)
+        + len(metadata_text)
+        + 8
+    )
+
+    body_budget = max(
+        CONTROL_TEXT_LIMIT - reserved,
+        0,
+    )
+
+    capped_body = (
+        _truncate_preserving_words(
+            body_text,
+            body_budget,
+        )
+    )
+
+    text_parts = [heading]
+
+    if capped_body:
+        text_parts.append(
+            capped_body
+        )
+
+    if metadata_text:
+        text_parts.append(
+            metadata_text
+        )
+
+    text = "\n\n".join(
+        text_parts
+    ).strip()
+
+    reply_markup = (
+        build_external_review_paragraph_keyboard(
+            review_id=review_id,
+            awaiting_edit_text=(
+                awaiting_edit_text
+            ),
+        )
+    )
+
+    selected_media, media_file_ids = _selected_media(
+        content,
+        selected_media_indexes=(
+            selected_media_indexes
+        ),
+        media_selection_explicit=(
+            media_selection_explicit
+        ),
+        manual_image_source=(
+            manual_image_source
+        ),
+        manual_image_file_id=(
+            manual_image_file_id
+        ),
+    )
+
+    return ExternalReviewPreviewView(
+        review_id=review_id,
+        text=text,
+        reply_markup=reply_markup,
+        media=selected_media,
+        media_file_ids=media_file_ids,
+    )
+

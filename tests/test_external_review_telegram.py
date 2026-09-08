@@ -241,7 +241,30 @@ def test_standard_callback_is_consumed():
 # =========================================================
 
 
-def test_short_callback_reports_shared_summary_path():
+def test_short_callback_generates_draft_without_publishing(
+    monkeypatch,
+):
+    """
+    Requirement: SHORT must generate a caption-safe faithful draft
+    and never publish until an explicit approve.
+    """
+
+    monkeypatch.setattr(
+        "core.external_review_execution.gemini_provider_configured",
+        lambda: True,
+    )
+
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "core.external_review_execution.summarize_text_safely",
+        lambda **kwargs: SimpleNamespace(
+            success=True,
+            validation_passed=True,
+            summary_text="خلاصه کوتاه امن برای کپشن.",
+        ),
+    )
+
     controller = _controller()
 
     _create_pending(
@@ -292,9 +315,82 @@ def test_short_callback_reports_shared_summary_path():
     assert len(messages) == 1
 
     assert (
-        "مسیر مشترک خلاصه‌سازی"
+        "خلاصه کوتاه امن برای کپشن."
         in messages[0][0][1]
     )
+
+    pending = controller.get_pending(
+        review_id="review-1",
+        chat_id=12345,
+    )
+
+    assert (
+        pending.review_stage
+        == "short_preview"
+    )
+
+    assert (
+        pending.draft_text
+        == "خلاصه کوتاه امن برای کپشن."
+    )
+
+
+def test_short_callback_fails_closed_without_publishing_when_gemini_unavailable():
+    """
+    Fail-closed: if Gemini is not configured, no draft is generated
+    and nothing is published; the pending review stays intact so the
+    user can retry.
+    """
+
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    answers = []
+    messages = []
+
+    handled = (
+        handle_external_review_telegram_callback(
+            callback_query=(
+                _callback(
+                    "extrev:short:review-1"
+                )
+            ),
+            answer_callback_query=(
+                lambda callback_id, text:
+                answers.append(
+                    (
+                        callback_id,
+                        text,
+                    )
+                )
+            ),
+            send_message=(
+                lambda *args, **kwargs:
+                messages.append(
+                    (
+                        args,
+                        kwargs,
+                    )
+                )
+            ),
+            controller=controller,
+        )
+    )
+
+    assert handled is True
+    assert len(messages) == 1
+    assert "ممکن نشد" in messages[0][0][1]
+
+    # Pending state remains intact for retry (stage unchanged).
+    pending = controller.get_pending(
+        review_id="review-1",
+        chat_id=12345,
+    )
+
+    assert pending.review_stage == "select"
 
 
 # =========================================================
@@ -672,3 +768,614 @@ def test_telegram_adapter_does_not_publish():
     assert handled is True
 
     assert len(calls) == 1
+
+
+# =========================================================
+# SHORT: EDIT / REGENERATE / APPROVE
+# =========================================================
+
+
+def test_short_edit_sets_awaiting_flag_without_publishing():
+    controller = _controller()
+    _create_pending(controller)
+
+    controller.state_store.update_review_stage(
+        review_id="review-1",
+        chat_id=12345,
+        review_stage="short_preview",
+        draft_text="خلاصه اول",
+    )
+
+    answers = []
+
+    handled = handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:short_edit:review-1"
+        ),
+        answer_callback_query=(
+            lambda callback_id, text: answers.append(
+                (callback_id, text)
+            )
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+    )
+
+    assert handled is True
+    assert answers[0][1] == "متن جایگزین خود را ارسال کنید."
+
+    pending = controller.get_pending(
+        review_id="review-1",
+        chat_id=12345,
+    )
+
+    assert pending.awaiting_edit_text is True
+    # Draft body is untouched until the edited text actually arrives.
+    assert pending.draft_text == "خلاصه اول"
+
+
+def test_short_regenerate_replaces_draft_with_new_summary(monkeypatch):
+    controller = _controller()
+    _create_pending(controller)
+
+    controller.state_store.update_review_stage(
+        review_id="review-1",
+        chat_id=12345,
+        review_stage="short_preview",
+        draft_text="خلاصه قدیمی",
+    )
+
+    monkeypatch.setattr(
+        "core.external_review_execution.gemini_provider_configured",
+        lambda: True,
+    )
+
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "core.external_review_execution.summarize_text_safely",
+        lambda **kwargs: SimpleNamespace(
+            success=True,
+            validation_passed=True,
+            summary_text="خلاصه جدید بازتولید شده",
+        ),
+    )
+
+    handled = handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:short_regenerate:review-1"
+        ),
+        answer_callback_query=(
+            lambda *args, **kwargs: None
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+    )
+
+    assert handled is True
+
+    pending = controller.get_pending(
+        review_id="review-1",
+        chat_id=12345,
+    )
+
+    assert pending.draft_text == "خلاصه جدید بازتولید شده"
+    assert pending.review_stage == "short_preview"
+
+
+def test_short_regenerate_failure_keeps_previous_draft(monkeypatch):
+    controller = _controller()
+    _create_pending(controller)
+
+    controller.state_store.update_review_stage(
+        review_id="review-1",
+        chat_id=12345,
+        review_stage="short_preview",
+        draft_text="خلاصه قدیمی",
+    )
+
+    messages = []
+
+    handled = handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:short_regenerate:review-1"
+        ),
+        answer_callback_query=(
+            lambda *args, **kwargs: None
+        ),
+        send_message=(
+            lambda *args, **kwargs: messages.append(
+                (args, kwargs)
+            )
+        ),
+        controller=controller,
+    )
+
+    assert handled is True
+    assert "ممکن نشد" in messages[-1][0][1]
+
+    pending = controller.get_pending(
+        review_id="review-1",
+        chat_id=12345,
+    )
+
+    # Gemini unconfigured -> fail closed, previous draft preserved.
+    assert pending.draft_text == "خلاصه قدیمی"
+
+
+def test_short_approve_publishes_draft_and_consumes_pending():
+    from types import SimpleNamespace
+
+    controller = _controller()
+    _create_pending(controller)
+
+    controller.state_store.update_review_stage(
+        review_id="review-1",
+        chat_id=12345,
+        review_stage="short_preview",
+        draft_text="خلاصه نهایی برای انتشار",
+    )
+
+    executed = []
+
+    def fake_execute(*, decision, api_url):
+        executed.append(decision)
+        return SimpleNamespace(published=True)
+
+    answers = []
+
+    handled = handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:short_approve:review-1"
+        ),
+        answer_callback_query=(
+            lambda callback_id, text: answers.append(
+                (callback_id, text)
+            )
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+        api_url="https://api.telegram.test",
+        execute_decision=fake_execute,
+    )
+
+    assert handled is True
+    assert len(executed) == 1
+    assert executed[0].review.body == "خلاصه نهایی برای انتشار"
+    assert executed[0].review.title == ""
+    assert executed[0].review.lead == ""
+    assert answers[-1] == ("cb-1", "منتشر شد.")
+
+    # Pending state is consumed after a successful publish.
+    import pytest as _pytest
+    from core.external_review_state import ExternalReviewNotFound
+
+    with _pytest.raises(ExternalReviewNotFound):
+        controller.get_pending(
+            review_id="review-1",
+            chat_id=12345,
+        )
+
+
+def test_short_approve_failure_keeps_pending_for_retry():
+    controller = _controller()
+    _create_pending(controller)
+
+    controller.state_store.update_review_stage(
+        review_id="review-1",
+        chat_id=12345,
+        review_stage="short_preview",
+        draft_text="خلاصه نهایی",
+    )
+
+    def failing_execute(*, decision, api_url):
+        raise RuntimeError("boom")
+
+    answers = []
+
+    handled = handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:short_approve:review-1"
+        ),
+        answer_callback_query=(
+            lambda callback_id, text: answers.append(
+                (callback_id, text)
+            )
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+        api_url="https://api.telegram.test",
+        execute_decision=failing_execute,
+    )
+
+    assert handled is True
+    assert "خطا" in answers[-1][1]
+
+    # Pending review remains intact for retry.
+    pending = controller.get_pending(
+        review_id="review-1",
+        chat_id=12345,
+    )
+    assert pending.draft_text == "خلاصه نهایی"
+
+
+def test_short_approve_blocks_publication_when_draft_is_empty():
+    controller = _controller()
+    _create_pending(controller)
+
+    controller.state_store.update_review_stage(
+        review_id="review-1",
+        chat_id=12345,
+        review_stage="short_preview",
+        draft_text="",
+    )
+
+    executed = []
+
+    answers = []
+
+    handled = handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:short_approve:review-1"
+        ),
+        answer_callback_query=(
+            lambda callback_id, text: answers.append(
+                (callback_id, text)
+            )
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+        api_url="https://api.telegram.test",
+        execute_decision=(
+            lambda **kwargs: executed.append(kwargs)
+        ),
+    )
+
+    assert handled is True
+    assert executed == []
+    assert "متنی برای انتشار وجود ندارد" in answers[-1][1]
+
+
+def test_short_preview_cancel_removes_pending_review():
+    controller = _controller()
+    _create_pending(controller)
+
+    controller.state_store.update_review_stage(
+        review_id="review-1",
+        chat_id=12345,
+        review_stage="short_preview",
+        draft_text="خلاصه",
+    )
+
+    handled = handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:cancel:review-1"
+        ),
+        answer_callback_query=(
+            lambda *args, **kwargs: None
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+    )
+
+    assert handled is True
+
+    import pytest as _pytest
+    from core.external_review_state import ExternalReviewNotFound
+
+    with _pytest.raises(ExternalReviewNotFound):
+        controller.get_pending(
+            review_id="review-1",
+            chat_id=12345,
+        )
+
+
+# =========================================================
+# PARAGRAPHS: PAGINATED, PERSISTENT, TRUE MULTI-SELECT
+# =========================================================
+
+
+def _paragraph_controller():
+    controller = _controller()
+    controller.create_pending(
+        review_id="review-1",
+        chat_id=12345,
+        content=NormalizedExternalContent(
+            source_type="web_article",
+            source_url="https://example.com/news",
+            canonical_url="https://example.com/news",
+            content_type="article",
+            title="عنوان خبر",
+            lead="لید خبر",
+            body="\n\n".join(
+                f"پاراگراف شماره {index}"
+                for index in range(9)
+            ),
+            source_name="Example",
+            extraction_confidence=0.95,
+        ),
+    )
+    return controller
+
+
+def test_paragraph_start_transitions_to_select_stage():
+    controller = _paragraph_controller()
+
+    handled = handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:para_start:review-1"
+        ),
+        answer_callback_query=(
+            lambda *args, **kwargs: None
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+    )
+
+    assert handled is True
+
+    pending = controller.get_pending(
+        review_id="review-1",
+        chat_id=12345,
+    )
+
+    assert pending.review_stage == "paragraph_select"
+    assert pending.paragraph_selected_indexes == ()
+    assert pending.paragraph_page == 0
+
+
+def test_paragraph_toggle_persists_selection_across_pages():
+    controller = _paragraph_controller()
+
+    controller.state_store.update_review_stage(
+        review_id="review-1",
+        chat_id=12345,
+        review_stage="paragraph_select",
+    )
+
+    # Select paragraph 1 on page 0.
+    handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:para_toggle:review-1:1"
+        ),
+        answer_callback_query=(
+            lambda *args, **kwargs: None
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+    )
+
+    # Move to page 1.
+    handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:para_page:review-1:1"
+        ),
+        answer_callback_query=(
+            lambda *args, **kwargs: None
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+    )
+
+    pending = controller.get_pending(
+        review_id="review-1",
+        chat_id=12345,
+    )
+    assert pending.paragraph_page == 1
+    # Selection from the previous page persists.
+    assert pending.paragraph_selected_indexes == (1,)
+
+    # Select paragraph 7 (page 1) too, then toggle 1 off again.
+    handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:para_toggle:review-1:7"
+        ),
+        answer_callback_query=(
+            lambda *args, **kwargs: None
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+    )
+    handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:para_toggle:review-1:1"
+        ),
+        answer_callback_query=(
+            lambda *args, **kwargs: None
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+    )
+
+    pending = controller.get_pending(
+        review_id="review-1",
+        chat_id=12345,
+    )
+    assert pending.paragraph_selected_indexes == (7,)
+
+
+def test_paragraph_confirm_blocks_when_nothing_selected():
+    controller = _paragraph_controller()
+
+    controller.state_store.update_review_stage(
+        review_id="review-1",
+        chat_id=12345,
+        review_stage="paragraph_select",
+    )
+
+    answers = []
+
+    handled = handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:para_confirm:review-1"
+        ),
+        answer_callback_query=(
+            lambda callback_id, text: answers.append(
+                (callback_id, text)
+            )
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+    )
+
+    assert handled is True
+    assert "حداقل یک پاراگراف" in answers[-1][1]
+
+    pending = controller.get_pending(
+        review_id="review-1",
+        chat_id=12345,
+    )
+    # Blocked: stage stays at selection, nothing to publish yet.
+    assert pending.review_stage == "paragraph_select"
+
+
+def test_paragraph_confirm_builds_draft_with_headline_and_source_order():
+    controller = _paragraph_controller()
+
+    controller.state_store.update_review_stage(
+        review_id="review-1",
+        chat_id=12345,
+        review_stage="paragraph_select",
+        paragraph_selected_indexes=(5, 1),
+    )
+
+    handled = handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:para_confirm:review-1"
+        ),
+        answer_callback_query=(
+            lambda *args, **kwargs: None
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+    )
+
+    assert handled is True
+
+    pending = controller.get_pending(
+        review_id="review-1",
+        chat_id=12345,
+    )
+
+    assert pending.review_stage == "paragraph_preview"
+
+    # Headline present, only the two selected paragraphs, in
+    # ascending (source) order regardless of selection click order.
+    assert "عنوان خبر" in pending.draft_text
+    para1_pos = pending.draft_text.index("پاراگراف شماره 1")
+    para5_pos = pending.draft_text.index("پاراگراف شماره 5")
+    assert para1_pos < para5_pos
+    assert "پاراگراف شماره 0" not in pending.draft_text
+    assert "پاراگراف شماره 2" not in pending.draft_text
+
+
+def test_paragraph_approve_publishes_only_selected_paragraphs():
+    from types import SimpleNamespace
+
+    controller = _paragraph_controller()
+
+    controller.state_store.update_review_stage(
+        review_id="review-1",
+        chat_id=12345,
+        review_stage="paragraph_preview",
+        draft_text="عنوان خبر\n\nپاراگراف شماره 3",
+    )
+
+    executed = []
+
+    def fake_execute(*, decision, api_url):
+        executed.append(decision)
+        return SimpleNamespace(published=True)
+
+    handled = handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:para_approve:review-1"
+        ),
+        answer_callback_query=(
+            lambda *args, **kwargs: None
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+        api_url="https://api.telegram.test",
+        execute_decision=fake_execute,
+    )
+
+    assert handled is True
+    assert len(executed) == 1
+    assert executed[0].review.body == (
+        "عنوان خبر\n\nپاراگراف شماره 3"
+    )
+
+    import pytest as _pytest
+    from core.external_review_state import ExternalReviewNotFound
+
+    with _pytest.raises(ExternalReviewNotFound):
+        controller.get_pending(
+            review_id="review-1",
+            chat_id=12345,
+        )
+
+
+def test_paragraph_edit_sets_awaiting_flag():
+    controller = _paragraph_controller()
+
+    controller.state_store.update_review_stage(
+        review_id="review-1",
+        chat_id=12345,
+        review_stage="paragraph_preview",
+        draft_text="عنوان خبر\n\nپاراگراف شماره 3",
+    )
+
+    answers = []
+
+    handled = handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:para_edit:review-1"
+        ),
+        answer_callback_query=(
+            lambda callback_id, text: answers.append(
+                (callback_id, text)
+            )
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+    )
+
+    assert handled is True
+    assert answers[0][1] == "متن جایگزین خود را ارسال کنید."
+
+    pending = controller.get_pending(
+        review_id="review-1",
+        chat_id=12345,
+    )
+    assert pending.awaiting_edit_text is True
