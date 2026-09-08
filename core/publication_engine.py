@@ -522,7 +522,7 @@ def _send_text_target(
             return _normalize_executor_result(
                 locals().get(
                     "last_outcome",
-                    True,
+                    False,
                 )
             )
 
@@ -530,7 +530,7 @@ def _send_text_target(
             _send_text_to_destination,
         )
 
-        last_outcome: Any = True
+        last_outcome: Any = False
 
         for index, message in enumerate(
             messages
@@ -1050,7 +1050,7 @@ def _outcome_ok(
         return bool(
             outcome.get(
                 "ok",
-                True,
+                False,
             )
         )
 
@@ -1515,7 +1515,11 @@ def _execute_delivery_part(
         )
 
         if not messages:
-            return True
+            # No media and no text to send: there is nothing that can
+            # produce a genuine Telegram transport success. Never
+            # fabricate a "primary" success without an actual
+            # sendMessage/sendPhoto/... call and a real message_id.
+            return False
 
         return _send_text_target(
             chat_id,
