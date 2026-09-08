@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import os
 import re
-
+import unicodedata
 from html import escape, unescape
 from typing import Dict, List, Optional, Any, Tuple
 
@@ -207,6 +207,9 @@ def _first_line_headline(text: str) -> str:
     for line in lines:
         value = line.strip()
         if value:
+            first_character = value[0]
+            if not unicodedata.category(first_character)[0] in {"L", "N"}:
+                return ""
             return value
     return ""
 
