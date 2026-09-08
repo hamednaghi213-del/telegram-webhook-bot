@@ -237,6 +237,11 @@ def publish_reviewed_external_content(
         media_presentation_mode=(
             media_presentation_mode
         ),
+        editorial_rewrite_applied=(
+            bool(
+                editorial_rewrite_applied
+            )
+        ),
     )
 
     _validate_transformation_state(

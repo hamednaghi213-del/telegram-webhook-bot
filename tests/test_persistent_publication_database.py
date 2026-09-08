@@ -514,6 +514,86 @@ def test_record_persistent_publication_part_success(
         },
     ]
 
+def test_record_persistent_publication_part_success_survives_index_failure(
+    db,
+    monkeypatch,
+):
+    """
+    A PGRST205-style failure (table missing from PostgREST schema
+    cache) writing to publication_delivery_message_index must never
+    turn an already-persisted successful delivery part into a
+    reported failure (false send failure / bug #3).
+    """
+
+    class FakeQuery:
+        def __init__(self):
+            self.table_name = None
+
+        def table(self, name):
+            self.table_name = name
+            return self
+
+        def upsert(self, payload, on_conflict=None):
+            if self.table_name == (
+                "publication_delivery_message_index"
+            ):
+                raise RuntimeError(
+                    "PGRST205: table not found in schema cache"
+                )
+            self.payload = payload
+            return self
+
+        def select(self, fields):
+            return self
+
+        def eq(self, field, value):
+            return self
+
+        def limit(self, value):
+            return self
+
+        def execute(self):
+            if self.table_name == "publication_deliveries":
+                return SimpleNamespace(
+                    data=[
+                        {
+                            "id": 21,
+                            "platform": "telegram",
+                            "destination_chat_id": "@farda_no",
+                        }
+                    ]
+                )
+            return SimpleNamespace(
+                data=[self.payload]
+            )
+
+    fake = FakeQuery()
+
+    monkeypatch.setattr(
+        db,
+        "service_supabase",
+        fake,
+    )
+
+    monkeypatch.setattr(
+        db.time,
+        "sleep",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = (
+        db.record_persistent_publication_part_success(
+            delivery_id=21,
+            part_key="primary",
+            message_id=501,
+            destination_chat_id="@farda_no",
+        )
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["delivery_id"] == 21
+
+
 def test_get_persistent_publication_part(
     db,
     monkeypatch,

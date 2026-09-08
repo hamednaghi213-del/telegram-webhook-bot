@@ -177,8 +177,9 @@ def test_external_short_final_includes_metadata_and_respects_target(
 
     text = captured["published_review"].body
     assert text.startswith("Headline\n\n")
-    assert text.endswith("- Shoمنبع: Source")
-    assert len(text) == 940
+    assert "به گزارش Source،" in text
+    assert "منبع:" not in text
+    assert len(text) <= 940
 
 
 def test_publish_decision_forwards_media_presentation_mode(monkeypatch):

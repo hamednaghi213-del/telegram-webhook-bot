@@ -307,16 +307,50 @@ def _bold_headlines_in_plan(
         or []
     )
 
+    escaped_headline = escape(headline)
+
     for index, message in enumerate(messages):
-        if headline not in str(message or ""):
-            continue
+        message_str = str(message or "")
+
         if index >= len(modes):
             modes.extend(
                 [None] * (index + 1 - len(modes))
             )
+
+        if modes[index] == "HTML":
+            # The message already carries HTML markup (for example a
+            # combined caption with inline blockquotes). The headline
+            # is present in its escaped form here, and must not be
+            # escaped a second time.
+            already_bold = (
+                f"<b>{escaped_headline}</b>"
+                in message_str
+            )
+
+            if (
+                escaped_headline
+                and escaped_headline in message_str
+                and not already_bold
+            ):
+                messages[index] = message_str.replace(
+                    escaped_headline,
+                    f"<b>{escaped_headline}</b>",
+                    1,
+                )
+                break
+
+            if headline and headline in message_str:
+                # Headline already present (bold or otherwise
+                # accounted for) in this HTML message.
+                break
+
+            continue
+
+        if headline not in message_str:
+            continue
+
         if modes[index] is None:
-            escaped = escape(str(message))
-            escaped_headline = escape(headline)
+            escaped = escape(message_str)
             messages[index] = escaped.replace(
                 escaped_headline,
                 f"<b>{escaped_headline}</b>",

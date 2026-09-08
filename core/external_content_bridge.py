@@ -613,6 +613,7 @@ def build_external_prepared_content(
     ] = None,
     source_key: str = "",
     media_presentation_mode: str = "normal",
+    editorial_rewrite_applied: bool = False,
 ) -> ExternalPreparedBridgeResult:
     """
     Convert reviewed external content into immutable PreparedContent.
@@ -648,7 +649,12 @@ def build_external_prepared_content(
         )
 
     text = _compose_reviewed_text(
-        review
+        review,
+        (
+            content.source_name
+            if not editorial_rewrite_applied
+            else ""
+        ),
     )
 
     if (

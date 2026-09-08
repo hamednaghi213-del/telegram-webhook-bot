@@ -2708,21 +2708,36 @@ def record_persistent_publication_part_success(
     )
 
     if indexed_message_ids:
-        record_persistent_publication_message_index(
-            delivery_id=int(delivery_id),
-            part_key=str(part_key),
-            message_ids=indexed_message_ids,
-            destination_chat_id=(
-                str(destination_chat_id)
-                if destination_chat_id is not None
-                else None
-            ),
-            primary_message_id=(
-                int(message_id)
-                if message_id is not None
-                else None
-            ),
-        )
+        try:
+            record_persistent_publication_message_index(
+                delivery_id=int(delivery_id),
+                part_key=str(part_key),
+                message_ids=indexed_message_ids,
+                destination_chat_id=(
+                    str(destination_chat_id)
+                    if destination_chat_id is not None
+                    else None
+                ),
+                primary_message_id=(
+                    int(message_id)
+                    if message_id is not None
+                    else None
+                ),
+            )
+        except Exception as index_error:
+            # The delivery part above is already durably recorded as
+            # "succeeded" (upsert committed). The message-index table is
+            # a secondary lookup used for reverse (chat_id, message_id)
+            # resolution (for example delete/edit sync) and must never
+            # turn a real, successful Telegram send into a reported
+            # failure. Log and continue: recovery re-reads
+            # publication_delivery_parts, which already reflects success.
+            logger.error(
+                "⚠️ Failed to record publication delivery message "
+                "index (delivery already marked succeeded) | "
+                f"delivery_id={delivery_id} | part_key={part_key} | "
+                f"error={index_error}"
+            )
 
     return rows[0]
 

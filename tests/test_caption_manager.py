@@ -2675,3 +2675,39 @@ def test_shared_plan_does_not_duplicate_existing_bold_headline_entity():
     ]
 
     assert len(bold_entities) == 1
+
+
+def test_shared_plan_bolds_headline_in_combined_html_text_message():
+    """
+    Regression test for bug #2: when a text message already carries
+    HTML markup (for example a combined caption with an inline
+    blockquote), the shared engine must still bold the headline
+    instead of leaving it visually plain.
+    """
+    text = (
+        "تیتر خبر\n\n"
+        "بدنه اول\n\n"
+        "متن نقل قول"
+    )
+    quote_start = text.index("متن نقل قول")
+
+    plan = analyze_content(
+        text,
+        other_entities=[
+            {
+                "type": "blockquote",
+                "offset": quote_start,
+                "length": len("متن نقل قول"),
+            }
+        ],
+        branding="",
+    )
+
+    assert (
+        plan.text["telegram"]["message_parse_modes"][0]
+        == "HTML"
+    )
+    assert (
+        "<b>تیتر خبر</b>"
+        in plan.text["telegram"]["messages"][0]
+    )
