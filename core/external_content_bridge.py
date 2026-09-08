@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 
 from dataclasses import dataclass
 from typing import (
@@ -108,19 +109,117 @@ def _clean_block(
     ).strip()
 
 
+_SOURCE_ATTRIBUTION_MARKER = "به گزارش"
+
+_SOURCE_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\u2600-\u27BF"
+    "\U0001F1E6-\U0001F1FF"
+    "]+"
+)
+
+_SOURCE_SEPARATOR_RE = re.compile(
+    r"[|\-\u2013\u2014:]+"
+)
+
+
+def clean_web_source_name(
+    value: Any,
+) -> str:
+    """
+    Reduce a raw extracted source string (which may contain raw IDs,
+    separators, icons, or duplicate names such as
+    "TABNAK | تابناک - 🔷") to a clean, human-readable source name.
+    """
+
+    text = str(
+        value
+        or ""
+    ).strip()
+
+    if not text:
+        return ""
+
+    text = _SOURCE_EMOJI_RE.sub(
+        "",
+        text,
+    ).strip()
+
+    segments = [
+        segment.strip()
+        for segment in _SOURCE_SEPARATOR_RE.split(text)
+        if segment.strip()
+    ]
+
+    if not segments:
+        return text
+
+    for segment in segments:
+        if any(
+            ord(char) > 127
+            for char in segment
+        ):
+            return segment
+
+    return segments[0]
+
+
+def apply_web_source_attribution(
+    text: str,
+    source_name: Any,
+) -> str:
+    """
+    Prepend a single newsroom-style "به گزارش {SOURCE}، " attribution to
+    web-derived body text, in place of a raw source footer.
+
+    Idempotent: if the text already carries the attribution marker
+    anywhere (for example because an upstream step, such as the SHORT
+    Smart Summary draft, already attributed it), it is returned
+    unchanged to avoid duplicate wording.
+    """
+
+    body = str(
+        text
+        or ""
+    ).strip()
+
+    cleaned_source = clean_web_source_name(
+        source_name
+    )
+
+    if not cleaned_source or not body:
+        return body
+
+    if _SOURCE_ATTRIBUTION_MARKER in body:
+        return body
+
+    return (
+        f"{_SOURCE_ATTRIBUTION_MARKER} {cleaned_source}، {body}"
+    )
+
+
 def _compose_reviewed_text(
     review: ExternalReviewResult,
+    source_name: Any = "",
 ) -> str:
     """
     Compose user-selected external text without inventing content.
 
     Exact duplicate blocks are removed while source order is preserved.
+
+    The headline (title) is kept bare so it can be rendered bold. Any
+    remaining body content receives a single newsroom-style
+    "به گزارش {SOURCE}، " attribution instead of a raw source footer.
     """
 
-    blocks = []
+    headline = _clean_block(
+        review.title
+    )
+
+    body_blocks = []
 
     for value in (
-        review.title,
         review.lead,
         review.body,
     ):
@@ -131,12 +230,26 @@ def _compose_reviewed_text(
         if not cleaned:
             continue
 
-        if cleaned in blocks:
+        if cleaned == headline:
             continue
 
-        blocks.append(
+        if cleaned in body_blocks:
+            continue
+
+        body_blocks.append(
             cleaned
         )
+
+    body_text = apply_web_source_attribution(
+        "\n\n".join(body_blocks).strip(),
+        source_name,
+    )
+
+    blocks = [
+        block
+        for block in (headline, body_text)
+        if block
+    ]
 
     return "\n\n".join(
         blocks
