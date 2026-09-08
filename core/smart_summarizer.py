@@ -1786,177 +1786,85 @@ def summarize_text_safely(
                 f"provider failed | {e}"
             )
 
-            return SummaryResult(
-                success=False,
-                original_text=raw_original_text,
-                summary_text=raw_original_text,
-                target_length=target_length,
-                original_length=original_length,
-                summary_length=original_length,
-                reduction_ratio=0.0,
-                validation_passed=False,
-                reason="provider_error",
-                metadata={
-                    "error": str(
-                        e
-                    ),
-                    "summarizer_called": True,
-                    "classifier_called": (
-                        classifier_called
-                    ),
-                    "retry_called": True,
-                    "retry_reason": (
-                        retry_reason
-                    ),
-                    "retry_target": (
-                        retry_target
-                    ),
-                    "minimum_target_length": (
-                        minimum_target_length
-                    ),
-                    "effective_minimum_target_length": (
-                        effective_minimum_target_length
-                    ),
-                    "first_candidate_summary": (
-                        first_candidate
-                    ),
-                    "content_type": (
-                        content_type
-                    ),
-                    "effective_max_reduction_ratio": (
-                        effective_max_reduction_ratio
-                    ),
-                    "effective_absolute_max_reduction_ratio": (
-                        effective_absolute_max_reduction_ratio
-                    )
-                }
+            generated = first_candidate
+            validation = first_validation
+            retry_generated = None
+
+        if retry_generated is not None:
+            retry_generated = normalize_text(
+                retry_generated
             )
 
-        retry_generated = normalize_text(
-            retry_generated
-        )
-
-        retry_validation = (
-            validate_summary(
-                original_text=raw_original_text,
-                summary_text=retry_generated,
-                target_length=target_length,
-                max_reduction_ratio=(
-                    validation_max_reduction_ratio
-                ),
-                content_type=content_type
-            )
-        )
-
-        retry_fill_ok = (
-            not summary_underfills_target(
-                retry_generated,
-                target_length
-            )
-        )
-
-        if (
-            retry_validation[
-                "valid"
-            ]
-            and retry_fill_ok
-        ):
-
-            generated = retry_generated
-            validation = retry_validation
-
-            logger.info(
-                f"✅ Smart underfill retry accepted | "
-                f"content_type={content_type} | "
-                f"target={target_length} | "
-                f"preferred_minimum="
-                f"{minimum_target_length} | "
-                f"effective_minimum="
-                f"{effective_minimum_target_length} | "
-                f"output={len(generated)}"
-            )
-
-        else:
-
-            retry_errors = list(
-                retry_validation.get(
-                    "errors",
-                    []
+            retry_validation = (
+                validate_summary(
+                    original_text=raw_original_text,
+                    summary_text=retry_generated,
+                    target_length=target_length,
+                    max_reduction_ratio=(
+                        validation_max_reduction_ratio
+                    ),
+                    content_type=content_type
                 )
-                or []
             )
 
-            if not retry_fill_ok:
-                retry_errors.append(
-                    "summary_underfills_target"
+            retry_fill_ok = (
+                not summary_underfills_target(
+                    retry_generated,
+                    target_length
+                )
+            )
+
+            if (
+                retry_validation[
+                    "valid"
+                ]
+                and retry_fill_ok
+            ):
+
+                generated = retry_generated
+                validation = retry_validation
+
+                logger.info(
+                    f"✅ Smart underfill retry accepted | "
+                    f"content_type={content_type} | "
+                    f"target={target_length} | "
+                    f"preferred_minimum="
+                    f"{minimum_target_length} | "
+                    f"effective_minimum="
+                    f"{effective_minimum_target_length} | "
+                    f"output={len(generated)}"
                 )
 
-            logger.warning(
-                f"⚠️ Smart underfill retry rejected | "
-                f"content_type={content_type} | "
-                f"errors={retry_errors} | "
-                f"target={target_length} | "
-                f"preferred_minimum="
-                f"{minimum_target_length} | "
-                f"effective_minimum="
-                f"{effective_minimum_target_length} | "
-                f"output={len(retry_generated)}"
-            )
+            else:
 
-            return SummaryResult(
-                success=False,
-                original_text=raw_original_text,
-                summary_text=raw_original_text,
-                target_length=target_length,
-                original_length=original_length,
-                summary_length=original_length,
-                reduction_ratio=0.0,
-                validation_passed=False,
-                reason="validation_failed",
-                metadata={
-                    "validation": (
-                        retry_validation
-                    ),
-                    "candidate_summary": (
-                        retry_generated
-                    ),
-                    "first_validation": (
-                        first_validation
-                    ),
-                    "first_candidate_summary": (
-                        first_candidate
-                    ),
-                    "summarizer_called": True,
-                    "classifier_called": (
-                        classifier_called
-                    ),
-                    "retry_called": True,
-                    "retry_reason": (
-                        retry_reason
-                    ),
-                    "retry_target": (
-                        retry_target
-                    ),
-                    "minimum_target_length": (
-                        minimum_target_length
-                    ),
-                    "effective_minimum_target_length": (
-                        effective_minimum_target_length
-                    ),
-                    "content_type": (
-                        content_type
-                    ),
-                    "effective_max_reduction_ratio": (
-                        effective_max_reduction_ratio
-                    ),
-                    "effective_absolute_max_reduction_ratio": (
-                        effective_absolute_max_reduction_ratio
-                    ),
-                    "required_reduction_ratio": (
-                        required_reduction_ratio
+                retry_errors = list(
+                    retry_validation.get(
+                        "errors",
+                        []
                     )
-                }
-            )
+                    or []
+                )
+
+                if not retry_fill_ok:
+                    retry_errors.append(
+                        "summary_underfills_target"
+                    )
+
+                logger.warning(
+                    f"⚠️ Smart underfill retry rejected; "
+                    f"using first valid result | "
+                    f"content_type={content_type} | "
+                    f"errors={retry_errors} | "
+                    f"target={target_length} | "
+                    f"preferred_minimum="
+                    f"{minimum_target_length} | "
+                    f"effective_minimum="
+                    f"{effective_minimum_target_length} | "
+                    f"output={len(retry_generated)}"
+                )
+
+                generated = first_candidate
+                validation = first_validation
 
     # =====================================================
     # OVERSHOOT RETRY (BOUNDED, ADAPTIVE)

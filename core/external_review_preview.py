@@ -45,6 +45,7 @@ from core.external_review_state import (
 # keeps headroom for the heading, metadata lines and selection
 # status so one editMessageText always stays valid.
 CONTROL_TEXT_LIMIT = 3500
+PARAGRAPH_SELECTOR_PREVIEW_LIMIT = 400
 
 
 # =========================================================
@@ -1083,7 +1084,8 @@ def build_external_review_paragraph_select_view(
     )
 
     numbered_paragraphs = "\n\n".join(
-        f"{index + 1}. {paragraphs[index]}"
+        f"{index + 1}. "
+        f"{_truncate_preserving_words(paragraphs[index], PARAGRAPH_SELECTOR_PREVIEW_LIMIT)}"
         for index in range(start, end)
     )
 
@@ -1321,4 +1323,3 @@ def build_external_review_paragraph_preview(
         media=selected_media,
         media_file_ids=media_file_ids,
     )
-

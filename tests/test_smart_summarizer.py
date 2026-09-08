@@ -1077,6 +1077,30 @@ def test_default_behavior_allows_only_one_overshoot_retry():
     assert result.metadata["overshoot_attempts"] == 1
 
 
+def test_underfill_retry_failure_falls_back_to_valid_first_result():
+    original = _neutral_filler(1200)
+    first = _neutral_filler(825)
+    calls = []
+
+    def fake_provider(original_text, instruction, target_length):
+        calls.append(target_length)
+        return first if len(calls) == 1 else _neutral_filler(1223)
+
+    result = summarize_text_safely(
+        original_text=original,
+        target_length=940,
+        summarizer=fake_provider,
+        aggressive_max_reduction_ratio=0.9,
+    )
+
+    assert len(calls) == 2
+    assert result.success is True
+    assert result.validation_passed is True
+    assert result.summary_text == first
+    assert result.summary_length == 825
+    assert result.metadata["retry_reason"] == "underfill"
+
+
 def test_external_short_style_opt_in_allows_three_total_attempts():
     """
     Requirement A: opt-in max_overshoot_retries=2 permits up to 3
