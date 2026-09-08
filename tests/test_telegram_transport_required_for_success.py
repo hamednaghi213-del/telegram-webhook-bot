@@ -174,3 +174,203 @@ def test_stale_partial_state_cannot_fabricate_success(monkeypatch):
     # Stale/partial state: attempt started ("sending") but never
     # completed with a real message_id.
     assert store.part_completed(source_key, identity, "primary") is False
+
+
+def _fresh_target_and_plan(monkeypatch, body="real body"):
+    target = PublicationTarget(
+        "workspace",
+        "workspace",
+        "telegram",
+        "@channel",
+        1,
+        1,
+    )
+
+    calls = []
+
+    class _FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True, "result": {"message_id": 777}}
+
+    def _fake_post(url, json=None, timeout=None):
+        calls.append((url, json))
+        return _FakeResponse()
+
+    monkeypatch.setattr(
+        "core.workspace_publisher.requests.post",
+        _fake_post,
+    )
+    monkeypatch.setattr(
+        publication_engine,
+        "_target_content_and_branding",
+        lambda *_args: (body, "brand"),
+    )
+    monkeypatch.setattr(
+        "core.caption_manager.analyze_content",
+        lambda **_kwargs: _plan_with_messages([body]),
+    )
+
+    return target, calls
+
+
+def test_fresh_delivery_claim_sends_telegram_once(monkeypatch):
+    """
+    Regression A: a fresh External Review approval reaches a fresh
+    Telegram destination -> claim -> Telegram sender MUST be called
+    -> API 200/message_id -> publication confirmed.
+    """
+
+    target, calls = _fresh_target_and_plan(monkeypatch)
+
+    result = publication_engine.publish_prepared_content(
+        1,
+        "https://api.telegram.org/botTEST",
+        PreparedContent(main_text="real body", source_key="fresh:a"),
+        [target],
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/sendMessage")
+    assert result["ok"] is True
+
+    delivery = result["results"][0]
+    assert delivery.status == "succeeded"
+    assert delivery.primary_message_id == 777
+
+
+def test_prior_real_success_is_idempotent_and_never_resent(
+    monkeypatch,
+):
+    """
+    Regression B: after a genuine Telegram success (message_id
+    recorded for the part), a retry must NOT call the sender again
+    and must idempotently confirm the existing success.
+    """
+
+    target, calls = _fresh_target_and_plan(monkeypatch)
+
+    first = publication_engine.publish_prepared_content(
+        1,
+        "https://api.telegram.org/botTEST",
+        PreparedContent(main_text="real body", source_key="fresh:b"),
+        [target],
+    )
+
+    assert first["ok"] is True
+    assert len(calls) == 1
+
+    second = publication_engine.publish_prepared_content(
+        1,
+        "https://api.telegram.org/botTEST",
+        PreparedContent(main_text="real body", source_key="fresh:b"),
+        [target],
+        allow_duplicate=True,
+    )
+
+    assert len(calls) == 1
+    assert second["ok"] is True
+    assert second["results"][0].status == "succeeded"
+    assert second["results"][0].primary_message_id == 777
+
+
+def test_stale_claim_without_proof_recovers_and_sends_once(
+    monkeypatch,
+):
+    """
+    Regression C: a delivery row that exists but was never proven by
+    a Telegram success (stale/incomplete claim, no message_id) must
+    not be treated as successful and must not yield zero confirmed
+    destinations. The engine recovers and executes the transport
+    exactly once, and publication_sources must not be finalized as
+    succeeded unless a destination truly succeeded.
+    """
+
+    from core.publication_state import InMemoryPublicationStateStore
+
+    store = InMemoryPublicationStateStore()
+
+    source_key = "stale:c"
+    identity = "telegram:external:channel"
+
+    # Stale claim: delivery row exists with a failed attempt and no
+    # proven part/message_id.
+    store.claim_destination(source_key, identity)
+    store.mark_failed(source_key, identity, "previous crash")
+
+    target, calls = _fresh_target_and_plan(monkeypatch)
+
+    result = publication_engine.publish_prepared_content(
+        1,
+        "https://api.telegram.org/botTEST",
+        PreparedContent(main_text="real body", source_key=source_key),
+        [target],
+        state_store=store,
+    )
+
+    # Sender ran exactly once and success is now proven.
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/sendMessage")
+    assert result["ok"] is True
+    assert result["results"][0].status == "succeeded"
+    assert result["results"][0].primary_message_id == 777
+
+    assert store.get_source(source_key).status == "succeeded"
+
+
+def test_source_is_never_marked_succeeded_without_confirmed_destination(
+    monkeypatch,
+):
+    """
+    publication_sources must not be finalized as published when all
+    selected destinations return no confirmed success.
+    """
+
+    from core.publication_state import InMemoryPublicationStateStore
+
+    store = InMemoryPublicationStateStore()
+
+    source_key = "stale:d"
+    identity = "telegram:external:channel"
+
+    store.claim_destination(source_key, identity)
+    store.mark_failed(source_key, identity, "previous crash")
+
+    target = PublicationTarget(
+        "workspace",
+        "workspace",
+        "telegram",
+        "@channel",
+        1,
+        1,
+    )
+
+    def _failing_post(url, json=None, timeout=None):
+        raise ConnectionError("telegram unreachable")
+
+    monkeypatch.setattr(
+        "core.workspace_publisher.requests.post",
+        _failing_post,
+    )
+    monkeypatch.setattr(
+        publication_engine,
+        "_target_content_and_branding",
+        lambda *_args: ("real body", "brand"),
+    )
+    monkeypatch.setattr(
+        "core.caption_manager.analyze_content",
+        lambda **_kwargs: _plan_with_messages(["real body"]),
+    )
+
+    result = publication_engine.publish_prepared_content(
+        1,
+        "https://api.telegram.org/botTEST",
+        PreparedContent(main_text="real body", source_key=source_key),
+        [target],
+        state_store=store,
+    )
+
+    assert result["ok"] is False
+    assert result["results"][0].status != "succeeded"
+    assert store.get_source(source_key).status != "succeeded"
