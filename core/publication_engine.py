@@ -20,6 +20,7 @@ from core.content_model import (
 from core.publication_state import (
     DEFAULT_PUBLICATION_STATE_STORE,
     PublicationStateStore,
+    delivery_state_has_success_proof,
 )
 from core.target_resolver import (
     canonical_target_identity,
@@ -1862,6 +1863,96 @@ def publish_prepared_content(
         )
 
         if state.status == "succeeded":
+            if not delivery_state_has_success_proof(
+                state
+            ):
+                state.status = "failed"
+                state.error = (
+                    "delivery marked succeeded without transport proof"
+                )
+            else:
+                results.append(
+                    DeliveryResult(
+                        target.platform,
+                        target.workspace_id,
+                        target.destination_id,
+                        target.external_id,
+                        status="succeeded",
+                        attempt=state.attempt,
+                        idempotency_key=(
+                            f"{source_key}:{identity}"
+                        ),
+                        primary_message_id=(
+                            state.message_ids.get(
+                                "primary"
+                            )
+                        ),
+                        message_ids=(
+                            state.all_message_ids.get(
+                                "primary",
+                                (),
+                            )
+                        ),
+                        followup_message_ids=tuple(
+                            value
+                            for key, value
+                            in sorted(
+                                state.message_ids.items()
+                            )
+                            if key.startswith(
+                                "followup:"
+                            )
+                        ),
+                        blockquote_message_ids=tuple(
+                            value
+                            for key, value
+                            in sorted(
+                                state.message_ids.items()
+                            )
+                            if key.startswith(
+                                "blockquote:"
+                            )
+                        ),
+                    )
+                )
+
+                continue
+
+        if hasattr(
+            store,
+            "begin_persistent_attempt",
+        ):
+            state = (
+                store.begin_persistent_attempt(
+                    source_key=source_key,
+                    target_identity=identity,
+                    platform=target.platform,
+                    destination_chat_id=(
+                        target.external_id
+                    ),
+                    workspace_id=(
+                        target.workspace_id
+                    ),
+                    destination_id=(
+                        target.destination_id
+                    ),
+                )
+            )
+        else:
+            state = (
+                store.begin_attempt(
+                    source_key,
+                    identity,
+                )
+            )
+
+        if (
+            state is not None
+            and state.status == "succeeded"
+            and delivery_state_has_success_proof(
+                state
+            )
+        ):
             results.append(
                 DeliveryResult(
                     target.platform,
@@ -1908,34 +1999,6 @@ def publish_prepared_content(
             )
 
             continue
-
-        if hasattr(
-            store,
-            "begin_persistent_attempt",
-        ):
-            state = (
-                store.begin_persistent_attempt(
-                    source_key=source_key,
-                    target_identity=identity,
-                    platform=target.platform,
-                    destination_chat_id=(
-                        target.external_id
-                    ),
-                    workspace_id=(
-                        target.workspace_id
-                    ),
-                    destination_id=(
-                        target.destination_id
-                    ),
-                )
-            )
-        else:
-            state = (
-                store.begin_attempt(
-                    source_key,
-                    identity,
-                )
-            )
 
         if state is None:
             current = (
@@ -2171,10 +2234,28 @@ def publish_prepared_content(
                     ),
                 )
 
-            if error is None:
+            final = (
+                store.get_delivery(
+                    source_key,
+                    identity,
+                )
+            )
+
+            if (
+                error is None
+                and delivery_state_has_success_proof(
+                    final
+                )
+            ):
                 store.mark_succeeded(
                     source_key,
                     identity,
+                )
+            elif error is None:
+                store.mark_failed(
+                    source_key,
+                    identity,
+                    "delivery completed without transport confirmation",
                 )
 
             final = (
