@@ -48,6 +48,45 @@ EXTERNAL_REVIEW_UI_STATE_KEY = (
     "__external_review_ui_state__"
 )
 
+# Media presentation mode values.
+#
+# MEDIA_PRESENTATION_MODE_NORMAL preserves the pre-existing behavior:
+# the bridge decides presentation from selected media (defaulting
+# multiple compatible items to the existing slideshow path).
+#
+# MEDIA_PRESENTATION_MODE_ALBUM forces the shared Telegram
+# media-group ("sendMediaGroup") path for 2+ selected images, the
+# existing single-media path for exactly one, and no-media for zero.
+MEDIA_PRESENTATION_MODE_NORMAL = "normal"
+MEDIA_PRESENTATION_MODE_ALBUM = "album"
+
+_VALID_MEDIA_PRESENTATION_MODES = (
+    MEDIA_PRESENTATION_MODE_NORMAL,
+    MEDIA_PRESENTATION_MODE_ALBUM,
+)
+
+
+def _normalize_media_presentation_mode(
+    value: Any,
+) -> str:
+    """
+    Normalize a media presentation mode value.
+
+    Fails closed to the default (current) behavior for any
+    unrecognized, missing, or malformed value so old persisted JSON
+    without this field keeps behaving exactly as before.
+    """
+
+    normalized = str(
+        value
+        or ""
+    ).strip().lower()
+
+    if normalized in _VALID_MEDIA_PRESENTATION_MODES:
+        return normalized
+
+    return MEDIA_PRESENTATION_MODE_NORMAL
+
 
 # =========================================================
 # ERRORS
@@ -124,6 +163,23 @@ class PendingExternalReview:
         downloading or staging them again. Never used for
         publication; final publication still materializes media
         through the existing boundary at execution time.
+
+    media_presentation_mode:
+        Backward-compatible review-only UI toggle controlling how
+        the terminal decision/bridge presents 2+ selected media.
+
+        "normal" (default, matches pre-existing behavior):
+            the bridge keeps deciding presentation from selected
+            media, defaulting multiple compatible items to the
+            existing slideshow path.
+
+        "album":
+            forces the shared Telegram media-group path for 2+
+            selected images, the existing single-media path for
+            exactly one image, and no-media for zero.
+
+        Missing/old persisted state without this field normalizes
+        to "normal", so existing pending reviews are unaffected.
     """
 
     review_id: str
@@ -150,6 +206,21 @@ class PendingExternalReview:
         str,
         ...,
     ] = ()
+
+    media_presentation_mode: str = (
+        MEDIA_PRESENTATION_MODE_NORMAL
+    )
+
+    def __post_init__(
+        self,
+    ) -> None:
+        object.__setattr__(
+            self,
+            "media_presentation_mode",
+            _normalize_media_presentation_mode(
+                self.media_presentation_mode
+            ),
+        )
 
     @property
     def expired(
@@ -463,6 +534,9 @@ def _content_with_review_state_to_dict(
         str,
         ...,
     ] = (),
+    media_presentation_mode: str = (
+        MEDIA_PRESENTATION_MODE_NORMAL
+    ),
 ) -> Dict[str, Any]:
     """
     Serialize external content plus review-only UI state.
@@ -478,6 +552,11 @@ def _content_with_review_state_to_dict(
     payload[
         EXTERNAL_REVIEW_UI_STATE_KEY
     ] = {
+        "media_presentation_mode": (
+            _normalize_media_presentation_mode(
+                media_presentation_mode
+            )
+        ),
         "selected_media_indexes": [
             int(index)
             for index
@@ -523,6 +602,7 @@ def _review_state_from_content_dict(
     Optional[int],
     Tuple[int, ...],
     Tuple[str, ...],
+    str,
 ]:
     raw_state = (
         value.get(
@@ -545,6 +625,7 @@ def _review_state_from_content_dict(
                 (),
                 expected_length=media_count,
             ),
+            MEDIA_PRESENTATION_MODE_NORMAL,
         )
 
     raw_indexes = (
@@ -606,6 +687,11 @@ def _review_state_from_content_dict(
                 (),
             ),
             expected_length=media_count,
+        ),
+        _normalize_media_presentation_mode(
+            raw_state.get(
+                "media_presentation_mode"
+            )
         ),
     )
 
@@ -1251,6 +1337,86 @@ class ExternalReviewStateStore:
                 preview_media_file_ids=(
                     pending.preview_media_file_ids
                 ),
+                media_presentation_mode=(
+                    pending.media_presentation_mode
+                ),
+            )
+
+            self._by_chat[
+                updated.chat_id
+            ] = updated
+
+            self._by_id[
+                updated.review_id
+            ] = updated
+
+            return updated
+
+    # -----------------------------------------------------
+    # MEDIA PRESENTATION MODE
+    # -----------------------------------------------------
+
+    def update_media_presentation_mode(
+        self,
+        *,
+        review_id: str,
+        chat_id: int,
+        media_presentation_mode: str,
+    ) -> PendingExternalReview:
+        """
+        Toggle the review-only media presentation mode.
+
+        This is a non-terminal, state-only update: it never
+        publishes anything and preserves every other pending field
+        (media selection, preview message identity, ...).
+        """
+
+        normalized_mode = (
+            _normalize_media_presentation_mode(
+                media_presentation_mode
+            )
+        )
+
+        with self._lock:
+            pending = self.require(
+                review_id=review_id,
+                chat_id=chat_id,
+            )
+
+            updated = PendingExternalReview(
+                review_id=(
+                    pending.review_id
+                ),
+                chat_id=(
+                    pending.chat_id
+                ),
+                content=(
+                    pending.content
+                ),
+                created_at=(
+                    pending.created_at
+                ),
+                expires_at=(
+                    pending.expires_at
+                ),
+                selected_media_indexes=(
+                    pending.selected_media_indexes
+                ),
+                media_selection_explicit=(
+                    pending.media_selection_explicit
+                ),
+                preview_message_id=(
+                    pending.preview_message_id
+                ),
+                preview_media_message_ids=(
+                    pending.preview_media_message_ids
+                ),
+                preview_media_file_ids=(
+                    pending.preview_media_file_ids
+                ),
+                media_presentation_mode=(
+                    normalized_mode
+                ),
             )
 
             self._by_chat[
@@ -1346,6 +1512,9 @@ class ExternalReviewStateStore:
                 ),
                 preview_media_file_ids=(
                     normalized_file_ids
+                ),
+                media_presentation_mode=(
+                    pending.media_presentation_mode
                 ),
             )
 
@@ -1553,6 +1722,7 @@ class PersistentExternalReviewStateStore:
             preview_message_id,
             preview_media_message_ids,
             preview_media_file_ids,
+            media_presentation_mode,
         ) = _review_state_from_content_dict(
             content_value,
             media_count=len(
@@ -1612,6 +1782,9 @@ class PersistentExternalReviewStateStore:
             ),
             preview_media_file_ids=(
                 preview_media_file_ids
+            ),
+            media_presentation_mode=(
+                media_presentation_mode
             ),
         )
 
@@ -2013,6 +2186,9 @@ class PersistentExternalReviewStateStore:
                     preview_media_file_ids=(
                         pending.preview_media_file_ids
                     ),
+                    media_presentation_mode=(
+                        pending.media_presentation_mode
+                    ),
                 )
             )
         }
@@ -2087,6 +2263,140 @@ class PersistentExternalReviewStateStore:
             preview_media_file_ids=(
                 pending.preview_media_file_ids
             ),
+            media_presentation_mode=(
+                pending.media_presentation_mode
+            ),
+        )
+
+    # -----------------------------------------------------
+    # MEDIA PRESENTATION MODE
+    # -----------------------------------------------------
+
+    def update_media_presentation_mode(
+        self,
+        *,
+        review_id: str,
+        chat_id: int,
+        media_presentation_mode: str,
+    ) -> PendingExternalReview:
+        """
+        Toggle the review-only media presentation mode.
+
+        This is a non-terminal, state-only update: it never
+        publishes anything and preserves every other pending field
+        (media selection, preview message identity, ...).
+        """
+
+        pending = self.require(
+            review_id=review_id,
+            chat_id=chat_id,
+        )
+
+        normalized_mode = (
+            _normalize_media_presentation_mode(
+                media_presentation_mode
+            )
+        )
+
+        payload = {
+            "content": (
+                _content_with_review_state_to_dict(
+                    pending.content,
+                    selected_media_indexes=(
+                        pending.selected_media_indexes
+                    ),
+                    media_selection_explicit=(
+                        pending.media_selection_explicit
+                    ),
+                    preview_message_id=(
+                        pending.preview_message_id
+                    ),
+                    preview_media_message_ids=(
+                        pending.preview_media_message_ids
+                    ),
+                    preview_media_file_ids=(
+                        pending.preview_media_file_ids
+                    ),
+                    media_presentation_mode=(
+                        normalized_mode
+                    ),
+                )
+            )
+        }
+
+        try:
+            response = (
+                self._table()
+                .update(
+                    payload
+                )
+                .eq(
+                    "review_id",
+                    pending.review_id,
+                )
+                .eq(
+                    "chat_id",
+                    pending.chat_id,
+                )
+                .execute()
+            )
+
+        except Exception as exc:
+            raise ExternalReviewPersistenceError(
+                (
+                    "failed to update persistent "
+                    "external review media presentation mode"
+                )
+            ) from exc
+
+        rows = (
+            getattr(
+                response,
+                "data",
+                None,
+            )
+            or []
+        )
+
+        if rows:
+            return self._row_to_pending(
+                rows[0]
+            )
+
+        return PendingExternalReview(
+            review_id=(
+                pending.review_id
+            ),
+            chat_id=(
+                pending.chat_id
+            ),
+            content=(
+                pending.content
+            ),
+            created_at=(
+                pending.created_at
+            ),
+            expires_at=(
+                pending.expires_at
+            ),
+            selected_media_indexes=(
+                pending.selected_media_indexes
+            ),
+            media_selection_explicit=(
+                pending.media_selection_explicit
+            ),
+            preview_message_id=(
+                pending.preview_message_id
+            ),
+            preview_media_message_ids=(
+                pending.preview_media_message_ids
+            ),
+            preview_media_file_ids=(
+                pending.preview_media_file_ids
+            ),
+            media_presentation_mode=(
+                normalized_mode
+            ),
         )
 
     # -----------------------------------------------------
@@ -2159,6 +2469,9 @@ class PersistentExternalReviewStateStore:
                     ),
                     preview_media_file_ids=(
                         normalized_file_ids
+                    ),
+                    media_presentation_mode=(
+                        pending.media_presentation_mode
                     ),
                 )
             )
@@ -2233,6 +2546,9 @@ class PersistentExternalReviewStateStore:
             ),
             preview_media_file_ids=(
                 normalized_file_ids
+            ),
+            media_presentation_mode=(
+                pending.media_presentation_mode
             ),
         )
 

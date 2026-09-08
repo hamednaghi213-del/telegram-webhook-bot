@@ -589,6 +589,168 @@ def test_nomedia_callback_is_non_terminal():
     )
 
 
+def test_mode_callback_is_non_terminal_and_toggles_album():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    result = (
+        handle_external_review_callback(
+            callback_data=(
+                "extrev:mode:"
+                "review-1:album"
+            ),
+            chat_id=12345,
+            controller=controller,
+        )
+    )
+
+    assert result.handled is True
+    assert result.completed is False
+    assert result.state_updated is True
+
+    assert result.decision is None
+    assert result.pending is not None
+
+    assert (
+        result.pending
+        .media_presentation_mode
+        == "album"
+    )
+
+
+def test_mode_callback_can_toggle_back_to_normal():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    handle_external_review_callback(
+        callback_data=(
+            "extrev:mode:"
+            "review-1:album"
+        ),
+        chat_id=12345,
+        controller=controller,
+    )
+
+    result = (
+        handle_external_review_callback(
+            callback_data=(
+                "extrev:mode:"
+                "review-1:normal"
+            ),
+            chat_id=12345,
+            controller=controller,
+        )
+    )
+
+    assert (
+        result.pending
+        .media_presentation_mode
+        == "normal"
+    )
+
+
+def test_mode_callback_preserves_media_selection_state():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    handle_external_review_callback(
+        callback_data=(
+            "extrev:media:"
+            "review-1:0,2"
+        ),
+        chat_id=12345,
+        controller=controller,
+    )
+
+    result = (
+        handle_external_review_callback(
+            callback_data=(
+                "extrev:mode:"
+                "review-1:album"
+            ),
+            chat_id=12345,
+            controller=controller,
+        )
+    )
+
+    assert (
+        result.pending
+        .selected_media_indexes
+        == (0, 2)
+    )
+
+    assert (
+        result.pending
+        .media_presentation_mode
+        == "album"
+    )
+
+
+def test_mode_callback_rejects_unsupported_value():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    with pytest.raises(
+        ExternalReviewCallbackError
+    ):
+        handle_external_review_callback(
+            callback_data=(
+                "extrev:mode:"
+                "review-1:collage"
+            ),
+            chat_id=12345,
+            controller=controller,
+        )
+
+
+def test_mode_state_survives_until_final_action():
+    controller = _controller()
+
+    _create_pending(
+        controller
+    )
+
+    handle_external_review_callback(
+        callback_data=(
+            "extrev:mode:"
+            "review-1:album"
+        ),
+        chat_id=12345,
+        controller=controller,
+    )
+
+    result = (
+        handle_external_review_callback(
+            callback_data=(
+                "extrev:standard:"
+                "review-1"
+            ),
+            chat_id=12345,
+            controller=controller,
+        )
+    )
+
+    assert result.decision is not None
+
+    assert (
+        result.decision
+        .media_presentation_mode
+        == "album"
+    )
+
+
 def test_media_state_survives_until_final_action():
     controller = _controller()
 

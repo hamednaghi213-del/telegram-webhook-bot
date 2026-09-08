@@ -6,7 +6,17 @@ import json
 import re
 
 from html.parser import HTMLParser
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Dict,
+    FrozenSet,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 from urllib.parse import urljoin, urlsplit
 
 from trafilatura import bare_extraction
@@ -63,6 +73,121 @@ _LOW_VALUE_IMAGE_MARKERS = (
     "recommended",
     "related-post",
 )
+
+# =========================================================
+# ANCESTOR / CONTAINER CONTEXT
+#
+# The HTML fact-finder walks a lightweight open-tag stack so each
+# <img> can be scored using the container it lives in (its class,
+# id and enclosing tag names), not only its own URL/alt/title text.
+#
+# This complements (does not replace) the existing URL-based
+# heuristics above and only ever applies to images sourced directly
+# from the HTML body ("html" source_kind); og/twitter/json-ld
+# candidates have no ancestor context and are unaffected.
+# =========================================================
+
+_VOID_HTML_ELEMENTS = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
+
+# Structural containers that are almost always chrome, not editorial
+# media (primary navigation / supplementary asides).
+_CONTAINER_NEGATIVE_TAGS = frozenset(
+    {
+        "nav",
+        "aside",
+    }
+)
+
+# Class/id tokens (whole-token, case-insensitive substring match)
+# that generically identify ads, logos, navigation, sidebars and
+# related/recommended-content widgets across arbitrary sites.
+_CONTAINER_NEGATIVE_TOKENS = frozenset(
+    {
+        "sidebar",
+        "widget",
+        "widgets",
+        "related",
+        "recirculation",
+        "outbrain",
+        "taboola",
+        "promo",
+        "promoted",
+        "advert",
+        "advertisement",
+        "ad-slot",
+        "adslot",
+        "sponsor",
+        "sponsored",
+        "comment",
+        "comments",
+        "share",
+        "sharing",
+        "social",
+        "breadcrumb",
+        "navbar",
+        "nav-bar",
+        "site-nav",
+        "main-nav",
+        "menu",
+        "footer",
+        "masthead",
+        "placeholder",
+        "skeleton",
+        "logo",
+        "brand",
+        "thumbnail-list",
+    }
+)
+
+# Structural containers that generically hold the primary editorial
+# image of an article.
+_CONTAINER_POSITIVE_TAGS = frozenset(
+    {
+        "figure",
+    }
+)
+
+_CONTAINER_POSITIVE_TOKENS = frozenset(
+    {
+        "hero",
+        "featured",
+        "feature-image",
+        "featuredimage",
+        "lead-image",
+        "leadmedia",
+        "article-body",
+        "articlebody",
+        "article-content",
+        "entry-content",
+        "entrycontent",
+        "post-content",
+        "postcontent",
+        "post-thumbnail",
+        "story-body",
+        "storybody",
+        "content-body",
+        "single-content",
+    }
+)
+
+_SCHEMA_ORG_MARKER = "schema.org"
 
 _MAX_ARTICLE_MEDIA = 10
 
@@ -191,6 +316,154 @@ def _parse_int(
     return parsed
 
 
+_TRACKING_QUERY_PREFIXES = (
+    "utm_",
+    "fbclid",
+    "gclid",
+    "gclsrc",
+    "icid",
+    "ref_src",
+    "ref_url",
+    "spm",
+    "mc_cid",
+    "mc_eid",
+)
+
+
+def _normalize_media_dedup_key(
+    url: str,
+) -> str:
+    """
+    Build a normalized, transport-neutral dedup key for a media URL.
+
+    This intentionally ignores scheme/host casing, default ports,
+    a trailing path slash and common analytics/tracking query
+    parameters so visually-identical images referenced through
+    slightly different URLs (og:image vs an <img> src, or the same
+    asset with a tracking parameter appended) collapse into a single
+    candidate. The candidate's own displayed URL is never altered by
+    this key.
+    """
+
+    raw = str(
+        url
+        or ""
+    ).strip()
+
+    if not raw:
+        return ""
+
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return raw.lower()
+
+    scheme = (
+        parts.scheme
+        or "https"
+    ).lower()
+
+    netloc = parts.netloc.lower()
+
+    if (
+        scheme == "http"
+        and netloc.endswith(":80")
+    ):
+        netloc = netloc[:-3]
+
+    if (
+        scheme == "https"
+        and netloc.endswith(":443")
+    ):
+        netloc = netloc[:-4]
+
+    path = parts.path or "/"
+
+    if (
+        len(path) > 1
+        and path.endswith("/")
+    ):
+        path = path.rstrip("/")
+
+    kept_query_pairs = [
+        pair
+        for pair in (parts.query or "").split("&")
+        if pair
+        and not any(
+            pair.split("=", 1)[0].lower().startswith(prefix)
+            for prefix in _TRACKING_QUERY_PREFIXES
+        )
+    ]
+
+    normalized = f"{scheme}://{netloc}{path}"
+
+    if kept_query_pairs:
+        normalized += "?" + "&".join(sorted(kept_query_pairs))
+
+    return normalized.lower()
+
+
+def _container_tokens(
+    ancestors: Sequence[Mapping[str, str]],
+) -> FrozenSet[str]:
+    tokens = set()
+
+    for entry in ancestors:
+        for attribute in (
+            "class",
+            "id",
+        ):
+            value = str(
+                entry.get(attribute, "")
+                or ""
+            ).strip().lower()
+
+            for token in value.split():
+                if token:
+                    tokens.add(token)
+
+    return frozenset(tokens)
+
+
+def _ancestor_tag_names(
+    ancestors: Sequence[Mapping[str, str]],
+) -> FrozenSet[str]:
+    return frozenset(
+        str(
+            entry.get("tag", "")
+            or ""
+        ).lower()
+        for entry in ancestors
+    )
+
+
+def _ancestor_within_schema_scope(
+    ancestors: Sequence[Mapping[str, str]],
+) -> bool:
+    return any(
+        _SCHEMA_ORG_MARKER
+        in str(
+            entry.get("itemtype", "")
+            or ""
+        ).lower()
+        for entry in ancestors
+    )
+
+
+def _tokens_match_any(
+    tokens: FrozenSet[str],
+    markers: FrozenSet[str],
+) -> bool:
+    if not tokens:
+        return False
+
+    return any(
+        marker in token
+        for token in tokens
+        for marker in markers
+    )
+
+
 def _best_srcset_url(
     srcset: str,
 ) -> str:
@@ -303,6 +576,12 @@ class _ArticleHTMLFacts(HTMLParser):
         self._json_ld_active = False
         self._json_ld_buffer: List[
             str
+        ] = []
+
+        # Open-tag stack used to give each <img> ancestor/container
+        # context (class, id, tag name, itemtype) for ranking.
+        self._tag_stack: List[
+            Dict[str, str]
         ] = []
 
     @staticmethod
@@ -466,6 +745,30 @@ class _ArticleHTMLFacts(HTMLParser):
                             ""
                         )
                     ),
+                    "item_prop": (
+                        attributes.get(
+                            "itemprop",
+                            ""
+                        )
+                    ),
+                    # Ancestor/container context captured from the
+                    # currently-open tag stack (this <img> is void
+                    # and is never pushed onto it itself).
+                    "ancestor_tags": (
+                        _ancestor_tag_names(
+                            self._tag_stack
+                        )
+                    ),
+                    "ancestor_tokens": (
+                        _container_tokens(
+                            self._tag_stack
+                        )
+                    ),
+                    "within_schema_scope": (
+                        _ancestor_within_schema_scope(
+                            self._tag_stack
+                        )
+                    ),
                 }
             )
 
@@ -504,6 +807,28 @@ class _ArticleHTMLFacts(HTMLParser):
         ):
             self._capture_tag = tag
             self._capture_buffer = []
+
+        # Maintain the open-tag ancestor stack for container-aware
+        # image ranking. Void elements (img, br, meta, ...) never
+        # receive a matching end tag and must not be pushed.
+        if tag not in _VOID_HTML_ELEMENTS:
+            self._tag_stack.append(
+                {
+                    "tag": tag,
+                    "class": attributes.get(
+                        "class",
+                        "",
+                    ),
+                    "id": attributes.get(
+                        "id",
+                        "",
+                    ),
+                    "itemtype": attributes.get(
+                        "itemtype",
+                        "",
+                    ),
+                }
+            )
 
     def handle_endtag(
         self,
@@ -565,6 +890,20 @@ class _ArticleHTMLFacts(HTMLParser):
 
             self._capture_tag = None
             self._capture_buffer = []
+
+        # Pop the ancestor stack back to (and including) the nearest
+        # open tag matching this end tag. This tolerates unbalanced
+        # markup without letting the stack grow unbounded or become
+        # permanently desynchronized.
+        if tag not in _VOID_HTML_ELEMENTS:
+            for index in range(
+                len(self._tag_stack) - 1,
+                -1,
+                -1,
+            ):
+                if self._tag_stack[index]["tag"] == tag:
+                    del self._tag_stack[index:]
+                    break
 
     def handle_data(
         self,
@@ -973,6 +1312,10 @@ def _image_score(
     title: str,
     source_kind: str,
     article_title: str,
+    ancestor_tags: FrozenSet[str] = frozenset(),
+    ancestor_tokens: FrozenSet[str] = frozenset(),
+    within_schema_scope: bool = False,
+    item_prop: str = "",
 ) -> int:
     score = 0
 
@@ -1024,6 +1367,38 @@ def _image_score(
     ):
         score -= 150
 
+    # =====================================================
+    # ANCESTOR / CONTAINER CONTEXT
+    #
+    # Only images sourced directly from the HTML body carry
+    # ancestor context; og/twitter/json-ld candidates pass empty
+    # defaults above and are unaffected.
+    # =====================================================
+
+    if (
+        ancestor_tags & _CONTAINER_NEGATIVE_TAGS
+        or _tokens_match_any(
+            ancestor_tokens,
+            _CONTAINER_NEGATIVE_TOKENS,
+        )
+    ):
+        score -= 140
+
+    if (
+        ancestor_tags & _CONTAINER_POSITIVE_TAGS
+        or _tokens_match_any(
+            ancestor_tokens,
+            _CONTAINER_POSITIVE_TOKENS,
+        )
+    ):
+        score += 25
+
+    if (
+        within_schema_scope
+        or str(item_prop or "").strip().lower() == "image"
+    ):
+        score += 15
+
     title_words = {
         word
         for word in re.findall(
@@ -1063,12 +1438,23 @@ def _is_low_value_image(
     height: Optional[int],
     alt_text: str,
     title: str,
+    ancestor_tags: FrozenSet[str] = frozenset(),
+    ancestor_tokens: FrozenSet[str] = frozenset(),
 ) -> bool:
     combined = f"{url} {alt_text} {title}".lower()
 
     if any(
         marker in combined
         for marker in _LOW_VALUE_IMAGE_MARKERS
+    ):
+        return True
+
+    if (
+        ancestor_tags & _CONTAINER_NEGATIVE_TAGS
+        or _tokens_match_any(
+            ancestor_tokens,
+            _CONTAINER_NEGATIVE_TOKENS,
+        )
     ):
         return True
 
@@ -1108,6 +1494,10 @@ def _build_media(
         height: Optional[int] = None,
         alt_text: str = "",
         title: str = "",
+        ancestor_tags: FrozenSet[str] = frozenset(),
+        ancestor_tokens: FrozenSet[str] = frozenset(),
+        within_schema_scope: bool = False,
+        item_prop: str = "",
     ) -> None:
         nonlocal order
 
@@ -1138,6 +1528,18 @@ def _build_media(
                     )
                 ),
                 "order": order,
+                "ancestor_tags": (
+                    ancestor_tags
+                ),
+                "ancestor_tokens": (
+                    ancestor_tokens
+                ),
+                "within_schema_scope": (
+                    within_schema_scope
+                ),
+                "item_prop": (
+                    item_prop
+                ),
             }
         )
 
@@ -1237,6 +1639,27 @@ def _build_media(
                     "id"
                 ),
             ),
+            ancestor_tags=image.get(
+                "ancestor_tags",
+                frozenset(),
+            ),
+            ancestor_tokens=image.get(
+                "ancestor_tokens",
+                frozenset(),
+            ),
+            within_schema_scope=bool(
+                image.get(
+                    "within_schema_scope",
+                    False,
+                )
+            ),
+            item_prop=str(
+                image.get(
+                    "item_prop",
+                    "",
+                )
+                or ""
+            ),
         )
 
     unique: Dict[
@@ -1268,15 +1691,47 @@ def _build_media(
                     "source_kind"
                 ],
                 article_title=article_title,
+                ancestor_tags=candidate.get(
+                    "ancestor_tags",
+                    frozenset(),
+                ),
+                ancestor_tokens=candidate.get(
+                    "ancestor_tokens",
+                    frozenset(),
+                ),
+                within_schema_scope=bool(
+                    candidate.get(
+                        "within_schema_scope",
+                        False,
+                    )
+                ),
+                item_prop=str(
+                    candidate.get(
+                        "item_prop",
+                        "",
+                    )
+                    or ""
+                ),
             )
         )
 
+        # Normalized dedup key: visually-identical images referenced
+        # through slightly different URLs (scheme/host casing,
+        # trailing slash, tracking query params) collapse into one
+        # candidate. The displayed "url" is never altered by this.
+        dedup_key = (
+            _normalize_media_dedup_key(
+                url
+            )
+            or url
+        )
+
         existing = unique.get(
-            url
+            dedup_key
         )
 
         if existing is None:
-            unique[url] = candidate
+            unique[dedup_key] = candidate
             continue
 
         if (
@@ -1288,7 +1743,7 @@ def _build_media(
                 existing["order"],
             )
 
-            unique[url] = candidate
+            unique[dedup_key] = candidate
 
     usable = [
         candidate
@@ -1301,6 +1756,14 @@ def _build_media(
             height=candidate["height"],
             alt_text=candidate["alt_text"],
             title=candidate["title"],
+            ancestor_tags=candidate.get(
+                "ancestor_tags",
+                frozenset(),
+            ),
+            ancestor_tokens=candidate.get(
+                "ancestor_tokens",
+                frozenset(),
+            ),
         )
     ]
 

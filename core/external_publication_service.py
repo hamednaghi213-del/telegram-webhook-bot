@@ -207,6 +207,7 @@ def publish_reviewed_external_content(
     ] = None,
     smart_summary_applied: bool = False,
     editorial_rewrite_applied: bool = False,
+    media_presentation_mode: str = "normal",
 ) -> ExternalPublicationResult:
     """
     Publish reviewed external content through the existing Shared Engine.
@@ -221,6 +222,10 @@ def publish_reviewed_external_content(
 
     The caller must apply requested shared transformations before invoking
     publication.
+
+    media_presentation_mode ("normal" default / "album" opt-in) is
+    forwarded unchanged to the bridge; see
+    `core.external_content_bridge._resolve_media_presentation`.
     """
 
     bridge = build_external_prepared_content(
@@ -229,6 +234,9 @@ def publish_reviewed_external_content(
         materializer=materializer,
         prepared_files=prepared_files,
         source_key=source_key,
+        media_presentation_mode=(
+            media_presentation_mode
+        ),
     )
 
     _validate_transformation_state(

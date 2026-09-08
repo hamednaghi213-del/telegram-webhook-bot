@@ -416,11 +416,14 @@ def handle_external_review_callback(
         extrev:paragraphs:<review_id>:0,2
         extrev:media:<review_id>:0
         extrev:media:<review_id>:0,1
+        extrev:mode:<review_id>:normal
+        extrev:mode:<review_id>:album
 
     Important:
 
         media
         nomedia
+        mode
 
     are state-only actions.
 
@@ -586,6 +589,51 @@ def handle_external_review_callback(
             message=(
                 "انتشار بدون تصویر انتخاب شد."
             ),
+        )
+
+    # =====================================================
+    # MEDIA PRESENTATION MODE — STATE ONLY
+    # =====================================================
+
+    if action == "mode":
+        requested_mode = str(
+            argument
+            or ""
+        ).strip().lower()
+
+        if requested_mode not in (
+            "normal",
+            "album",
+        ):
+            raise ExternalReviewCallbackError(
+                "unsupported media presentation mode"
+            )
+
+        updated = (
+            resolved_controller
+            .state_store
+            .update_media_presentation_mode(
+                review_id=review_id,
+                chat_id=chat_id,
+                media_presentation_mode=(
+                    requested_mode
+                ),
+            )
+        )
+
+        message = (
+            "🖼 حالت آلبوم فعال شد."
+            if updated.media_presentation_mode
+            == "album"
+            else "🖼 حالت عادی فعال شد."
+        )
+
+        return ExternalReviewCallbackResult(
+            handled=True,
+            action=action,
+            review_id=review_id,
+            pending=updated,
+            message=message,
         )
 
     # =====================================================

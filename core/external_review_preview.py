@@ -160,6 +160,31 @@ def _selection_status_line(
     )
 
 
+def _presentation_mode_status_line(
+    *,
+    media_count: int,
+    media_presentation_mode: str,
+) -> str:
+    if media_count <= 1:
+        return ""
+
+    normalized_mode = str(
+        media_presentation_mode
+        or ""
+    ).strip().lower()
+
+    if normalized_mode == "album":
+        return (
+            "🖼 حالت انتشار: آلبوم "
+            "(ارسال گروهی تصاویر)."
+        )
+
+    return (
+        "🖼 حالت انتشار: عادی "
+        "(اسلایدشو پیش‌فرض)."
+    )
+
+
 def _media_count_line(
     media_count: int,
 ) -> str:
@@ -192,6 +217,7 @@ def build_external_review_keyboard(
     media_count: int,
     selected_media_indexes: Tuple[int, ...] = (),
     media_selection_explicit: bool = False,
+    media_presentation_mode: str = "normal",
 ) -> dict:
     """
     Build the review inline keyboard.
@@ -200,6 +226,7 @@ def build_external_review_keyboard(
 
         extrev:<action>:<review_id>
         extrev:media:<review_id>:<index>
+        extrev:mode:<review_id>:<normal|album>
     """
 
     review_rows = [
@@ -321,6 +348,43 @@ def build_external_review_keyboard(
                     ]
                 )
 
+        if media_count > 1:
+            normalized_mode = str(
+                media_presentation_mode
+                or ""
+            ).strip().lower()
+
+            is_album = (
+                normalized_mode == "album"
+            )
+
+            review_rows.append(
+                [
+                    {
+                        "text": (
+                            "🖼 آلبوم ✅"
+                            if is_album
+                            else "🖼 آلبوم"
+                        ),
+                        "callback_data": (
+                            "extrev:mode:"
+                            f"{review_id}:album"
+                        ),
+                    },
+                    {
+                        "text": (
+                            "🖼 عادی ✅"
+                            if not is_album
+                            else "🖼 عادی"
+                        ),
+                        "callback_data": (
+                            "extrev:mode:"
+                            f"{review_id}:normal"
+                        ),
+                    },
+                ]
+            )
+
     review_rows.append(
         [
             {
@@ -364,6 +428,7 @@ def build_external_review_preview(
     preview: ExternalContentPreview,
     selected_media_indexes: Tuple[int, ...] = (),
     media_selection_explicit: bool = False,
+    media_presentation_mode: str = "normal",
 ) -> ExternalReviewPreviewView:
     """
     Render one coherent review preview.
@@ -418,6 +483,20 @@ def build_external_review_preview(
     if selection_status:
         metadata_parts.append(
             selection_status
+        )
+
+    presentation_mode_status = (
+        _presentation_mode_status_line(
+            media_count=media_count,
+            media_presentation_mode=(
+                media_presentation_mode
+            ),
+        )
+    )
+
+    if presentation_mode_status:
+        metadata_parts.append(
+            presentation_mode_status
         )
 
     metadata_text = "\n".join(
@@ -494,6 +573,9 @@ def build_external_review_preview(
             ),
             media_selection_explicit=(
                 media_selection_explicit
+            ),
+            media_presentation_mode=(
+                media_presentation_mode
             ),
         )
     )

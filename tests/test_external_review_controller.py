@@ -656,3 +656,48 @@ def test_controller_has_no_publication_methods():
         controller,
         "translate",
     )
+
+
+# =========================================================
+# REQUIREMENT C: media_presentation_mode PROPAGATION
+# =========================================================
+
+
+def test_apply_selection_defaults_decision_mode_to_normal():
+    controller, _store = _controller()
+
+    controller.create_pending(
+        review_id="review-1",
+        chat_id=100,
+        content=_content(),
+    )
+
+    decision = controller.apply_selection(
+        review_id="review-1",
+        chat_id=100,
+    )
+
+    assert decision.media_presentation_mode == "normal"
+
+
+def test_apply_selection_propagates_album_mode_from_pending():
+    controller, store = _controller()
+
+    controller.create_pending(
+        review_id="review-1",
+        chat_id=100,
+        content=_content(),
+    )
+
+    store.update_media_presentation_mode(
+        review_id="review-1",
+        chat_id=100,
+        media_presentation_mode="album",
+    )
+
+    decision = controller.apply_selection(
+        review_id="review-1",
+        chat_id=100,
+    )
+
+    assert decision.media_presentation_mode == "album"

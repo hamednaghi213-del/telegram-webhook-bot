@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from dataclasses import (
     dataclass,
     replace,
@@ -32,6 +34,8 @@ from core.smart_summarizer import (
     summarize_text_safely,
 )
 
+logger = logging.getLogger(__name__)
+
 
 # =========================================================
 # ERRORS
@@ -60,6 +64,14 @@ STATUS_EDITORIAL_REQUIRED = (
 )
 
 EXTERNAL_SHORT_MAX_REDUCTION_RATIO = 0.97
+
+# Opt-in bounded adaptive overshoot retries for External Review SHORT
+# only. This allows up to 3 total generation attempts (1 first +
+# 2 retries) while every attempt is still validated against the
+# original 940-character caption target using the existing shared
+# validator. Generic callers of summarize_text_safely never pass
+# this and keep their current (1-retry) behavior unchanged.
+EXTERNAL_SHORT_MAX_OVERSHOOT_RETRIES = 2
 
 
 # =========================================================
@@ -219,6 +231,9 @@ def _apply_shared_smart_summary(
                 aggressive_max_reduction_ratio=(
                     EXTERNAL_SHORT_MAX_REDUCTION_RATIO
                 ),
+                max_overshoot_retries=(
+                    EXTERNAL_SHORT_MAX_OVERSHOOT_RETRIES
+                ),
             )
         )
 
@@ -250,6 +265,34 @@ def _apply_shared_smart_summary(
             "validation_passed",
             False,
         )
+    )
+
+    metadata = (
+        getattr(
+            outcome,
+            "metadata",
+            {},
+        )
+        or {}
+    )
+
+    logger.info(
+        "External review SHORT smart summary attempt | "
+        "success=%s | validation_passed=%s | "
+        "overshoot_attempts=%s | max_overshoot_retries=%s | "
+        "target=%s | output_length=%s",
+        success,
+        validation_passed,
+        metadata.get(
+            "overshoot_attempts"
+        ),
+        metadata.get(
+            "max_overshoot_retries"
+        ),
+        DEFAULT_CAPTION_TARGET,
+        len(
+            summary_text
+        ),
     )
 
     if (
@@ -316,6 +359,9 @@ def _publish_decision(
                 ),
                 smart_summary_applied=(
                     smart_summary_applied
+                ),
+                media_presentation_mode=(
+                    decision.media_presentation_mode
                 ),
             )
         )

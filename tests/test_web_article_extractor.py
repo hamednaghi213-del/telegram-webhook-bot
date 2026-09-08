@@ -681,3 +681,213 @@ def test_article_without_image_remains_valid_candidate():
         "no_article_image"
         in result.warnings
     )
+
+
+# =========================================================
+# REQUIREMENT B: ANCESTOR/CONTAINER-AWARE IMAGE RANKING
+# AND NORMALIZED DEDUP
+# =========================================================
+
+
+ANCESTOR_CONTEXT_HTML = """
+<html><head>
+<meta property="og:title" content="Ancestor context story">
+</head><body><article>
+<h1>Ancestor context story</h1>
+<p>This article contains enough substantive reporting text to be
+extracted as a normal news article with several candidate images
+placed in different structural containers across the page.</p>
+
+<figure class="hero-image">
+    <img src="/images/hero-photo.jpg" width="1600" height="900"
+         alt="Ancestor context story">
+</figure>
+
+<img src="/images/plain-photo.jpg" width="1200" height="800"
+     alt="Plain photo">
+
+<nav>
+    <img src="/images/nav-photo.jpg" width="1200" height="800"
+         alt="Nav photo">
+</nav>
+
+<div class="sidebar-related">
+    <img src="/images/sidebar-photo.jpg" width="1200" height="800"
+         alt="Sidebar photo">
+</div>
+
+<div class="site-footer">
+    <img src="/images/footer-logo.jpg" width="1200" height="800"
+         alt="Footer logo photo">
+</div>
+</article></body></html>
+"""
+
+
+def test_hero_container_image_is_ranked_first():
+    result = WebArticleExtractor().extract_from_html(
+        ANCESTOR_CONTEXT_HTML,
+        source_url="https://example.com/story",
+    )
+
+    assert result.has_media is True
+
+    assert result.media[0].source_url == (
+        "https://example.com/images/hero-photo.jpg"
+    )
+
+
+def test_nav_and_sidebar_container_images_are_filtered_out():
+    result = WebArticleExtractor().extract_from_html(
+        ANCESTOR_CONTEXT_HTML,
+        source_url="https://example.com/story",
+    )
+
+    urls = [item.source_url for item in result.media]
+
+    assert (
+        "https://example.com/images/nav-photo.jpg"
+        not in urls
+    )
+
+    assert (
+        "https://example.com/images/sidebar-photo.jpg"
+        not in urls
+    )
+
+    assert (
+        "https://example.com/images/footer-logo.jpg"
+        not in urls
+    )
+
+
+def test_hero_container_image_outranks_plain_body_image():
+    result = WebArticleExtractor().extract_from_html(
+        ANCESTOR_CONTEXT_HTML,
+        source_url="https://example.com/story",
+    )
+
+    urls = [item.source_url for item in result.media]
+
+    hero_index = urls.index(
+        "https://example.com/images/hero-photo.jpg"
+    )
+    plain_index = urls.index(
+        "https://example.com/images/plain-photo.jpg"
+    )
+
+    assert hero_index < plain_index
+
+
+TRACKING_PARAM_DEDUP_HTML = """
+<html><head>
+<meta property="og:title" content="Tracking param story">
+<meta property="og:image"
+      content="https://example.com/images/shared-photo.jpg?utm_source=rss">
+</head><body><article>
+<h1>Tracking param story</h1>
+<p>This article contains enough substantive reporting text so it is
+extracted as a normal news article, with the same editorial image
+referenced twice: once via Open Graph metadata with a tracking query
+parameter, and once directly in the body with a trailing slash and a
+different tracking parameter.</p>
+<img src="https://example.com/images/shared-photo.jpg/?fbclid=abc123"
+     width="1600" height="900" alt="Tracking param story">
+</article></body></html>
+"""
+
+
+def test_normalized_dedup_collapses_tracking_params_and_trailing_slash():
+    result = WebArticleExtractor().extract_from_html(
+        TRACKING_PARAM_DEDUP_HTML,
+        source_url="https://example.com/story",
+    )
+
+    matches = [
+        item
+        for item in result.media
+        if item.source_url.startswith(
+            "https://example.com/images/shared-photo.jpg"
+        )
+    ]
+
+    assert len(matches) == 1
+
+
+def test_normalized_dedup_preserves_original_display_url():
+    result = WebArticleExtractor().extract_from_html(
+        TRACKING_PARAM_DEDUP_HTML,
+        source_url="https://example.com/story",
+    )
+
+    matches = [
+        item
+        for item in result.media
+        if item.source_url.startswith(
+            "https://example.com/images/shared-photo.jpg"
+        )
+    ]
+
+    # The displayed URL is untouched by dedup normalization (no
+    # forced stripping of query strings/trailing slash on output).
+    assert matches[0].source_url in (
+        "https://example.com/images/shared-photo.jpg?utm_source=rss",
+        "https://example.com/images/shared-photo.jpg/?fbclid=abc123",
+    )
+
+
+MANY_IMAGES_HTML_TEMPLATE = """
+<html><head>
+<meta property="og:title" content="Many images story">
+</head><body><article>
+<h1>Many images story</h1>
+<p>This article contains enough substantive reporting text so it is
+extracted as a normal news article with more than ten distinct
+editorial candidate images across the page body.</p>
+{images}
+</article></body></html>
+"""
+
+
+def test_extracted_media_is_capped_at_ten():
+    images = "".join(
+        (
+            f'<img src="/images/gallery-{index}.jpg" '
+            f'width="1200" height="800" '
+            f'alt="Many images story {index}">'
+        )
+        for index in range(15)
+    )
+
+    result = WebArticleExtractor().extract_from_html(
+        MANY_IMAGES_HTML_TEMPLATE.format(images=images),
+        source_url="https://example.com/story",
+    )
+
+    assert len(result.media) <= 10
+
+
+def test_media_ranking_is_deterministic_across_runs():
+    images = "".join(
+        (
+            f'<img src="/images/gallery-{index}.jpg" '
+            f'width="1200" height="800" '
+            f'alt="Many images story {index}">'
+        )
+        for index in range(15)
+    )
+
+    html = MANY_IMAGES_HTML_TEMPLATE.format(images=images)
+
+    first = WebArticleExtractor().extract_from_html(
+        html,
+        source_url="https://example.com/story",
+    )
+    second = WebArticleExtractor().extract_from_html(
+        html,
+        source_url="https://example.com/story",
+    )
+
+    assert [item.source_url for item in first.media] == [
+        item.source_url for item in second.media
+    ]

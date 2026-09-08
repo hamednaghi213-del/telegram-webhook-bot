@@ -784,6 +784,183 @@ def test_single_plain_photo_does_not_force_slideshow():
     )
 
 
+# =========================================================
+# REQUIREMENT C: media_presentation_mode ROUTING
+# =========================================================
+
+
+def test_album_mode_forces_shared_media_group_path_for_two_or_more_images():
+    """
+    ALBUM mode with 2+ selected images must bypass the slideshow
+    default and route through the existing shared Telegram
+    media-group ("sendMediaGroup") path, which is selected by an
+    empty `media_presentation` value.
+    """
+
+    media = (
+        _media(
+            url="https://example.com/1.jpg",
+            position=1,
+            presentation="",
+        ),
+        _media(
+            url="https://example.com/2.jpg",
+            position=2,
+            presentation="",
+        ),
+    )
+
+    result = build_external_prepared_content(
+        _content(media=media),
+        _review(media=media),
+        prepared_files=(
+            {"type": "photo", "file_id": "file-1"},
+            {"type": "photo", "file_id": "file-2"},
+        ),
+        media_presentation_mode="album",
+    )
+
+    assert (
+        result.prepared_content.media_presentation
+        == ""
+    )
+
+    assert len(
+        result.prepared_content.files
+    ) == 2
+
+
+def test_album_mode_overrides_explicit_slideshow_metadata():
+    """
+    ALBUM is an explicit user override: it must win even when
+    individual media items already declare slideshow/collage
+    presentation metadata.
+    """
+
+    media = (
+        _media(
+            url="https://example.com/1.jpg",
+            position=0,
+            presentation="slideshow",
+        ),
+        _media(
+            url="https://example.com/2.jpg",
+            position=1,
+            presentation="slideshow",
+        ),
+    )
+
+    result = build_external_prepared_content(
+        _content(media=media),
+        _review(media=media),
+        prepared_files=(
+            {"type": "photo", "file_id": "file-1"},
+            {"type": "photo", "file_id": "file-2"},
+        ),
+        media_presentation_mode="album",
+    )
+
+    assert (
+        result.prepared_content.media_presentation
+        == ""
+    )
+
+
+def test_album_mode_with_single_image_uses_existing_single_path():
+    """One selected image in ALBUM mode still uses the existing
+    single-media path (empty presentation, exactly one file)."""
+
+    media = (
+        _media(
+            url="https://example.com/1.jpg",
+            position=0,
+            presentation="",
+        ),
+    )
+
+    result = build_external_prepared_content(
+        _content(media=media),
+        _review(media=media),
+        prepared_files=(
+            {"type": "photo", "file_id": "file-1"},
+        ),
+        media_presentation_mode="album",
+    )
+
+    assert (
+        result.prepared_content.media_presentation
+        == ""
+    )
+
+    assert len(
+        result.prepared_content.files
+    ) == 1
+
+
+def test_album_mode_with_zero_images_has_no_media():
+    result = build_external_prepared_content(
+        _content(media=()),
+        _review(media=()),
+        media_presentation_mode="album",
+    )
+
+    assert (
+        result.prepared_content.media_presentation
+        == ""
+    )
+
+    assert result.prepared_content.files == ()
+
+
+def test_normal_mode_preserves_default_slideshow_behavior():
+    """
+    NORMAL is the default and must preserve exactly the pre-existing
+    behavior: 2+ compatible plain photos still default to slideshow.
+    """
+
+    media = (
+        _media(
+            url="https://example.com/1.jpg",
+            position=1,
+            presentation="",
+        ),
+        _media(
+            url="https://example.com/2.jpg",
+            position=2,
+            presentation="",
+        ),
+    )
+
+    result_explicit_normal = build_external_prepared_content(
+        _content(media=media),
+        _review(media=media),
+        prepared_files=(
+            {"type": "photo", "file_id": "file-1"},
+            {"type": "photo", "file_id": "file-2"},
+        ),
+        media_presentation_mode="normal",
+    )
+
+    result_default = build_external_prepared_content(
+        _content(media=media),
+        _review(media=media),
+        prepared_files=(
+            {"type": "photo", "file_id": "file-1"},
+            {"type": "photo", "file_id": "file-2"},
+        ),
+    )
+
+    assert (
+        result_explicit_normal.prepared_content.media_presentation
+        == "slideshow"
+    )
+
+    assert (
+        result_default.prepared_content.media_presentation
+        == "slideshow"
+    )
+
+
 def test_partial_explicit_slideshow_is_preserved():
     """
     If one selected item already declares slideshow and the remaining

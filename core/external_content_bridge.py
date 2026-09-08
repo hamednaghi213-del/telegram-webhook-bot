@@ -388,9 +388,21 @@ def _can_default_to_slideshow(
 
 def _resolve_media_presentation(
     review: ExternalReviewResult,
+    *,
+    media_presentation_mode: str = "normal",
 ) -> str:
     """
     Resolve the semantic media presentation for reviewed external content.
+
+    media_presentation_mode="album" (opt-in, backward compatible):
+        Force an empty presentation so 2+ selected media always enter
+        the existing shared Telegram media-group ("sendMediaGroup")
+        path, exactly one item uses the existing single-media path,
+        and zero items remain no-media. This bypasses the slideshow
+        default below entirely.
+
+    media_presentation_mode="normal" (default, matches pre-existing
+    behavior):
 
     Rules:
 
@@ -408,6 +420,14 @@ def _resolve_media_presentation(
     3. Single media and unsupported mixed media remain on the normal media
        publication path.
     """
+
+    normalized_mode = str(
+        media_presentation_mode
+        or ""
+    ).strip().lower()
+
+    if normalized_mode == "album":
+        return ""
 
     media = tuple(
         review.media
@@ -479,6 +499,7 @@ def build_external_prepared_content(
         ]
     ] = None,
     source_key: str = "",
+    media_presentation_mode: str = "normal",
 ) -> ExternalPreparedBridgeResult:
     """
     Convert reviewed external content into immutable PreparedContent.
@@ -491,6 +512,10 @@ def build_external_prepared_content(
       - does not insert raw external URLs into PreparedContent.files
 
     External media must cross the materialization boundary first.
+
+    media_presentation_mode ("normal" default / "album" opt-in) is a
+    backward-compatible review-only toggle. See
+    `_resolve_media_presentation` for exact routing semantics.
     """
 
     if not isinstance(
@@ -588,7 +613,10 @@ def build_external_prepared_content(
         files=files,
         media_presentation=(
             _resolve_media_presentation(
-                review
+                review,
+                media_presentation_mode=(
+                    media_presentation_mode
+                ),
             )
         ),
         source_key=(
