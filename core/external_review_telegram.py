@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from typing import (
     Any,
     Callable,
     Dict,
+    Mapping,
     Optional,
 )
 
@@ -19,9 +21,225 @@ from core.external_review_controller import (
     DEFAULT_EXTERNAL_REVIEW_CONTROLLER,
     ExternalReviewController,
 )
+from core.external_review_state import (
+    PendingExternalReview,
+)
 
 
 logger = logging.getLogger(__name__)
+
+
+# =========================================================
+# PREVIEW SURFACE HELPERS
+# =========================================================
+
+
+def _control_message_id(
+    callback_query: Dict[str, Any],
+    pending: Optional[
+        PendingExternalReview
+    ],
+) -> Optional[int]:
+    """
+    Resolve the message that owns the review keyboard.
+
+    The callback message identifies the control message directly.
+    The persisted preview ref covers cases where Telegram omits the
+    message envelope (or the callback arrived on the media panel).
+    """
+
+    message = (
+        callback_query.get(
+            "message",
+            {},
+        )
+        or {}
+    )
+
+    try:
+        message_id = int(
+            message.get(
+                "message_id"
+            )
+        )
+
+        if message_id > 0:
+            return message_id
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        pass
+
+    if pending is not None:
+        return pending.preview_message_id
+
+    return None
+
+
+def _render_pending_view(
+    pending: PendingExternalReview,
+):
+    from core.external_content_review import (
+        build_external_content_preview,
+    )
+    from core.external_review_preview import (
+        build_external_review_preview,
+    )
+
+    preview = build_external_content_preview(
+        pending.content
+    )
+
+    return build_external_review_preview(
+        review_id=pending.review_id,
+        content=pending.content,
+        preview=preview,
+        selected_media_indexes=(
+            pending.selected_media_indexes
+        ),
+        media_selection_explicit=(
+            pending.media_selection_explicit
+        ),
+    )
+
+
+def _staging_chat_id() -> str:
+    return str(
+        os.getenv(
+            "EXTERNAL_MEDIA_STAGING_CHAT_ID",
+            "",
+        )
+        or ""
+    ).strip()
+
+
+def _refresh_preview(
+    *,
+    callback_query: Dict[str, Any],
+    pending: PendingExternalReview,
+    chat_id: int,
+    telegram_api: Optional[
+        Callable[..., Mapping[str, Any]]
+    ],
+    controller: ExternalReviewController,
+    req_id: str,
+) -> None:
+    """
+    Edit the existing review surface after a state change.
+
+    Fail-soft: when the control message cannot be edited (missing
+    identity or API rejection) a single fresh control message is
+    sent so the review never becomes unusable.
+    """
+
+    if telegram_api is None:
+        return
+
+    from core.external_review_telegram_panel import (
+        edit_control_message,
+        reconcile_media_panel,
+        send_control_message,
+    )
+
+    view = _render_pending_view(
+        pending
+    )
+
+    control_id = _control_message_id(
+        callback_query,
+        pending,
+    )
+
+    edited = edit_control_message(
+        telegram_api=telegram_api,
+        chat_id=chat_id,
+        message_id=control_id,
+        text=view.text,
+        reply_markup=view.reply_markup,
+    )
+
+    if not edited:
+        fallback_id = send_control_message(
+            telegram_api=telegram_api,
+            chat_id=chat_id,
+            text=view.text,
+            reply_markup=view.reply_markup,
+        )
+
+        if fallback_id:
+            control_id = fallback_id
+
+    media_ids = reconcile_media_panel(
+        telegram_api=telegram_api,
+        chat_id=chat_id,
+        staging_chat_id=_staging_chat_id(),
+        media=view.media,
+        current_message_ids=(
+            pending.preview_media_message_ids
+        ),
+    )
+
+    try:
+        controller.state_store.update_preview_message_refs(
+            review_id=pending.review_id,
+            chat_id=chat_id,
+            preview_message_id=control_id,
+            preview_media_message_ids=media_ids,
+        )
+
+    except Exception as exc:
+        logger.exception(
+            (
+                "[%s] External review preview refs "
+                "could not be persisted after refresh | "
+                "review_id=%s | %s"
+            ),
+            req_id,
+            pending.review_id,
+            exc,
+        )
+
+
+def _finalize_preview(
+    *,
+    callback_query: Dict[str, Any],
+    pending: Optional[
+        PendingExternalReview
+    ],
+    chat_id: int,
+    telegram_api: Optional[
+        Callable[..., Mapping[str, Any]]
+    ],
+    text: str,
+) -> None:
+    """
+    Move the preview surface into its terminal state.
+
+    The control message loses its keyboard and shows the outcome;
+    the media panel stays visible for reference.
+    """
+
+    if telegram_api is None:
+        return
+
+    from core.external_review_telegram_panel import (
+        edit_control_message,
+    )
+
+    edit_control_message(
+        telegram_api=telegram_api,
+        chat_id=chat_id,
+        message_id=_control_message_id(
+            callback_query,
+            pending,
+        ),
+        text=text,
+        reply_markup={
+            "inline_keyboard": []
+        },
+    )
 
 
 # =========================================================
@@ -39,6 +257,9 @@ def handle_external_review_telegram_callback(
     send_message: Callable[..., Any],
     controller: Optional[
         ExternalReviewController
+    ] = None,
+    telegram_api: Optional[
+        Callable[..., Mapping[str, Any]]
     ] = None,
     api_url: str = "",
     execute_decision: Optional[
@@ -202,12 +423,34 @@ def handle_external_review_telegram_callback(
             "لغو شد.",
         )
 
-        send_message(
-            int(
-                user_id
-            ),
-            "❌ بررسی این مطلب لغو شد.",
+        cancelled_pending = (
+            result.cancelled
         )
+
+        finalized = False
+
+        if telegram_api is not None:
+            finalized = True
+
+            _finalize_preview(
+                callback_query=callback_query,
+                pending=cancelled_pending,
+                chat_id=int(
+                    user_id
+                ),
+                telegram_api=telegram_api,
+                text=(
+                    "❌ بررسی این مطلب لغو شد."
+                ),
+            )
+
+        if not finalized:
+            send_message(
+                int(
+                    user_id
+                ),
+                "❌ بررسی این مطلب لغو شد.",
+            )
 
         return True
 
@@ -228,6 +471,33 @@ def handle_external_review_telegram_callback(
 
         if pending is None:
             return True
+
+        # =============================================
+        # EDIT THE EXISTING PREVIEW IN PLACE
+        # =============================================
+        #
+        # Media selection is non-terminal. The review
+        # surface (media panel + one control message) is
+        # updated in place; no new status messages are
+        # created and pending state stays intact.
+        # =============================================
+
+        if telegram_api is not None:
+            _refresh_preview(
+                callback_query=callback_query,
+                pending=pending,
+                chat_id=int(
+                    user_id
+                ),
+                telegram_api=telegram_api,
+                controller=resolved_controller,
+                req_id=req_id,
+            )
+
+            return True
+
+        # Legacy fallback when no editing capability is
+        # available (tests/older callers).
 
         if (
             pending.media_selection_explicit
@@ -622,17 +892,34 @@ def handle_external_review_telegram_callback(
                     ),
                 )
 
-                send_message(
-                    int(
-                        user_id
-                    ),
-                    (
-                        "✅ مطلب با موفقیت منتشر شد.\n\n"
-                        "⚠️ وضعیت بررسی به‌طور کامل "
-                        "پاک نشد؛ از ارسال دوباره "
-                        "همین انتخاب خودداری کنید."
-                    ),
-                )
+                if telegram_api is not None:
+                    _finalize_preview(
+                        callback_query=callback_query,
+                        pending=None,
+                        chat_id=int(
+                            user_id
+                        ),
+                        telegram_api=telegram_api,
+                        text=(
+                            "✅ مطلب با موفقیت منتشر شد.\n\n"
+                            "⚠️ وضعیت بررسی به‌طور کامل "
+                            "پاک نشد؛ از ارسال دوباره "
+                            "همین انتخاب خودداری کنید."
+                        ),
+                    )
+
+                else:
+                    send_message(
+                        int(
+                            user_id
+                        ),
+                        (
+                            "✅ مطلب با موفقیت منتشر شد.\n\n"
+                            "⚠️ وضعیت بررسی به‌طور کامل "
+                            "پاک نشد؛ از ارسال دوباره "
+                            "همین انتخاب خودداری کنید."
+                        ),
+                    )
 
                 return True
 
@@ -641,12 +928,26 @@ def handle_external_review_telegram_callback(
                 "منتشر شد.",
             )
 
-            send_message(
-                int(
-                    user_id
-                ),
-                "✅ مطلب با موفقیت منتشر شد.",
-            )
+            if telegram_api is not None:
+                _finalize_preview(
+                    callback_query=callback_query,
+                    pending=None,
+                    chat_id=int(
+                        user_id
+                    ),
+                    telegram_api=telegram_api,
+                    text=(
+                        "✅ مطلب با موفقیت منتشر شد."
+                    ),
+                )
+
+            else:
+                send_message(
+                    int(
+                        user_id
+                    ),
+                    "✅ مطلب با موفقیت منتشر شد.",
+                )
 
             return True
 

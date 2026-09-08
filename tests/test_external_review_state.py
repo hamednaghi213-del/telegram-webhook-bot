@@ -532,3 +532,161 @@ def test_reset_clears_all_state():
 
     assert len(store) == 0
     assert store.active_review_ids() == ()
+
+
+# =========================================================
+# PREVIEW MESSAGE IDENTITY
+# =========================================================
+
+
+def test_preview_message_refs_default_empty():
+    store = ExternalReviewStateStore(
+        ttl_seconds=60,
+    )
+
+    pending = store.create(
+        review_id="review-1",
+        chat_id=100,
+        content=_content(),
+    )
+
+    assert pending.preview_message_id is None
+    assert pending.preview_media_message_ids == ()
+
+
+def test_update_preview_message_refs_roundtrip():
+    store = ExternalReviewStateStore(
+        ttl_seconds=60,
+    )
+
+    store.create(
+        review_id="review-1",
+        chat_id=100,
+        content=_content(),
+    )
+
+    updated = store.update_preview_message_refs(
+        review_id="review-1",
+        chat_id=100,
+        preview_message_id=555,
+        preview_media_message_ids=(901, 902),
+    )
+
+    assert updated.preview_message_id == 555
+    assert updated.preview_media_message_ids == (901, 902)
+
+    reloaded = store.require(
+        review_id="review-1",
+        chat_id=100,
+    )
+
+    assert reloaded.preview_message_id == 555
+    assert reloaded.preview_media_message_ids == (901, 902)
+
+
+def test_media_selection_update_preserves_message_refs():
+    store = ExternalReviewStateStore(
+        ttl_seconds=60,
+    )
+
+    store.create(
+        review_id="review-1",
+        chat_id=100,
+        content=_content(),
+    )
+
+    store.update_preview_message_refs(
+        review_id="review-1",
+        chat_id=100,
+        preview_message_id=555,
+    )
+
+    updated = store.update_media_selection(
+        review_id="review-1",
+        chat_id=100,
+        selected_media_indexes=(),
+        explicit=True,
+    )
+
+    assert updated.preview_message_id == 555
+
+
+def test_preview_message_refs_normalize_invalid_values():
+    store = ExternalReviewStateStore(
+        ttl_seconds=60,
+    )
+
+    store.create(
+        review_id="review-1",
+        chat_id=100,
+        content=_content(),
+    )
+
+    updated = store.update_preview_message_refs(
+        review_id="review-1",
+        chat_id=100,
+        preview_message_id="not-a-number",
+        preview_media_message_ids=(0, -3, 42, 42),
+    )
+
+    assert updated.preview_message_id is None
+    assert updated.preview_media_message_ids == (42,)
+
+
+def test_serialized_ui_state_includes_message_refs():
+    from core.external_review_state import (
+        _content_with_review_state_to_dict,
+        _review_state_from_content_dict,
+        EXTERNAL_REVIEW_UI_STATE_KEY,
+    )
+
+    payload = _content_with_review_state_to_dict(
+        _content(),
+        selected_media_indexes=(1,),
+        media_selection_explicit=True,
+        preview_message_id=555,
+        preview_media_message_ids=(901,),
+    )
+
+    state = payload[EXTERNAL_REVIEW_UI_STATE_KEY]
+
+    assert state["preview_message_id"] == 555
+    assert state["preview_media_message_ids"] == [901]
+
+    (
+        indexes,
+        explicit,
+        message_id,
+        media_ids,
+    ) = _review_state_from_content_dict(payload)
+
+    assert indexes == (1,)
+    assert explicit is True
+    assert message_id == 555
+    assert media_ids == (901,)
+
+
+def test_legacy_ui_state_without_message_refs_is_compatible():
+    from core.external_review_state import (
+        _review_state_from_content_dict,
+        EXTERNAL_REVIEW_UI_STATE_KEY,
+    )
+
+    payload = {
+        EXTERNAL_REVIEW_UI_STATE_KEY: {
+            "selected_media_indexes": [0],
+            "media_selection_explicit": True,
+        }
+    }
+
+    (
+        indexes,
+        explicit,
+        message_id,
+        media_ids,
+    ) = _review_state_from_content_dict(payload)
+
+    assert indexes == (0,)
+    assert explicit is True
+    assert message_id is None
+    assert media_ids == ()
