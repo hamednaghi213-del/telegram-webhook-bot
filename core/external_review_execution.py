@@ -175,6 +175,52 @@ def _review_text(
     ).strip()
 
 
+def _compose_external_short(
+    *,
+    decision: ExternalReviewDecision,
+    body: str,
+) -> str:
+    headline = str(
+        decision.content.title
+        or decision.review.title
+        or ""
+    ).strip()
+    source = str(
+        decision.content.source_name
+        or ""
+    ).strip()
+
+    parts = []
+    if headline:
+        parts.append(headline)
+    if body:
+        parts.append(str(body).strip())
+    if source:
+        parts.append(
+            f"- Shoمنبع: {source}"
+        )
+
+    return "\n\n".join(parts).strip()
+
+
+def _external_short_body_budget(
+    decision: ExternalReviewDecision,
+) -> int:
+    shell = _compose_external_short(
+        decision=decision,
+        body="",
+    )
+
+    separator = 2 if shell else 0
+
+    return max(
+        DEFAULT_CAPTION_TARGET
+        - len(shell)
+        - separator,
+        0,
+    )
+
+
 # =========================================================
 # SMART SUMMARY
 # =========================================================
@@ -198,11 +244,16 @@ def generate_external_review_short_summary_text(
     nothing is published or persisted.
     """
 
-    original_text = (
-        _review_text(
-            decision
+    review = decision.review
+
+    original_text = "\n\n".join(
+        part
+        for part in (
+            str(review.lead or "").strip(),
+            str(review.body or "").strip(),
         )
-    )
+        if part
+    ).strip()
 
     if not original_text:
         raise ExternalReviewExecutionError(
@@ -215,11 +266,20 @@ def generate_external_review_short_summary_text(
         )
 
     try:
+        body_budget = _external_short_body_budget(
+            decision
+        )
+
+        if body_budget <= 0:
+            raise ExternalReviewExecutionError(
+                "external review SHORT has no body budget"
+            )
+
         outcome = (
             summarize_text_safely(
                 original_text=original_text,
                 target_length=(
-                    DEFAULT_CAPTION_TARGET
+                    body_budget
                 ),
                 summarizer=(
                     summarize_with_gemini
@@ -285,7 +345,7 @@ def generate_external_review_short_summary_text(
         metadata.get(
             "max_overshoot_retries"
         ),
-        DEFAULT_CAPTION_TARGET,
+        _external_short_body_budget(decision),
         len(
             summary_text
         ),
@@ -300,7 +360,17 @@ def generate_external_review_short_summary_text(
             "shared smart summary did not produce a valid result"
         )
 
-    return summary_text
+    final_text = _compose_external_short(
+        decision=decision,
+        body=summary_text,
+    )
+
+    if len(final_text) > DEFAULT_CAPTION_TARGET:
+        raise ExternalReviewExecutionError(
+            "external review SHORT exceeded final target"
+        )
+
+    return final_text
 
 
 def _apply_shared_smart_summary(
