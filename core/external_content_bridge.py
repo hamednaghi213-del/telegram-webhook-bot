@@ -199,6 +199,29 @@ def apply_web_source_attribution(
     )
 
 
+def compose_reviewed_publication_text(
+    review: ExternalReviewResult,
+    source_name: Any = "",
+) -> str:
+    """
+    Single final formatter for External Review publication text.
+
+    Both the review preview and the final publishable output are
+    generated from this same composition so they can never diverge:
+
+      - headline stays bare (rendered bold downstream), never repeated
+        below with a "تیتر اصلی:" prefix
+      - the source appears exactly once, as the newsroom-style
+        "به گزارش {clean_source}، " lead at the start of the body
+      - no "منبع:" footer is ever appended
+    """
+
+    return _compose_reviewed_text(
+        review,
+        source_name,
+    )
+
+
 def _compose_reviewed_text(
     review: ExternalReviewResult,
     source_name: Any = "",

@@ -27,8 +27,12 @@ from core.external_content_model import (
     ExternalMedia,
     NormalizedExternalContent,
 )
+from core.external_content_bridge import (
+    compose_reviewed_publication_text,
+)
 from core.external_content_review import (
     ExternalContentPreview,
+    ExternalReviewResult,
 )
 from core.external_review_state import (
     MANUAL_IMAGE_SOURCE_NONE,
@@ -509,11 +513,8 @@ def build_external_review_preview(
 
     metadata_parts = []
 
-    if preview.source_name:
-        metadata_parts.append(
-            "منبع: "
-            f"{preview.source_name}"
-        )
+    # No "منبع:" footer: the source appears exactly once as the
+    # "به گزارش {source}،" lead at the start of the body.
 
     metadata_parts.append(
         "اطمینان استخراج: "
@@ -563,30 +564,23 @@ def build_external_review_preview(
         if part
     ).strip()
 
-    preview_parts = []
-
-    if preview.title:
-        preview_parts.append(
-            preview.title
+    # The visible preview text is produced by the same final
+    # formatter used for publication: the headline stays bare at the
+    # top and the source appears exactly once as the
+    # "به گزارش {source}،" lead at the start of the body. No "منبع:"
+    # footer and no "تیتر اصلی:" duplicate headline line.
+    body_text = (
+        compose_reviewed_publication_text(
+            ExternalReviewResult(
+                title=preview.title,
+                lead=preview.lead,
+                body="\n\n".join(
+                    preview.paragraphs
+                ),
+            ),
+            preview.source_name,
         )
-
-    if preview.lead:
-        preview_parts.append(
-            preview.lead
-        )
-
-    if preview.paragraphs:
-        preview_parts.append(
-            "\n\n".join(
-                preview.paragraphs
-            )
-        )
-
-    body_text = "\n\n".join(
-        part
-        for part in preview_parts
-        if part
-    ).strip()
+    )
 
     reserved = (
         len(heading)
@@ -691,19 +685,15 @@ def _draft_heading_and_metadata(
     heading: str,
     awaiting_edit_text: bool,
 ) -> Tuple[str, str]:
+    """
+    Draft previews never render the removed "تیتر اصلی:" duplicate
+    headline line or the trailing "منبع:" source footer. The headline
+    stays only at the top of the draft body and the source appears
+    exactly once as the "به گزارش {source}،" lead inside the draft
+    text itself.
+    """
+
     metadata_parts = []
-
-    if preview.title:
-        metadata_parts.append(
-            "تیتر اصلی: "
-            f"{preview.title}"
-        )
-
-    if preview.source_name:
-        metadata_parts.append(
-            "منبع: "
-            f"{preview.source_name}"
-        )
 
     if awaiting_edit_text:
         metadata_parts.append(
@@ -793,9 +783,12 @@ def build_external_review_short_preview(
     """
     Render the SHORT caption-safe draft awaiting explicit approval.
 
-    Shows the original headline and source alongside the generated
-    draft so the admin can verify faithfulness before approving.
-    Nothing is published until "approve" is pressed.
+    Shows the generated draft exactly as it will be published so the
+    admin can verify faithfulness before approving. The visible text
+    is produced by the same final formatter used for publication
+    (source only as the "به گزارش {source}،" body lead; no "منبع:" or
+    "تیتر اصلی:" footers). Nothing is published until "approve" is
+    pressed.
     """
 
     heading, metadata_text = (
@@ -808,10 +801,17 @@ def build_external_review_short_preview(
         )
     )
 
-    body_text = str(
-        draft_text
-        or ""
-    ).strip()
+    body_text = (
+        compose_reviewed_publication_text(
+            ExternalReviewResult(
+                body=str(
+                    draft_text
+                    or ""
+                ),
+            ),
+            preview.source_name,
+        )
+    )
 
     reserved = (
         len(heading)
@@ -1091,18 +1091,6 @@ def build_external_review_paragraph_select_view(
 
     metadata_parts = []
 
-    if preview.title:
-        metadata_parts.append(
-            "تیتر اصلی: "
-            f"{preview.title}"
-        )
-
-    if preview.source_name:
-        metadata_parts.append(
-            "منبع: "
-            f"{preview.source_name}"
-        )
-
     if not paragraph_selected_indexes:
         metadata_parts.append(
             "حداقل یک پاراگراف را انتخاب کنید."
@@ -1252,10 +1240,17 @@ def build_external_review_paragraph_preview(
         )
     )
 
-    body_text = str(
-        draft_text
-        or ""
-    ).strip()
+    body_text = (
+        compose_reviewed_publication_text(
+            ExternalReviewResult(
+                body=str(
+                    draft_text
+                    or ""
+                ),
+            ),
+            preview.source_name,
+        )
+    )
 
     reserved = (
         len(heading)

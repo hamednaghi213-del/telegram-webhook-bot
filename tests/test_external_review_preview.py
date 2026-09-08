@@ -74,7 +74,10 @@ def test_preview_contains_heading_metadata_and_body():
     assert "عنوان خبر" in view.text
     assert "لید خبر" in view.text
     assert "پاراگراف اول" in view.text
-    assert "منبع: Example" in view.text
+    # The old "منبع:" source footer is removed; the source appears
+    # exactly once as the "به گزارش {source}،" body lead instead.
+    assert "منبع:" not in view.text
+    assert "تیتر اصلی:" not in view.text
     assert "اطمینان استخراج" in view.text
 
 
@@ -388,3 +391,127 @@ def test_preview_omits_presentation_mode_status_text():
     )
 
     assert "حالت انتشار" not in view.text
+
+
+# =========================================================
+# SOURCE FORMAT (no "منبع:" footer / no "تیتر اصلی:" duplicate)
+# =========================================================
+
+
+def test_short_draft_preview_has_single_body_lead_source():
+    from core.external_review_preview import (
+        build_external_review_short_preview,
+    )
+
+    content = _content()
+    preview = build_external_content_preview(content)
+
+    view = build_external_review_short_preview(
+        review_id="r1",
+        content=content,
+        preview=preview,
+        draft_text="متن کوتاه خبر",
+    )
+
+    assert "منبع:" not in view.text
+    assert "تیتر اصلی:" not in view.text
+    assert "به گزارش Example،" in view.text
+    assert view.text.count("Example") == 1
+
+
+def test_short_draft_preview_does_not_duplicate_existing_attribution():
+    from core.external_review_preview import (
+        build_external_review_short_preview,
+    )
+
+    content = _content()
+    preview = build_external_content_preview(content)
+
+    view = build_external_review_short_preview(
+        review_id="r1",
+        content=content,
+        preview=preview,
+        draft_text="به گزارش Example، متن کوتاه خبر",
+    )
+
+    assert view.text.count("به گزارش") == 1
+    assert view.text.count("Example") == 1
+
+
+def test_paragraph_draft_preview_has_single_body_lead_source():
+    from core.external_review_preview import (
+        build_external_review_paragraph_preview,
+    )
+
+    content = _content()
+    preview = build_external_content_preview(content)
+
+    view = build_external_review_paragraph_preview(
+        review_id="r1",
+        content=content,
+        preview=preview,
+        draft_text="عنوان خبر\n\nپاراگراف اول",
+    )
+
+    assert "منبع:" not in view.text
+    assert "تیتر اصلی:" not in view.text
+    assert "به گزارش Example،" in view.text
+    # Headline stays at the top; never repeated as metadata below it.
+    assert view.text.count("عنوان خبر") == 1
+
+
+def test_preview_and_final_output_share_the_same_formatter():
+    """
+    The SHORT draft preview body and the final publishable text must
+    come from the same composition, so what is approved is exactly
+    what is published.
+    """
+
+    from core.external_content_bridge import (
+        compose_reviewed_publication_text,
+    )
+    from core.external_content_review import (
+        ExternalReviewResult,
+    )
+    from core.external_review_preview import (
+        build_external_review_short_preview,
+    )
+
+    content = _content()
+    preview = build_external_content_preview(content)
+
+    view = build_external_review_short_preview(
+        review_id="r1",
+        content=content,
+        preview=preview,
+        draft_text="متن کوتاه خبر",
+    )
+
+    final_text = compose_reviewed_publication_text(
+        ExternalReviewResult(body="متن کوتاه خبر"),
+        content.source_name,
+    )
+
+    assert final_text in view.text
+    assert "به گزارش Example،" in final_text
+    assert "منبع:" not in final_text
+    assert "تیتر اصلی:" not in final_text
+
+
+def test_raw_duplicate_source_is_normalized_to_single_clean_name():
+    from core.external_content_bridge import (
+        compose_reviewed_publication_text,
+    )
+    from core.external_content_review import (
+        ExternalReviewResult,
+    )
+
+    text = compose_reviewed_publication_text(
+        ExternalReviewResult(body="متن خبر"),
+        "TABNAK | تابناک",
+    )
+
+    assert text.startswith("به گزارش تابناک،")
+    assert "TABNAK" not in text
+    assert "منبع:" not in text
+    assert text.count("تابناک") == 1
