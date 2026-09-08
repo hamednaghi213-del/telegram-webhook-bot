@@ -148,16 +148,27 @@ def test_keyboard_preserves_callback_contract():
     assert "extrev:short:r1" in callbacks
     assert "extrev:headline:r1" in callbacks
     assert "extrev:lead:r1" in callbacks
-    assert "extrev:media:r1:0" in callbacks
-    assert "extrev:media:r1:1" in callbacks
-    assert "extrev:media:r1:2" in callbacks
-    assert "extrev:nomedia:r1" in callbacks
+    assert "extrev:para_start:r1" in callbacks
     assert "extrev:manual:r1:waiting" in callbacks
-    assert "extrev:manual:r1:replace" in callbacks
     assert "extrev:manual:r1:primary" in callbacks
     assert "extrev:manual:r1:none" in callbacks
     assert "extrev:editorial:r1" in callbacks
     assert "extrev:cancel:r1" in callbacks
+
+    # Per-candidate media buttons and the album/normal toggle are
+    # intentionally hidden from the simplified keyboard.
+    assert not any(
+        callback.startswith("extrev:media:")
+        for callback in callbacks
+    )
+    assert not any(
+        callback.startswith("extrev:mode:")
+        for callback in callbacks
+    )
+    assert not any(
+        callback.startswith("extrev:nomedia:")
+        for callback in callbacks
+    )
 
 
 def test_keyboard_marks_selected_media():
@@ -175,7 +186,6 @@ def test_keyboard_marks_selected_media():
     ]
 
     assert "🖼 تصویر اصلی ✅" in labels
-    assert "🖼 تصویر 2" in labels
 
 
 def test_keyboard_marks_explicit_no_media():
@@ -193,6 +203,71 @@ def test_keyboard_marks_explicit_no_media():
     ]
 
     assert "🚫 بدون تصویر ✅" in labels
+
+
+def test_keyboard_manual_button_offers_add_when_no_file():
+    keyboard = build_external_review_keyboard(
+        review_id="r1",
+        media_count=0,
+    )
+
+    labels = [
+        button["text"]
+        for row in keyboard["inline_keyboard"]
+        for button in row
+    ]
+
+    assert "➕ افزودن تصویر دستی" in labels
+
+
+def test_keyboard_manual_button_offers_cancel_while_waiting():
+    keyboard = build_external_review_keyboard(
+        review_id="r1",
+        media_count=0,
+        manual_image_waiting=True,
+    )
+
+    labels = [
+        button["text"]
+        for row in keyboard["inline_keyboard"]
+        for button in row
+    ]
+
+    assert "⏳ لغو انتظار عکس" in labels
+
+
+def test_keyboard_manual_button_shows_active_replace_state():
+    keyboard = build_external_review_keyboard(
+        review_id="r1",
+        media_count=0,
+        manual_image_source="replace",
+        manual_image_file_id="manual-1",
+    )
+
+    labels = [
+        button["text"]
+        for row in keyboard["inline_keyboard"]
+        for button in row
+    ]
+
+    assert "🔁 تصویر دستی ✅" in labels
+
+
+def test_keyboard_manual_button_offers_restore_when_inactive():
+    keyboard = build_external_review_keyboard(
+        review_id="r1",
+        media_count=0,
+        manual_image_source="primary",
+        manual_image_file_id="manual-1",
+    )
+
+    labels = [
+        button["text"]
+        for row in keyboard["inline_keyboard"]
+        for button in row
+    ]
+
+    assert "🔁 بازگرداندن تصویر دستی" in labels
 
 
 # =========================================================
@@ -269,84 +344,39 @@ def test_manual_replacement_preview_uses_uploaded_photo_file_id():
 
 
 # =========================================================
-# REQUIREMENT C: media_presentation_mode UI CONTROLS
+# SIMPLIFIED KEYBOARD: TECHNICAL MEDIA UI IS HIDDEN
 # =========================================================
 
 
-def test_keyboard_omits_mode_toggle_for_single_or_no_media():
+def test_keyboard_never_shows_mode_toggle():
     keyboard_no_media = build_external_review_keyboard(
         review_id="r1",
         media_count=0,
     )
 
-    keyboard_single_media = build_external_review_keyboard(
+    keyboard_multi_media = build_external_review_keyboard(
         review_id="r1",
-        media_count=1,
+        media_count=3,
     )
 
-    callbacks_no_media = _callbacks(keyboard_no_media)
-    callbacks_single_media = _callbacks(keyboard_single_media)
+    for keyboard in (
+        keyboard_no_media,
+        keyboard_multi_media,
+    ):
+        callbacks = _callbacks(keyboard)
 
-    assert not any(
-        callback.startswith("extrev:mode:")
-        for callback in callbacks_no_media
-    )
+        assert not any(
+            callback.startswith("extrev:mode:")
+            for callback in callbacks
+        )
 
-    assert not any(
-        callback.startswith("extrev:mode:")
-        for callback in callbacks_single_media
-    )
-
-
-def test_keyboard_shows_mode_toggle_for_multiple_media():
-    keyboard = build_external_review_keyboard(
-        review_id="r1",
-        media_count=2,
-    )
-
-    callbacks = _callbacks(keyboard)
-
-    assert "extrev:mode:r1:album" in callbacks
-    assert "extrev:mode:r1:normal" in callbacks
+        assert not any(
+            callback.startswith("extrev:media:")
+            for callback in callbacks
+        )
 
 
-def test_keyboard_marks_active_normal_mode():
-    keyboard = build_external_review_keyboard(
-        review_id="r1",
-        media_count=2,
-        media_presentation_mode="normal",
-    )
-
-    labels = [
-        button["text"]
-        for row in keyboard["inline_keyboard"]
-        for button in row
-    ]
-
-    assert "🖼 عادی ✅" in labels
-    assert "🖼 آلبوم" in labels
-    assert "🖼 آلبوم ✅" not in labels
-
-
-def test_keyboard_marks_active_album_mode():
-    keyboard = build_external_review_keyboard(
-        review_id="r1",
-        media_count=2,
-        media_presentation_mode="album",
-    )
-
-    labels = [
-        button["text"]
-        for row in keyboard["inline_keyboard"]
-        for button in row
-    ]
-
-    assert "🖼 آلبوم ✅" in labels
-    assert "🖼 عادی" in labels
-    assert "🖼 عادی ✅" not in labels
-
-
-def test_preview_reports_album_presentation_status():
+def test_preview_omits_presentation_mode_status_text():
     content = _content(media=_media(2))
     preview = build_external_content_preview(content)
 
@@ -357,26 +387,4 @@ def test_preview_reports_album_presentation_status():
         media_presentation_mode="album",
     )
 
-    assert "آلبوم" in view.text
-    assert "extrev:mode:r1:album" in _callbacks(
-        view.reply_markup
-    )
-
-
-def test_preview_defaults_to_normal_presentation_when_unspecified():
-    content = _content(media=_media(2))
-    preview = build_external_content_preview(content)
-
-    view = build_external_review_preview(
-        review_id="r1",
-        content=content,
-        preview=preview,
-    )
-
-    labels = [
-        button["text"]
-        for row in view.reply_markup["inline_keyboard"]
-        for button in row
-    ]
-
-    assert "🖼 عادی ✅" in labels
+    assert "حالت انتشار" not in view.text

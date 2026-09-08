@@ -701,6 +701,11 @@ def test_serialized_ui_state_includes_message_refs():
         manual_image_source,
         manual_image_file_id,
         manual_image_waiting,
+        review_stage,
+        draft_text,
+        paragraph_selected_indexes,
+        paragraph_page,
+        awaiting_edit_text,
     ) = _review_state_from_content_dict(
         payload,
         media_count=1,
@@ -740,6 +745,11 @@ def test_legacy_ui_state_without_message_refs_is_compatible():
         manual_image_source,
         manual_image_file_id,
         manual_image_waiting,
+        review_stage,
+        draft_text,
+        paragraph_selected_indexes,
+        paragraph_page,
+        awaiting_edit_text,
     ) = _review_state_from_content_dict(payload)
 
     assert indexes == (0,)
@@ -932,6 +942,11 @@ def test_serialized_ui_state_round_trips_presentation_mode():
         _,
         _,
         _,
+        _,
+        _,
+        _,
+        _,
+        _,
     ) = _review_state_from_content_dict(payload)
 
     assert media_presentation_mode == "album"
@@ -960,6 +975,11 @@ def test_serialized_ui_state_normalizes_invalid_presentation_mode():
         _,
         _,
         media_presentation_mode,
+        _,
+        _,
+        _,
+        _,
+        _,
         _,
         _,
         _,

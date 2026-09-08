@@ -763,7 +763,9 @@ def test_standalone_url_creates_coherent_preview_surface(
     assert len(pending.preview_media_message_ids) == 1
     assert pending.preview_media_file_ids[0] == "staged-1"
 
-    # Keyboard contract unchanged.
+    # Keyboard contract (simplified: technical per-media buttons and
+    # the album/normal toggle are hidden; high-level content/image
+    # choices and cancel remain).
     keyboard = controls[0]["reply_markup"]["inline_keyboard"]
     callbacks = [
         button["callback_data"]
@@ -771,8 +773,8 @@ def test_standalone_url_creates_coherent_preview_surface(
         for button in row
     ]
     assert f"extrev:standard:{review_id}" in callbacks
-    assert f"extrev:media:{review_id}:0" in callbacks
-    assert f"extrev:nomedia:{review_id}" in callbacks
+    assert f"extrev:manual:{review_id}:primary" in callbacks
+    assert f"extrev:manual:{review_id}:none" in callbacks
     assert f"extrev:cancel:{review_id}" in callbacks
 
 
@@ -864,3 +866,99 @@ def test_wrong_input_keeps_manual_photo_waiting_state(
     )
     assert pending.manual_image_waiting is True
     assert "هنوز منتظر عکس" in sent[-1][0][1]
+
+
+def test_waiting_draft_edit_text_replaces_draft_before_normal_publication(
+    monkeypatch,
+):
+    DEFAULT_EXTERNAL_REVIEW_STATE_STORE.create(
+        review_id="review-1",
+        chat_id=1001,
+        content=_content(),
+    )
+    DEFAULT_EXTERNAL_REVIEW_STATE_STORE.update_review_stage(
+        review_id="review-1",
+        chat_id=1001,
+        review_stage="short_preview",
+        draft_text="خلاصه قبلی",
+        awaiting_edit_text=True,
+    )
+
+    refreshed = []
+    sent = []
+
+    monkeypatch.setattr(
+        "core.external_review_telegram.refresh_external_review_preview",
+        lambda **kwargs: refreshed.append(kwargs),
+    )
+
+    with patch.object(
+        webhook_handler,
+        "request",
+        FakeRequest(_message("متن جایگزین برای نسخه کوتاه")),
+    ), patch.object(
+        webhook_handler,
+        "validate_webhook_token",
+        return_value=True,
+    ), patch.object(
+        webhook_handler,
+        "send_message",
+        side_effect=lambda *args, **kwargs: sent.append((args, kwargs)),
+    ):
+        result, status = webhook_handler.handle_webhook()
+
+    assert status == 200
+    assert result["external_review_text_edit"] is True
+
+    pending = DEFAULT_EXTERNAL_REVIEW_STATE_STORE.require(
+        review_id="review-1",
+        chat_id=1001,
+    )
+    assert pending.draft_text == "متن جایگزین برای نسخه کوتاه"
+    assert pending.awaiting_edit_text is False
+    assert pending.review_stage == "short_preview"
+    assert refreshed
+    assert sent[-1][0][1] == "✅ متن جایگزین ثبت شد."
+
+
+def test_empty_text_keeps_draft_edit_waiting_state():
+    DEFAULT_EXTERNAL_REVIEW_STATE_STORE.create(
+        review_id="review-1",
+        chat_id=1001,
+        content=_content(),
+    )
+    DEFAULT_EXTERNAL_REVIEW_STATE_STORE.update_review_stage(
+        review_id="review-1",
+        chat_id=1001,
+        review_stage="short_preview",
+        draft_text="خلاصه قبلی",
+        awaiting_edit_text=True,
+    )
+
+    sent = []
+
+    with patch.object(
+        webhook_handler,
+        "request",
+        FakeRequest(_photo_message()),
+    ), patch.object(
+        webhook_handler,
+        "validate_webhook_token",
+        return_value=True,
+    ), patch.object(
+        webhook_handler,
+        "send_message",
+        side_effect=lambda *args, **kwargs: sent.append((args, kwargs)),
+    ):
+        result, status = webhook_handler.handle_webhook()
+
+    assert status == 200
+    assert result["waiting"] is True
+
+    pending = DEFAULT_EXTERNAL_REVIEW_STATE_STORE.require(
+        review_id="review-1",
+        chat_id=1001,
+    )
+    assert pending.awaiting_edit_text is True
+    assert pending.draft_text == "خلاصه قبلی"
+    assert "منتظر متن جایگزین" in sent[-1][0][1]

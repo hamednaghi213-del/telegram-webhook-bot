@@ -180,26 +180,22 @@ def _review_text(
 # =========================================================
 
 
-def _apply_shared_smart_summary(
+def generate_external_review_short_summary_text(
     decision: ExternalReviewDecision,
-) -> ExternalReviewDecision:
+) -> str:
     """
-    Apply the project's existing Smart Summary to a SHORT decision.
+    Generate a caption-safe Smart Summary draft for a SHORT decision
+    WITHOUT publishing anything.
 
-    The existing Gemini provider is injected into the existing shared
-    Smart Summary engine.
-
-    SHORT uses the caption-safe target because reviewed external
-    content may be published together with selected media.
-
-    Aggressive reduction is opt-in only for this explicit SHORT path.
-    The shared Smart Summary defaults remain unchanged everywhere else.
-
-    No second summarization implementation exists here.
+    This is the pure-text half of `_apply_shared_smart_summary`,
+    reused by the External Review preview surface so a SHORT draft
+    can be shown for explicit approve / edit / regenerate / cancel
+    before publication ever runs.
 
     Fail closed:
-    if Gemini is not configured, fails, or the shared validator rejects
-    the result, nothing is published.
+    if Gemini is not configured, fails, or the shared validator
+    rejects the result, an ExternalReviewExecutionError is raised and
+    nothing is published or persisted.
     """
 
     original_text = (
@@ -303,6 +299,37 @@ def _apply_shared_smart_summary(
         raise ExternalReviewExecutionError(
             "shared smart summary did not produce a valid result"
         )
+
+    return summary_text
+
+
+def _apply_shared_smart_summary(
+    decision: ExternalReviewDecision,
+) -> ExternalReviewDecision:
+    """
+    Apply the project's existing Smart Summary to a SHORT decision.
+
+    The existing Gemini provider is injected into the existing shared
+    Smart Summary engine.
+
+    SHORT uses the caption-safe target because reviewed external
+    content may be published together with selected media.
+
+    Aggressive reduction is opt-in only for this explicit SHORT path.
+    The shared Smart Summary defaults remain unchanged everywhere else.
+
+    No second summarization implementation exists here.
+
+    Fail closed:
+    if Gemini is not configured, fails, or the shared validator rejects
+    the result, nothing is published.
+    """
+
+    summary_text = (
+        generate_external_review_short_summary_text(
+            decision
+        )
+    )
 
     summarized_review = replace(
         decision.review,
