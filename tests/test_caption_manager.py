@@ -2624,3 +2624,54 @@ def test_formatter_removes_icon_handle_when_forward_username_differs():
         "🔹 🔹"
         not in result
     )
+
+
+def _bold_entity_text(text, entity):
+    assert entity["type"] == "bold"
+    encoded = text.encode("utf-16-le")
+    start = entity["offset"] * 2
+    end = start + entity["length"] * 2
+    return encoded[start:end].decode("utf-16-le")
+
+
+def test_shared_plan_bolds_normal_text_headline():
+    plan = analyze_content(
+        "تیتر خبر\n\nبدنه خبر",
+        branding="",
+    )
+
+    message = plan.text["telegram"]["messages"][0]
+    assert message.startswith("<b>تیتر خبر</b>")
+    assert plan.text["telegram"]["message_parse_modes"][0] == "HTML"
+
+
+def test_shared_plan_bolds_media_caption_headline_entity():
+    plan = analyze_content(
+        "تیتر رسانه\n\nبدنه کوتاه",
+        branding="",
+    )
+
+    caption = plan.telegram["media_caption"]
+    bold_entities = [
+        entity for entity in plan.telegram["media_caption_entities"]
+        if entity.get("type") == "bold"
+    ]
+
+    assert caption.startswith("تیتر رسانه")
+    assert _bold_entity_text(caption, bold_entities[0]) == "تیتر رسانه"
+
+
+def test_shared_plan_does_not_duplicate_existing_bold_headline_entity():
+    plan = analyze_content(
+        "تیتر موجود\n\nبدنه کوتاه",
+        other_entities=[{"type": "bold", "offset": 0, "length": 10}],
+        branding="",
+    )
+
+    bold_entities = [
+        entity for entity in plan.telegram["media_caption_entities"]
+        if entity.get("type") == "bold"
+        and entity.get("offset") == 0
+    ]
+
+    assert len(bold_entities) == 1

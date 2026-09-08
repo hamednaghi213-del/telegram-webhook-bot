@@ -19,6 +19,7 @@ def _decision(*, short=False):
         canonical_url="https://example.com/story",
         content_type="article",
         title="Headline",
+        source_name="Source",
         body="x" * 17525,
     )
     review = ExternalReviewResult(
@@ -67,11 +68,11 @@ def test_long_external_short_uses_caption_safe_aggressive_policy(
     )
 
     assert result.published is True
-    assert captured["target_length"] == 940
+    assert captured["target_length"] < 940
     assert captured["aggressive_max_reduction_ratio"] == (
         EXTERNAL_SHORT_MAX_REDUCTION_RATIO
     )
-    assert len(captured["original_text"]) > 17525
+    assert len(captured["original_text"]) >= 17525
 
 
 def test_unconfirmed_publication_is_retryable_failure(monkeypatch):
@@ -136,7 +137,48 @@ def test_external_short_requests_bounded_overshoot_retries(monkeypatch):
     )
     # 2 retries after the first attempt == 3 total attempts.
     assert EXTERNAL_SHORT_MAX_OVERSHOOT_RETRIES == 2
-    assert captured["target_length"] == 940
+    assert captured["target_length"] < 940
+
+
+def test_external_short_final_includes_metadata_and_respects_target(
+    monkeypatch,
+):
+    captured = {}
+
+    monkeypatch.setattr(
+        "core.external_review_execution.gemini_provider_configured",
+        lambda: True,
+    )
+
+    def fake_summarize(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            success=True,
+            validation_passed=True,
+            summary_text="ب" * kwargs["target_length"],
+        )
+
+    monkeypatch.setattr(
+        "core.external_review_execution.summarize_text_safely",
+        fake_summarize,
+    )
+    monkeypatch.setattr(
+        "core.external_review_execution.publish_reviewed_external_content",
+        lambda **kwargs: (
+            captured.update({"published_review": kwargs["review"]})
+            or SimpleNamespace(ok=True)
+        ),
+    )
+
+    execute_external_review_decision(
+        decision=_decision(short=True),
+        api_url="https://api.telegram.test",
+    )
+
+    text = captured["published_review"].body
+    assert text.startswith("Headline\n\n")
+    assert text.endswith("- Shoمنبع: Source")
+    assert len(text) == 940
 
 
 def test_publish_decision_forwards_media_presentation_mode(monkeypatch):

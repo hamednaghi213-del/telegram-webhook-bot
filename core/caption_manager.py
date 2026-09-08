@@ -7,7 +7,10 @@ import re
 from html import escape, unescape
 from typing import Dict, List, Optional, Any, Tuple
 
-from core.content_entities import build_blockquote_html
+from core.content_entities import (
+    build_blockquote_html,
+    build_utf16_positions,
+)
 from core.cleaner import clean_text
 
 from core.telegram_caption_entities import (
@@ -195,6 +198,133 @@ class PublicationPlan:
             "bale": self.bale,
             "metadata": self.metadata
         }
+
+
+def _first_line_headline(text: str) -> str:
+    lines = str(text or "").splitlines()
+    if len(lines) < 2:
+        return ""
+    for line in lines:
+        value = line.strip()
+        if value:
+            return value
+    return ""
+
+
+def _has_covering_bold_entity(
+    entities: List[Dict[str, Any]],
+    *,
+    offset: int,
+    length: int,
+) -> bool:
+    end = offset + length
+    for entity in entities or []:
+        if entity.get("type") != "bold":
+            continue
+        entity_offset = int(entity.get("offset") or 0)
+        entity_end = entity_offset + int(entity.get("length") or 0)
+        if entity_offset <= offset and entity_end >= end:
+            return True
+    return False
+
+
+def _ensure_telegram_headline_bold_entity(
+    text: str,
+    entities: List[Dict[str, Any]],
+    headline: str,
+) -> List[Dict[str, Any]]:
+    if not text or not headline:
+        return list(entities or [])
+
+    start = str(text).find(headline)
+    if start < 0:
+        return list(entities or [])
+
+    positions = build_utf16_positions(text)
+    offset = positions[start]
+    length = positions[start + len(headline)] - offset
+    result = list(entities or [])
+
+    if _has_covering_bold_entity(
+        result,
+        offset=offset,
+        length=length,
+    ):
+        return result
+
+    result.append(
+        {
+            "type": "bold",
+            "offset": offset,
+            "length": length,
+        }
+    )
+    result.sort(
+        key=lambda item: (
+            int(item.get("offset") or 0),
+            int(item.get("length") or 0),
+        )
+    )
+    return result
+
+
+def _bold_headlines_in_plan(
+    plan: PublicationPlan,
+    *,
+    headline: str,
+) -> None:
+    if not headline:
+        return
+
+    if (
+        plan.telegram.get("media_caption")
+        and not plan.telegram.get("media_parse_mode")
+    ):
+        plan.telegram["media_caption_entities"] = (
+            _ensure_telegram_headline_bold_entity(
+                plan.telegram["media_caption"],
+                list(
+                    plan.telegram.get(
+                        "media_caption_entities"
+                    )
+                    or []
+                ),
+                headline,
+            )
+        )
+
+    messages = list(
+        plan.text.get("telegram", {}).get("messages")
+        or []
+    )
+    modes = list(
+        plan.text.get("telegram", {}).get(
+            "message_parse_modes"
+        )
+        or []
+    )
+
+    for index, message in enumerate(messages):
+        if headline not in str(message or ""):
+            continue
+        if index >= len(modes):
+            modes.extend(
+                [None] * (index + 1 - len(modes))
+            )
+        if modes[index] is None:
+            escaped = escape(str(message))
+            escaped_headline = escape(headline)
+            messages[index] = escaped.replace(
+                escaped_headline,
+                f"<b>{escaped_headline}</b>",
+                1,
+            )
+            modes[index] = "HTML"
+        break
+
+    if messages:
+        plan.text["telegram"]["messages"] = messages
+        plan.text["telegram"]["message_parse_modes"] = modes
 
 
 # =========================================================
@@ -4221,6 +4351,11 @@ def analyze_content(
                 list(plan.telegram.get("media_caption_entities") or [])
                 + preserved_entities
             )
+
+    _bold_headlines_in_plan(
+        plan,
+        headline=_first_line_headline(main_text),
+    )
 
     telegram_caption = (
         plan.telegram[
