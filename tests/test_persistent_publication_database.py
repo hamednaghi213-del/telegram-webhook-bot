@@ -654,6 +654,63 @@ def test_get_persistent_publication_part(
         "part_key": "primary",
     }
 
+
+def test_list_persistent_publication_parts(
+    db,
+    monkeypatch,
+):
+    rows = [
+        {
+            "delivery_id": 21,
+            "part_key": "primary",
+            "status": "succeeded",
+        },
+        {
+            "delivery_id": 21,
+            "part_key": "followup:1",
+            "status": "failed",
+        },
+    ]
+
+    class FakeQuery:
+        def __init__(self):
+            self.filters = {}
+
+        def table(self, name):
+            assert name == (
+                "publication_delivery_parts"
+            )
+            return self
+
+        def select(self, _columns):
+            return self
+
+        def eq(self, key, value):
+            self.filters[key] = value
+            return self
+
+        def execute(self):
+            return SimpleNamespace(
+                data=rows
+            )
+
+    fake = FakeQuery()
+
+    monkeypatch.setattr(
+        db,
+        "service_supabase",
+        fake,
+    )
+
+    result = db.list_persistent_publication_parts(
+        delivery_id=21,
+    )
+
+    assert result == tuple(rows)
+    assert fake.filters == {
+        "delivery_id": 21,
+    }
+
 def test_mark_persistent_publication_delivery_succeeded(
     db,
     monkeypatch,

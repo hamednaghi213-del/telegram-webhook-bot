@@ -2843,6 +2843,30 @@ def get_persistent_publication_part(
 
     return result.data[0]
 
+
+@with_retry
+def list_persistent_publication_parts(
+    *,
+    delivery_id: int,
+) -> Tuple[Dict[str, Any], ...]:
+    """
+    Read all persisted publication delivery parts for one delivery.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    result = (
+        service_supabase
+        .table("publication_delivery_parts")
+        .select("*")
+        .eq("delivery_id", int(delivery_id))
+        .execute()
+    )
+
+    return tuple(result.data or [])
+
 @with_retry
 def mark_persistent_publication_delivery_succeeded(
     *,

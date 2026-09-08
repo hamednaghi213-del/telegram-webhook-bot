@@ -37,6 +37,25 @@ class DeliveryState:
     error: Optional[str] = None
 
 
+def delivery_state_has_success_proof(
+    state: Optional[DeliveryState],
+) -> bool:
+    if state is None:
+        return False
+    if any(
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        for value in state.message_ids.values()
+    ):
+        return True
+    return any(
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        for values in state.all_message_ids.values()
+        for value in values
+    )
+
+
 class PublicationStateStore(ABC):
     @abstractmethod
     def claim_source(self, source_key: str) -> bool: ...
@@ -255,10 +274,6 @@ class PersistentPublicationStateStore(
                 lease_seconds=self.lease_seconds,
             )
         )
-
-        if not bool(claim.get("claimed")):
-            return None
-
         state = self.claim_destination(
             source_key,
             target_identity,
@@ -280,7 +295,80 @@ class PersistentPublicationStateStore(
         )
         state.error = None
 
+        if (
+            state.persistent_delivery_id is not None
+            and state.status == "succeeded"
+        ):
+            self._restore_persisted_success_parts(
+                source_key=source_key,
+                target_identity=target_identity,
+                delivery_id=state.persistent_delivery_id,
+            )
+            if delivery_state_has_success_proof(
+                state
+            ):
+                return state
+            state.status = "failed"
+            state.error = (
+                "delivery marked succeeded without transport proof"
+            )
+
+        if not bool(claim.get("claimed")):
+            return None
+
         return state
+
+    def _restore_persisted_success_parts(
+        self,
+        *,
+        source_key: str,
+        target_identity: str,
+        delivery_id: int,
+    ) -> None:
+        from core import database
+
+        for persisted in (
+            database.list_persistent_publication_parts(
+                delivery_id=int(delivery_id),
+            )
+            or ()
+        ):
+            if str(
+                persisted.get("status") or ""
+            ) != "succeeded":
+                continue
+
+            message_id = persisted.get("message_id")
+            raw_message_ids = (
+                persisted.get("message_ids") or ()
+            )
+            message_ids = tuple(
+                int(value)
+                for value in raw_message_ids
+                if isinstance(value, int)
+                and not isinstance(value, bool)
+            )
+
+            if (
+                message_id is None
+                and not message_ids
+            ):
+                continue
+
+            super().part_succeeded(
+                source_key,
+                target_identity,
+                str(
+                    persisted.get("part_key") or ""
+                ),
+                message_id=message_id,
+                message_ids=message_ids,
+                destination_chat_id=(
+                    persisted.get(
+                        "destination_chat_id"
+                    )
+                ),
+            )
 
     def part_succeeded(
         self,

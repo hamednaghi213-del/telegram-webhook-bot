@@ -1,5 +1,6 @@
 from core.publication_state import (
     PersistentPublicationStateStore,
+    delivery_state_has_success_proof,
 )
 
 
@@ -279,6 +280,112 @@ def test_part_completed_restores_persisted_success(
     assert delivery.message_chat_ids["primary"] == (
         "@farda_no"
     )
+
+
+def test_begin_persistent_attempt_restores_proven_success_without_resend(
+    monkeypatch,
+):
+    import core.database
+
+    monkeypatch.setattr(
+        core.database,
+        "claim_persistent_publication_delivery",
+        lambda **_kwargs: {
+            "claimed": False,
+            "source_id": 10,
+            "delivery_id": 20,
+            "status": "succeeded",
+            "attempt_count": 2,
+            "lease_expires_at": None,
+        },
+    )
+    monkeypatch.setattr(
+        core.database,
+        "list_persistent_publication_parts",
+        lambda **_kwargs: (
+            {
+                "part_key": "primary",
+                "status": "succeeded",
+                "message_id": 501,
+                "message_ids": [501, 502],
+                "destination_chat_id": "@farda_no",
+            },
+        ),
+    )
+
+    store = PersistentPublicationStateStore(
+        lease_owner="worker-test",
+    )
+
+    state = store.begin_persistent_attempt(
+        source_key="telegram:1:100",
+        target_identity="telegram:external:farda_no",
+        platform="telegram",
+        destination_chat_id="@farda_no",
+    )
+
+    assert state is not None
+    assert state.status == "succeeded"
+    assert delivery_state_has_success_proof(state) is True
+    assert state.message_ids["primary"] == 501
+    assert state.all_message_ids["primary"] == (
+        501,
+        502,
+    )
+
+
+def test_begin_persistent_attempt_rejects_unproven_success(
+    monkeypatch,
+):
+    import core.database
+
+    monkeypatch.setattr(
+        core.database,
+        "claim_persistent_publication_delivery",
+        lambda **_kwargs: {
+            "claimed": False,
+            "source_id": 10,
+            "delivery_id": 20,
+            "status": "succeeded",
+            "attempt_count": 2,
+            "lease_expires_at": None,
+        },
+    )
+    monkeypatch.setattr(
+        core.database,
+        "list_persistent_publication_parts",
+        lambda **_kwargs: (
+            {
+                "part_key": "primary",
+                "status": "succeeded",
+                "message_id": None,
+                "message_ids": None,
+                "destination_chat_id": "@farda_no",
+            },
+        ),
+    )
+
+    store = PersistentPublicationStateStore(
+        lease_owner="worker-test",
+    )
+
+    state = store.begin_persistent_attempt(
+        source_key="telegram:1:100",
+        target_identity="telegram:external:farda_no",
+        platform="telegram",
+        destination_chat_id="@farda_no",
+    )
+
+    assert state is None
+    delivery = store.get_delivery(
+        "telegram:1:100",
+        "telegram:external:farda_no",
+    )
+    assert delivery is not None
+    assert delivery.status == "failed"
+    assert delivery_state_has_success_proof(
+        delivery
+    ) is False
 
 def test_mark_succeeded_persists_delivery(
     monkeypatch,
