@@ -1220,7 +1220,23 @@ def summarize_text_safely(
     aggressive_max_reduction_ratio: Optional[
         float
     ] = None,
+    max_overshoot_retries: Optional[
+        int
+    ] = None,
 ) -> SummaryResult:
+    """
+    max_overshoot_retries is opt-in only.
+
+    Default (None) preserves the existing behavior of exactly one
+    bounded overshoot retry (two total generation attempts). Callers
+    may explicitly request additional bounded overshoot attempts
+    (e.g. External Review SHORT); every attempt is still validated
+    against the caller's original target_length using the existing
+    validate_summary validator, so raising this value never changes
+    what counts as a valid result -- only how many adaptive attempts
+    are made to reach one.
+    """
+
     raw_original_text = (
         preserve_original_text(
             original_text
@@ -1706,6 +1722,17 @@ def summarize_text_safely(
     retry_reason = None
     retry_target = None
 
+    overshoot_attempts_used = 0
+
+    resolved_max_overshoot_retries = max(
+        1,
+        int(
+            max_overshoot_retries
+        )
+        if max_overshoot_retries
+        else 1,
+    )
+
     first_candidate = generated
     first_validation = validation
 
@@ -1932,7 +1959,16 @@ def summarize_text_safely(
             )
 
     # =====================================================
-    # OVERSHOOT RETRY
+    # OVERSHOOT RETRY (BOUNDED, ADAPTIVE)
+    #
+    # Default behavior (max_overshoot_retries not provided) is
+    # exactly one retry attempt, unchanged from before.
+    #
+    # Opt-in callers (max_overshoot_retries > 1) get additional
+    # bounded adaptive attempts. Every attempt -- first or Nth --
+    # is validated with validate_summary against the caller's
+    # ORIGINAL target_length. Raising the attempt count never
+    # relaxes what counts as a valid result.
     # =====================================================
 
     elif should_retry_overshoot(
@@ -1941,26 +1977,49 @@ def summarize_text_safely(
         target_length=target_length
     ):
 
-        retry_target = (
-            calculate_retry_target(
-                original_length=original_length,
-                current_target=target_length,
-                generated_length=len(
-                    generated
+        current_generated = generated
+        current_generation_target = target_length
+
+        last_retry_generated = None
+        last_retry_validation = None
+
+        while (
+            overshoot_attempts_used
+            < resolved_max_overshoot_retries
+            and should_retry_overshoot(
+                validation=(
+                    validation
+                    if last_retry_validation is None
+                    else last_retry_validation
                 ),
-                effective_max_reduction_ratio=(
-                    effective_max_reduction_ratio
+                generated=current_generated,
+                target_length=target_length
+            )
+        ):
+
+            retry_target = (
+                calculate_retry_target(
+                    original_length=original_length,
+                    current_target=current_generation_target,
+                    generated_length=len(
+                        current_generated
+                    ),
+                    effective_max_reduction_ratio=(
+                        effective_max_reduction_ratio
+                    )
                 )
             )
-        )
 
-        if retry_target is not None:
+            if retry_target is None:
+                break
+
+            overshoot_attempts_used += 1
 
             retry_called = True
             retry_reason = "overshoot"
 
             overshoot = (
-                len(generated)
+                len(current_generated)
                 - target_length
             )
 
@@ -1972,9 +2031,11 @@ def summarize_text_safely(
 
             logger.info(
                 f"🔁 Smart summary overshoot retry | "
+                f"attempt={overshoot_attempts_used}/"
+                f"{resolved_max_overshoot_retries} | "
                 f"content_type={content_type} | "
-                f"first_target={target_length} | "
-                f"first_output={len(generated)} | "
+                f"original_target={target_length} | "
+                f"input_output={len(current_generated)} | "
                 f"overshoot={overshoot} | "
                 f"retry_target={retry_target}"
             )
@@ -2001,7 +2062,9 @@ def summarize_text_safely(
 
                 logger.exception(
                     f"❌ Smart summarizer retry "
-                    f"provider failed | {e}"
+                    f"provider failed | "
+                    f"attempt={overshoot_attempts_used}/"
+                    f"{resolved_max_overshoot_retries} | {e}"
                 )
 
                 return SummaryResult(
@@ -2028,6 +2091,12 @@ def summarize_text_safely(
                         ),
                         "retry_target": (
                             retry_target
+                        ),
+                        "overshoot_attempts": (
+                            overshoot_attempts_used
+                        ),
+                        "max_overshoot_retries": (
+                            resolved_max_overshoot_retries
                         ),
                         "minimum_target_length": (
                             retry_minimum_target
@@ -2057,7 +2126,7 @@ def summarize_text_safely(
             # retry_target is only an INTERNAL provider target.
             #
             # The actual publication contract is still the
-            # caller's original target_length.
+            # caller's original target_length, on every attempt.
             #
             # Example:
             #
@@ -2086,6 +2155,9 @@ def summarize_text_safely(
                 )
             )
 
+            last_retry_generated = retry_generated
+            last_retry_validation = retry_validation
+
             if retry_validation[
                 "valid"
             ]:
@@ -2095,77 +2167,103 @@ def summarize_text_safely(
 
                 logger.info(
                     f"✅ Smart summary overshoot retry accepted | "
+                    f"attempt={overshoot_attempts_used}/"
+                    f"{resolved_max_overshoot_retries} | "
                     f"content_type={content_type} | "
-                    f"first_target={target_length} | "
+                    f"original_target={target_length} | "
                     f"retry_target={retry_target} | "
                     f"validation_target={target_length} | "
                     f"output={len(generated)}"
                 )
 
-            else:
+                break
 
-                logger.warning(
-                    f"⚠️ Smart summary overshoot retry rejected | "
-                    f"content_type={content_type} | "
-                    f"errors="
-                    f"{retry_validation['errors']} | "
-                    f"retry_target={retry_target} | "
-                    f"validation_target={target_length} | "
-                    f"output="
-                    f"{len(retry_generated)}"
-                )
+            logger.warning(
+                f"⚠️ Smart summary overshoot retry rejected | "
+                f"attempt={overshoot_attempts_used}/"
+                f"{resolved_max_overshoot_retries} | "
+                f"content_type={content_type} | "
+                f"errors="
+                f"{retry_validation['errors']} | "
+                f"retry_target={retry_target} | "
+                f"validation_target={target_length} | "
+                f"output="
+                f"{len(retry_generated)}"
+            )
 
-                return SummaryResult(
-                    success=False,
-                    original_text=raw_original_text,
-                    summary_text=raw_original_text,
-                    target_length=target_length,
-                    original_length=original_length,
-                    summary_length=original_length,
-                    reduction_ratio=0.0,
-                    validation_passed=False,
-                    reason="validation_failed",
-                    metadata={
-                        "validation": (
-                            retry_validation
-                        ),
-                        "candidate_summary": (
-                            retry_generated
-                        ),
-                        "first_validation": (
-                            first_validation
-                        ),
-                        "first_candidate_summary": (
-                            first_candidate
-                        ),
-                        "summarizer_called": True,
-                        "classifier_called": (
-                            classifier_called
-                        ),
-                        "retry_called": True,
-                        "retry_reason": (
-                            retry_reason
-                        ),
-                        "retry_target": (
-                            retry_target
-                        ),
-                        "retry_validation_target": (
-                            target_length
-                        ),
-                        "content_type": (
-                            content_type
-                        ),
-                        "effective_max_reduction_ratio": (
-                            effective_max_reduction_ratio
-                        ),
-                        "effective_absolute_max_reduction_ratio": (
-                            effective_absolute_max_reduction_ratio
-                        ),
-                        "required_reduction_ratio": (
-                            required_reduction_ratio
-                        )
-                    }
-                )
+            current_generated = retry_generated
+            current_generation_target = retry_target
+
+        # =================================================
+        # ALL BOUNDED ATTEMPTS EXHAUSTED WITHOUT A VALID RESULT
+        #
+        # Fail closed using the LAST attempt's candidate and
+        # validation (matches the original single-retry contract
+        # when resolved_max_overshoot_retries == 1).
+        # =================================================
+
+        if (
+            not validation["valid"]
+            and last_retry_validation is not None
+        ):
+
+            return SummaryResult(
+                success=False,
+                original_text=raw_original_text,
+                summary_text=raw_original_text,
+                target_length=target_length,
+                original_length=original_length,
+                summary_length=original_length,
+                reduction_ratio=0.0,
+                validation_passed=False,
+                reason="validation_failed",
+                metadata={
+                    "validation": (
+                        last_retry_validation
+                    ),
+                    "candidate_summary": (
+                        last_retry_generated
+                    ),
+                    "first_validation": (
+                        first_validation
+                    ),
+                    "first_candidate_summary": (
+                        first_candidate
+                    ),
+                    "summarizer_called": True,
+                    "classifier_called": (
+                        classifier_called
+                    ),
+                    "retry_called": True,
+                    "retry_reason": (
+                        retry_reason
+                    ),
+                    "retry_target": (
+                        current_generation_target
+                    ),
+                    "retry_validation_target": (
+                        target_length
+                    ),
+                    "overshoot_attempts": (
+                        overshoot_attempts_used
+                    ),
+                    "max_overshoot_retries": (
+                        resolved_max_overshoot_retries
+                    ),
+                    "content_type": (
+                        content_type
+                    ),
+                    "effective_max_reduction_ratio": (
+                        effective_max_reduction_ratio
+                    ),
+                    "effective_absolute_max_reduction_ratio": (
+                        effective_absolute_max_reduction_ratio
+                    ),
+                    "required_reduction_ratio": (
+                        required_reduction_ratio
+                    )
+                }
+            )
 
     # =====================================================
     # FINAL VALIDATION FAILURE
@@ -2209,6 +2307,12 @@ def summarize_text_safely(
                 ),
                 "retry_target": (
                     retry_target
+                ),
+                "overshoot_attempts": (
+                    overshoot_attempts_used
+                ),
+                "max_overshoot_retries": (
+                    resolved_max_overshoot_retries
                 ),
                 "minimum_target_length": (
                     minimum_target_length
@@ -2298,6 +2402,12 @@ def summarize_text_safely(
             ),
             "retry_target": (
                 retry_target
+            ),
+            "overshoot_attempts": (
+                overshoot_attempts_used
+            ),
+            "max_overshoot_retries": (
+                resolved_max_overshoot_retries
             ),
             "minimum_target_length": (
                 minimum_target_length

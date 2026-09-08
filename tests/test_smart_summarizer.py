@@ -1030,3 +1030,162 @@ def test_default_reduction_policy_is_40_percent():
         DEFAULT_MAX_REDUCTION_RATIO
         == 0.40
     )
+
+
+# =========================================================
+# REQUIREMENT A: BOUNDED ADAPTIVE OVERSHOOT RETRIES
+# (opt-in, max_overshoot_retries, validated against the
+# caller's ORIGINAL target_length on every attempt)
+# =========================================================
+
+
+def _neutral_filler(length):
+    sentence = (
+        "این یک جمله خنثی و بدون عدد یا نام خاص است. "
+    )
+    text = (sentence * (length // len(sentence) + 2))
+    return text[:length]
+
+
+def test_default_behavior_allows_only_one_overshoot_retry():
+    """
+    Unset max_overshoot_retries must reproduce the original
+    single-retry contract byte-for-byte: exactly one retry attempt
+    (two total generation calls), even if the retry still overshoots.
+    """
+
+    original = _neutral_filler(3000)
+
+    calls = []
+
+    def fake_provider(original_text, instruction, target_length):
+        calls.append(target_length)
+        # Every attempt overshoots the caller's target (940).
+        return _neutral_filler(1000)
+
+    result = summarize_text_safely(
+        original_text=original,
+        target_length=940,
+        summarizer=fake_provider,
+        aggressive_max_reduction_ratio=0.9,
+    )
+
+    # 1 initial call + 1 retry == 2 total, never 3.
+    assert len(calls) == 2
+    assert result.success is False
+    assert result.metadata["max_overshoot_retries"] == 1
+    assert result.metadata["overshoot_attempts"] == 1
+
+
+def test_external_short_style_opt_in_allows_three_total_attempts():
+    """
+    Requirement A: opt-in max_overshoot_retries=2 permits up to 3
+    total attempts (1 initial + 2 retries), matching the External
+    Review SHORT wiring (EXTERNAL_SHORT_MAX_OVERSHOOT_RETRIES=2).
+    Every attempt must still validate against the ORIGINAL
+    target_length of 940.
+    """
+
+    original = _neutral_filler(3000)
+
+    call_lengths = [1000, 980, 900]
+    calls = []
+
+    def fake_provider(original_text, instruction, target_length):
+        calls.append(target_length)
+        return _neutral_filler(
+            call_lengths[len(calls) - 1]
+        )
+
+    result = summarize_text_safely(
+        original_text=original,
+        target_length=940,
+        summarizer=fake_provider,
+        aggressive_max_reduction_ratio=0.9,
+        max_overshoot_retries=2,
+    )
+
+    # 1 initial + 2 retries == 3 total attempts.
+    assert len(calls) == 3
+
+    assert result.success is True
+    assert result.validation_passed is True
+    assert len(result.summary_text) == 900
+    assert len(result.summary_text) <= 940
+
+    assert result.metadata["max_overshoot_retries"] == 2
+    assert result.metadata["overshoot_attempts"] == 2
+
+
+def test_opt_in_overshoot_retries_still_fail_closed_when_exhausted():
+    """
+    Even with the larger opt-in retry budget, if every attempt keeps
+    overshooting the ORIGINAL target, the function must fail closed
+    (return the original text, success False) rather than accepting
+    an over-length summary.
+    """
+
+    original = _neutral_filler(3000)
+
+    calls = []
+
+    def fake_provider(original_text, instruction, target_length):
+        calls.append(target_length)
+        # Always overshoots the caller's original 940 target.
+        return _neutral_filler(1000)
+
+    result = summarize_text_safely(
+        original_text=original,
+        target_length=940,
+        summarizer=fake_provider,
+        aggressive_max_reduction_ratio=0.9,
+        max_overshoot_retries=2,
+    )
+
+    # 1 initial + 2 retries == 3 total attempts, all exhausted.
+    assert len(calls) == 3
+
+    assert result.success is False
+    assert result.validation_passed is False
+    assert result.summary_text == original
+    assert result.metadata["max_overshoot_retries"] == 2
+    assert result.metadata["overshoot_attempts"] == 2
+
+
+def test_overshoot_retry_validates_every_attempt_against_original_target():
+    """
+    Requirement A: raising the retry budget must never relax what
+    counts as a valid result -- every retry (not just the first) is
+    validated with validate_summary against the caller's ORIGINAL
+    target_length (940), never the internal (smaller) retry target.
+    """
+
+    original = _neutral_filler(3000)
+
+    calls = []
+
+    def fake_provider(original_text, instruction, target_length):
+        calls.append(target_length)
+        # First attempt overshoots; the single retry lands exactly
+        # at the original target boundary (940), which must be
+        # accepted even though it is larger than the internal retry
+        # target requested of the provider.
+        if len(calls) == 1:
+            return _neutral_filler(1000)
+        return _neutral_filler(940)
+
+    result = summarize_text_safely(
+        original_text=original,
+        target_length=940,
+        summarizer=fake_provider,
+        aggressive_max_reduction_ratio=0.9,
+    )
+
+    assert len(calls) == 2
+    # The internal retry target requested from the provider must be
+    # smaller than 940 (adaptive), yet the 940-length result is
+    # still accepted because it fits the ORIGINAL target.
+    assert calls[1] < 940
+
+    assert result.success is True
+    assert len(result.summary_text) == 940

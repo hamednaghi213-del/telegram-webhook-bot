@@ -245,3 +245,117 @@ def test_explicit_no_media_hides_panel():
 
     assert view.media == ()
     assert "بدون تصویر" in view.text
+
+
+# =========================================================
+# REQUIREMENT C: media_presentation_mode UI CONTROLS
+# =========================================================
+
+
+def test_keyboard_omits_mode_toggle_for_single_or_no_media():
+    keyboard_no_media = build_external_review_keyboard(
+        review_id="r1",
+        media_count=0,
+    )
+
+    keyboard_single_media = build_external_review_keyboard(
+        review_id="r1",
+        media_count=1,
+    )
+
+    callbacks_no_media = _callbacks(keyboard_no_media)
+    callbacks_single_media = _callbacks(keyboard_single_media)
+
+    assert not any(
+        callback.startswith("extrev:mode:")
+        for callback in callbacks_no_media
+    )
+
+    assert not any(
+        callback.startswith("extrev:mode:")
+        for callback in callbacks_single_media
+    )
+
+
+def test_keyboard_shows_mode_toggle_for_multiple_media():
+    keyboard = build_external_review_keyboard(
+        review_id="r1",
+        media_count=2,
+    )
+
+    callbacks = _callbacks(keyboard)
+
+    assert "extrev:mode:r1:album" in callbacks
+    assert "extrev:mode:r1:normal" in callbacks
+
+
+def test_keyboard_marks_active_normal_mode():
+    keyboard = build_external_review_keyboard(
+        review_id="r1",
+        media_count=2,
+        media_presentation_mode="normal",
+    )
+
+    labels = [
+        button["text"]
+        for row in keyboard["inline_keyboard"]
+        for button in row
+    ]
+
+    assert "🖼 عادی ✅" in labels
+    assert "🖼 آلبوم" in labels
+    assert "🖼 آلبوم ✅" not in labels
+
+
+def test_keyboard_marks_active_album_mode():
+    keyboard = build_external_review_keyboard(
+        review_id="r1",
+        media_count=2,
+        media_presentation_mode="album",
+    )
+
+    labels = [
+        button["text"]
+        for row in keyboard["inline_keyboard"]
+        for button in row
+    ]
+
+    assert "🖼 آلبوم ✅" in labels
+    assert "🖼 عادی" in labels
+    assert "🖼 عادی ✅" not in labels
+
+
+def test_preview_reports_album_presentation_status():
+    content = _content(media=_media(2))
+    preview = build_external_content_preview(content)
+
+    view = build_external_review_preview(
+        review_id="r1",
+        content=content,
+        preview=preview,
+        media_presentation_mode="album",
+    )
+
+    assert "آلبوم" in view.text
+    assert "extrev:mode:r1:album" in _callbacks(
+        view.reply_markup
+    )
+
+
+def test_preview_defaults_to_normal_presentation_when_unspecified():
+    content = _content(media=_media(2))
+    preview = build_external_content_preview(content)
+
+    view = build_external_review_preview(
+        review_id="r1",
+        content=content,
+        preview=preview,
+    )
+
+    labels = [
+        button["text"]
+        for row in view.reply_markup["inline_keyboard"]
+        for button in row
+    ]
+
+    assert "🖼 عادی ✅" in labels

@@ -102,6 +102,9 @@ def _render_pending_view(
         media_selection_explicit=(
             pending.media_selection_explicit
         ),
+        media_presentation_mode=(
+            pending.media_presentation_mode
+        ),
     )
 
 

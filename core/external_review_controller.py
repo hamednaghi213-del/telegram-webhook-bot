@@ -58,6 +58,8 @@ class ExternalReviewDecision:
     content: NormalizedExternalContent
     review: ExternalReviewResult
 
+    media_presentation_mode: str = "normal"
+
     @property
     def requires_smart_summary(
         self,
@@ -226,6 +228,9 @@ class ExternalReviewController:
             chat_id=pending.chat_id,
             content=content,
             review=review,
+            media_presentation_mode=(
+                pending.media_presentation_mode
+            ),
         )
 
     # -----------------------------------------------------
