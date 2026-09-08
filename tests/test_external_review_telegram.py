@@ -332,7 +332,11 @@ def test_short_callback_generates_draft_without_publishing(
 
     assert (
         pending.draft_text
-        == "خلاصه کوتاه امن برای کپشن."
+        == (
+            "عنوان خبر\n\n"
+            "خلاصه کوتاه امن برای کپشن.\n\n"
+            "- Shoمنبع: Example"
+        )
     )
 
 
@@ -864,7 +868,14 @@ def test_short_regenerate_replaces_draft_with_new_summary(monkeypatch):
         chat_id=12345,
     )
 
-    assert pending.draft_text == "خلاصه جدید بازتولید شده"
+    assert (
+        pending.draft_text
+        == (
+            "عنوان خبر\n\n"
+            "خلاصه جدید بازتولید شده\n\n"
+            "- Shoمنبع: Example"
+        )
+    )
     assert pending.review_stage == "short_preview"
 
 
