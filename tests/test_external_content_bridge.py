@@ -577,23 +577,29 @@ def test_cannot_supply_materializer_and_prepared_files_together():
         )
 
 
-def test_prepared_files_are_rejected_when_review_has_no_media():
-    with pytest.raises(
-        ExternalContentBridgeError,
-        match="no selected media",
-    ):
-        build_external_prepared_content(
-            _content(),
-            _review(
-                media=()
-            ),
-            prepared_files=(
-                {
-                    "type": "photo",
-                    "file_id": "file-1",
-                },
-            ),
-        )
+def test_prepared_files_allow_manual_media_without_review_media():
+    result = build_external_prepared_content(
+        _content(),
+        _review(
+            media=()
+        ),
+        prepared_files=(
+            {
+                "type": "photo",
+                "file_id": "file-1",
+            },
+        ),
+    )
+
+    assert len(result.prepared_content.files) == 1
+    assert (
+        result.prepared_content.files[0]["type"]
+        == "photo"
+    )
+    assert (
+        result.prepared_content.files[0]["file_id"]
+        == "file-1"
+    )
 
 
 # =========================================================

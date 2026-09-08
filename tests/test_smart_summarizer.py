@@ -1189,3 +1189,50 @@ def test_overshoot_retry_validates_every_attempt_against_original_target():
 
     assert result.success is True
     assert len(result.summary_text) == 940
+
+
+def test_retry_target_floor_allows_exact_1030_to_976_to_valid():
+    original = _neutral_filler(32533)
+    calls = []
+
+    def fake_provider(original_text, instruction, target_length):
+        calls.append(target_length)
+        if len(calls) == 1:
+            return _neutral_filler(1200)
+        return _neutral_filler(1030)
+
+    result = summarize_text_safely(
+        original_text=original,
+        target_length=1030,
+        summarizer=fake_provider,
+        aggressive_max_reduction_ratio=0.97,
+        max_overshoot_retries=2,
+    )
+
+    assert calls == [1030, 976]
+    assert result.success is True
+    assert result.validation_passed is True
+    assert len(result.summary_text) == 1030
+    assert result.metadata["retry_target"] == 976
+
+
+def test_retry_target_floor_still_fails_closed_when_1030_to_976_remains_invalid():
+    original = _neutral_filler(32533)
+    calls = []
+
+    def fake_provider(original_text, instruction, target_length):
+        calls.append(target_length)
+        return _neutral_filler(1200 if len(calls) == 1 else 1100)
+
+    result = summarize_text_safely(
+        original_text=original,
+        target_length=1030,
+        summarizer=fake_provider,
+        aggressive_max_reduction_ratio=0.97,
+        max_overshoot_retries=2,
+    )
+
+    assert calls == [1030, 976]
+    assert result.success is False
+    assert result.validation_passed is False
+    assert result.summary_text == original

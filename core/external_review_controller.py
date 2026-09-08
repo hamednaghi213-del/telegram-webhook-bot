@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import (
+    Any,
+    Mapping,
+    Optional,
+    Tuple,
+)
 
 from core.external_content_model import (
     NormalizedExternalContent,
@@ -18,6 +23,8 @@ from core.external_content_review import (
 from core.external_review_state import (
     DEFAULT_EXTERNAL_REVIEW_STATE_STORE,
     ExternalReviewStateStore,
+    MANUAL_IMAGE_SOURCE_NONE,
+    MANUAL_IMAGE_SOURCE_REPLACE,
     PendingExternalReview,
 )
 
@@ -59,6 +66,10 @@ class ExternalReviewDecision:
     review: ExternalReviewResult
 
     media_presentation_mode: str = "normal"
+    prepared_files: Tuple[
+        Mapping[str, Any],
+        ...,
+    ] = ()
 
     @property
     def requires_smart_summary(
@@ -223,6 +234,62 @@ class ExternalReviewController:
             )
         )
 
+        prepared_files: Tuple[
+            Mapping[str, Any],
+            ...,
+        ] = ()
+
+        if (
+            pending.manual_image_source
+            == MANUAL_IMAGE_SOURCE_NONE
+        ):
+            review = ExternalReviewResult(
+                title=review.title,
+                lead=review.lead,
+                body=review.body,
+                media=(),
+                selected_paragraph_indexes=(
+                    review.selected_paragraph_indexes
+                ),
+                selected_media_indexes=(),
+                requires_smart_summary=(
+                    review.requires_smart_summary
+                ),
+                requires_editorial_rewrite=(
+                    review.requires_editorial_rewrite
+                ),
+            )
+
+        elif (
+            pending.manual_image_source
+            == MANUAL_IMAGE_SOURCE_REPLACE
+            and pending.manual_image_file_id
+        ):
+            prepared_files = (
+                {
+                    "type": "photo",
+                    "file_id": (
+                        pending.manual_image_file_id
+                    ),
+                },
+            )
+            review = ExternalReviewResult(
+                title=review.title,
+                lead=review.lead,
+                body=review.body,
+                media=(),
+                selected_paragraph_indexes=(
+                    review.selected_paragraph_indexes
+                ),
+                selected_media_indexes=(),
+                requires_smart_summary=(
+                    review.requires_smart_summary
+                ),
+                requires_editorial_rewrite=(
+                    review.requires_editorial_rewrite
+                ),
+            )
+
         return ExternalReviewDecision(
             review_id=pending.review_id,
             chat_id=pending.chat_id,
@@ -231,6 +298,7 @@ class ExternalReviewController:
             media_presentation_mode=(
                 pending.media_presentation_mode
             ),
+            prepared_files=prepared_files,
         )
 
     # -----------------------------------------------------

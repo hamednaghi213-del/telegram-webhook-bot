@@ -152,6 +152,10 @@ def test_keyboard_preserves_callback_contract():
     assert "extrev:media:r1:1" in callbacks
     assert "extrev:media:r1:2" in callbacks
     assert "extrev:nomedia:r1" in callbacks
+    assert "extrev:manual:r1:waiting" in callbacks
+    assert "extrev:manual:r1:replace" in callbacks
+    assert "extrev:manual:r1:primary" in callbacks
+    assert "extrev:manual:r1:none" in callbacks
     assert "extrev:editorial:r1" in callbacks
     assert "extrev:cancel:r1" in callbacks
 
@@ -179,7 +183,7 @@ def test_keyboard_marks_explicit_no_media():
         review_id="r1",
         media_count=2,
         selected_media_indexes=(),
-        media_selection_explicit=True,
+        manual_image_source="none",
     )
 
     labels = [
@@ -245,6 +249,23 @@ def test_explicit_no_media_hides_panel():
 
     assert view.media == ()
     assert "بدون تصویر" in view.text
+
+
+def test_manual_replacement_preview_uses_uploaded_photo_file_id():
+    content = _content(media=_media(1))
+    preview = build_external_content_preview(content)
+
+    view = build_external_review_preview(
+        review_id="r1",
+        content=content,
+        preview=preview,
+        manual_image_source="replace",
+        manual_image_file_id="manual-photo-1",
+    )
+
+    assert len(view.media) == 1
+    assert view.media_file_ids == ("manual-photo-1",)
+    assert "تصویر دستی" in view.text
 
 
 # =========================================================

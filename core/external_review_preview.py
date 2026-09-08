@@ -30,6 +30,11 @@ from core.external_content_model import (
 from core.external_content_review import (
     ExternalContentPreview,
 )
+from core.external_review_state import (
+    MANUAL_IMAGE_SOURCE_NONE,
+    MANUAL_IMAGE_SOURCE_PRIMARY,
+    MANUAL_IMAGE_SOURCE_REPLACE,
+)
 
 
 # =========================================================
@@ -55,6 +60,7 @@ class ExternalReviewPreviewView:
     text: str
     reply_markup: dict
     media: Tuple[ExternalMedia, ...]
+    media_file_ids: Tuple[str, ...] = ()
 
 
 # =========================================================
@@ -100,14 +106,50 @@ def _selected_media(
     *,
     selected_media_indexes: Tuple[int, ...],
     media_selection_explicit: bool,
-) -> Tuple[ExternalMedia, ...]:
+    manual_image_source: str = (
+        MANUAL_IMAGE_SOURCE_PRIMARY
+    ),
+    manual_image_file_id: str = "",
+) -> Tuple[
+    Tuple[ExternalMedia, ...],
+    Tuple[str, ...],
+]:
+    if (
+        manual_image_source
+        == MANUAL_IMAGE_SOURCE_REPLACE
+        and str(
+            manual_image_file_id
+            or ""
+        ).strip()
+    ):
+        return (
+            (
+                ExternalMedia(
+                    type="photo",
+                    source_url="",
+                    position=0,
+                    presentation="cover",
+                    metadata={
+                        "source_kind": "manual",
+                    },
+                ),
+            ),
+            (str(manual_image_file_id).strip(),),
+        )
+
+    if (
+        manual_image_source
+        == MANUAL_IMAGE_SOURCE_NONE
+    ):
+        return (), ()
+
     media = tuple(
         content.media
         or ()
     )
 
     if not media_selection_explicit:
-        return media
+        return media, ()
 
     selected = []
 
@@ -117,8 +159,11 @@ def _selected_media(
                 media[index]
             )
 
-    return tuple(
-        selected
+    return (
+        tuple(
+            selected
+        ),
+        (),
     )
 
 
@@ -127,9 +172,41 @@ def _selection_status_line(
     media_count: int,
     selected_media_indexes: Tuple[int, ...],
     media_selection_explicit: bool,
+    manual_image_source: str = (
+        MANUAL_IMAGE_SOURCE_PRIMARY
+    ),
+    manual_image_file_id: str = "",
+    manual_image_waiting: bool = False,
 ) -> str:
+    if manual_image_waiting:
+        return (
+            "⏳ منتظر دریافت عکس بعدی شما برای جایگزینی هستم."
+        )
+
+    if (
+        manual_image_source
+        == MANUAL_IMAGE_SOURCE_REPLACE
+        and str(
+            manual_image_file_id
+            or ""
+        ).strip()
+    ):
+        return (
+            "🖼 تصویر دستی جایگزین تصویر مطلب خواهد شد."
+        )
+
+    if (
+        manual_image_source
+        == MANUAL_IMAGE_SOURCE_NONE
+    ):
+        return (
+            "🚫 بدون تصویر انتخاب شده است."
+        )
+
     if media_count <= 0:
-        return ""
+        return (
+            "🖼 تصویر دستی اضافه نشده است."
+        )
 
     if not media_selection_explicit:
         if media_count == 1:
@@ -218,6 +295,11 @@ def build_external_review_keyboard(
     selected_media_indexes: Tuple[int, ...] = (),
     media_selection_explicit: bool = False,
     media_presentation_mode: str = "normal",
+    manual_image_source: str = (
+        MANUAL_IMAGE_SOURCE_PRIMARY
+    ),
+    manual_image_file_id: str = "",
+    manual_image_waiting: bool = False,
 ) -> dict:
     """
     Build the review inline keyboard.
@@ -264,6 +346,78 @@ def build_external_review_keyboard(
         ],
     ]
 
+    manual_has_file = bool(
+        str(
+            manual_image_file_id
+            or ""
+        ).strip()
+    )
+
+    review_rows.append(
+        [
+            {
+                "text": (
+                    "🖼 تصویر اصلی ✅"
+                    if (
+                        manual_image_source
+                        == MANUAL_IMAGE_SOURCE_PRIMARY
+                    )
+                    else "🖼 تصویر اصلی"
+                ),
+                "callback_data": (
+                    "extrev:manual:"
+                    f"{review_id}:primary"
+                ),
+            },
+            {
+                "text": (
+                    "🚫 بدون تصویر ✅"
+                    if (
+                        manual_image_source
+                        == MANUAL_IMAGE_SOURCE_NONE
+                    )
+                    else "🚫 بدون تصویر"
+                ),
+                "callback_data": (
+                    "extrev:manual:"
+                    f"{review_id}:none"
+                ),
+            },
+        ]
+    )
+
+    review_rows.append(
+        [
+            {
+                "text": (
+                    "⏳ لغو انتظار عکس"
+                    if manual_image_waiting
+                    else "📥 انتظار برای عکس"
+                ),
+                "callback_data": (
+                    "extrev:manual:"
+                    f"{review_id}:"
+                    f"{'cancel' if manual_image_waiting else 'waiting'}"
+                ),
+            },
+            {
+                "text": (
+                    "🔁 تصویر دستی ✅"
+                    if (
+                        manual_has_file
+                        and manual_image_source
+                        == MANUAL_IMAGE_SOURCE_REPLACE
+                    )
+                    else "🔁 تصویر دستی"
+                ),
+                "callback_data": (
+                    "extrev:manual:"
+                    f"{review_id}:replace"
+                ),
+            },
+        ]
+    )
+
     if media_count > 0:
         selected_set = set(
             selected_media_indexes
@@ -286,7 +440,7 @@ def build_external_review_keyboard(
             [
                 {
                     "text": media_label(
-                        "🖼 تصویر اصلی",
+                        "🖼 تصویر استخراجی",
                         0,
                     ),
                     "callback_data": (
@@ -296,12 +450,12 @@ def build_external_review_keyboard(
                 },
                 {
                     "text": (
-                        "🚫 بدون تصویر ✅"
+                        "🚫 رسانه استخراجی ✅"
                         if (
                             media_selection_explicit
                             and not selected_media_indexes
                         )
-                        else "🚫 بدون تصویر"
+                        else "🚫 رسانه استخراجی"
                     ),
                     "callback_data": (
                         "extrev:nomedia:"
@@ -429,6 +583,11 @@ def build_external_review_preview(
     selected_media_indexes: Tuple[int, ...] = (),
     media_selection_explicit: bool = False,
     media_presentation_mode: str = "normal",
+    manual_image_source: str = (
+        MANUAL_IMAGE_SOURCE_PRIMARY
+    ),
+    manual_image_file_id: str = "",
+    manual_image_waiting: bool = False,
 ) -> ExternalReviewPreviewView:
     """
     Render one coherent review preview.
@@ -476,6 +635,15 @@ def build_external_review_preview(
             ),
             media_selection_explicit=(
                 media_selection_explicit
+            ),
+            manual_image_source=(
+                manual_image_source
+            ),
+            manual_image_file_id=(
+                manual_image_file_id
+            ),
+            manual_image_waiting=(
+                manual_image_waiting
             ),
         )
     )
@@ -577,20 +745,38 @@ def build_external_review_preview(
             media_presentation_mode=(
                 media_presentation_mode
             ),
+            manual_image_source=(
+                manual_image_source
+            ),
+            manual_image_file_id=(
+                manual_image_file_id
+            ),
+            manual_image_waiting=(
+                manual_image_waiting
+            ),
         )
+    )
+
+    selected_media, media_file_ids = _selected_media(
+        content,
+        selected_media_indexes=(
+            selected_media_indexes
+        ),
+        media_selection_explicit=(
+            media_selection_explicit
+        ),
+        manual_image_source=(
+            manual_image_source
+        ),
+        manual_image_file_id=(
+            manual_image_file_id
+        ),
     )
 
     return ExternalReviewPreviewView(
         review_id=review_id,
         text=text,
         reply_markup=reply_markup,
-        media=_selected_media(
-            content,
-            selected_media_indexes=(
-                selected_media_indexes
-            ),
-            media_selection_explicit=(
-                media_selection_explicit
-            ),
-        ),
+        media=selected_media,
+        media_file_ids=media_file_ids,
     )

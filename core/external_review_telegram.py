@@ -105,6 +105,15 @@ def _render_pending_view(
         media_presentation_mode=(
             pending.media_presentation_mode
         ),
+        manual_image_source=(
+            pending.manual_image_source
+        ),
+        manual_image_file_id=(
+            pending.manual_image_file_id
+        ),
+        manual_image_waiting=(
+            pending.manual_image_waiting
+        ),
     )
 
 
@@ -164,7 +173,8 @@ def _refresh_preview(
             pending.preview_media_message_ids
         ),
         staged_file_ids=(
-            pending.preview_media_file_ids
+            view.media_file_ids
+            or pending.preview_media_file_ids
         ),
     )
 
@@ -191,28 +201,29 @@ def _refresh_preview(
         pending.preview_media_file_ids
     )
 
-    if len(merged_file_ids) < len(
-        pending.content.media
-    ):
-        merged_file_ids.extend(
-            [""]
-            * (
-                len(pending.content.media)
-                - len(merged_file_ids)
-            )
-        )
-
-    for position, file_id in (
-        panel_result
-        .file_ids_by_position
-        .items()
-    ):
-        if 0 <= position < len(
-            merged_file_ids
+    if not view.media_file_ids:
+        if len(merged_file_ids) < len(
+            pending.content.media
         ):
-            merged_file_ids[position] = (
-                str(file_id or "")
+            merged_file_ids.extend(
+                [""]
+                * (
+                    len(pending.content.media)
+                    - len(merged_file_ids)
+                )
             )
+
+        for position, file_id in (
+            panel_result
+            .file_ids_by_position
+            .items()
+        ):
+            if 0 <= position < len(
+                merged_file_ids
+            ):
+                merged_file_ids[position] = (
+                    str(file_id or "")
+                )
 
     try:
         controller.state_store.update_preview_message_refs(
@@ -238,6 +249,26 @@ def _refresh_preview(
             pending.review_id,
             exc,
         )
+
+
+def refresh_external_review_preview(
+    *,
+    pending: PendingExternalReview,
+    chat_id: int,
+    telegram_api: Optional[
+        Callable[..., Mapping[str, Any]]
+    ],
+    controller: ExternalReviewController,
+    req_id: str,
+) -> None:
+    _refresh_preview(
+        callback_query={},
+        pending=pending,
+        chat_id=chat_id,
+        telegram_api=telegram_api,
+        controller=controller,
+        req_id=req_id,
+    )
 
 
 def _finalize_preview(
@@ -699,7 +730,12 @@ def handle_external_review_telegram_callback(
 
         editorial_media_files = []
 
-        if review.media:
+        if decision.prepared_files:
+            editorial_media_files = list(
+                decision.prepared_files
+            )
+
+        elif review.media:
 
             try:
                 from core.external_media_factory import (

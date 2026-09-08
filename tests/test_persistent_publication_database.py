@@ -384,11 +384,28 @@ def test_record_persistent_publication_part_success(
     class FakeQuery:
         def __init__(self):
             self.table_name = None
+            self.table_names = []
             self.payload = None
             self.on_conflict = None
+            self.selected = None
+            self.filters = []
+            self.index_payload = None
+            self.index_on_conflict = None
 
         def table(self, name):
             self.table_name = name
+            self.table_names.append(name)
+            return self
+
+        def select(self, fields):
+            self.selected = fields
+            return self
+
+        def eq(self, field, value):
+            self.filters.append((field, value))
+            return self
+
+        def limit(self, value):
             return self
 
         def upsert(
@@ -396,11 +413,25 @@ def test_record_persistent_publication_part_success(
             payload,
             on_conflict=None,
         ):
-            self.payload = payload
-            self.on_conflict = on_conflict
+            if self.table_name == "publication_delivery_parts":
+                self.payload = payload
+                self.on_conflict = on_conflict
+            else:
+                self.index_payload = payload
+                self.index_on_conflict = on_conflict
             return self
 
         def execute(self):
+            if self.table_name == "publication_deliveries":
+                return SimpleNamespace(
+                    data=[
+                        {
+                            "id": 21,
+                            "platform": "telegram",
+                            "destination_chat_id": "@farda_no",
+                        }
+                    ]
+                )
             return SimpleNamespace(
                 data=[self.payload]
             )
@@ -423,7 +454,7 @@ def test_record_persistent_publication_part_success(
         )
     )
 
-    assert fake.table_name == (
+    assert fake.table_names[0] == (
         "publication_delivery_parts"
     )
 
@@ -449,6 +480,39 @@ def test_record_persistent_publication_part_success(
     assert result["last_error"] is None
     assert result["lease_owner"] is None
     assert result["lease_expires_at"] is None
+    assert (
+        "publication_delivery_message_index"
+        in fake.table_names
+    )
+    assert fake.index_on_conflict == (
+        "platform,destination_chat_id,message_id"
+    )
+    assert fake.index_payload == [
+        {
+            "delivery_id": 21,
+            "platform": "telegram",
+            "destination_chat_id": "@farda_no",
+            "part_key": "primary",
+            "message_id": 501,
+            "is_primary": True,
+        },
+        {
+            "delivery_id": 21,
+            "platform": "telegram",
+            "destination_chat_id": "@farda_no",
+            "part_key": "primary",
+            "message_id": 502,
+            "is_primary": False,
+        },
+        {
+            "delivery_id": 21,
+            "platform": "telegram",
+            "destination_chat_id": "@farda_no",
+            "part_key": "primary",
+            "message_id": 503,
+            "is_primary": False,
+        },
+    ]
 
 def test_get_persistent_publication_part(
     db,

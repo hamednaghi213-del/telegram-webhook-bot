@@ -363,6 +363,57 @@ def test_editorial_callback_reports_shared_editorial_path():
     )
 
 
+def test_editorial_callback_queues_pending_review_with_manual_media():
+    controller = _controller()
+    _create_pending(controller)
+    controller.state_store.update_manual_image_state(
+        review_id="review-1",
+        chat_id=12345,
+        manual_image_source="replace",
+        manual_image_file_id="manual-photo-1",
+        manual_image_waiting=False,
+    )
+
+    queued = []
+    executed = []
+
+    handled = handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:editorial:review-1"
+        ),
+        answer_callback_query=(
+            lambda *args, **kwargs: None
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        controller=controller,
+        api_url="https://api.telegram.test",
+        execute_decision=(
+            lambda **kwargs: executed.append(kwargs)
+        ),
+        queue_editorial_review=(
+            lambda **kwargs: queued.append(kwargs) or True
+        ),
+    )
+
+    assert handled is True
+    assert executed == []
+    assert len(queued) == 1
+    assert queued[0]["forced_content_type"] == (
+        "news_analysis"
+    )
+    assert queued[0]["source_key"] == (
+        "external:review-1"
+    )
+    assert queued[0]["media_files"] == [
+        {
+            "type": "photo",
+            "file_id": "manual-photo-1",
+        },
+    ]
+
+
 # =========================================================
 # CANCEL
 # =========================================================

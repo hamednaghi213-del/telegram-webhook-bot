@@ -1,6 +1,7 @@
 import pytest
 
 from core.external_content_model import (
+    ExternalMedia,
     NormalizedExternalContent,
 )
 from core.external_content_resolver import (
@@ -23,6 +24,7 @@ def _normalized(
     source_type="web_article",
     source_url="https://example.com/news/1",
     canonical_url="https://example.com/news/1",
+    media=(),
 ):
     return NormalizedExternalContent(
         source_type=source_type,
@@ -32,6 +34,7 @@ def _normalized(
         title="Headline",
         lead="Lead",
         body="Body",
+        media=media,
         original_language="en",
         extraction_confidence=0.9,
     )
@@ -305,6 +308,73 @@ def test_invalid_web_extractor_result_is_rejected():
         resolver.resolve(
             "https://example.com/news/1"
         )
+
+
+def test_web_article_review_exposes_only_one_trustworthy_primary_image():
+    resolver = ExternalContentResolver(
+        web_extractor=FakeWebExtractor(
+            result=_normalized(
+                media=(
+                    ExternalMedia(
+                        type="photo",
+                        source_url="https://example.com/og.jpg",
+                        position=0,
+                        presentation="cover",
+                        metadata={
+                            "source_kind": "og",
+                            "trustworthy_primary": True,
+                        },
+                    ),
+                    ExternalMedia(
+                        type="photo",
+                        source_url="https://example.com/gallery.jpg",
+                        position=1,
+                        presentation="gallery",
+                        metadata={
+                            "source_kind": "html",
+                            "trustworthy_primary": False,
+                        },
+                    ),
+                )
+            )
+        ),
+    )
+
+    result = resolver.resolve(
+        "https://example.com/news/1"
+    )
+
+    assert len(result.content.media) == 1
+    assert result.content.media[0].source_url == (
+        "https://example.com/og.jpg"
+    )
+
+
+def test_web_article_review_drops_untrusted_html_fallback_image():
+    resolver = ExternalContentResolver(
+        web_extractor=FakeWebExtractor(
+            result=_normalized(
+                media=(
+                    ExternalMedia(
+                        type="photo",
+                        source_url="https://example.com/body.jpg",
+                        position=0,
+                        presentation="cover",
+                        metadata={
+                            "source_kind": "html",
+                            "trustworthy_primary": False,
+                        },
+                    ),
+                )
+            )
+        ),
+    )
+
+    result = resolver.resolve(
+        "https://example.com/news/1"
+    )
+
+    assert result.content.media == ()
 
 
 # =========================================================

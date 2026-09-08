@@ -16,6 +16,7 @@ BRANDING_SEPARATOR_COST = 2  # "\n\n"
 # MVP publication roles that may publish
 PUBLISH_ROLES = frozenset({"owner", "manager", "publisher"})
 _LEGACY_PLACEHOLDER_LABELS = frozenset({"@channel", "channel"})
+MAX_BALE_DELETE_RETRIES = 3
 
 # In-process pending publication store (keyed by chat_id)
 # Stores {"destinations": [...], "text": ..., "media_file_id": ...,
@@ -142,6 +143,189 @@ def resolve_legacy_media_label(tenant: Optional[Dict[str, Any]]) -> str:
 def _record_publication_message_link(**payload):
     from core.database import create_publication_message_link
     return create_publication_message_link(**payload)
+
+
+def _delete_not_found_response(payload: Any) -> bool:
+    text = str(payload or "").lower()
+    return (
+        "not found" in text
+        or "message to delete not found" in text
+        or "message not found" in text
+    )
+
+
+def _delete_telegram_message(
+    api_url: str,
+    chat_id: Any,
+    message_id: int,
+) -> bool:
+    try:
+        response = requests.post(
+            f"{api_url}/deleteMessage",
+            json={
+                "chat_id": chat_id,
+                "message_id": int(message_id),
+            },
+            timeout=30,
+        )
+        data = response.json() or {}
+    except Exception as exc:
+        logger.exception(
+            f"❌ Telegram delete failed | {exc}"
+        )
+        return False
+
+    if (
+        response.status_code == 200
+        and data.get("ok", True) is not False
+    ):
+        return True
+
+    if _delete_not_found_response(
+        data.get("description") or data
+    ):
+        return True
+
+    logger.error(
+        "❌ Telegram delete rejected | "
+        f"chat={chat_id} | message={message_id} | "
+        f"status={response.status_code} | "
+        f"response={str(data)[:300]}"
+    )
+    return False
+
+
+def delete_telegram_publication_and_sync_bale(
+    *,
+    api_url: str,
+    telegram_chat_id: Any,
+    telegram_message_id: int,
+    max_bale_retries: int = MAX_BALE_DELETE_RETRIES,
+) -> bool:
+    from datetime import datetime, timezone
+    from core.database import (
+        get_publication_sync_targets_for_telegram_message,
+        mark_persistent_publication_delivery_delete_state,
+    )
+
+    if not _delete_telegram_message(
+        api_url,
+        telegram_chat_id,
+        telegram_message_id,
+    ):
+        return False
+
+    mapping = get_publication_sync_targets_for_telegram_message(
+        telegram_chat_id,
+        telegram_message_id,
+    )
+    if not mapping:
+        logger.info(
+            "Telegram deletion has no persisted Bale mapping | "
+            f"chat={telegram_chat_id} | message={telegram_message_id}"
+        )
+        return True
+
+    bounded_retries = max(
+        1,
+        int(max_bale_retries or 1),
+    )
+    all_ok = True
+    bale_deliveries = tuple(
+        mapping.get("bale_deliveries")
+        or ()
+    )
+
+    if not bale_deliveries:
+        return True
+
+    token = os.getenv("BALE_BOT_TOKEN", "").strip()
+    if not token:
+        logger.error(
+            "BALE_BOT_TOKEN is not configured for delete sync"
+        )
+        return False
+
+    from core.bale_forwarder import (
+        delete_bale_message,
+    )
+
+    for delivery in bale_deliveries:
+        delivery_id = delivery.get("delivery_id")
+        delete_status = str(
+            delivery.get("delete_status")
+            or "pending"
+        )
+        attempt_count = int(
+            delivery.get("delete_attempt_count")
+            or 0
+        )
+
+        if delete_status == "succeeded":
+            continue
+
+        if attempt_count >= bounded_retries:
+            all_ok = False
+            continue
+
+        next_attempt = attempt_count + 1
+
+        if delivery_id is not None:
+            mark_persistent_publication_delivery_delete_state(
+                delivery_id=int(delivery_id),
+                delete_status="sending",
+                delete_attempt_count=next_attempt,
+            )
+
+        delivery_ok = True
+        for message_id in (
+            delivery.get("message_ids")
+            or ()
+        ):
+            result = delete_bale_message(
+                delivery.get("chat_id"),
+                token,
+                int(message_id),
+                return_result=True,
+            )
+            if not bool(result.get("ok")) and not _delete_not_found_response(
+                result.get("response")
+            ):
+                delivery_ok = False
+                break
+
+        if delivery_id is None:
+            all_ok = all_ok and delivery_ok
+            continue
+
+        if delivery_ok:
+            mark_persistent_publication_delivery_delete_state(
+                delivery_id=int(delivery_id),
+                delete_status="succeeded",
+                delete_attempt_count=next_attempt,
+                delete_last_error=None,
+                deleted_at=datetime.now(
+                    timezone.utc
+                ).isoformat(),
+            )
+            continue
+
+        terminal = (
+            "failed_terminal"
+            if next_attempt >= bounded_retries
+            else "failed"
+        )
+        mark_persistent_publication_delivery_delete_state(
+            delivery_id=int(delivery_id),
+            delete_status=terminal,
+            delete_attempt_count=next_attempt,
+            delete_last_error=(
+                "bale_delete_failed"
+            ),
+        )
+        all_ok = False
+
+    return all_ok
 
 
 def sync_edited_channel_post_to_bale(edited_post: Dict[str, Any]) -> bool:

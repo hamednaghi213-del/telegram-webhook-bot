@@ -294,6 +294,37 @@ def test_nomedia_marks_preview_without_image():
     assert pending.selected_media_indexes == ()
 
 
+def test_manual_waiting_callback_updates_preview_in_place():
+    controller = _controller()
+
+    controller.create_pending(
+        review_id="review-1",
+        chat_id=12345,
+        content=_content(),
+    )
+
+    api = FakeTelegramApi()
+
+    handled = handle_external_review_telegram_callback(
+        callback_query=_callback(
+            "extrev:manual:review-1:waiting"
+        ),
+        answer_callback_query=(
+            lambda *args, **kwargs: None
+        ),
+        send_message=(
+            lambda *args, **kwargs: None
+        ),
+        telegram_api=api,
+        controller=controller,
+    )
+
+    assert handled is True
+    edits = api.payloads("editMessageText")
+    assert len(edits) == 1
+    assert "منتظر دریافت عکس" in edits[0]["text"]
+
+
 def test_edit_failure_falls_back_to_single_control_message():
     controller = _controller()
 

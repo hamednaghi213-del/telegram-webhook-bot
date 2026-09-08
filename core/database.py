@@ -2352,6 +2352,30 @@ def get_persistent_publication_source(
 
 
 @with_retry
+def get_persistent_publication_source_by_id(
+    source_id: int,
+) -> Optional[Dict[str, Any]]:
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    result = (
+        service_supabase
+        .table("publication_sources")
+        .select("*")
+        .eq("id", int(source_id))
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        return None
+
+    return result.data[0]
+
+
+@with_retry
 def ensure_persistent_publication_source(
     *,
     source_key: str,
@@ -2430,6 +2454,30 @@ def get_persistent_publication_delivery(
             "delivery_generation",
             max(1, int(delivery_generation)),
         )
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        return None
+
+    return result.data[0]
+
+
+@with_retry
+def get_persistent_publication_delivery_by_id(
+    delivery_id: int,
+) -> Optional[Dict[str, Any]]:
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    result = (
+        service_supabase
+        .table("publication_deliveries")
+        .select("*")
+        .eq("id", int(delivery_id))
         .limit(1)
         .execute()
     )
@@ -2651,7 +2699,105 @@ def record_persistent_publication_part_success(
             "publication part success returned no row"
         )
 
+    indexed_message_ids = tuple(
+        normalized_ids
+    ) or (
+        (int(message_id),)
+        if message_id is not None
+        else ()
+    )
+
+    if indexed_message_ids:
+        record_persistent_publication_message_index(
+            delivery_id=int(delivery_id),
+            part_key=str(part_key),
+            message_ids=indexed_message_ids,
+            destination_chat_id=(
+                str(destination_chat_id)
+                if destination_chat_id is not None
+                else None
+            ),
+            primary_message_id=(
+                int(message_id)
+                if message_id is not None
+                else None
+            ),
+        )
+
     return rows[0]
+
+
+@with_retry
+def record_persistent_publication_message_index(
+    *,
+    delivery_id: int,
+    part_key: str,
+    message_ids: Tuple[int, ...],
+    destination_chat_id: Optional[str] = None,
+    primary_message_id: Optional[int] = None,
+) -> None:
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    delivery = get_persistent_publication_delivery_by_id(
+        int(delivery_id)
+    )
+
+    if not delivery:
+        raise RuntimeError(
+            "publication delivery not found for message index"
+        )
+
+    normalized_message_ids = tuple(
+        int(value)
+        for value in (message_ids or ())
+        if isinstance(value, int)
+        and not isinstance(value, bool)
+    )
+
+    if not normalized_message_ids:
+        return
+
+    platform = str(
+        delivery.get("platform")
+        or ""
+    ).strip()
+    resolved_chat_id = str(
+        destination_chat_id
+        if destination_chat_id is not None
+        else delivery.get(
+            "destination_chat_id",
+            "",
+        )
+        or ""
+    )
+
+    payload = [
+        {
+            "delivery_id": int(delivery_id),
+            "platform": platform,
+            "destination_chat_id": resolved_chat_id,
+            "part_key": str(part_key),
+            "message_id": int(value),
+            "is_primary": bool(
+                primary_message_id is not None
+                and int(value)
+                == int(primary_message_id)
+            ),
+        }
+        for value in normalized_message_ids
+    ]
+
+    service_supabase.table(
+        "publication_delivery_message_index"
+    ).upsert(
+        payload,
+        on_conflict=(
+            "platform,destination_chat_id,message_id"
+        ),
+    ).execute()
 
 @with_retry
 def get_persistent_publication_part(
@@ -2755,6 +2901,302 @@ def mark_persistent_publication_delivery_failed(
             "publication delivery failure returned no row"
         )
 
+    return rows[0]
+
+
+@with_retry
+def list_persistent_publication_message_indexes(
+    *,
+    delivery_ids: Tuple[int, ...],
+) -> Tuple[Dict[str, Any], ...]:
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    normalized_ids = tuple(
+        int(value)
+        for value in (delivery_ids or ())
+        if isinstance(value, int)
+        and not isinstance(value, bool)
+    )
+
+    if not normalized_ids:
+        return ()
+
+    result = (
+        service_supabase
+        .table("publication_delivery_message_index")
+        .select("*")
+        .in_("delivery_id", list(normalized_ids))
+        .execute()
+    )
+
+    return tuple(result.data or [])
+
+
+@with_retry
+def list_persistent_publication_deliveries_for_source(
+    *,
+    source_id: int,
+    delivery_generation: Optional[int] = None,
+) -> Tuple[Dict[str, Any], ...]:
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    query = (
+        service_supabase
+        .table("publication_deliveries")
+        .select("*")
+        .eq("source_id", int(source_id))
+    )
+
+    if delivery_generation is not None:
+        query = query.eq(
+            "delivery_generation",
+            max(1, int(delivery_generation)),
+        )
+
+    result = query.execute()
+    return tuple(result.data or [])
+
+
+@with_retry
+def get_publication_sync_targets_for_telegram_message(
+    telegram_chat_id: Any,
+    telegram_message_id: int,
+) -> Optional[Dict[str, Any]]:
+    if service_supabase is None:
+        link = get_publication_message_link(
+            telegram_chat_id,
+            telegram_message_id,
+        )
+        if not link:
+            return None
+        return {
+            "telegram": {
+                "chat_id": str(
+                    link["telegram_chat_id"]
+                ),
+                "message_ids": (
+                    int(link["telegram_message_id"]),
+                ),
+            },
+            "bale_deliveries": (
+                {
+                    "delivery_id": None,
+                    "chat_id": str(
+                        link["bale_chat_id"]
+                    ),
+                    "message_ids": (
+                        int(link["bale_message_id"]),
+                    ),
+                    "delete_status": "pending",
+                    "delete_attempt_count": 0,
+                },
+            ),
+        }
+
+    index_result = (
+        service_supabase
+        .table("publication_delivery_message_index")
+        .select("*")
+        .eq("platform", "telegram")
+        .eq("destination_chat_id", str(telegram_chat_id))
+        .eq("message_id", int(telegram_message_id))
+        .limit(1)
+        .execute()
+    )
+
+    index_rows = index_result.data or []
+    if not index_rows:
+        link = get_publication_message_link(
+            telegram_chat_id,
+            telegram_message_id,
+        )
+        if not link:
+            return None
+        return {
+            "telegram": {
+                "chat_id": str(
+                    link["telegram_chat_id"]
+                ),
+                "message_ids": (
+                    int(link["telegram_message_id"]),
+                ),
+            },
+            "bale_deliveries": (
+                {
+                    "delivery_id": None,
+                    "chat_id": str(
+                        link["bale_chat_id"]
+                    ),
+                    "message_ids": (
+                        int(link["bale_message_id"]),
+                    ),
+                    "delete_status": "pending",
+                    "delete_attempt_count": 0,
+                },
+            ),
+        }
+
+    telegram_index = index_rows[0]
+    telegram_delivery = get_persistent_publication_delivery_by_id(
+        int(telegram_index["delivery_id"])
+    )
+    if not telegram_delivery:
+        return None
+
+    source = get_persistent_publication_source_by_id(
+        int(
+            telegram_delivery["source_id"]
+        )
+    )
+
+    deliveries = list_persistent_publication_deliveries_for_source(
+        source_id=int(
+            telegram_delivery["source_id"]
+        ),
+        delivery_generation=int(
+            telegram_delivery.get(
+                "delivery_generation",
+                1,
+            )
+            or 1
+        ),
+    )
+
+    indexes = list_persistent_publication_message_indexes(
+        delivery_ids=tuple(
+            int(item["id"])
+            for item in deliveries
+        ),
+    )
+
+    indexes_by_delivery: Dict[int, list] = {}
+    for row in indexes:
+        indexes_by_delivery.setdefault(
+            int(row["delivery_id"]),
+            [],
+        ).append(row)
+
+    return {
+        "source_key": (
+            str(
+                source.get(
+                    "source_key",
+                    "",
+                )
+            )
+            if source
+            else ""
+        ),
+        "telegram": {
+            "delivery_id": int(
+                telegram_delivery["id"]
+            ),
+            "chat_id": str(
+                telegram_delivery.get(
+                    "destination_chat_id",
+                    "",
+                )
+            ),
+            "message_ids": tuple(
+                sorted(
+                    int(row["message_id"])
+                    for row in indexes_by_delivery.get(
+                        int(
+                            telegram_delivery["id"]
+                        ),
+                        [],
+                    )
+                )
+            ),
+        },
+        "bale_deliveries": tuple(
+            {
+                "delivery_id": int(item["id"]),
+                "chat_id": str(
+                    item.get(
+                        "destination_chat_id",
+                        "",
+                    )
+                ),
+                "message_ids": tuple(
+                    sorted(
+                        int(row["message_id"])
+                        for row in indexes_by_delivery.get(
+                            int(item["id"]),
+                            [],
+                        )
+                    )
+                ),
+                "delete_status": str(
+                    item.get(
+                        "delete_status",
+                        "pending",
+                    )
+                    or "pending"
+                ),
+                "delete_attempt_count": int(
+                    item.get(
+                        "delete_attempt_count"
+                        or 0
+                    )
+                ),
+            }
+            for item in deliveries
+            if str(item.get("platform") or "") == "bale"
+        ),
+    }
+
+
+@with_retry
+def mark_persistent_publication_delivery_delete_state(
+    *,
+    delivery_id: int,
+    delete_status: str,
+    delete_attempt_count: int,
+    delete_last_error: Optional[str] = None,
+    deleted_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent publication state is not configured"
+        )
+
+    payload = {
+        "delete_status": str(
+            delete_status
+            or "pending"
+        ),
+        "delete_attempt_count": max(
+            0,
+            int(delete_attempt_count),
+        ),
+        "delete_last_error": (
+            str(delete_last_error)
+            if delete_last_error is not None
+            else None
+        ),
+        "deleted_at": deleted_at,
+    }
+
+    result = (
+        service_supabase
+        .table("publication_deliveries")
+        .update(payload)
+        .eq("id", int(delivery_id))
+        .execute()
+    )
+
+    rows = result.data or []
+    if not rows:
+        raise RuntimeError(
+            "publication delivery delete update returned no row"
+        )
     return rows[0]
 
 @with_retry
