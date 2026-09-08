@@ -1055,6 +1055,115 @@ def answer_callback_query(
 
 
 # =========================================================
+# GENERIC TELEGRAM API CALLER
+# =========================================================
+
+def telegram_api(
+    method: str,
+    payload: Dict[str, Any],
+    timeout: int = 30
+) -> Dict[str, Any]:
+    """
+    Minimal Bot API caller used by interactive review surfaces.
+
+    Supports one binary file field per call through the
+    ``<field>_bytes`` convention (e.g. ``photo_bytes``), which is
+    sent as multipart/form-data. Returns the decoded JSON envelope
+    (``{"ok": ..., "result": ...}``); transport failures return
+    ``{"ok": False}`` and are logged by the caller.
+    """
+
+    if not API_URL:
+        return {"ok": False}
+
+    method_name = str(
+        method
+        or ""
+    ).strip()
+
+    if not method_name:
+        return {"ok": False}
+
+    data: Dict[str, Any] = {}
+    files: Dict[str, Any] = {}
+
+    for key, value in (
+        payload or {}
+    ).items():
+        if value is None:
+            continue
+
+        if key.endswith("_bytes"):
+            field = key[: -len("_bytes")]
+
+            files[field] = (
+                field,
+                bytes(value),
+            )
+
+            continue
+
+        if isinstance(
+            value,
+            (dict, list),
+        ):
+            import json as _json
+
+            data[key] = (
+                _json.dumps(
+                    value,
+                    ensure_ascii=False,
+                )
+            )
+
+            continue
+
+        data[key] = value
+
+    try:
+        if files:
+            response = requests.post(
+                f"{API_URL}/{method_name}",
+                data=data,
+                files=files,
+                timeout=timeout,
+            )
+
+        else:
+            response = requests.post(
+                f"{API_URL}/{method_name}",
+                json=payload,
+                timeout=timeout,
+            )
+
+        if response.status_code != 200:
+            logger.warning(
+                f"⚠️ telegram_api {method_name} "
+                f"failed | status={response.status_code} | "
+                f"response={response.text[:300]}"
+            )
+
+            return {"ok": False}
+
+        decoded = (
+            response.json() or {}
+        )
+
+        if not isinstance(decoded, dict):
+            return {"ok": False}
+
+        return decoded
+
+    except Exception as e:
+        logger.exception(
+            f"❌ telegram_api {method_name} "
+            f"failed | {e}"
+        )
+
+        return {"ok": False}
+
+
+# =========================================================
 # SEND TEXT TO CHANNEL
 # =========================================================
 
@@ -4190,6 +4299,9 @@ def handle_webhook() -> Tuple[
                             send_message=(
                                 send_message
                             ),
+                            telegram_api=(
+                                telegram_api
+                            ),
                             api_url=(
                                 API_URL
                                 or ""
@@ -4633,390 +4745,123 @@ def handle_webhook() -> Tuple[
                         )
                     )
 
-                    preview_parts = []
-
-                    if external_preview.title:
-                        preview_parts.append(
-                            external_preview.title
-                        )
-
-                    if external_preview.lead:
-                        preview_parts.append(
-                            external_preview.lead
-                        )
-
-                    if external_preview.paragraphs:
-                        preview_parts.append(
-                            "\n\n".join(
-                                external_preview
-                                .paragraphs
-                            )
-                        )
-
-                    preview_text = (
-                        "\n\n".join(
-                            part
-                            for part in preview_parts
-                            if part
-                        )
-                        .strip()
-                    )
-
                     # =====================================
-                    # FULL PREVIEW CHUNKING
+                    # REVIEW PREVIEW SURFACE
                     # =====================================
                     #
-                    # Preserve the complete extracted article.
-                    # Long previews are split into several
-                    # Telegram messages instead of truncation.
+                    # One coherent preview:
+                    #   - optional media panel (photos/album)
+                    #   - one persistent control message
+                    #     (text + inline keyboard)
+                    #
+                    # Message identity is persisted so later media
+                    # or mode callbacks edit this preview in place
+                    # instead of accumulating new messages.
                     # =====================================
 
-                    preview_chunks = []
+                    from core.external_review_preview import (
+                        build_external_review_preview,
+                    )
 
-                    remaining_preview = (
-                        preview_text
+                    from core.external_review_telegram_panel import (
+                        send_control_message,
+                        send_media_panel,
+                    )
+
+                    preview_view = (
+                        build_external_review_preview(
+                            review_id=(
+                                external_review_id
+                            ),
+                            content=(
+                                external_resolution
+                                .content
+                            ),
+                            preview=(
+                                external_preview
+                            ),
+                        )
+                    )
+
+                    staging_chat_id = str(
+                        os.getenv(
+                            "EXTERNAL_MEDIA_STAGING_CHAT_ID",
+                            "",
+                        )
                         or ""
                     ).strip()
 
-                    PREVIEW_CHUNK_LIMIT = 3000
+                    media_message_ids: Tuple[int, ...] = ()
 
-                    while remaining_preview:
-
-                        if len(
-                            remaining_preview
-                        ) <= PREVIEW_CHUNK_LIMIT:
-
-                            preview_chunks.append(
-                                remaining_preview
-                            )
-
-                            break
-
-                        split_at = (
-                            remaining_preview.rfind(
-                                "\n\n",
-                                0,
-                                PREVIEW_CHUNK_LIMIT,
+                    if preview_view.media:
+                        media_message_ids = (
+                            send_media_panel(
+                                telegram_api=(
+                                    telegram_api
+                                ),
+                                chat_id=chat_id,
+                                staging_chat_id=(
+                                    staging_chat_id
+                                ),
+                                media=(
+                                    preview_view.media
+                                ),
                             )
                         )
 
-                        if split_at <= 0:
-
-                            split_at = (
-                                remaining_preview.rfind(
-                                    "\n",
-                                    0,
-                                    PREVIEW_CHUNK_LIMIT,
-                                )
-                            )
-
-                        if split_at <= 0:
-
-                            split_at = (
-                                remaining_preview.rfind(
-                                    " ",
-                                    0,
-                                    PREVIEW_CHUNK_LIMIT,
-                                )
-                            )
-
-                        if split_at <= 0:
-
-                            split_at = (
-                                PREVIEW_CHUNK_LIMIT
-                            )
-
-                        chunk = (
-                            remaining_preview[
-                                :split_at
-                            ]
-                            .strip()
+                    preview_message_id = (
+                        send_control_message(
+                            telegram_api=(
+                                telegram_api
+                            ),
+                            chat_id=chat_id,
+                            text=(
+                                preview_view.text
+                            ),
+                            reply_markup=(
+                                preview_view
+                                .reply_markup
+                            ),
                         )
-
-                        if chunk:
-
-                            preview_chunks.append(
-                                chunk
-                            )
-
-                        remaining_preview = (
-                            remaining_preview[
-                                split_at:
-                            ]
-                            .strip()
-                        )
-
-                    if not preview_chunks:
-
-                        preview_chunks = [
-                            preview_text
-                            or ""
-                        ]
-
-                    source_line = ""
-
-                    if (
-                        external_preview
-                        .source_name
-                    ):
-                        source_line = (
-                            "\n\n"
-                            "منبع: "
-                            f"{external_preview.source_name}"
-                        )
-
-                    confidence_line = (
-                        "\n"
-                        "اطمینان استخراج: "
-                        f"{round(external_preview.extraction_confidence * 100)}٪"
                     )
 
-                    warning_line = ""
-
-                    if external_preview.warnings:
-                        warning_line = (
-                            "\n"
-                            "⚠️ استخراج نیازمند بررسی است."
-                        )
-
-                    # =====================================
-                    # EXTRACTED MEDIA SUMMARY
-                    # =====================================
-
-                    media_count = (
-                        external_preview
-                        .media_count
-                    )
-
-                    media_line = ""
-
-                    if media_count == 1:
-                        media_line = (
-                            "\n"
-                            "🖼 یک تصویر برای این مطلب "
-                            "شناسایی شد."
-                        )
-
-                    elif media_count > 1:
-                        media_line = (
-                            "\n"
-                            f"🖼 {media_count} تصویر برای "
-                            "این مطلب شناسایی شد."
+                    if preview_message_id is None:
+                        # Editing requires a message identity. Fall
+                        # back to the legacy plain send so the
+                        # review remains usable even if the generic
+                        # API caller is unavailable.
+                        send_message(
+                            chat_id,
+                            preview_view.text,
+                            reply_markup=(
+                                preview_view
+                                .reply_markup
+                            ),
                         )
 
                     else:
-                        media_line = (
-                            "\n"
-                            "🖼 تصویر معتبری برای این "
-                            "مطلب شناسایی نشد."
-                        )
-
-                    # =====================================
-                    # REVIEW KEYBOARD
-                    # =====================================
-
-                    review_rows = [
-                        [
-                            {
-                                "text": "✅ استاندارد",
-                                "callback_data": (
-                                    "extrev:standard:"
-                                    f"{external_review_id}"
+                        try:
+                            external_controller.state_store.update_preview_message_refs(
+                                review_id=(
+                                    external_review_id
                                 ),
-                            },
-                            {
-                                "text": "✂️ کوتاه",
-                                "callback_data": (
-                                    "extrev:short:"
-                                    f"{external_review_id}"
+                                chat_id=chat_id,
+                                preview_message_id=(
+                                    preview_message_id
                                 ),
-                            },
-                        ],
-                        [
-                            {
-                                "text": "📰 تیتر",
-                                "callback_data": (
-                                    "extrev:headline:"
-                                    f"{external_review_id}"
+                                preview_media_message_ids=(
+                                    media_message_ids
                                 ),
-                            },
-                            {
-                                "text": "📝 تیتر و لید",
-                                "callback_data": (
-                                    "extrev:lead:"
-                                    f"{external_review_id}"
-                                ),
-                            },
-                        ],
-                    ]
-
-                    # =====================================
-                    # MEDIA OPTIONS
-                    # =====================================
-
-                    if media_count > 0:
-
-                        review_rows.append(
-                            [
-                                {
-                                    "text": "🖼 تصویر اصلی",
-                                    "callback_data": (
-                                        "extrev:media:"
-                                        f"{external_review_id}:0"
-                                    ),
-                                },
-                                {
-                                    "text": "🚫 بدون تصویر",
-                                    "callback_data": (
-                                        "extrev:nomedia:"
-                                        f"{external_review_id}"
-                                    ),
-                                },
-                            ]
-                        )
-
-                        additional_media_buttons = []
-
-                        for media_index in range(
-                            1,
-                            media_count,
-                        ):
-                            additional_media_buttons.append(
-                                {
-                                    "text": (
-                                        "🖼 "
-                                        f"تصویر {media_index + 1}"
-                                    ),
-                                    "callback_data": (
-                                        "extrev:media:"
-                                        f"{external_review_id}:"
-                                        f"{media_index}"
-                                    ),
-                                }
                             )
 
-                        if additional_media_buttons:
-
-                            for index in range(
-                                0,
-                                len(
-                                    additional_media_buttons
-                                ),
-                                2,
-                            ):
-                                review_rows.append(
-                                    additional_media_buttons[
-                                        index:index + 2
-                                    ]
+                        except Exception as refs_exc:
+                            logger.exception(
+                                (
+                                    f"[{req_id}] ⚠️ External "
+                                    "review preview message refs "
+                                    "could not be persisted | "
+                                    f"{refs_exc}"
                                 )
-
-                    review_rows.append(
-                        [
-                            {
-                                "text": "✍️ بازنویسی تحریریه",
-                                "callback_data": (
-                                    "extrev:editorial:"
-                                    f"{external_review_id}"
-                                ),
-                            },
-                        ]
-                    )
-
-                    review_rows.append(
-                        [
-                            {
-                                "text": "❌ لغو",
-                                "callback_data": (
-                                    "extrev:cancel:"
-                                    f"{external_review_id}"
-                                ),
-                            },
-                        ]
-                    )
-
-                    review_keyboard = {
-                        "inline_keyboard": (
-                            review_rows
-                        )
-                    }
-
-                    # =====================================
-                    # SEND FULL REVIEW + KEYBOARD
-                    # =====================================
-
-                    metadata_text = (
-                        f"{source_line}"
-                        f"{confidence_line}"
-                        f"{media_line}"
-                        f"{warning_line}"
-                    ).strip()
-
-                    for preview_index, preview_chunk in enumerate(
-                        preview_chunks
-                    ):
-
-                        is_first_preview = (
-                            preview_index == 0
-                        )
-
-                        is_last_preview = (
-                            preview_index
-                            == len(
-                                preview_chunks
-                            ) - 1
-                        )
-
-                        if is_first_preview:
-
-                            heading = (
-                                "🔎 پیش‌نمایش مطلب"
-                            )
-
-                        else:
-
-                            heading = (
-                                "🔎 ادامه پیش‌نمایش"
-                            )
-
-                        current_review_message = (
-                            f"{heading}\n\n"
-                            f"{preview_chunk}"
-                        ).strip()
-
-                        if (
-                            is_last_preview
-                            and metadata_text
-                        ):
-
-                            current_review_message = (
-                                f"{current_review_message}"
-                                f"\n\n{metadata_text}"
-                            ).strip()
-
-                        if is_last_preview:
-
-                            try:
-
-                                send_message(
-                                    chat_id,
-                                    current_review_message,
-                                    reply_markup=(
-                                        review_keyboard
-                                    ),
-                                )
-
-                            except TypeError:
-
-                                send_message(
-                                    chat_id,
-                                    current_review_message,
-                                )
-
-                        else:
-
-                            send_message(
-                                chat_id,
-                                current_review_message,
                             )
 
                     logger.info(

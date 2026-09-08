@@ -109,6 +109,13 @@ class PendingExternalReview:
 
     media_selection_explicit=True with empty indexes:
         The user explicitly selected "no media".
+
+    preview_message_id / preview_media_message_ids:
+        Telegram message identity of the review surface. They let
+        later callbacks edit the existing preview in place instead
+        of accumulating new messages. Optional and platform-specific;
+        stored inside the existing JSON content payload so durable
+        stores require no schema migration.
     """
 
     review_id: str
@@ -123,6 +130,13 @@ class PendingExternalReview:
     ] = ()
 
     media_selection_explicit: bool = False
+
+    preview_message_id: Optional[int] = None
+
+    preview_media_message_ids: Tuple[
+        int,
+        ...,
+    ] = ()
 
     @property
     def expired(
@@ -322,6 +336,64 @@ def _content_to_dict(
     }
 
 
+def _normalize_message_ids(
+    ids: Any,
+) -> Tuple[int, ...]:
+    normalized: list = []
+
+    for item in (
+        ids
+        or ()
+    ):
+        try:
+            message_id = int(
+                item
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            continue
+
+        if message_id <= 0:
+            continue
+
+        if message_id in normalized:
+            continue
+
+        normalized.append(
+            message_id
+        )
+
+    return tuple(
+        normalized
+    )
+
+
+def _normalize_message_id(
+    value: Any,
+) -> Optional[int]:
+    if value is None:
+        return None
+
+    try:
+        message_id = int(
+            value
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+    if message_id <= 0:
+        return None
+
+    return message_id
+
+
 def _content_with_review_state_to_dict(
     content: NormalizedExternalContent,
     *,
@@ -330,6 +402,13 @@ def _content_with_review_state_to_dict(
         ...,
     ] = (),
     media_selection_explicit: bool = False,
+    preview_message_id: Optional[
+        int
+    ] = None,
+    preview_media_message_ids: Tuple[
+        int,
+        ...,
+    ] = (),
 ) -> Dict[str, Any]:
     """
     Serialize external content plus review-only UI state.
@@ -353,6 +432,18 @@ def _content_with_review_state_to_dict(
         "media_selection_explicit": bool(
             media_selection_explicit
         ),
+        "preview_message_id": (
+            _normalize_message_id(
+                preview_message_id
+            )
+        ),
+        "preview_media_message_ids": [
+            int(message_id)
+            for message_id
+            in _normalize_message_ids(
+                preview_media_message_ids
+            )
+        ],
     }
 
     return payload
@@ -363,6 +454,8 @@ def _review_state_from_content_dict(
 ) -> Tuple[
     Tuple[int, ...],
     bool,
+    Optional[int],
+    Tuple[int, ...],
 ]:
     raw_state = (
         value.get(
@@ -379,6 +472,8 @@ def _review_state_from_content_dict(
         return (
             (),
             False,
+            None,
+            (),
         )
 
     raw_indexes = (
@@ -421,6 +516,17 @@ def _review_state_from_content_dict(
             raw_state.get(
                 "media_selection_explicit",
                 False,
+            )
+        ),
+        _normalize_message_id(
+            raw_state.get(
+                "preview_message_id"
+            )
+        ),
+        _normalize_message_ids(
+            raw_state.get(
+                "preview_media_message_ids",
+                (),
             )
         ),
     )
@@ -1058,6 +1164,87 @@ class ExternalReviewStateStore:
                 media_selection_explicit=bool(
                     explicit
                 ),
+                preview_message_id=(
+                    pending.preview_message_id
+                ),
+                preview_media_message_ids=(
+                    pending.preview_media_message_ids
+                ),
+            )
+
+            self._by_chat[
+                updated.chat_id
+            ] = updated
+
+            self._by_id[
+                updated.review_id
+            ] = updated
+
+            return updated
+
+    # -----------------------------------------------------
+    # PREVIEW MESSAGE IDENTITY
+    # -----------------------------------------------------
+
+    def update_preview_message_refs(
+        self,
+        *,
+        review_id: str,
+        chat_id: int,
+        preview_message_id: Optional[
+            int
+        ] = None,
+        preview_media_message_ids: Tuple[
+            int,
+            ...,
+        ] = (),
+    ) -> PendingExternalReview:
+        normalized_message_id = (
+            _normalize_message_id(
+                preview_message_id
+            )
+        )
+
+        normalized_media_ids = (
+            _normalize_message_ids(
+                preview_media_message_ids
+            )
+        )
+
+        with self._lock:
+            pending = self.require(
+                review_id=review_id,
+                chat_id=chat_id,
+            )
+
+            updated = PendingExternalReview(
+                review_id=(
+                    pending.review_id
+                ),
+                chat_id=(
+                    pending.chat_id
+                ),
+                content=(
+                    pending.content
+                ),
+                created_at=(
+                    pending.created_at
+                ),
+                expires_at=(
+                    pending.expires_at
+                ),
+                selected_media_indexes=(
+                    pending.selected_media_indexes
+                ),
+                media_selection_explicit=(
+                    pending.media_selection_explicit
+                ),
+                preview_message_id=(
+                    normalized_message_id
+                ),
+                preview_media_message_ids=(
+                    normalized_media_ids
+                ),
             )
 
             self._by_chat[
@@ -1261,6 +1448,8 @@ class PersistentExternalReviewStateStore:
         (
             selected_media_indexes,
             media_selection_explicit,
+            preview_message_id,
+            preview_media_message_ids,
         ) = _review_state_from_content_dict(
             content_value
         )
@@ -1302,6 +1491,12 @@ class PersistentExternalReviewStateStore:
             ),
             media_selection_explicit=(
                 media_selection_explicit
+            ),
+            preview_message_id=(
+                preview_message_id
+            ),
+            preview_media_message_ids=(
+                preview_media_message_ids
             ),
         )
 
@@ -1694,6 +1889,12 @@ class PersistentExternalReviewStateStore:
                     media_selection_explicit=bool(
                         explicit
                     ),
+                    preview_message_id=(
+                        pending.preview_message_id
+                    ),
+                    preview_media_message_ids=(
+                        pending.preview_media_message_ids
+                    ),
                 )
             )
         }
@@ -1758,6 +1959,135 @@ class PersistentExternalReviewStateStore:
             ),
             media_selection_explicit=bool(
                 explicit
+            ),
+            preview_message_id=(
+                pending.preview_message_id
+            ),
+            preview_media_message_ids=(
+                pending.preview_media_message_ids
+            ),
+        )
+
+    # -----------------------------------------------------
+    # PREVIEW MESSAGE IDENTITY
+    # -----------------------------------------------------
+
+    def update_preview_message_refs(
+        self,
+        *,
+        review_id: str,
+        chat_id: int,
+        preview_message_id: Optional[
+            int
+        ] = None,
+        preview_media_message_ids: Tuple[
+            int,
+            ...,
+        ] = (),
+    ) -> PendingExternalReview:
+        pending = self.require(
+            review_id=review_id,
+            chat_id=chat_id,
+        )
+
+        normalized_message_id = (
+            _normalize_message_id(
+                preview_message_id
+            )
+        )
+
+        normalized_media_ids = (
+            _normalize_message_ids(
+                preview_media_message_ids
+            )
+        )
+
+        payload = {
+            "content": (
+                _content_with_review_state_to_dict(
+                    pending.content,
+                    selected_media_indexes=(
+                        pending.selected_media_indexes
+                    ),
+                    media_selection_explicit=(
+                        pending.media_selection_explicit
+                    ),
+                    preview_message_id=(
+                        normalized_message_id
+                    ),
+                    preview_media_message_ids=(
+                        normalized_media_ids
+                    ),
+                )
+            )
+        }
+
+        try:
+            response = (
+                self._table()
+                .update(
+                    payload
+                )
+                .eq(
+                    "review_id",
+                    pending.review_id,
+                )
+                .eq(
+                    "chat_id",
+                    pending.chat_id,
+                )
+                .execute()
+            )
+
+        except Exception as exc:
+            raise ExternalReviewPersistenceError(
+                (
+                    "failed to update persistent "
+                    "external review preview message refs"
+                )
+            ) from exc
+
+        rows = (
+            getattr(
+                response,
+                "data",
+                None,
+            )
+            or []
+        )
+
+        if rows:
+            return self._row_to_pending(
+                rows[0]
+            )
+
+        return PendingExternalReview(
+            review_id=(
+                pending.review_id
+            ),
+            chat_id=(
+                pending.chat_id
+            ),
+            content=(
+                pending.content
+            ),
+            created_at=(
+                pending.created_at
+            ),
+            expires_at=(
+                pending.expires_at
+            ),
+            selected_media_indexes=(
+                pending.selected_media_indexes
+            ),
+            media_selection_explicit=(
+                pending.media_selection_explicit
+            ),
+            preview_message_id=(
+                normalized_message_id
+            ),
+            preview_media_message_ids=(
+                normalized_media_ids
             ),
         )
 
