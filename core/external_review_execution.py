@@ -22,6 +22,9 @@ from core.external_media_factory import (
 from core.external_media_materializer import (
     ExternalMediaMaterializer,
 )
+from core.external_content_bridge import (
+    apply_web_source_attribution,
+)
 from core.external_publication_service import (
     ExternalPublicationResult,
     publish_reviewed_external_content,
@@ -185,20 +188,18 @@ def _compose_external_short(
         or decision.review.title
         or ""
     ).strip()
-    source = str(
-        decision.content.source_name
-        or ""
-    ).strip()
+    source = decision.content.source_name
+
+    body_text = apply_web_source_attribution(
+        str(body or "").strip(),
+        source,
+    )
 
     parts = []
     if headline:
         parts.append(headline)
-    if body:
-        parts.append(str(body).strip())
-    if source:
-        parts.append(
-            f"- Shoمنبع: {source}"
-        )
+    if body_text:
+        parts.append(body_text)
 
     return "\n\n".join(parts).strip()
 
@@ -206,17 +207,19 @@ def _compose_external_short(
 def _external_short_body_budget(
     decision: ExternalReviewDecision,
 ) -> int:
-    shell = _compose_external_short(
+    placeholder_shell = _compose_external_short(
         decision=decision,
-        body="",
+        body="x",
     )
 
-    separator = 2 if shell else 0
+    shell_overhead = max(
+        len(placeholder_shell) - 1,
+        0,
+    )
 
     return max(
         DEFAULT_CAPTION_TARGET
-        - len(shell)
-        - separator,
+        - shell_overhead,
         0,
     )
 

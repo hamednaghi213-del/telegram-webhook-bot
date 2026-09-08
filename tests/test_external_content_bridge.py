@@ -280,7 +280,7 @@ def test_text_only_external_content_becomes_prepared_content():
         result.prepared_content.main_text
         == (
             "Main Headline\n\n"
-            "Main Lead\n\n"
+            "به گزارش Example News، Main Lead\n\n"
             "Paragraph one.\n"
             "Paragraph two."
         )
@@ -1180,12 +1180,27 @@ def test_bridge_preserves_external_provenance():
     )
 
 
-def test_external_source_name_is_not_added_to_visible_text():
+def test_external_source_name_is_attributed_in_standard_visible_text():
     content = _content()
 
     result = build_external_prepared_content(
         content,
         _review(),
+    )
+
+    assert (
+        "به گزارش Example News،"
+        in result.prepared_content.main_text
+    )
+
+
+def test_external_source_name_is_not_added_when_editorial_rewrite_applied():
+    content = _content()
+
+    result = build_external_prepared_content(
+        content,
+        _review(),
+        editorial_rewrite_applied=True,
     )
 
     assert (
