@@ -8,6 +8,7 @@ from core.external_review_state import (
     ExternalReviewStateStore,
 )
 from core.external_review_telegram import (
+    _render_pending_view,
     handle_external_review_telegram_callback,
 )
 
@@ -1214,6 +1215,40 @@ def test_paragraph_toggle_persists_selection_across_pages():
         chat_id=12345,
     )
     assert pending.paragraph_selected_indexes == (7,)
+
+
+def test_paragraph_selector_bounds_preview_without_changing_content():
+    controller = _controller()
+    long_paragraph = "واژه " * 300
+    content = NormalizedExternalContent(
+        source_type="web_article",
+        source_url="https://example.com/long",
+        canonical_url="https://example.com/long",
+        content_type="article",
+        title="عنوان خبر",
+        lead="",
+        body="\n\n".join(long_paragraph for _ in range(7)),
+        source_name="Example",
+        extraction_confidence=0.95,
+    )
+    controller.create_pending(
+        review_id="review-1",
+        chat_id=12345,
+        content=content,
+    )
+    pending = controller.state_store.update_review_stage(
+        review_id="review-1",
+        chat_id=12345,
+        review_stage="paragraph_select",
+        paragraph_selected_indexes=(0, 6),
+    )
+
+    view = _render_pending_view(pending)
+
+    assert len(view.text) <= 3500
+    assert len(view.text) < len(long_paragraph) * 6
+    assert pending.content.body == content.body
+    assert pending.paragraph_selected_indexes == (0, 6)
 
 
 def test_paragraph_confirm_blocks_when_nothing_selected():
