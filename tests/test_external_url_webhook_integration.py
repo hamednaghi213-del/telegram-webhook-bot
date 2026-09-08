@@ -567,3 +567,189 @@ def test_non_publishable_external_content_is_not_reviewed(
         "محتوای کافی"
         in sent[0][0][1]
     )
+
+
+# =========================================================
+# COHERENT PREVIEW SURFACE (MEDIA PANEL + CONTROL MESSAGE)
+# =========================================================
+
+
+class _FakeTelegramApi:
+    def __init__(self):
+        self.calls = []
+        self.next_message_id = 7000
+        self.next_file_id = 0
+
+    def __call__(self, method, payload):
+        payload = dict(payload or {})
+
+        self.calls.append((method, payload))
+
+        if method == "sendPhoto" and "photo_bytes" in payload:
+            self.next_message_id += 1
+            self.next_file_id += 1
+
+            return {
+                "ok": True,
+                "result": {
+                    "message_id": self.next_message_id,
+                    "photo": [
+                        {"file_id": f"staged-{self.next_file_id}"}
+                    ],
+                },
+            }
+
+        if method in ("sendMessage", "sendPhoto"):
+            self.next_message_id += 1
+
+            return {
+                "ok": True,
+                "result": {
+                    "message_id": self.next_message_id,
+                },
+            }
+
+        if method == "sendMediaGroup":
+            result = []
+
+            for _ in payload.get("media", []):
+                self.next_message_id += 1
+                result.append(
+                    {"message_id": self.next_message_id}
+                )
+
+            return {"ok": True, "result": result}
+
+        return {"ok": True, "result": True}
+
+    def payloads(self, method):
+        return [
+            payload
+            for item_method, payload in self.calls
+            if item_method == method
+        ]
+
+
+def test_standalone_url_creates_coherent_preview_surface(
+    monkeypatch,
+):
+    from core.external_content_model import ExternalMedia
+
+    def _resolution_with_media():
+        return ExternalResolutionResult(
+            requested_url="https://example.com/news",
+            canonical_url="https://example.com/news",
+            source_kind=ExternalSourceKind.WEB_ARTICLE,
+            content=NormalizedExternalContent(
+                source_type="web_article",
+                source_url="https://example.com/news",
+                canonical_url="https://example.com/news",
+                content_type="article",
+                title="عنوان خبر خارجی",
+                lead="لید خبر خارجی",
+                body="پاراگراف اول خبر.",
+                original_language="fa",
+                source_name="Example News",
+                extraction_confidence=0.94,
+                media=(
+                    ExternalMedia(
+                        type="image",
+                        source_url="https://example.com/1.jpg",
+                        position=0,
+                    ),
+                ),
+            ),
+        )
+
+    monkeypatch.setenv(
+        "EXTERNAL_MEDIA_STAGING_CHAT_ID",
+        "-1001",
+    )
+
+    monkeypatch.setattr(
+        "core.external_content_resolver."
+        "ExternalContentResolver.resolve",
+        lambda self, url: _resolution_with_media(),
+    )
+
+    monkeypatch.setattr(
+        "core.external_review_telegram_panel."
+        "_download_image",
+        lambda *, media, max_bytes, fetcher=None:
+        b"fake-image-bytes",
+    )
+
+    api = _FakeTelegramApi()
+
+    sent = []
+
+    with patch.object(
+        webhook_handler,
+        "request",
+        FakeRequest(_message("https://example.com/news")),
+    ), patch.object(
+        webhook_handler,
+        "validate_webhook_token",
+        return_value=True,
+    ), patch.object(
+        webhook_handler,
+        "send_message",
+        side_effect=(
+            lambda *args, **kwargs:
+            sent.append((args, kwargs))
+        ),
+    ), patch.object(
+        webhook_handler,
+        "telegram_api",
+        api,
+    ):
+        result, status = webhook_handler.handle_webhook()
+
+    assert status == 200
+    assert result["external_review"] is True
+
+    review_id = result["review_id"]
+
+    # The control message went through the API caller with the
+    # keyboard attached, not through legacy plain sends.
+    assert sent == []
+
+    controls = api.payloads("sendMessage")
+    assert len(controls) == 1
+    assert "🔎 پیش‌نمایش مطلب" in controls[0]["text"]
+    assert "reply_markup" in controls[0]
+
+    # The selected image was staged once and displayed.
+    staging = [
+        p for p in api.payloads("sendPhoto")
+        if "photo_bytes" in p
+    ]
+    display = [
+        p for p in api.payloads("sendPhoto")
+        if "photo_bytes" not in p
+    ]
+    assert len(staging) == 1
+    assert len(display) == 1
+    assert display[0]["photo"] == "staged-1"
+
+    # Message identity persisted for in-place updates.
+    pending = DEFAULT_EXTERNAL_REVIEW_STATE_STORE.require(
+        review_id=review_id,
+        chat_id=1001,
+    )
+
+    assert pending.preview_message_id is not None
+    assert len(pending.preview_media_message_ids) == 1
+    assert pending.preview_media_file_ids[0] == "staged-1"
+
+    # Keyboard contract unchanged.
+    keyboard = controls[0]["reply_markup"]["inline_keyboard"]
+    callbacks = [
+        button["callback_data"]
+        for row in keyboard
+        for button in row
+    ]
+    assert f"extrev:standard:{review_id}" in callbacks
+    assert f"extrev:media:{review_id}:0" in callbacks
+    assert f"extrev:nomedia:{review_id}" in callbacks
+    assert f"extrev:cancel:{review_id}" in callbacks
