@@ -21,6 +21,9 @@ from core.external_review_controller import (
 from core.external_review_state import (
     ExternalReviewNotFound,
     ExternalReviewStateStore,
+    MANUAL_IMAGE_SOURCE_NONE,
+    MANUAL_IMAGE_SOURCE_PRIMARY,
+    MANUAL_IMAGE_SOURCE_REPLACE,
 )
 
 
@@ -577,15 +580,67 @@ def test_nomedia_callback_is_non_terminal():
     assert result.pending is not None
 
     assert (
-        result.pending
-        .media_selection_explicit
-        is True
+        result.pending.manual_image_source
+        == MANUAL_IMAGE_SOURCE_NONE
     )
 
     assert (
         result.pending
         .selected_media_indexes
         == ()
+    )
+
+
+def test_manual_waiting_callback_sets_waiting_state():
+    controller = _controller()
+    _create_pending(controller)
+
+    result = handle_external_review_callback(
+        callback_data="extrev:manual:review-1:waiting",
+        chat_id=12345,
+        controller=controller,
+    )
+
+    assert result.pending is not None
+    assert result.pending.manual_image_waiting is True
+
+
+def test_manual_replace_requires_uploaded_photo():
+    controller = _controller()
+    _create_pending(controller)
+
+    result = handle_external_review_callback(
+        callback_data="extrev:manual:review-1:replace",
+        chat_id=12345,
+        controller=controller,
+    )
+
+    assert result.pending is not None
+    assert result.pending.manual_image_source == (
+        MANUAL_IMAGE_SOURCE_PRIMARY
+    )
+    assert "ابتدا" in result.message
+
+
+def test_manual_replace_activates_uploaded_photo():
+    controller = _controller()
+    _create_pending(controller)
+    controller.state_store.update_manual_image_state(
+        review_id="review-1",
+        chat_id=12345,
+        manual_image_file_id="manual-photo-1",
+        manual_image_waiting=False,
+    )
+
+    result = handle_external_review_callback(
+        callback_data="extrev:manual:review-1:replace",
+        chat_id=12345,
+        controller=controller,
+    )
+
+    assert result.pending is not None
+    assert result.pending.manual_image_source == (
+        MANUAL_IMAGE_SOURCE_REPLACE
     )
 
 

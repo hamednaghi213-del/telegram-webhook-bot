@@ -5,7 +5,10 @@ from __future__ import annotations
 import logging
 import os
 
-from dataclasses import dataclass
+from dataclasses import (
+    dataclass,
+    replace,
+)
 from datetime import (
     datetime,
     timedelta,
@@ -65,6 +68,16 @@ _VALID_MEDIA_PRESENTATION_MODES = (
     MEDIA_PRESENTATION_MODE_ALBUM,
 )
 
+MANUAL_IMAGE_SOURCE_PRIMARY = "primary"
+MANUAL_IMAGE_SOURCE_REPLACE = "replace"
+MANUAL_IMAGE_SOURCE_NONE = "none"
+
+_VALID_MANUAL_IMAGE_SOURCES = (
+    MANUAL_IMAGE_SOURCE_PRIMARY,
+    MANUAL_IMAGE_SOURCE_REPLACE,
+    MANUAL_IMAGE_SOURCE_NONE,
+)
+
 
 def _normalize_media_presentation_mode(
     value: Any,
@@ -86,6 +99,39 @@ def _normalize_media_presentation_mode(
         return normalized
 
     return MEDIA_PRESENTATION_MODE_NORMAL
+
+
+def _normalize_manual_image_source(
+    value: Any,
+) -> str:
+    normalized = str(
+        value
+        or ""
+    ).strip().lower()
+
+    if normalized in _VALID_MANUAL_IMAGE_SOURCES:
+        return normalized
+
+    return MANUAL_IMAGE_SOURCE_PRIMARY
+
+
+def _normalize_manual_image_file_id(
+    value: Any,
+) -> str:
+    file_id = str(
+        value
+        or ""
+    ).strip()
+
+    if file_id.startswith(
+        (
+            "http://",
+            "https://",
+        )
+    ):
+        return ""
+
+    return file_id
 
 
 # =========================================================
@@ -180,6 +226,18 @@ class PendingExternalReview:
 
         Missing/old persisted state without this field normalizes
         to "normal", so existing pending reviews are unaffected.
+
+    manual_image_source:
+        "primary" -> use the extracted trustworthy primary image.
+        "replace" -> use the manually uploaded replacement image.
+        "none" -> publish without image.
+
+    manual_image_file_id:
+        Reusable Telegram file_id for the manually uploaded image.
+
+    manual_image_waiting:
+        The review is waiting for the next same-chat photo upload and
+        must intercept it before ordinary publication routing.
     """
 
     review_id: str
@@ -211,6 +269,14 @@ class PendingExternalReview:
         MEDIA_PRESENTATION_MODE_NORMAL
     )
 
+    manual_image_source: str = (
+        MANUAL_IMAGE_SOURCE_PRIMARY
+    )
+
+    manual_image_file_id: str = ""
+
+    manual_image_waiting: bool = False
+
     def __post_init__(
         self,
     ) -> None:
@@ -219,6 +285,27 @@ class PendingExternalReview:
             "media_presentation_mode",
             _normalize_media_presentation_mode(
                 self.media_presentation_mode
+            ),
+        )
+        object.__setattr__(
+            self,
+            "manual_image_source",
+            _normalize_manual_image_source(
+                self.manual_image_source
+            ),
+        )
+        object.__setattr__(
+            self,
+            "manual_image_file_id",
+            _normalize_manual_image_file_id(
+                self.manual_image_file_id
+            ),
+        )
+        object.__setattr__(
+            self,
+            "manual_image_waiting",
+            bool(
+                self.manual_image_waiting
             ),
         )
 
@@ -272,6 +359,16 @@ def _plain_value(
         ]
 
     return value
+
+
+def _replace_pending(
+    pending: PendingExternalReview,
+    **changes: Any,
+) -> PendingExternalReview:
+    return replace(
+        pending,
+        **changes,
+    )
 
 
 def _media_to_dict(
@@ -537,6 +634,11 @@ def _content_with_review_state_to_dict(
     media_presentation_mode: str = (
         MEDIA_PRESENTATION_MODE_NORMAL
     ),
+    manual_image_source: str = (
+        MANUAL_IMAGE_SOURCE_PRIMARY
+    ),
+    manual_image_file_id: str = "",
+    manual_image_waiting: bool = False,
 ) -> Dict[str, Any]:
     """
     Serialize external content plus review-only UI state.
@@ -587,6 +689,19 @@ def _content_with_review_state_to_dict(
                 ),
             )
         ],
+        "manual_image_source": (
+            _normalize_manual_image_source(
+                manual_image_source
+            )
+        ),
+        "manual_image_file_id": (
+            _normalize_manual_image_file_id(
+                manual_image_file_id
+            )
+        ),
+        "manual_image_waiting": bool(
+            manual_image_waiting
+        ),
     }
 
     return payload
@@ -603,6 +718,9 @@ def _review_state_from_content_dict(
     Tuple[int, ...],
     Tuple[str, ...],
     str,
+    str,
+    str,
+    bool,
 ]:
     raw_state = (
         value.get(
@@ -626,6 +744,9 @@ def _review_state_from_content_dict(
                 expected_length=media_count,
             ),
             MEDIA_PRESENTATION_MODE_NORMAL,
+            MANUAL_IMAGE_SOURCE_PRIMARY,
+            "",
+            False,
         )
 
     raw_indexes = (
@@ -691,6 +812,22 @@ def _review_state_from_content_dict(
         _normalize_media_presentation_mode(
             raw_state.get(
                 "media_presentation_mode"
+            )
+        ),
+        _normalize_manual_image_source(
+            raw_state.get(
+                "manual_image_source"
+            )
+        ),
+        _normalize_manual_image_file_id(
+            raw_state.get(
+                "manual_image_file_id"
+            )
+        ),
+        bool(
+            raw_state.get(
+                "manual_image_waiting",
+                False,
             )
         ),
     )
@@ -1169,6 +1306,9 @@ class ExternalReviewStateStore:
                         now
                         + self.ttl_seconds
                     ),
+                    manual_image_source=(
+                        MANUAL_IMAGE_SOURCE_PRIMARY
+                    ),
                 )
             )
 
@@ -1306,39 +1446,16 @@ class ExternalReviewStateStore:
                 normalized_indexes,
             )
 
-            updated = PendingExternalReview(
-                review_id=(
-                    pending.review_id
-                ),
-                chat_id=(
-                    pending.chat_id
-                ),
-                content=(
-                    pending.content
-                ),
-                created_at=(
-                    pending.created_at
-                ),
-                expires_at=(
-                    pending.expires_at
-                ),
+            updated = _replace_pending(
+                pending,
                 selected_media_indexes=(
                     normalized_indexes
                 ),
                 media_selection_explicit=bool(
                     explicit
                 ),
-                preview_message_id=(
-                    pending.preview_message_id
-                ),
-                preview_media_message_ids=(
-                    pending.preview_media_message_ids
-                ),
-                preview_media_file_ids=(
-                    pending.preview_media_file_ids
-                ),
-                media_presentation_mode=(
-                    pending.media_presentation_mode
+                manual_image_source=(
+                    MANUAL_IMAGE_SOURCE_PRIMARY
                 ),
             )
 
@@ -1383,37 +1500,8 @@ class ExternalReviewStateStore:
                 chat_id=chat_id,
             )
 
-            updated = PendingExternalReview(
-                review_id=(
-                    pending.review_id
-                ),
-                chat_id=(
-                    pending.chat_id
-                ),
-                content=(
-                    pending.content
-                ),
-                created_at=(
-                    pending.created_at
-                ),
-                expires_at=(
-                    pending.expires_at
-                ),
-                selected_media_indexes=(
-                    pending.selected_media_indexes
-                ),
-                media_selection_explicit=(
-                    pending.media_selection_explicit
-                ),
-                preview_message_id=(
-                    pending.preview_message_id
-                ),
-                preview_media_message_ids=(
-                    pending.preview_media_message_ids
-                ),
-                preview_media_file_ids=(
-                    pending.preview_media_file_ids
-                ),
+            updated = _replace_pending(
+                pending,
                 media_presentation_mode=(
                     normalized_mode
                 ),
@@ -1482,28 +1570,8 @@ class ExternalReviewStateStore:
                     )
                 )
 
-            updated = PendingExternalReview(
-                review_id=(
-                    pending.review_id
-                ),
-                chat_id=(
-                    pending.chat_id
-                ),
-                content=(
-                    pending.content
-                ),
-                created_at=(
-                    pending.created_at
-                ),
-                expires_at=(
-                    pending.expires_at
-                ),
-                selected_media_indexes=(
-                    pending.selected_media_indexes
-                ),
-                media_selection_explicit=(
-                    pending.media_selection_explicit
-                ),
+            updated = _replace_pending(
+                pending,
                 preview_message_id=(
                     normalized_message_id
                 ),
@@ -1513,8 +1581,61 @@ class ExternalReviewStateStore:
                 preview_media_file_ids=(
                     normalized_file_ids
                 ),
-                media_presentation_mode=(
-                    pending.media_presentation_mode
+            )
+
+            self._by_chat[
+                updated.chat_id
+            ] = updated
+
+            self._by_id[
+                updated.review_id
+            ] = updated
+
+            return updated
+
+    def update_manual_image_state(
+        self,
+        *,
+        review_id: str,
+        chat_id: int,
+        manual_image_source: Optional[
+            str
+        ] = None,
+        manual_image_file_id: Optional[
+            str
+        ] = None,
+        manual_image_waiting: Optional[
+            bool
+        ] = None,
+    ) -> PendingExternalReview:
+        with self._lock:
+            pending = self.require(
+                review_id=review_id,
+                chat_id=chat_id,
+            )
+
+            updated = _replace_pending(
+                pending,
+                manual_image_source=(
+                    pending.manual_image_source
+                    if manual_image_source is None
+                    else _normalize_manual_image_source(
+                        manual_image_source
+                    )
+                ),
+                manual_image_file_id=(
+                    pending.manual_image_file_id
+                    if manual_image_file_id is None
+                    else _normalize_manual_image_file_id(
+                        manual_image_file_id
+                    )
+                ),
+                manual_image_waiting=(
+                    pending.manual_image_waiting
+                    if manual_image_waiting is None
+                    else bool(
+                        manual_image_waiting
+                    )
                 ),
             )
 
@@ -1723,6 +1844,9 @@ class PersistentExternalReviewStateStore:
             preview_media_message_ids,
             preview_media_file_ids,
             media_presentation_mode,
+            manual_image_source,
+            manual_image_file_id,
+            manual_image_waiting,
         ) = _review_state_from_content_dict(
             content_value,
             media_count=len(
@@ -1785,6 +1909,15 @@ class PersistentExternalReviewStateStore:
             ),
             media_presentation_mode=(
                 media_presentation_mode
+            ),
+            manual_image_source=(
+                manual_image_source
+            ),
+            manual_image_file_id=(
+                manual_image_file_id
+            ),
+            manual_image_waiting=(
+                manual_image_waiting
             ),
         )
 
@@ -2050,6 +2183,9 @@ class PersistentExternalReviewStateStore:
             expires_at=(
                 expires_at.timestamp()
             ),
+            manual_image_source=(
+                MANUAL_IMAGE_SOURCE_PRIMARY
+            ),
         )
 
     # -----------------------------------------------------
@@ -2189,6 +2325,15 @@ class PersistentExternalReviewStateStore:
                     media_presentation_mode=(
                         pending.media_presentation_mode
                     ),
+                    manual_image_source=(
+                        pending.manual_image_source
+                    ),
+                    manual_image_file_id=(
+                        pending.manual_image_file_id
+                    ),
+                    manual_image_waiting=(
+                        pending.manual_image_waiting
+                    ),
                 )
             )
         }
@@ -2232,39 +2377,16 @@ class PersistentExternalReviewStateStore:
                 rows[0]
             )
 
-        return PendingExternalReview(
-            review_id=(
-                pending.review_id
-            ),
-            chat_id=(
-                pending.chat_id
-            ),
-            content=(
-                pending.content
-            ),
-            created_at=(
-                pending.created_at
-            ),
-            expires_at=(
-                pending.expires_at
-            ),
+        return _replace_pending(
+            pending,
             selected_media_indexes=(
                 normalized_indexes
             ),
             media_selection_explicit=bool(
                 explicit
             ),
-            preview_message_id=(
-                pending.preview_message_id
-            ),
-            preview_media_message_ids=(
-                pending.preview_media_message_ids
-            ),
-            preview_media_file_ids=(
-                pending.preview_media_file_ids
-            ),
-            media_presentation_mode=(
-                pending.media_presentation_mode
+            manual_image_source=(
+                MANUAL_IMAGE_SOURCE_PRIMARY
             ),
         )
 
@@ -2320,6 +2442,15 @@ class PersistentExternalReviewStateStore:
                     media_presentation_mode=(
                         normalized_mode
                     ),
+                    manual_image_source=(
+                        pending.manual_image_source
+                    ),
+                    manual_image_file_id=(
+                        pending.manual_image_file_id
+                    ),
+                    manual_image_waiting=(
+                        pending.manual_image_waiting
+                    ),
                 )
             )
         }
@@ -2363,37 +2494,8 @@ class PersistentExternalReviewStateStore:
                 rows[0]
             )
 
-        return PendingExternalReview(
-            review_id=(
-                pending.review_id
-            ),
-            chat_id=(
-                pending.chat_id
-            ),
-            content=(
-                pending.content
-            ),
-            created_at=(
-                pending.created_at
-            ),
-            expires_at=(
-                pending.expires_at
-            ),
-            selected_media_indexes=(
-                pending.selected_media_indexes
-            ),
-            media_selection_explicit=(
-                pending.media_selection_explicit
-            ),
-            preview_message_id=(
-                pending.preview_message_id
-            ),
-            preview_media_message_ids=(
-                pending.preview_media_message_ids
-            ),
-            preview_media_file_ids=(
-                pending.preview_media_file_ids
-            ),
+        return _replace_pending(
+            pending,
             media_presentation_mode=(
                 normalized_mode
             ),
@@ -2473,6 +2575,15 @@ class PersistentExternalReviewStateStore:
                     media_presentation_mode=(
                         pending.media_presentation_mode
                     ),
+                    manual_image_source=(
+                        pending.manual_image_source
+                    ),
+                    manual_image_file_id=(
+                        pending.manual_image_file_id
+                    ),
+                    manual_image_waiting=(
+                        pending.manual_image_waiting
+                    ),
                 )
             )
         }
@@ -2516,28 +2627,8 @@ class PersistentExternalReviewStateStore:
                 rows[0]
             )
 
-        return PendingExternalReview(
-            review_id=(
-                pending.review_id
-            ),
-            chat_id=(
-                pending.chat_id
-            ),
-            content=(
-                pending.content
-            ),
-            created_at=(
-                pending.created_at
-            ),
-            expires_at=(
-                pending.expires_at
-            ),
-            selected_media_indexes=(
-                pending.selected_media_indexes
-            ),
-            media_selection_explicit=(
-                pending.media_selection_explicit
-            ),
+        return _replace_pending(
+            pending,
             preview_message_id=(
                 normalized_message_id
             ),
@@ -2547,8 +2638,136 @@ class PersistentExternalReviewStateStore:
             preview_media_file_ids=(
                 normalized_file_ids
             ),
-            media_presentation_mode=(
-                pending.media_presentation_mode
+        )
+
+    def update_manual_image_state(
+        self,
+        *,
+        review_id: str,
+        chat_id: int,
+        manual_image_source: Optional[
+            str
+        ] = None,
+        manual_image_file_id: Optional[
+            str
+        ] = None,
+        manual_image_waiting: Optional[
+            bool
+        ] = None,
+    ) -> PendingExternalReview:
+        pending = self.require(
+            review_id=review_id,
+            chat_id=chat_id,
+        )
+
+        payload = {
+            "content": (
+                _content_with_review_state_to_dict(
+                    pending.content,
+                    selected_media_indexes=(
+                        pending.selected_media_indexes
+                    ),
+                    media_selection_explicit=(
+                        pending.media_selection_explicit
+                    ),
+                    preview_message_id=(
+                        pending.preview_message_id
+                    ),
+                    preview_media_message_ids=(
+                        pending.preview_media_message_ids
+                    ),
+                    preview_media_file_ids=(
+                        pending.preview_media_file_ids
+                    ),
+                    media_presentation_mode=(
+                        pending.media_presentation_mode
+                    ),
+                    manual_image_source=(
+                        pending.manual_image_source
+                        if manual_image_source is None
+                        else _normalize_manual_image_source(
+                            manual_image_source
+                        )
+                    ),
+                    manual_image_file_id=(
+                        pending.manual_image_file_id
+                        if manual_image_file_id is None
+                        else _normalize_manual_image_file_id(
+                            manual_image_file_id
+                        )
+                    ),
+                    manual_image_waiting=(
+                        pending.manual_image_waiting
+                        if manual_image_waiting is None
+                        else bool(
+                            manual_image_waiting
+                        )
+                    ),
+                )
+            )
+        }
+
+        try:
+            response = (
+                self._table()
+                .update(
+                    payload
+                )
+                .eq(
+                    "review_id",
+                    pending.review_id,
+                )
+                .eq(
+                    "chat_id",
+                    pending.chat_id,
+                )
+                .execute()
+            )
+
+        except Exception as exc:
+            raise ExternalReviewPersistenceError(
+                (
+                    "failed to update persistent "
+                    "external review manual image state"
+                )
+            ) from exc
+
+        rows = (
+            getattr(
+                response,
+                "data",
+                None,
+            )
+            or []
+        )
+
+        if rows:
+            return self._row_to_pending(
+                rows[0]
+            )
+
+        return _replace_pending(
+            pending,
+            manual_image_source=(
+                pending.manual_image_source
+                if manual_image_source is None
+                else _normalize_manual_image_source(
+                    manual_image_source
+                )
+            ),
+            manual_image_file_id=(
+                pending.manual_image_file_id
+                if manual_image_file_id is None
+                else _normalize_manual_image_file_id(
+                    manual_image_file_id
+                )
+            ),
+            manual_image_waiting=(
+                pending.manual_image_waiting
+                if manual_image_waiting is None
+                else bool(
+                    manual_image_waiting
+                )
             ),
         )
 

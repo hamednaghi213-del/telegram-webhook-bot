@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import (
+    dataclass,
+    replace,
+)
 from enum import Enum
 from typing import (
     Any,
@@ -276,7 +279,46 @@ class ExternalContentResolver:
                 "web article extractor returned invalid content"
             )
 
-        return content
+        if not content.media:
+            return content
+
+        trusted_primary = next(
+            (
+                item
+                for item in (
+                    content.media
+                    or ()
+                )
+                if bool(
+                    getattr(
+                        item,
+                        "metadata",
+                        {},
+                    ).get(
+                        "trustworthy_primary",
+                        False,
+                    )
+                )
+            ),
+            None,
+        )
+
+        if trusted_primary is None:
+            return replace(
+                content,
+                media=(),
+            )
+
+        return replace(
+            content,
+            media=(
+                replace(
+                    trusted_primary,
+                    position=0,
+                    presentation="cover",
+                ),
+            ),
+        )
 
     def _resolve_instagram(
         self,

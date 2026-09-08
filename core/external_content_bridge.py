@@ -541,6 +541,7 @@ def build_external_prepared_content(
     if (
         not text
         and not review.media
+        and not prepared_files
     ):
         raise ExternalContentBridgeError(
             "reviewed external content has no text or media"
@@ -559,13 +560,20 @@ def build_external_prepared_content(
         ...
     ] = ()
 
-    if review.media:
-        if prepared_files is not None:
-            files = (
-                _validate_prepared_files(
-                    prepared_files
-                )
+    validated_prepared_files: Optional[
+        Tuple[Mapping[str, Any], ...]
+    ] = None
+
+    if prepared_files is not None:
+        validated_prepared_files = (
+            _validate_prepared_files(
+                prepared_files
             )
+        )
+
+    if review.media:
+        if validated_prepared_files is not None:
+            files = validated_prepared_files
 
         elif materializer is not None:
             files = (
@@ -590,10 +598,8 @@ def build_external_prepared_content(
                 "materialized media count does not match reviewed media count"
             )
 
-    elif prepared_files:
-        raise ExternalContentBridgeError(
-            "prepared_files supplied for review with no selected media"
-        )
+    elif validated_prepared_files is not None:
+        files = validated_prepared_files
 
     resolved_source_key = str(
         source_key

@@ -16,6 +16,7 @@ from core.external_review_controller import (
 from core.external_review_state import (
     ExternalReviewNotFound,
     ExternalReviewStateStore,
+    MANUAL_IMAGE_SOURCE_REPLACE,
 )
 
 
@@ -227,6 +228,39 @@ def test_consume_after_success_removes_pending_review():
     assert (
         store.get_for_chat(100)
         is None
+    )
+
+
+def test_manual_replacement_selection_produces_prepared_photo_file():
+    controller, _store = _controller()
+
+    controller.create_pending(
+        review_id="review-1",
+        chat_id=100,
+        content=_content(),
+    )
+
+    controller.state_store.update_manual_image_state(
+        review_id="review-1",
+        chat_id=100,
+        manual_image_source=(
+            MANUAL_IMAGE_SOURCE_REPLACE
+        ),
+        manual_image_file_id="manual-photo-1",
+        manual_image_waiting=False,
+    )
+
+    decision = controller.apply_selection(
+        review_id="review-1",
+        chat_id=100,
+    )
+
+    assert decision.review.media == ()
+    assert decision.prepared_files == (
+        {
+            "type": "photo",
+            "file_id": "manual-photo-1",
+        },
     )
 
 

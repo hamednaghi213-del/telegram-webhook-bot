@@ -357,6 +357,10 @@ def _publish_decision(
                 materializer=(
                     resolved_materializer
                 ),
+                prepared_files=(
+                    decision.prepared_files
+                    or None
+                ),
                 smart_summary_applied=(
                     smart_summary_applied
                 ),

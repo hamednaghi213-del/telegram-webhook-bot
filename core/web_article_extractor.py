@@ -1468,6 +1468,67 @@ def _is_low_value_image(
     )
 
 
+def _is_trustworthy_primary_candidate(
+    *,
+    source_kind: str,
+    ancestor_tokens: FrozenSet[str] = frozenset(),
+    within_schema_scope: bool = False,
+    item_prop: str = "",
+) -> bool:
+    normalized_source = str(
+        source_kind
+        or ""
+    ).strip().lower()
+
+    if normalized_source in {
+        "og",
+        "twitter",
+        "json_ld",
+    }:
+        return True
+
+    if normalized_source != "html":
+        return False
+
+    normalized_tokens = {
+        str(token or "").strip().lower()
+        for token in (
+            ancestor_tokens
+            or frozenset()
+        )
+        if str(token or "").strip()
+    }
+
+    if normalized_tokens.intersection(
+        {
+            "hero",
+            "featured",
+            "feature",
+            "lead",
+            "cover",
+            "main",
+            "primary",
+            "headline",
+        }
+    ):
+        return True
+
+    normalized_item_prop = str(
+        item_prop
+        or ""
+    ).strip().lower()
+
+    return bool(
+        within_schema_scope
+        and normalized_item_prop
+        in {
+            "image",
+            "primaryimageofpage",
+            "associatedmedia",
+        }
+    )
+
+
 def _build_media(
     *,
     facts: _ArticleHTMLFacts,
@@ -1830,6 +1891,30 @@ def _build_media(
                     "score": item[
                         "score"
                     ],
+                    "trustworthy_primary": (
+                        _is_trustworthy_primary_candidate(
+                            source_kind=item[
+                                "source_kind"
+                            ],
+                            ancestor_tokens=item.get(
+                                "ancestor_tokens",
+                                frozenset(),
+                            ),
+                            within_schema_scope=bool(
+                                item.get(
+                                    "within_schema_scope",
+                                    False,
+                                )
+                            ),
+                            item_prop=str(
+                                item.get(
+                                    "item_prop",
+                                    "",
+                                )
+                                or ""
+                            ),
+                        )
+                    ),
                     "original_position": (
                         item[
                             "order"

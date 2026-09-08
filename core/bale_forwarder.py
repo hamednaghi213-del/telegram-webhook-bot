@@ -66,6 +66,27 @@ def edit_bale_message(channel, token, message_id, text, is_caption=False):
         return False
 
 
+def delete_bale_message(channel, token, message_id, return_result=False):
+    try:
+        response = requests.post(
+            f"{BALE_API_BASE}{token}/deleteMessage",
+            json={
+                "chat_id": channel,
+                "message_id": message_id,
+            },
+            timeout=120,
+        )
+        return _send_result(
+            response,
+            return_result=return_result,
+        )
+    except Exception as e:
+        logger.exception(
+            f"❌ Bale delete failed | {e}"
+        )
+        return _failed_result(return_result)
+
+
 # =========================================================
 # MAIN ENTRY
 # =========================================================

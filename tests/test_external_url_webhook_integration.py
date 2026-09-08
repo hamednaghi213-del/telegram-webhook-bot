@@ -174,6 +174,27 @@ def _message(
     }
 
 
+def _photo_message(
+    *,
+    file_id="photo-file-1",
+    message_id=101,
+    chat_id=1001,
+):
+    return {
+        "update_id": 9002,
+        "message": {
+            "message_id": message_id,
+            "chat": {
+                "id": chat_id,
+            },
+            "photo": [
+                {"file_id": "small"},
+                {"file_id": file_id},
+            ],
+        },
+    }
+
+
 def setup_function():
 
     sys.modules[
@@ -753,3 +774,93 @@ def test_standalone_url_creates_coherent_preview_surface(
     assert f"extrev:media:{review_id}:0" in callbacks
     assert f"extrev:nomedia:{review_id}" in callbacks
     assert f"extrev:cancel:{review_id}" in callbacks
+
+
+def test_waiting_manual_photo_is_captured_before_normal_publication(
+    monkeypatch,
+):
+    DEFAULT_EXTERNAL_REVIEW_STATE_STORE.create(
+        review_id="review-1",
+        chat_id=1001,
+        content=_content(),
+    )
+    DEFAULT_EXTERNAL_REVIEW_STATE_STORE.update_manual_image_state(
+        review_id="review-1",
+        chat_id=1001,
+        manual_image_waiting=True,
+    )
+
+    refreshed = []
+    sent = []
+
+    monkeypatch.setattr(
+        "core.external_review_telegram.refresh_external_review_preview",
+        lambda **kwargs: refreshed.append(kwargs),
+    )
+
+    with patch.object(
+        webhook_handler,
+        "request",
+        FakeRequest(_photo_message()),
+    ), patch.object(
+        webhook_handler,
+        "validate_webhook_token",
+        return_value=True,
+    ), patch.object(
+        webhook_handler,
+        "send_message",
+        side_effect=lambda *args, **kwargs: sent.append((args, kwargs)),
+    ):
+        result, status = webhook_handler.handle_webhook()
+
+    assert status == 200
+    assert result["external_review_manual_image"] is True
+    pending = DEFAULT_EXTERNAL_REVIEW_STATE_STORE.require(
+        review_id="review-1",
+        chat_id=1001,
+    )
+    assert pending.manual_image_file_id == "photo-file-1"
+    assert pending.manual_image_waiting is False
+    assert refreshed
+    assert sent[-1][0][1] == "✅ تصویر دستی ثبت شد."
+
+
+def test_wrong_input_keeps_manual_photo_waiting_state(
+    monkeypatch,
+):
+    DEFAULT_EXTERNAL_REVIEW_STATE_STORE.create(
+        review_id="review-1",
+        chat_id=1001,
+        content=_content(),
+    )
+    DEFAULT_EXTERNAL_REVIEW_STATE_STORE.update_manual_image_state(
+        review_id="review-1",
+        chat_id=1001,
+        manual_image_waiting=True,
+    )
+
+    sent = []
+
+    with patch.object(
+        webhook_handler,
+        "request",
+        FakeRequest(_message("خبر عادی")),
+    ), patch.object(
+        webhook_handler,
+        "validate_webhook_token",
+        return_value=True,
+    ), patch.object(
+        webhook_handler,
+        "send_message",
+        side_effect=lambda *args, **kwargs: sent.append((args, kwargs)),
+    ):
+        result, status = webhook_handler.handle_webhook()
+
+    assert status == 200
+    assert result["waiting"] is True
+    pending = DEFAULT_EXTERNAL_REVIEW_STATE_STORE.require(
+        review_id="review-1",
+        chat_id=1001,
+    )
+    assert pending.manual_image_waiting is True
+    assert "هنوز منتظر عکس" in sent[-1][0][1]

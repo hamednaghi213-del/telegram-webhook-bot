@@ -807,7 +807,6 @@ def get_media_from_message(
         )
 
         return result
-
     if "photo" in msg:
 
         photos = (
@@ -935,6 +934,107 @@ def get_media_from_message(
         return result
 
     return result
+
+
+def try_handle_waiting_external_review_manual_image(
+    *,
+    chat_id: int,
+    msg: Dict[str, Any],
+    req_id: str,
+) -> Optional[Tuple[Dict[str, Any], int]]:
+    try:
+        from core.external_review_controller import (
+            ExternalReviewController,
+        )
+        from core.external_review_state import (
+            MANUAL_IMAGE_SOURCE_REPLACE,
+        )
+        from core.external_review_telegram import (
+            refresh_external_review_preview,
+        )
+    except Exception:
+        return None
+
+    controller = ExternalReviewController()
+    pending = controller.state_store.get_for_chat(
+        chat_id
+    )
+
+    if (
+        pending is None
+        or not pending.manual_image_waiting
+    ):
+        return None
+
+    media = get_media_from_message(
+        msg
+    )
+
+    if media.get("type") == "photo" and media.get(
+        "file_id"
+    ):
+        updated = (
+            controller.state_store
+            .update_manual_image_state(
+                review_id=pending.review_id,
+                chat_id=chat_id,
+                manual_image_source=(
+                    MANUAL_IMAGE_SOURCE_REPLACE
+                ),
+                manual_image_file_id=str(
+                    media["file_id"]
+                ),
+                manual_image_waiting=False,
+            )
+        )
+
+        refresh_external_review_preview(
+            pending=updated,
+            chat_id=chat_id,
+            telegram_api=telegram_api,
+            controller=controller,
+            req_id=req_id,
+        )
+
+        send_message(
+            chat_id,
+            "✅ تصویر دستی ثبت شد.",
+        )
+
+        logger.info(
+            (
+                f"[{req_id}] 🖼 External review manual image "
+                f"captured | review_id={updated.review_id}"
+            )
+        )
+
+        return {
+            "ok": True,
+            "external_review_manual_image": True,
+            "review_id": updated.review_id,
+        }, 200
+
+    send_message(
+        chat_id,
+        (
+            "⏳ هنوز منتظر عکس بعدی شما برای این مطلب هستم. "
+            "لطفاً یک عکس ارسال کنید یا از دکمه لغو انتظار استفاده کنید."
+        ),
+    )
+
+    logger.info(
+        (
+            f"[{req_id}] ⏳ External review manual image still "
+            f"waiting | review_id={pending.review_id}"
+        )
+    )
+
+    return {
+        "ok": True,
+        "external_review_manual_image": False,
+        "review_id": pending.review_id,
+        "waiting": True,
+    }, 200
 
 
 # =========================================================
@@ -4616,6 +4716,17 @@ def handle_webhook() -> Tuple[
             return {
                 "ok": True
             }, 200
+
+        external_review_manual_result = (
+            try_handle_waiting_external_review_manual_image(
+                chat_id=chat_id,
+                msg=msg,
+                req_id=req_id,
+            )
+        )
+
+        if external_review_manual_result is not None:
+            return external_review_manual_result
 
         # =================================================
         # STANDALONE EXTERNAL CONTENT URL

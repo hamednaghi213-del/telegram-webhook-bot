@@ -5,6 +5,9 @@ from unittest.mock import (
     patch,
     MagicMock
 )
+from core.external_review_state import (
+    DEFAULT_EXTERNAL_REVIEW_STATE_STORE,
+)
 
 
 # =========================================================
@@ -168,6 +171,7 @@ def setup_function():
     }
 
     fake_command_handler.handle_command.reset_mock()
+    DEFAULT_EXTERNAL_REVIEW_STATE_STORE.reset()
 
 
 # =========================================================

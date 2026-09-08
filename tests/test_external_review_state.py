@@ -10,6 +10,7 @@ from core.external_review_state import (
     ExternalReviewExpired,
     ExternalReviewNotFound,
     ExternalReviewStateStore,
+    MANUAL_IMAGE_SOURCE_REPLACE,
 )
 
 
@@ -311,7 +312,42 @@ def test_pop_returns_and_removes_review():
     assert result is pending
     assert store.get_by_id("review-1") is None
     assert store.get_for_chat(100) is None
-    assert len(store) == 0
+
+
+def test_manual_image_state_persists_inside_pending_review():
+    store = ExternalReviewStateStore()
+
+    store.create(
+        review_id="review-1",
+        chat_id=100,
+        content=_content(),
+    )
+
+    updated = store.update_manual_image_state(
+        review_id="review-1",
+        chat_id=100,
+        manual_image_source=(
+            MANUAL_IMAGE_SOURCE_REPLACE
+        ),
+        manual_image_file_id="manual-file-1",
+        manual_image_waiting=False,
+    )
+
+    assert updated.manual_image_source == (
+        MANUAL_IMAGE_SOURCE_REPLACE
+    )
+    assert updated.manual_image_file_id == (
+        "manual-file-1"
+    )
+    assert updated.manual_image_waiting is False
+    assert len(store) == 1
+    assert (
+        store.require(
+            review_id="review-1",
+            chat_id=100,
+        ).manual_image_file_id
+        == "manual-file-1"
+    )
 
 
 def test_pop_wrong_chat_does_not_remove_review():
@@ -662,6 +698,9 @@ def test_serialized_ui_state_includes_message_refs():
         media_ids,
         file_ids,
         media_presentation_mode,
+        manual_image_source,
+        manual_image_file_id,
+        manual_image_waiting,
     ) = _review_state_from_content_dict(
         payload,
         media_count=1,
@@ -673,6 +712,9 @@ def test_serialized_ui_state_includes_message_refs():
     assert media_ids == (901,)
     assert file_ids == ("",)
     assert media_presentation_mode == "normal"
+    assert manual_image_source == "primary"
+    assert manual_image_file_id == ""
+    assert manual_image_waiting is False
 
 
 def test_legacy_ui_state_without_message_refs_is_compatible():
@@ -695,6 +737,9 @@ def test_legacy_ui_state_without_message_refs_is_compatible():
         media_ids,
         file_ids,
         media_presentation_mode,
+        manual_image_source,
+        manual_image_file_id,
+        manual_image_waiting,
     ) = _review_state_from_content_dict(payload)
 
     assert indexes == (0,)
@@ -703,6 +748,9 @@ def test_legacy_ui_state_without_message_refs_is_compatible():
     assert media_ids == ()
     assert file_ids == ()
     assert media_presentation_mode == "normal"
+    assert manual_image_source == "primary"
+    assert manual_image_file_id == ""
+    assert manual_image_waiting is False
 
 
 # =========================================================
@@ -881,6 +929,9 @@ def test_serialized_ui_state_round_trips_presentation_mode():
         _,
         _,
         media_presentation_mode,
+        _,
+        _,
+        _,
     ) = _review_state_from_content_dict(payload)
 
     assert media_presentation_mode == "album"
@@ -909,6 +960,9 @@ def test_serialized_ui_state_normalizes_invalid_presentation_mode():
         _,
         _,
         media_presentation_mode,
+        _,
+        _,
+        _,
     ) = _review_state_from_content_dict(payload)
 
     assert media_presentation_mode == "normal"

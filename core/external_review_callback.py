@@ -19,6 +19,9 @@ from core.external_review_controller import (
     ExternalReviewDecision,
 )
 from core.external_review_state import (
+    MANUAL_IMAGE_SOURCE_NONE,
+    MANUAL_IMAGE_SOURCE_PRIMARY,
+    MANUAL_IMAGE_SOURCE_REPLACE,
     PendingExternalReview,
 )
 
@@ -418,6 +421,7 @@ def handle_external_review_callback(
         extrev:media:<review_id>:0,1
         extrev:mode:<review_id>:normal
         extrev:mode:<review_id>:album
+        extrev:manual:<review_id>:waiting|cancel|replace|primary|none
 
     Important:
 
@@ -539,6 +543,18 @@ def handle_external_review_callback(
                 explicit=True,
             )
         )
+        updated = (
+            resolved_controller
+            .state_store
+            .update_manual_image_state(
+                review_id=review_id,
+                chat_id=chat_id,
+                manual_image_source=(
+                    MANUAL_IMAGE_SOURCE_PRIMARY
+                ),
+                manual_image_waiting=False,
+            )
+        )
 
         if updated.selected_media_indexes:
             human_indexes = ", ".join(
@@ -580,6 +596,18 @@ def handle_external_review_callback(
                 explicit=True,
             )
         )
+        updated = (
+            resolved_controller
+            .state_store
+            .update_manual_image_state(
+                review_id=review_id,
+                chat_id=chat_id,
+                manual_image_source=(
+                    MANUAL_IMAGE_SOURCE_NONE
+                ),
+                manual_image_waiting=False,
+            )
+        )
 
         return ExternalReviewCallbackResult(
             handled=True,
@@ -589,6 +617,171 @@ def handle_external_review_callback(
             message=(
                 "انتشار بدون تصویر انتخاب شد."
             ),
+        )
+
+    # =====================================================
+    # MANUAL IMAGE FLOW — STATE ONLY
+    # =====================================================
+
+    if action == "manual":
+        requested_action = str(
+            argument
+            or ""
+        ).strip().lower()
+
+        pending = (
+            resolved_controller.get_pending(
+                review_id=review_id,
+                chat_id=chat_id,
+            )
+        )
+
+        if requested_action == "waiting":
+            updated = (
+                resolved_controller
+                .state_store
+                .update_manual_image_state(
+                    review_id=review_id,
+                    chat_id=chat_id,
+                    manual_image_waiting=True,
+                )
+            )
+            return ExternalReviewCallbackResult(
+                handled=True,
+                action=action,
+                review_id=review_id,
+                pending=updated,
+                message=(
+                    "عکس بعدی شما به‌عنوان تصویر دستی ثبت می‌شود."
+                ),
+            )
+
+        if requested_action == "cancel":
+            updated = (
+                resolved_controller
+                .state_store
+                .update_manual_image_state(
+                    review_id=review_id,
+                    chat_id=chat_id,
+                    manual_image_waiting=False,
+                )
+            )
+            return ExternalReviewCallbackResult(
+                handled=True,
+                action=action,
+                review_id=review_id,
+                pending=updated,
+                message=(
+                    "انتظار برای عکس دستی لغو شد."
+                ),
+            )
+
+        if requested_action == "replace":
+            if not pending.manual_image_file_id:
+                return ExternalReviewCallbackResult(
+                    handled=True,
+                    action=action,
+                    review_id=review_id,
+                    pending=pending,
+                    message=(
+                        "ابتدا با دکمه انتظار، عکس دستی را ارسال کنید."
+                    ),
+                )
+
+            updated = (
+                resolved_controller
+                .state_store
+                .update_manual_image_state(
+                    review_id=review_id,
+                    chat_id=chat_id,
+                    manual_image_source=(
+                        MANUAL_IMAGE_SOURCE_REPLACE
+                    ),
+                    manual_image_waiting=False,
+                )
+            )
+            return ExternalReviewCallbackResult(
+                handled=True,
+                action=action,
+                review_id=review_id,
+                pending=updated,
+                message=(
+                    "تصویر دستی جایگزین شد."
+                ),
+            )
+
+        if requested_action == "primary":
+            if pending.content.media:
+                pending = (
+                    resolved_controller
+                    .state_store
+                    .update_media_selection(
+                        review_id=review_id,
+                        chat_id=chat_id,
+                        selected_media_indexes=(0,),
+                        explicit=True,
+                    )
+                )
+
+            updated = (
+                resolved_controller
+                .state_store
+                .update_manual_image_state(
+                    review_id=review_id,
+                    chat_id=chat_id,
+                    manual_image_source=(
+                        MANUAL_IMAGE_SOURCE_PRIMARY
+                    ),
+                    manual_image_waiting=False,
+                )
+            )
+            return ExternalReviewCallbackResult(
+                handled=True,
+                action=action,
+                review_id=review_id,
+                pending=updated,
+                message=(
+                    "تصویر اصلی مطلب انتخاب شد."
+                    if pending.content.media
+                    else "برای این مطلب تصویر اصلی معتبری وجود ندارد."
+                ),
+            )
+
+        if requested_action == "none":
+            (
+                resolved_controller
+                .state_store
+                .update_media_selection(
+                    review_id=review_id,
+                    chat_id=chat_id,
+                    selected_media_indexes=(),
+                    explicit=True,
+                )
+            )
+            updated = (
+                resolved_controller
+                .state_store
+                .update_manual_image_state(
+                    review_id=review_id,
+                    chat_id=chat_id,
+                    manual_image_source=(
+                        MANUAL_IMAGE_SOURCE_NONE
+                    ),
+                    manual_image_waiting=False,
+                )
+            )
+            return ExternalReviewCallbackResult(
+                handled=True,
+                action=action,
+                review_id=review_id,
+                pending=updated,
+                message=(
+                    "انتشار بدون تصویر انتخاب شد."
+                ),
+            )
+
+        raise ExternalReviewCallbackError(
+            "unsupported manual image action"
         )
 
     # =====================================================
