@@ -444,11 +444,19 @@ def _resolve_media_presentation(
         ):
             return presentation
 
-    if not presentations:
-        if _can_default_to_slideshow(
-            review
-        ):
-            return "slideshow"
+    routing_presentations = {
+        item
+        for item in presentations
+        if item in (
+            "slideshow",
+            "collage",
+        )
+    }
+
+    if not routing_presentations and _can_default_to_slideshow(
+        review
+    ):
+        return "slideshow"
 
     return ""
 

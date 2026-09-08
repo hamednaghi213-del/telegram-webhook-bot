@@ -152,6 +152,19 @@ def _refresh_preview(
         pending,
     )
 
+    panel_result = reconcile_media_panel(
+        telegram_api=telegram_api,
+        chat_id=chat_id,
+        staging_chat_id=_staging_chat_id(),
+        media=view.media,
+        current_message_ids=(
+            pending.preview_media_message_ids
+        ),
+        staged_file_ids=(
+            pending.preview_media_file_ids
+        ),
+    )
+
     edited = edit_control_message(
         telegram_api=telegram_api,
         chat_id=chat_id,
@@ -170,19 +183,6 @@ def _refresh_preview(
 
         if fallback_id:
             control_id = fallback_id
-
-    panel_result = reconcile_media_panel(
-        telegram_api=telegram_api,
-        chat_id=chat_id,
-        staging_chat_id=_staging_chat_id(),
-        media=view.media,
-        current_message_ids=(
-            pending.preview_media_message_ids
-        ),
-        staged_file_ids=(
-            pending.preview_media_file_ids
-        ),
-    )
 
     merged_file_ids = list(
         pending.preview_media_file_ids

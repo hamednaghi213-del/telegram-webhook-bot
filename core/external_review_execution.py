@@ -59,6 +59,8 @@ STATUS_EDITORIAL_REQUIRED = (
     "editorial_required"
 )
 
+EXTERNAL_SHORT_MAX_REDUCTION_RATIO = 0.97
+
 
 # =========================================================
 # RESULT
@@ -214,7 +216,9 @@ def _apply_shared_smart_summary(
                 summarizer=(
                     summarize_with_gemini
                 ),
-                aggressive_max_reduction_ratio=0.80,
+                aggressive_max_reduction_ratio=(
+                    EXTERNAL_SHORT_MAX_REDUCTION_RATIO
+                ),
             )
         )
 
@@ -320,6 +324,11 @@ def _publish_decision(
         raise ExternalReviewExecutionError(
             "external reviewed content publication failed"
         ) from exc
+
+    if not publication.ok:
+        raise ExternalReviewExecutionError(
+            "shared publication engine did not confirm publication"
+        )
 
     return ExternalReviewExecutionResult(
         status=STATUS_PUBLISHED,

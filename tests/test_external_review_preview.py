@@ -228,7 +228,7 @@ def test_explicit_selection_shows_only_selected_media():
         == "https://example.com/2.jpg"
     )
 
-    assert "تصاویر انتخاب‌شده: 3" in view.text
+    assert "تصاویر آلبوم انتشار: 3" in view.text
 
 
 def test_explicit_no_media_hides_panel():

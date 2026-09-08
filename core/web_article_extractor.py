@@ -57,7 +57,14 @@ _LOW_VALUE_IMAGE_MARKERS = (
     "tracking",
     "pixel",
     "favicon",
+    "sponsor",
+    "promoted",
+    "recommendation",
+    "recommended",
+    "related-post",
 )
+
+_MAX_ARTICLE_MEDIA = 10
 
 _SPACE_RE = re.compile(r"[ \t\f\v]+")
 _BLANK_LINE_RE = re.compile(r"\n[ \t]*\n+")
@@ -1049,6 +1056,32 @@ def _image_score(
     return score
 
 
+def _is_low_value_image(
+    *,
+    url: str,
+    width: Optional[int],
+    height: Optional[int],
+    alt_text: str,
+    title: str,
+) -> bool:
+    combined = f"{url} {alt_text} {title}".lower()
+
+    if any(
+        marker in combined
+        for marker in _LOW_VALUE_IMAGE_MARKERS
+    ):
+        return True
+
+    return bool(
+        width is not None
+        and height is not None
+        and (
+            width < 200
+            or height < 120
+        )
+    )
+
+
 def _build_media(
     *,
     facts: _ArticleHTMLFacts,
@@ -1261,9 +1294,14 @@ def _build_media(
         candidate
         for candidate
         in unique.values()
-        if candidate[
-            "score"
-        ] > -50
+        if candidate["score"] > -50
+        and not _is_low_value_image(
+            url=candidate["url"],
+            width=candidate["width"],
+            height=candidate["height"],
+            alt_text=candidate["alt_text"],
+            title=candidate["title"],
+        )
     ]
 
     if not usable:
@@ -1283,15 +1321,16 @@ def _build_media(
             for item in usable
             if item is not hero
         ),
-        key=lambda item: item[
-            "order"
-        ],
+        key=lambda item: (
+            -item["score"],
+            item["order"],
+        ),
     )
 
     ordered = [
         hero,
         *remaining,
-    ]
+    ][:_MAX_ARTICLE_MEDIA]
 
     media = []
 

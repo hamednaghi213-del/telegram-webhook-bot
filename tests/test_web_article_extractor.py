@@ -140,6 +140,22 @@ ARTICLE_HTML = """
 """
 
 
+MEDIA_FILTER_HTML = """
+<html><head>
+<meta property="og:title" content="Major election result">
+<meta property="og:image" content="/ads/banner-election.jpg">
+</head><body><article>
+<h1>Major election result</h1>
+<p>This article contains enough substantive reporting to be extracted
+as a normal news article with several editorial photographs.</p>
+<img src="/images/gallery-low.jpg" width="800" height="500">
+<img src="/images/gallery-high.jpg" width="1600" height="900"
+     alt="Major election result">
+<img src="/assets/recommended-story.jpg" width="1200" height="800">
+</article></body></html>
+"""
+
+
 PERSIAN_HTML = """
 <!doctype html>
 <html lang="fa-IR">
@@ -327,6 +343,20 @@ def test_extracts_and_ranks_article_images():
         "https://example.com/assets/site-logo.png"
         not in urls
     )
+
+
+def test_filters_assets_and_ranks_editorial_media_deterministically():
+    result = WebArticleExtractor().extract_from_html(
+        MEDIA_FILTER_HTML,
+        source_url="https://example.com/story",
+    )
+
+    assert [
+        item.source_url for item in result.media
+    ] == [
+        "https://example.com/images/gallery-high.jpg",
+        "https://example.com/images/gallery-low.jpg",
+    ]
 
 
 def test_duplicate_image_sources_are_deduplicated():

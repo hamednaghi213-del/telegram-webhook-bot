@@ -139,8 +139,8 @@ def _selection_status_line(
             )
 
         return (
-            f"🖼 هر {media_count} تصویر "
-            "به‌طور پیش‌فرض استفاده می‌شوند."
+            f"🖼 هر {media_count} تصویر در آلبوم "
+            "انتشار استفاده می‌شوند."
         )
 
     if not selected_media_indexes:
@@ -155,7 +155,7 @@ def _selection_status_line(
     )
 
     return (
-        "🖼 تصاویر انتخاب‌شده: "
+        "🖼 تصاویر آلبوم انتشار: "
         f"{human_indexes}"
     )
 
