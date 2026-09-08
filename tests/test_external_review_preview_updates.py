@@ -527,3 +527,153 @@ def test_media_toggle_without_telegram_api_keeps_legacy_message():
     assert handled is True
     assert len(messages) == 1
     assert "تصاویر انتخاب‌شده" in messages[0][0][1]
+
+
+# =========================================================
+# MEDIA PANEL WITH STAGING (END-TO-END SURFACE)
+# =========================================================
+
+
+class StagingTelegramApi(FakeTelegramApi):
+    def __init__(self):
+        super().__init__()
+        self.next_file_id = 0
+
+    def __call__(self, method, payload):
+        payload = dict(payload or {})
+
+        if method == "sendPhoto" and (
+            "photo_bytes" in payload
+        ):
+            self.calls.append((method, payload))
+            self.next_message_id += 1
+            self.next_file_id += 1
+
+            return {
+                "ok": True,
+                "result": {
+                    "message_id": self.next_message_id,
+                    "photo": [
+                        {
+                            "file_id": (
+                                "staged-"
+                                f"{self.next_file_id}"
+                            ),
+                        }
+                    ],
+                },
+            }
+
+        if method == "sendMediaGroup":
+            self.calls.append((method, payload))
+            result = []
+
+            for _ in payload.get("media", []):
+                self.next_message_id += 1
+                result.append(
+                    {"message_id": self.next_message_id}
+                )
+
+            return {"ok": True, "result": result}
+
+        return super().__call__(method, payload)
+
+
+def test_media_toggle_with_staging_displays_and_caches(
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "EXTERNAL_MEDIA_STAGING_CHAT_ID",
+        "-1001",
+    )
+
+    controller = _controller()
+
+    controller.create_pending(
+        review_id="review-1",
+        chat_id=12345,
+        content=_content(),
+    )
+
+    api = StagingTelegramApi()
+
+    monkeypatch.setattr(
+        "core.external_review_telegram_panel."
+        "_download_image",
+        lambda *, media, max_bytes, fetcher=None:
+        b"fake-image-bytes",
+    )
+
+    handled = (
+        handle_external_review_telegram_callback(
+            callback_query=_callback(
+                "extrev:media:review-1:0"
+            ),
+            answer_callback_query=(
+                lambda *args, **kwargs: None
+            ),
+            send_message=(
+                lambda *args, **kwargs: None
+            ),
+            telegram_api=api,
+            controller=controller,
+        )
+    )
+
+    assert handled is True
+
+    # One photo was staged and displayed.
+    staging_calls = [
+        payload
+        for payload in api.payloads("sendPhoto")
+        if "photo_bytes" in payload
+    ]
+
+    assert len(staging_calls) == 1
+
+    pending = controller.get_pending(
+        review_id="review-1",
+        chat_id=12345,
+    )
+
+    # Staged file_id persisted for reuse.
+    assert pending.preview_media_file_ids[0] == "staged-1"
+    assert pending.preview_message_id is not None
+
+    # Toggle image 2 in: only image 2 should be staged now;
+    # image 1 must reuse its cached file_id.
+    handled = (
+        handle_external_review_telegram_callback(
+            callback_query=_callback(
+                "extrev:media:review-1:1"
+            ),
+            answer_callback_query=(
+                lambda *args, **kwargs: None
+            ),
+            send_message=(
+                lambda *args, **kwargs: None
+            ),
+            telegram_api=api,
+            controller=controller,
+        )
+    )
+
+    assert handled is True
+
+    staging_calls = [
+        payload
+        for payload in api.payloads("sendPhoto")
+        if "photo_bytes" in payload
+    ]
+
+    assert len(staging_calls) == 2
+
+    groups = api.payloads("sendMediaGroup")
+    assert len(groups) == 1
+    assert [
+        item["media"] for item in groups[0]["media"]
+    ] == ["staged-1", "staged-2"]
+
+    # No new control message was created across both toggles.
+    assert api.payloads("sendMessage") == []
+    assert len(api.payloads("editMessageText")) == 2

@@ -171,7 +171,7 @@ def _refresh_preview(
         if fallback_id:
             control_id = fallback_id
 
-    media_ids = reconcile_media_panel(
+    panel_result = reconcile_media_panel(
         telegram_api=telegram_api,
         chat_id=chat_id,
         staging_chat_id=_staging_chat_id(),
@@ -179,14 +179,49 @@ def _refresh_preview(
         current_message_ids=(
             pending.preview_media_message_ids
         ),
+        staged_file_ids=(
+            pending.preview_media_file_ids
+        ),
     )
+
+    merged_file_ids = list(
+        pending.preview_media_file_ids
+    )
+
+    if len(merged_file_ids) < len(
+        pending.content.media
+    ):
+        merged_file_ids.extend(
+            [""]
+            * (
+                len(pending.content.media)
+                - len(merged_file_ids)
+            )
+        )
+
+    for position, file_id in (
+        panel_result
+        .file_ids_by_position
+        .items()
+    ):
+        if 0 <= position < len(
+            merged_file_ids
+        ):
+            merged_file_ids[position] = (
+                str(file_id or "")
+            )
 
     try:
         controller.state_store.update_preview_message_refs(
             review_id=pending.review_id,
             chat_id=chat_id,
             preview_message_id=control_id,
-            preview_media_message_ids=media_ids,
+            preview_media_message_ids=(
+                panel_result.message_ids
+            ),
+            preview_media_file_ids=tuple(
+                merged_file_ids
+            ),
         )
 
     except Exception as exc:

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 
+from dataclasses import dataclass, field
 from typing import (
     Any,
     Callable,
@@ -151,6 +152,24 @@ def _photo_file_id_from_result(
             return file_id
 
     return ""
+
+
+# =========================================================
+# RESULT
+# =========================================================
+
+
+@dataclass(frozen=True)
+class MediaPanelResult:
+    """Outcome of rendering one preview media panel."""
+
+    message_ids: Tuple[int, ...] = ()
+
+    # file_id per source media position, ready to persist so
+    # later toggles can re-display without staging again.
+    file_ids_by_position: Mapping[int, str] = field(
+        default_factory=dict
+    )
 
 
 # =========================================================
@@ -330,11 +349,12 @@ def send_media_panel(
     chat_id: int,
     staging_chat_id: str,
     media: Sequence[ExternalMedia],
+    staged_file_ids: Sequence[str] = (),
     max_bytes: int = (
         10 * 1024 * 1024
     ),
     fetcher: Any = None,
-) -> Tuple[int, ...]:
+) -> MediaPanelResult:
     """
     Display the selected external media as one preview panel.
 
@@ -343,22 +363,21 @@ def send_media_panel(
     user as a photo or an album. The staging messages are deleted
     immediately; nothing is published to a destination.
 
-    Returns the displayed message ids (empty when nothing could be
-    shown). Non-photo media are skipped for display; they remain
-    available for publication through the existing materializer.
+    ``staged_file_ids`` may contain previously staged file_id
+    values aligned with ``content.media`` indexes. Media items that
+    already have a staged value are re-displayed directly without
+    downloading or staging again.
+
+    Returns displayed message ids plus the file_id used per source
+    media position. Non-photo media are skipped for display; they
+    remain available for publication through the existing
+    materializer.
     """
 
     normalized_staging = str(
         staging_chat_id
         or ""
     ).strip()
-
-    if not normalized_staging:
-        logger.warning(
-            "external review preview media panel "
-            "skipped | staging chat is not configured"
-        )
-        return ()
 
     photos = [
         item
@@ -378,11 +397,59 @@ def send_media_panel(
     ]
 
     if not photos:
-        return ()
+        return MediaPanelResult()
+
+    staged_by_index: Dict[int, str] = {}
+
+    for item in photos:
+        position = int(
+            getattr(
+                item,
+                "position",
+                0,
+            )
+            or 0
+        )
+
+        candidate = ""
+
+        if 0 <= position < len(
+            staged_file_ids
+        ):
+            candidate = str(
+                staged_file_ids[position]
+                or ""
+            ).strip()
+
+        if candidate:
+            staged_by_index[position] = candidate
 
     file_ids = []
+    resolved_by_position: Dict[int, str] = {}
 
     for item in photos[:10]:
+        position = int(
+            getattr(
+                item,
+                "position",
+                0,
+            )
+            or 0
+        )
+
+        cached = staged_by_index.get(
+            position,
+            "",
+        )
+
+        if cached:
+            file_ids.append(cached)
+            resolved_by_position[position] = cached
+            continue
+
+        if not normalized_staging:
+            continue
+
         content = _download_image(
             media=item,
             max_bytes=max_bytes,
@@ -450,9 +517,14 @@ def send_media_panel(
             file_ids.append(
                 file_id
             )
+            resolved_by_position[position] = file_id
 
     if not file_ids:
-        return ()
+        return MediaPanelResult(
+            file_ids_by_position=(
+                resolved_by_position
+            ),
+        )
 
     try:
         if len(file_ids) == 1:
@@ -474,10 +546,15 @@ def send_media_panel(
                 )
             )
 
-            return (
-                (message_id,)
-                if message_id
-                else ()
+            return MediaPanelResult(
+                message_ids=(
+                    (message_id,)
+                    if message_id
+                    else ()
+                ),
+                file_ids_by_position=(
+                    resolved_by_position
+                ),
             )
 
         group_media = [
@@ -521,8 +598,13 @@ def send_media_panel(
                         message_id
                     )
 
-        return tuple(
-            message_ids
+        return MediaPanelResult(
+            message_ids=tuple(
+                message_ids
+            ),
+            file_ids_by_position=(
+                resolved_by_position
+            ),
         )
 
     except Exception as exc:
@@ -530,7 +612,11 @@ def send_media_panel(
             "external review preview media panel "
             f"send failed | {exc}"
         )
-        return ()
+        return MediaPanelResult(
+            file_ids_by_position=(
+                resolved_by_position
+            ),
+        )
 
 
 def delete_media_panel(
@@ -568,36 +654,28 @@ def reconcile_media_panel(
     staging_chat_id: str,
     media: Sequence[ExternalMedia],
     current_message_ids: Sequence[int],
+    staged_file_ids: Sequence[str] = (),
     max_bytes: int = (
         10 * 1024 * 1024
     ),
     fetcher: Any = None,
-) -> Tuple[int, ...]:
+) -> MediaPanelResult:
     """
     Bring the displayed media panel in line with the selected media.
 
-    The panel is only rebuilt when the visible set actually changed;
+    The panel is rebuilt only when the visible set actually changed;
     callers pass the desired media and the currently displayed
     message ids. Deleting first keeps ordering stable: the control
     message always stays the last message in the chat.
+
+    Previously staged file_id values are reused so unchanged media
+    are not downloaded or staged again.
     """
 
-    desired_key = tuple(
-        str(
-            getattr(
-                item,
-                "source_url",
-                "",
-            )
-            or ""
-        )
-        for item in (
-            media
-            or ()
-        )
-    )
-
-    if not desired_key:
+    if not tuple(
+        media
+        or ()
+    ):
         if current_message_ids:
             delete_media_panel(
                 telegram_api=telegram_api,
@@ -607,7 +685,7 @@ def reconcile_media_panel(
                 ),
             )
 
-        return ()
+        return MediaPanelResult()
 
     if current_message_ids:
         delete_media_panel(
@@ -623,6 +701,7 @@ def reconcile_media_panel(
         chat_id=chat_id,
         staging_chat_id=staging_chat_id,
         media=media,
+        staged_file_ids=staged_file_ids,
         max_bytes=max_bytes,
         fetcher=fetcher,
     )

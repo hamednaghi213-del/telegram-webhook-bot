@@ -658,12 +658,17 @@ def test_serialized_ui_state_includes_message_refs():
         explicit,
         message_id,
         media_ids,
-    ) = _review_state_from_content_dict(payload)
+        file_ids,
+    ) = _review_state_from_content_dict(
+        payload,
+        media_count=1,
+    )
 
     assert indexes == (1,)
     assert explicit is True
     assert message_id == 555
     assert media_ids == (901,)
+    assert file_ids == ("",)
 
 
 def test_legacy_ui_state_without_message_refs_is_compatible():
@@ -684,9 +689,11 @@ def test_legacy_ui_state_without_message_refs_is_compatible():
         explicit,
         message_id,
         media_ids,
+        file_ids,
     ) = _review_state_from_content_dict(payload)
 
     assert indexes == (0,)
     assert explicit is True
     assert message_id is None
     assert media_ids == ()
+    assert file_ids == ()

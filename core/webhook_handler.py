@@ -4792,9 +4792,10 @@ def handle_webhook() -> Tuple[
                     ).strip()
 
                     media_message_ids: Tuple[int, ...] = ()
+                    staged_file_ids: Tuple[str, ...] = ()
 
                     if preview_view.media:
-                        media_message_ids = (
+                        panel_result = (
                             send_media_panel(
                                 telegram_api=(
                                     telegram_api
@@ -4808,6 +4809,33 @@ def handle_webhook() -> Tuple[
                                 ),
                             )
                         )
+
+                        media_message_ids = (
+                            panel_result.message_ids
+                        )
+
+                        if (
+                            panel_result
+                            .file_ids_by_position
+                        ):
+                            staged_file_ids = tuple(
+                                str(
+                                    panel_result
+                                    .file_ids_by_position
+                                    .get(
+                                        position,
+                                        "",
+                                    )
+                                    or ""
+                                )
+                                for position in range(
+                                    len(
+                                        external_resolution
+                                        .content
+                                        .media
+                                    )
+                                )
+                            )
 
                     preview_message_id = (
                         send_control_message(
@@ -4851,6 +4879,9 @@ def handle_webhook() -> Tuple[
                                 ),
                                 preview_media_message_ids=(
                                     media_message_ids
+                                ),
+                                preview_media_file_ids=(
+                                    staged_file_ids
                                 ),
                             )
 

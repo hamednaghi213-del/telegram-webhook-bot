@@ -116,6 +116,14 @@ class PendingExternalReview:
         of accumulating new messages. Optional and platform-specific;
         stored inside the existing JSON content payload so durable
         stores require no schema migration.
+
+    preview_media_file_ids:
+        file_id values already staged for the preview media panel,
+        aligned with the order of ``content.media``. They let media
+        toggles re-display previously staged photos without
+        downloading or staging them again. Never used for
+        publication; final publication still materializes media
+        through the existing boundary at execution time.
     """
 
     review_id: str
@@ -135,6 +143,11 @@ class PendingExternalReview:
 
     preview_media_message_ids: Tuple[
         int,
+        ...,
+    ] = ()
+
+    preview_media_file_ids: Tuple[
+        str,
         ...,
     ] = ()
 
@@ -371,6 +384,43 @@ def _normalize_message_ids(
     )
 
 
+def _normalize_file_ids(
+    values: Any,
+    *,
+    expected_length: int,
+) -> Tuple[str, ...]:
+    """
+    Normalize staged preview file_id slots.
+
+    The result always has exactly ``expected_length`` entries; slots
+    without a staged value remain empty strings so indexes stay
+    aligned with ``content.media``.
+    """
+
+    normalized: list = []
+
+    for item in (
+        values
+        or ()
+    ):
+        normalized.append(
+            str(
+                item
+                or ""
+            ).strip()
+        )
+
+    if len(normalized) < expected_length:
+        normalized.extend(
+            [""]
+            * (expected_length - len(normalized))
+        )
+
+    return tuple(
+        normalized[:expected_length]
+    )
+
+
 def _normalize_message_id(
     value: Any,
 ) -> Optional[int]:
@@ -409,6 +459,10 @@ def _content_with_review_state_to_dict(
         int,
         ...,
     ] = (),
+    preview_media_file_ids: Tuple[
+        str,
+        ...,
+    ] = (),
 ) -> Dict[str, Any]:
     """
     Serialize external content plus review-only UI state.
@@ -444,6 +498,16 @@ def _content_with_review_state_to_dict(
                 preview_media_message_ids
             )
         ],
+        "preview_media_file_ids": [
+            str(file_id)
+            for file_id
+            in _normalize_file_ids(
+                preview_media_file_ids,
+                expected_length=len(
+                    content.media
+                ),
+            )
+        ],
     }
 
     return payload
@@ -451,11 +515,14 @@ def _content_with_review_state_to_dict(
 
 def _review_state_from_content_dict(
     value: Mapping[str, Any],
+    *,
+    media_count: int = 0,
 ) -> Tuple[
     Tuple[int, ...],
     bool,
     Optional[int],
     Tuple[int, ...],
+    Tuple[str, ...],
 ]:
     raw_state = (
         value.get(
@@ -474,6 +541,10 @@ def _review_state_from_content_dict(
             False,
             None,
             (),
+            _normalize_file_ids(
+                (),
+                expected_length=media_count,
+            ),
         )
 
     raw_indexes = (
@@ -528,6 +599,13 @@ def _review_state_from_content_dict(
                 "preview_media_message_ids",
                 (),
             )
+        ),
+        _normalize_file_ids(
+            raw_state.get(
+                "preview_media_file_ids",
+                (),
+            ),
+            expected_length=media_count,
         ),
     )
 
@@ -1170,6 +1248,9 @@ class ExternalReviewStateStore:
                 preview_media_message_ids=(
                     pending.preview_media_message_ids
                 ),
+                preview_media_file_ids=(
+                    pending.preview_media_file_ids
+                ),
             )
 
             self._by_chat[
@@ -1198,6 +1279,9 @@ class ExternalReviewStateStore:
             int,
             ...,
         ] = (),
+        preview_media_file_ids: Optional[
+            Tuple[str, ...]
+        ] = None,
     ) -> PendingExternalReview:
         normalized_message_id = (
             _normalize_message_id(
@@ -1216,6 +1300,21 @@ class ExternalReviewStateStore:
                 review_id=review_id,
                 chat_id=chat_id,
             )
+
+            if preview_media_file_ids is None:
+                normalized_file_ids = (
+                    pending.preview_media_file_ids
+                )
+
+            else:
+                normalized_file_ids = (
+                    _normalize_file_ids(
+                        preview_media_file_ids,
+                        expected_length=len(
+                            pending.content.media
+                        ),
+                    )
+                )
 
             updated = PendingExternalReview(
                 review_id=(
@@ -1244,6 +1343,9 @@ class ExternalReviewStateStore:
                 ),
                 preview_media_message_ids=(
                     normalized_media_ids
+                ),
+                preview_media_file_ids=(
+                    normalized_file_ids
                 ),
             )
 
@@ -1450,8 +1552,18 @@ class PersistentExternalReviewStateStore:
             media_selection_explicit,
             preview_message_id,
             preview_media_message_ids,
+            preview_media_file_ids,
         ) = _review_state_from_content_dict(
-            content_value
+            content_value,
+            media_count=len(
+                (
+                    content_value.get(
+                        "media",
+                        [],
+                    )
+                    or []
+                )
+            ),
         )
 
         return PendingExternalReview(
@@ -1497,6 +1609,9 @@ class PersistentExternalReviewStateStore:
             ),
             preview_media_message_ids=(
                 preview_media_message_ids
+            ),
+            preview_media_file_ids=(
+                preview_media_file_ids
             ),
         )
 
@@ -1895,6 +2010,9 @@ class PersistentExternalReviewStateStore:
                     preview_media_message_ids=(
                         pending.preview_media_message_ids
                     ),
+                    preview_media_file_ids=(
+                        pending.preview_media_file_ids
+                    ),
                 )
             )
         }
@@ -1966,6 +2084,9 @@ class PersistentExternalReviewStateStore:
             preview_media_message_ids=(
                 pending.preview_media_message_ids
             ),
+            preview_media_file_ids=(
+                pending.preview_media_file_ids
+            ),
         )
 
     # -----------------------------------------------------
@@ -1984,6 +2105,9 @@ class PersistentExternalReviewStateStore:
             int,
             ...,
         ] = (),
+        preview_media_file_ids: Optional[
+            Tuple[str, ...]
+        ] = None,
     ) -> PendingExternalReview:
         pending = self.require(
             review_id=review_id,
@@ -2002,6 +2126,21 @@ class PersistentExternalReviewStateStore:
             )
         )
 
+        if preview_media_file_ids is None:
+            normalized_file_ids = (
+                pending.preview_media_file_ids
+            )
+
+        else:
+            normalized_file_ids = (
+                _normalize_file_ids(
+                    preview_media_file_ids,
+                    expected_length=len(
+                        pending.content.media
+                    ),
+                )
+            )
+
         payload = {
             "content": (
                 _content_with_review_state_to_dict(
@@ -2017,6 +2156,9 @@ class PersistentExternalReviewStateStore:
                     ),
                     preview_media_message_ids=(
                         normalized_media_ids
+                    ),
+                    preview_media_file_ids=(
+                        normalized_file_ids
                     ),
                 )
             )
@@ -2088,6 +2230,9 @@ class PersistentExternalReviewStateStore:
             ),
             preview_media_message_ids=(
                 normalized_media_ids
+            ),
+            preview_media_file_ids=(
+                normalized_file_ids
             ),
         )
 
