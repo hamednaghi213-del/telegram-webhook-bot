@@ -2645,28 +2645,59 @@ def record_persistent_publication_part_success(
 ) -> Dict[str, Any]:
     """
     Persist one successfully delivered publication part.
+
+    A persistent succeeded part must contain real transport proof.
+    A status-only succeeded row without a Telegram/Bale message ID
+    must never be created because it can suppress the real sender
+    during idempotent recovery.
     """
     if service_supabase is None:
         raise RuntimeError(
             "Persistent publication state is not configured"
         )
 
+    normalized_message_id = (
+        int(message_id)
+        if (
+            isinstance(message_id, int)
+            and not isinstance(message_id, bool)
+            and message_id > 0
+        )
+        else None
+    )
+
     normalized_ids = [
         int(value)
         for value in (message_ids or ())
-        if isinstance(value, int)
-        and not isinstance(value, bool)
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value > 0
+        )
     ]
+
+    # Persistent success requires actual transport proof.
+    #
+    # Never write:
+    #   status = succeeded
+    #   message_id = NULL
+    #   message_ids = NULL
+    #
+    # Such a row is not proof that Telegram/Bale received anything.
+    if (
+        normalized_message_id is None
+        and not normalized_ids
+    ):
+        raise RuntimeError(
+            "cannot persist publication part success "
+            "without transport message id"
+        )
 
     payload = {
         "delivery_id": int(delivery_id),
         "part_key": str(part_key),
         "status": "succeeded",
-        "message_id": (
-            int(message_id)
-            if message_id is not None
-            else None
-        ),
+        "message_id": normalized_message_id,
         "message_ids": (
             normalized_ids
             if normalized_ids
@@ -2702,8 +2733,8 @@ def record_persistent_publication_part_success(
     indexed_message_ids = tuple(
         normalized_ids
     ) or (
-        (int(message_id),)
-        if message_id is not None
+        (normalized_message_id,)
+        if normalized_message_id is not None
         else ()
     )
 
@@ -2718,24 +2749,17 @@ def record_persistent_publication_part_success(
                     if destination_chat_id is not None
                     else None
                 ),
-                primary_message_id=(
-                    int(message_id)
-                    if message_id is not None
-                    else None
-                ),
+                primary_message_id=normalized_message_id,
             )
         except Exception as index_error:
-            # The delivery part above is already durably recorded as
-            # "succeeded" (upsert committed). The message-index table is
-            # a secondary lookup used for reverse (chat_id, message_id)
-            # resolution (for example delete/edit sync) and must never
-            # turn a real, successful Telegram send into a reported
-            # failure. Log and continue: recovery re-reads
-            # publication_delivery_parts, which already reflects success.
+            # The real transport delivery is already durably recorded.
+            # The message-index table is only a secondary reverse lookup
+            # and its failure must not convert a real send into failure.
             logger.error(
                 "⚠️ Failed to record publication delivery message "
                 "index (delivery already marked succeeded) | "
-                f"delivery_id={delivery_id} | part_key={part_key} | "
+                f"delivery_id={delivery_id} | "
+                f"part_key={part_key} | "
                 f"error={index_error}"
             )
 
