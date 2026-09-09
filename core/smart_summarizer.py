@@ -998,6 +998,7 @@ def build_summarization_instruction(
         "نسبت داده شده است این نسبت را حفظ کن. "
 
         "در صورت تعارض میان کوتاه‌شدن و وفاداری، "
+
         "وفاداری به خبر اولویت مطلق دارد. "
 
         f"خروجی تحت هیچ شرایطی نباید بیشتر از "
@@ -1048,8 +1049,102 @@ def build_underfill_retry_instruction(
 
 
 # =========================================================
+# SEMANTIC RETRY INSTRUCTION
+# =========================================================
+
+def build_semantic_retry_instruction(
+    target_length: int,
+    minimum_length: int,
+    content_type: str,
+    validation: Dict[str, Any]
+) -> str:
+    base_instruction = (
+        build_summarization_instruction(
+            target_length=target_length,
+            content_type=content_type,
+            minimum_length=minimum_length
+        )
+    )
+
+    errors = set(
+        validation.get(
+            "errors",
+            []
+        )
+        or []
+    )
+
+    extra_instruction = ""
+
+    if "certainty_markers_lost" in errors:
+        markers = list(
+            validation.get(
+                "original_certainty_markers",
+                []
+            )
+            or []
+        )
+
+        marker_hint = (
+            "، ".join(markers[:12])
+            if markers
+            else "نشانه‌های قطعیت و عدم قطعیت متن اصلی"
+        )
+
+        extra_instruction += (
+            " نسخه قبلی یکی از قیود معنایی مهم را از دست داده بود. "
+            "در این تلاش میزان قطعیت، احتمال، ادعا، تأیید یا تکذیب "
+            "و نسبت دادن سخنان را صریحاً حفظ کن. "
+            f"نشانه‌های موجود در متن اصلی شامل این موارد است: {marker_hint}. "
+            "آنها را فقط در همان معنای موجود در متن اصلی حفظ کن و "
+            "هیچ نشانه یا ادعای تازه‌ای اضافه نکن. "
+        )
+
+    return (
+        base_instruction
+        + extra_instruction
+        + " از تمام ظرفیت مجاز فقط به اندازه لازم برای حفظ وفاداری استفاده کن. "
+        + f"خروجی همچنان نباید بیشتر از {target_length} کاراکتر باشد."
+    )
+
+
+# =========================================================
 # CONTROLLED RETRY HELPERS
 # =========================================================
+
+def should_retry_semantic_validation(
+    validation: Dict[str, Any],
+    generated: str,
+    target_length: int
+) -> bool:
+    if not SUMMARY_RETRY_ENABLED:
+        return False
+
+    if not generated:
+        return False
+
+    if len(generated) > target_length:
+        return False
+
+    errors = set(
+        validation.get(
+            "errors",
+            []
+        )
+        or []
+    )
+
+    retryable_errors = {
+        "certainty_markers_lost",
+    }
+
+    return bool(
+        errors
+        and errors.issubset(
+            retryable_errors
+        )
+    )
+
 
 def should_retry_overshoot(
     validation: Dict[str, Any],
@@ -1134,6 +1229,12 @@ def should_retry_summary(
         )
         or
         should_retry_underfill(
+            validation=validation,
+            generated=generated,
+            target_length=target_length
+        )
+        or
+        should_retry_semantic_validation(
             validation=validation,
             generated=generated,
             target_length=target_length
@@ -1879,10 +1980,18 @@ def summarize_text_safely(
     # relaxes what counts as a valid result.
     # =====================================================
 
-    elif should_retry_overshoot(
-        validation=validation,
-        generated=generated,
-        target_length=target_length
+    elif (
+        should_retry_overshoot(
+            validation=validation,
+            generated=generated,
+            target_length=target_length
+        )
+        or
+        should_retry_semantic_validation(
+            validation=validation,
+            generated=generated,
+            target_length=target_length
+        )
     ):
 
         current_generated = generated
@@ -1894,68 +2003,107 @@ def summarize_text_safely(
         while (
             overshoot_attempts_used
             < resolved_max_overshoot_retries
-            and should_retry_overshoot(
-                validation=(
-                    validation
-                    if last_retry_validation is None
-                    else last_retry_validation
-                ),
-                generated=current_generated,
-                target_length=target_length
-            )
         ):
+            active_validation = (
+                validation
+                if last_retry_validation is None
+                else last_retry_validation
+            )
 
-            retry_target = (
-                calculate_retry_target(
-                    original_length=original_length,
-                    current_target=current_generation_target,
-                    generated_length=len(
-                        current_generated
-                    ),
-                    effective_max_reduction_ratio=(
-                        effective_max_reduction_ratio
-                    )
+            retry_for_overshoot = (
+                should_retry_overshoot(
+                    validation=active_validation,
+                    generated=current_generated,
+                    target_length=target_length
                 )
             )
 
-            if retry_target is None:
+            retry_for_semantic_validation = (
+                should_retry_semantic_validation(
+                    validation=active_validation,
+                    generated=current_generated,
+                    target_length=target_length
+                )
+            )
+
+            if not (
+                retry_for_overshoot
+                or retry_for_semantic_validation
+            ):
                 break
+
+            if retry_for_semantic_validation:
+                # The candidate already fits the caller's real limit.
+                # Do not make it shorter again; use the full caller budget
+                # to restore lost semantic constraints such as certainty.
+                retry_target = target_length
+                retry_minimum_target = (
+                    minimum_target_length
+                )
+                retry_reason = "semantic_validation"
+                retry_instruction = (
+                    build_semantic_retry_instruction(
+                        target_length=target_length,
+                        minimum_length=(
+                            minimum_target_length
+                        ),
+                        content_type=content_type,
+                        validation=active_validation
+                    )
+                )
+                overshoot = 0
+            else:
+                retry_target = (
+                    calculate_retry_target(
+                        original_length=original_length,
+                        current_target=current_generation_target,
+                        generated_length=len(
+                            current_generated
+                        ),
+                        effective_max_reduction_ratio=(
+                            effective_max_reduction_ratio
+                        )
+                    )
+                )
+
+                if retry_target is None:
+                    break
+
+                retry_minimum_target = (
+                    calculate_minimum_target_length(
+                        retry_target
+                    )
+                )
+                retry_reason = "overshoot"
+                retry_instruction = (
+                    build_summarization_instruction(
+                        target_length=retry_target,
+                        content_type=content_type,
+                        minimum_length=(
+                            retry_minimum_target
+                        )
+                    )
+                )
+                overshoot = max(
+                    0,
+                    len(current_generated)
+                    - target_length
+                )
 
             overshoot_attempts_used += 1
 
             retry_called = True
-            retry_reason = "overshoot"
-
-            overshoot = (
-                len(current_generated)
-                - target_length
-            )
-
-            retry_minimum_target = (
-                calculate_minimum_target_length(
-                    retry_target
-                )
-            )
 
             logger.info(
-                f"🔁 Smart summary overshoot retry | "
+                f"🔁 Smart summary {retry_reason} retry | "
                 f"attempt={overshoot_attempts_used}/"
                 f"{resolved_max_overshoot_retries} | "
                 f"content_type={content_type} | "
                 f"original_target={target_length} | "
                 f"input_output={len(current_generated)} | "
                 f"overshoot={overshoot} | "
-                f"retry_target={retry_target}"
-            )
-
-            retry_instruction = (
-                build_summarization_instruction(
-                    target_length=retry_target,
-                    content_type=content_type,
-                    minimum_length=(
-                        retry_minimum_target
-                    )
-                )
+                f"retry_target={retry_target} | "
+                f"errors={active_validation.get('errors', [])}"
             )
 
             try:
