@@ -1,7 +1,7 @@
 """Publication delivery state abstraction.
 
 The production implementation is intentionally in-memory until an additive
-database migration is approved.  The publication engine depends only on this
+database migration is approved. The publication engine depends only on this
 interface so a durable Supabase implementation can replace it later.
 """
 
@@ -11,7 +11,15 @@ import threading
 from typing import Dict, Optional, Set, Tuple
 
 
-SOURCE_STATUSES = {"pending", "sending", "partial", "succeeded", "failed", "failed_terminal"}
+SOURCE_STATUSES = {
+    "pending",
+    "sending",
+    "partial",
+    "succeeded",
+    "failed",
+    "failed_terminal",
+}
+
 MAX_DELIVERY_ATTEMPTS = 5
 
 
@@ -37,22 +45,55 @@ class DeliveryState:
     error: Optional[str] = None
 
 
+def _valid_message_id(value) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value > 0
+    )
+
+
+def _normalized_message_ids(values) -> Tuple[int, ...]:
+    return tuple(
+        int(value)
+        for value in (values or ())
+        if _valid_message_id(value)
+    )
+
+
+def _part_has_transport_proof(
+    message_id=None,
+    message_ids=None,
+) -> bool:
+    if _valid_message_id(message_id):
+        return True
+
+    return bool(
+        _normalized_message_ids(message_ids)
+    )
+
+
 def delivery_state_has_success_proof(
     state: Optional[DeliveryState],
 ) -> bool:
+    """
+    Return True only when the delivery contains real transport proof.
+
+    A completed part/status alone is not proof of an external delivery.
+    Successful idempotent recovery requires at least one real message_id
+    returned by the transport and persisted for this logical delivery.
+    """
     if state is None:
         return False
-    if state.completed_parts:
-        return True
+
     if any(
-        isinstance(value, int)
-        and not isinstance(value, bool)
+        _valid_message_id(value)
         for value in state.message_ids.values()
     ):
         return True
+
     return any(
-        isinstance(value, int)
-        and not isinstance(value, bool)
+        _valid_message_id(value)
         for values in state.all_message_ids.values()
         for value in values
     )
@@ -60,148 +101,385 @@ def delivery_state_has_success_proof(
 
 class PublicationStateStore(ABC):
     @abstractmethod
-    def claim_source(self, source_key: str) -> bool: ...
+    def claim_source(
+        self,
+        source_key: str,
+    ) -> bool:
+        ...
 
     @abstractmethod
-    def get_source(self, source_key: str) -> Optional[SourceState]: ...
+    def get_source(
+        self,
+        source_key: str,
+    ) -> Optional[SourceState]:
+        ...
 
     @abstractmethod
-    def mark_source(self, source_key: str, status: str,
-                    error: Optional[str] = None) -> None: ...
+    def mark_source(
+        self,
+        source_key: str,
+        status: str,
+        error: Optional[str] = None,
+    ) -> None:
+        ...
 
     @abstractmethod
-    def claim_destination(self, source_key: str, target_identity: str) -> DeliveryState: ...
+    def claim_destination(
+        self,
+        source_key: str,
+        target_identity: str,
+    ) -> DeliveryState:
+        ...
 
     @abstractmethod
-    def begin_attempt(self, source_key: str, target_identity: str) -> Optional[DeliveryState]: ...
+    def begin_attempt(
+        self,
+        source_key: str,
+        target_identity: str,
+    ) -> Optional[DeliveryState]:
+        ...
 
     @abstractmethod
-    def part_succeeded(self, source_key: str, target_identity: str, part: str,
-                       message_id: Optional[int] = None,
-                       message_ids: Optional[Tuple[int, ...]] = None,
-                       destination_chat_id: Optional[str] = None) -> None: ...
+    def part_succeeded(
+        self,
+        source_key: str,
+        target_identity: str,
+        part: str,
+        message_id: Optional[int] = None,
+        message_ids: Optional[Tuple[int, ...]] = None,
+        destination_chat_id: Optional[str] = None,
+    ) -> None:
+        ...
 
     @abstractmethod
-    def part_completed(self, source_key: str, target_identity: str, part: str) -> bool: ...
+    def part_completed(
+        self,
+        source_key: str,
+        target_identity: str,
+        part: str,
+    ) -> bool:
+        ...
 
     @abstractmethod
-    def mark_succeeded(self, source_key: str, target_identity: str) -> None: ...
+    def mark_succeeded(
+        self,
+        source_key: str,
+        target_identity: str,
+    ) -> None:
+        ...
 
     @abstractmethod
-    def mark_failed(self, source_key: str, target_identity: str, error: str) -> None: ...
+    def mark_failed(
+        self,
+        source_key: str,
+        target_identity: str,
+        error: str,
+    ) -> None:
+        ...
 
     @abstractmethod
-    def get_delivery(self, source_key: str, target_identity: str) -> Optional[DeliveryState]: ...
+    def get_delivery(
+        self,
+        source_key: str,
+        target_identity: str,
+    ) -> Optional[DeliveryState]:
+        ...
 
     @abstractmethod
-    def successful_deliveries(self, source_key: str) -> Tuple[str, ...]: ...
+    def successful_deliveries(
+        self,
+        source_key: str,
+    ) -> Tuple[str, ...]:
+        ...
 
     @abstractmethod
-    def reset(self) -> None: ...
+    def reset(self) -> None:
+        ...
 
 
-class InMemoryPublicationStateStore(PublicationStateStore):
+class InMemoryPublicationStateStore(
+    PublicationStateStore
+):
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._sources: Dict[str, SourceState] = {}
-        self._deliveries: Dict[Tuple[str, str], DeliveryState] = {}
+        self._sources: Dict[
+            str,
+            SourceState,
+        ] = {}
+        self._deliveries: Dict[
+            Tuple[str, str],
+            DeliveryState,
+        ] = {}
 
-    def claim_source(self, source_key: str) -> bool:
+    def claim_source(
+        self,
+        source_key: str,
+    ) -> bool:
         with self._lock:
             first = source_key not in self._sources
+
             if first:
-                self._sources[source_key] = SourceState(source_key=source_key)
+                self._sources[
+                    source_key
+                ] = SourceState(
+                    source_key=source_key
+                )
+
             return first
 
-    def get_source(self, source_key: str) -> Optional[SourceState]:
+    def get_source(
+        self,
+        source_key: str,
+    ) -> Optional[SourceState]:
         with self._lock:
-            return self._sources.get(source_key)
+            return self._sources.get(
+                source_key
+            )
 
-    def mark_source(self, source_key: str, status: str,
-                    error: Optional[str] = None) -> None:
+    def mark_source(
+        self,
+        source_key: str,
+        status: str,
+        error: Optional[str] = None,
+    ) -> None:
         if status not in SOURCE_STATUSES:
-            raise ValueError(f"invalid source status: {status}")
+            raise ValueError(
+                f"invalid source status: {status}"
+            )
+
         with self._lock:
-            self.claim_source(source_key)
-            state = self._sources[source_key]
-            if status == "sending" and state.status != "sending":
+            self.claim_source(
+                source_key
+            )
+
+            state = self._sources[
+                source_key
+            ]
+
+            if (
+                status == "sending"
+                and state.status != "sending"
+            ):
                 state.attempt += 1
+
             state.status = status
             state.error = error
 
-    def claim_destination(self, source_key: str, target_identity: str) -> DeliveryState:
+    def claim_destination(
+        self,
+        source_key: str,
+        target_identity: str,
+    ) -> DeliveryState:
         with self._lock:
-            key = (source_key, target_identity)
-            state = self._deliveries.get(key)
+            key = (
+                source_key,
+                target_identity,
+            )
+
+            state = self._deliveries.get(
+                key
+            )
+
             if state is None:
-                state = DeliveryState(source_key, target_identity)
-                self._deliveries[key] = state
+                state = DeliveryState(
+                    source_key,
+                    target_identity,
+                )
+
+                self._deliveries[
+                    key
+                ] = state
+
             return state
 
-    def begin_attempt(self, source_key: str, target_identity: str) -> Optional[DeliveryState]:
+    def begin_attempt(
+        self,
+        source_key: str,
+        target_identity: str,
+    ) -> Optional[DeliveryState]:
         with self._lock:
-            state = self.claim_destination(source_key, target_identity)
-            # Atomic in-process lease. A concurrent webhook/timer may observe
-            # the same source while the first request is between delivery
-            # steps; it must not start a second external side effect.
+            state = self.claim_destination(
+                source_key,
+                target_identity,
+            )
+
+            # Atomic in-process lease. A concurrent webhook/timer may
+            # observe the same source while the first request is between
+            # delivery steps; it must not start a second external side
+            # effect.
             if state.status == "sending":
                 return None
-            if state.status == "failed_terminal" or (
-                state.status == "failed" and state.attempt >= MAX_DELIVERY_ATTEMPTS
+
+            if (
+                state.status
+                == "failed_terminal"
+                or (
+                    state.status == "failed"
+                    and state.attempt
+                    >= MAX_DELIVERY_ATTEMPTS
+                )
             ):
-                state.status = "failed_terminal"
+                state.status = (
+                    "failed_terminal"
+                )
                 return None
+
             state.attempt += 1
             state.status = "sending"
             state.error = None
+
             return state
 
-    def part_succeeded(self, source_key: str, target_identity: str, part: str,
-                       message_id: Optional[int] = None,
-                       message_ids: Optional[Tuple[int, ...]] = None,
-                       destination_chat_id: Optional[str] = None) -> None:
+    def part_succeeded(
+        self,
+        source_key: str,
+        target_identity: str,
+        part: str,
+        message_id: Optional[int] = None,
+        message_ids: Optional[
+            Tuple[int, ...]
+        ] = None,
+        destination_chat_id: Optional[
+            str
+        ] = None,
+    ) -> None:
         with self._lock:
-            state = self.claim_destination(source_key, target_identity)
-            state.completed_parts.add(part)
-            if message_id is not None:
-                state.message_ids[part] = int(message_id)
-            normalized_ids = tuple(
-                int(value) for value in (message_ids or ())
-                if isinstance(value, int) and not isinstance(value, bool)
+            state = self.claim_destination(
+                source_key,
+                target_identity,
             )
+
+            normalized_ids = (
+                _normalized_message_ids(
+                    message_ids
+                )
+            )
+
+            normalized_primary = (
+                int(message_id)
+                if _valid_message_id(
+                    message_id
+                )
+                else None
+            )
+
+            # Keep completed_parts for granular in-process resume
+            # compatibility, but completed_parts alone must never be
+            # treated as durable transport proof.
+            state.completed_parts.add(
+                part
+            )
+
+            if normalized_primary is not None:
+                state.message_ids[
+                    part
+                ] = normalized_primary
+
             if normalized_ids:
-                state.all_message_ids[part] = normalized_ids
+                state.all_message_ids[
+                    part
+                ] = normalized_ids
+
+            elif normalized_primary is not None:
+                state.all_message_ids[
+                    part
+                ] = (
+                    normalized_primary,
+                )
+
             if destination_chat_id is not None:
-                state.message_chat_ids[part] = str(destination_chat_id)
+                state.message_chat_ids[
+                    part
+                ] = str(
+                    destination_chat_id
+                )
 
-    def part_completed(self, source_key: str, target_identity: str, part: str) -> bool:
+    def part_completed(
+        self,
+        source_key: str,
+        target_identity: str,
+        part: str,
+    ) -> bool:
         with self._lock:
-            state = self._deliveries.get((source_key, target_identity))
-            return bool(state and part in state.completed_parts)
+            state = self._deliveries.get(
+                (
+                    source_key,
+                    target_identity,
+                )
+            )
 
-    def mark_succeeded(self, source_key: str, target_identity: str) -> None:
-        with self._lock:
-            self.claim_destination(source_key, target_identity).status = "succeeded"
+            return bool(
+                state
+                and part
+                in state.completed_parts
+            )
 
-    def mark_failed(self, source_key: str, target_identity: str, error: str) -> None:
+    def mark_succeeded(
+        self,
+        source_key: str,
+        target_identity: str,
+    ) -> None:
         with self._lock:
-            state = self.claim_destination(source_key, target_identity)
+            self.claim_destination(
+                source_key,
+                target_identity,
+            ).status = "succeeded"
+
+    def mark_failed(
+        self,
+        source_key: str,
+        target_identity: str,
+        error: str,
+    ) -> None:
+        with self._lock:
+            state = self.claim_destination(
+                source_key,
+                target_identity,
+            )
+
             state.status = "failed"
             state.error = str(error)
 
-    def get_delivery(self, source_key: str, target_identity: str) -> Optional[DeliveryState]:
+    def get_delivery(
+        self,
+        source_key: str,
+        target_identity: str,
+    ) -> Optional[DeliveryState]:
         with self._lock:
-            return self._deliveries.get((source_key, target_identity))
+            return self._deliveries.get(
+                (
+                    source_key,
+                    target_identity,
+                )
+            )
 
-    def successful_deliveries(self, source_key: str) -> Tuple[str, ...]:
+    def successful_deliveries(
+        self,
+        source_key: str,
+    ) -> Tuple[str, ...]:
         with self._lock:
-            return tuple(identity for (source, identity), state in self._deliveries.items()
-                         if source == source_key and state.status == "succeeded")
+            return tuple(
+                identity
+                for (
+                    source,
+                    identity,
+                ), state
+                in self._deliveries.items()
+                if (
+                    source == source_key
+                    and state.status
+                    == "succeeded"
+                    and delivery_state_has_success_proof(
+                        state
+                    )
+                )
+            )
 
     def reset(self) -> None:
         with self._lock:
             self._sources.clear()
             self._deliveries.clear()
+
 
 class PersistentPublicationStateStore(
     InMemoryPublicationStateStore
@@ -244,8 +522,12 @@ class PersistentPublicationStateStore(
         target_identity: str,
         platform: str,
         destination_chat_id: str = "",
-        workspace_id: Optional[int] = None,
-        destination_id: Optional[int] = None,
+        workspace_id: Optional[
+            int
+        ] = None,
+        destination_id: Optional[
+            int
+        ] = None,
         delivery_generation: int = 1,
     ) -> Optional[DeliveryState]:
         """
@@ -262,30 +544,45 @@ class PersistentPublicationStateStore(
             database
             .claim_persistent_publication_delivery(
                 source_key=source_key,
-                canonical_identity=target_identity,
+                canonical_identity=(
+                    target_identity
+                ),
                 platform=platform,
                 destination_chat_id=(
                     destination_chat_id
                 ),
                 workspace_id=workspace_id,
-                destination_id=destination_id,
+                destination_id=(
+                    destination_id
+                ),
                 delivery_generation=(
                     delivery_generation
                 ),
-                lease_owner=self.lease_owner,
-                lease_seconds=self.lease_seconds,
+                lease_owner=(
+                    self.lease_owner
+                ),
+                lease_seconds=(
+                    self.lease_seconds
+                ),
             )
         )
+
         state = self.claim_destination(
             source_key,
             target_identity,
         )
 
         state.attempt = int(
-            claim.get("attempt_count") or 0
+            claim.get(
+                "attempt_count"
+            )
+            or 0
         )
 
-        delivery_id = claim.get("delivery_id")
+        delivery_id = claim.get(
+            "delivery_id"
+        )
+
         state.persistent_delivery_id = (
             int(delivery_id)
             if delivery_id is not None
@@ -293,29 +590,48 @@ class PersistentPublicationStateStore(
         )
 
         state.status = str(
-            claim.get("status") or "sending"
+            claim.get("status")
+            or "sending"
         )
+
         state.error = None
 
         if (
-            state.persistent_delivery_id is not None
-            and state.status == "succeeded"
+            state.persistent_delivery_id
+            is not None
+            and state.status
+            == "succeeded"
         ):
             self._restore_persisted_success_parts(
                 source_key=source_key,
-                target_identity=target_identity,
-                delivery_id=state.persistent_delivery_id,
-            )
-            if delivery_state_has_success_proof(
-                state
-            ):
-                return state
-            state.status = "failed"
-            state.error = (
-                "delivery marked succeeded without transport proof"
+                target_identity=(
+                    target_identity
+                ),
+                delivery_id=(
+                    state
+                    .persistent_delivery_id
+                ),
             )
 
-        if not bool(claim.get("claimed")):
+            if (
+                delivery_state_has_success_proof(
+                    state
+                )
+            ):
+                return state
+
+            # A persisted delivery row saying "succeeded"
+            # without any transport message ID is stale/invalid
+            # recovery state and MUST NOT short-circuit the sender.
+            state.status = "failed"
+            state.error = (
+                "delivery marked succeeded "
+                "without transport proof"
+            )
+
+        if not bool(
+            claim.get("claimed")
+        ):
             return None
 
         return state
@@ -330,30 +646,49 @@ class PersistentPublicationStateStore(
         from core import database
 
         for persisted in (
-            database.list_persistent_publication_parts(
-                delivery_id=int(delivery_id),
+            database
+            .list_persistent_publication_parts(
+                delivery_id=int(
+                    delivery_id
+                ),
             )
             or ()
         ):
-            if str(
-                persisted.get("status") or ""
-            ) != "succeeded":
+            if (
+                str(
+                    persisted.get(
+                        "status"
+                    )
+                    or ""
+                )
+                != "succeeded"
+            ):
                 continue
 
-            message_id = persisted.get("message_id")
-            raw_message_ids = (
-                persisted.get("message_ids") or ()
-            )
-            message_ids = tuple(
-                int(value)
-                for value in raw_message_ids
-                if isinstance(value, int)
-                and not isinstance(value, bool)
+            message_id = persisted.get(
+                "message_id"
             )
 
-            if (
-                message_id is None
-                and not message_ids
+            raw_message_ids = (
+                persisted.get(
+                    "message_ids"
+                )
+                or ()
+            )
+
+            message_ids = (
+                _normalized_message_ids(
+                    raw_message_ids
+                )
+            )
+
+            # A database row with status=succeeded but without a
+            # real transport message ID is not a successful part.
+            # Do not restore it into completed_parts; doing so would
+            # cause publication_engine to skip the actual sender.
+            if not _part_has_transport_proof(
+                message_id=message_id,
+                message_ids=message_ids,
             ):
                 continue
 
@@ -361,10 +696,21 @@ class PersistentPublicationStateStore(
                 source_key,
                 target_identity,
                 str(
-                    persisted.get("part_key") or ""
+                    persisted.get(
+                        "part_key"
+                    )
+                    or ""
                 ),
-                message_id=message_id,
-                message_ids=message_ids,
+                message_id=(
+                    int(message_id)
+                    if _valid_message_id(
+                        message_id
+                    )
+                    else None
+                ),
+                message_ids=(
+                    message_ids
+                ),
                 destination_chat_id=(
                     persisted.get(
                         "destination_chat_id"
@@ -378,18 +724,62 @@ class PersistentPublicationStateStore(
         target_identity: str,
         part: str,
         message_id: Optional[int] = None,
-        message_ids: Optional[Tuple[int, ...]] = None,
-        destination_chat_id: Optional[str] = None,
+        message_ids: Optional[
+            Tuple[int, ...]
+        ] = None,
+        destination_chat_id: Optional[
+            str
+        ] = None,
     ) -> None:
         from core import database
+
+        normalized_ids = (
+            _normalized_message_ids(
+                message_ids
+            )
+        )
+
+        normalized_primary = (
+            int(message_id)
+            if _valid_message_id(
+                message_id
+            )
+            else None
+        )
+
+        # Persistent success is allowed only with real transport
+        # proof. This prevents status=succeeded/NULL-message rows
+        # from creating false idempotent success on later retries.
+        if not _part_has_transport_proof(
+            message_id=normalized_primary,
+            message_ids=normalized_ids,
+        ):
+            state = self.claim_destination(
+                source_key,
+                target_identity,
+            )
+
+            state.status = "failed"
+            state.error = (
+                f"{part} completed without "
+                "transport message id"
+            )
+
+            return
 
         super().part_succeeded(
             source_key,
             target_identity,
             part,
-            message_id=message_id,
-            message_ids=message_ids,
-            destination_chat_id=destination_chat_id,
+            message_id=(
+                normalized_primary
+            ),
+            message_ids=(
+                normalized_ids
+            ),
+            destination_chat_id=(
+                destination_chat_id
+            ),
         )
 
         state = self.get_delivery(
@@ -399,16 +789,25 @@ class PersistentPublicationStateStore(
 
         if (
             state is None
-            or state.persistent_delivery_id is None
+            or state.persistent_delivery_id
+            is None
         ):
             return
 
         database.record_persistent_publication_part_success(
-            delivery_id=state.persistent_delivery_id,
+            delivery_id=(
+                state.persistent_delivery_id
+            ),
             part_key=part,
-            message_id=message_id,
-            message_ids=message_ids,
-            destination_chat_id=destination_chat_id,
+            message_id=(
+                normalized_primary
+            ),
+            message_ids=(
+                normalized_ids
+            ),
+            destination_chat_id=(
+                destination_chat_id
+            ),
         )
 
     def part_completed(
@@ -419,52 +818,106 @@ class PersistentPublicationStateStore(
     ) -> bool:
         from core import database
 
-        if super().part_completed(
-            source_key,
-            target_identity,
-            part,
-        ):
-            return True
-
         state = self.get_delivery(
             source_key,
             target_identity,
         )
 
+        # In-memory completion is safe to reuse only when this exact
+        # part also has transport proof.
+        if (
+            state is not None
+            and part
+            in state.completed_parts
+            and _part_has_transport_proof(
+                message_id=(
+                    state.message_ids.get(
+                        part
+                    )
+                ),
+                message_ids=(
+                    state.all_message_ids.get(
+                        part,
+                        (),
+                    )
+                ),
+            )
+        ):
+            return True
+
         if (
             state is None
-            or state.persistent_delivery_id is None
+            or state.persistent_delivery_id
+            is None
         ):
             return False
 
-        persisted = database.get_persistent_publication_part(
-            delivery_id=state.persistent_delivery_id,
-            part_key=part,
+        persisted = (
+            database
+            .get_persistent_publication_part(
+                delivery_id=(
+                    state
+                    .persistent_delivery_id
+                ),
+                part_key=part,
+            )
         )
 
         if not persisted:
             return False
 
-        if str(persisted.get("status") or "") != "succeeded":
+        if (
+            str(
+                persisted.get(
+                    "status"
+                )
+                or ""
+            )
+            != "succeeded"
+        ):
             return False
 
-        message_ids = tuple(
-            int(value)
-            for value in (
-                persisted.get("message_ids") or ()
-            )
-            if isinstance(value, int)
-            and not isinstance(value, bool)
+        message_id = persisted.get(
+            "message_id"
         )
+
+        message_ids = (
+            _normalized_message_ids(
+                persisted.get(
+                    "message_ids"
+                )
+                or ()
+            )
+        )
+
+        # CRITICAL:
+        # status=succeeded is NOT sufficient.
+        # A real Telegram/Bale transport message ID must exist,
+        # otherwise the sender must execute again.
+        if not _part_has_transport_proof(
+            message_id=message_id,
+            message_ids=message_ids,
+        ):
+            return False
 
         super().part_succeeded(
             source_key,
             target_identity,
             part,
-            message_id=persisted.get("message_id"),
-            message_ids=message_ids,
+            message_id=(
+                int(message_id)
+                if _valid_message_id(
+                    message_id
+                )
+                else None
+            ),
+            message_ids=(
+                message_ids
+            ),
             destination_chat_id=(
-                persisted.get("destination_chat_id")
+                persisted.get(
+                    "destination_chat_id"
+                )
             ),
         )
 
@@ -476,6 +929,25 @@ class PersistentPublicationStateStore(
         target_identity: str,
     ) -> None:
         from core import database
+
+        state = self.get_delivery(
+            source_key,
+            target_identity,
+        )
+
+        # Never mark a destination succeeded merely because its
+        # parts/status say completed. Require actual transport proof.
+        if not delivery_state_has_success_proof(
+            state
+        ):
+            if state is not None:
+                state.status = "failed"
+                state.error = (
+                    "delivery completed without "
+                    "transport confirmation"
+                )
+
+            return
 
         super().mark_succeeded(
             source_key,
@@ -489,12 +961,15 @@ class PersistentPublicationStateStore(
 
         if (
             state is None
-            or state.persistent_delivery_id is None
+            or state.persistent_delivery_id
+            is None
         ):
             return
 
         database.mark_persistent_publication_delivery_succeeded(
-            delivery_id=state.persistent_delivery_id,
+            delivery_id=(
+                state.persistent_delivery_id
+            ),
         )
 
     def mark_failed(
@@ -518,13 +993,19 @@ class PersistentPublicationStateStore(
 
         if (
             state is None
-            or state.persistent_delivery_id is None
+            or state.persistent_delivery_id
+            is None
         ):
             return
 
         database.mark_persistent_publication_delivery_failed(
-            delivery_id=state.persistent_delivery_id,
+            delivery_id=(
+                state.persistent_delivery_id
+            ),
             error=str(error),
         )
 
-DEFAULT_PUBLICATION_STATE_STORE = InMemoryPublicationStateStore()
+
+DEFAULT_PUBLICATION_STATE_STORE = (
+    InMemoryPublicationStateStore()
+)
