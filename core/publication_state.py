@@ -42,6 +42,8 @@ def delivery_state_has_success_proof(
 ) -> bool:
     if state is None:
         return False
+    if state.completed_parts:
+        return True
     if any(
         isinstance(value, int)
         and not isinstance(value, bool)
