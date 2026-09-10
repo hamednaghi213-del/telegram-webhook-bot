@@ -4740,6 +4740,7 @@ def handle_webhook() -> Tuple[
                                 answer_callback_query
                             ),
                             send_message=send_message,
+                            publish_prepared_text=publish_prepared_text,
                             req_id=req_id,
                         )
                     )
