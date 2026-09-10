@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from core.translation_provider import (
@@ -10,9 +10,8 @@ from core.translation_provider import (
 )
 
 from core.translation_service import (
-    TranslationRequest,
     TranslationResult,
-    translate_text_safely,
+    translate_text,
 )
 
 from core.translation_state import (
@@ -57,42 +56,41 @@ logger = logging.getLogger(__name__)
 # TRANSLATION CONTROLLER
 # =========================================================
 #
-# NEW FILE
+# EXISTING FILE — FULL REPLACEMENT
 #
-# این فایل چهار بخش Translation را به هم وصل می‌کند:
+# Shared Translation workflow controller.
 #
 # translation_service.py
+#          ↑
 # translation_provider.py
-# translation_ui.py
+#          ↑
+# translation_controller.py
+#          ↓
 # translation_state.py
+#          ↓
+# translation_ui.py
 #
-# Flow:
+# Responsibilities:
 #
-# User content
-#      ↓
-# start_translation()
-#      ↓
-# Language menu
-#      ↓
-# select_translation_language()
-#      ↓
-# Gemini Provider
-#      ↓
-# Safe Translation + Validation
-#      ↓
-# Translation Preview
-#      ↓
-# Confirm / Edit / Cancel
+# - create translation review
+# - language selection
+# - custom language
+# - execute translation
+# - validation result handling
+# - preview
+# - manual edit
+# - confirmation
+# - cancellation
 #
-# این فایل هنوز:
+# It intentionally DOES NOT:
 #
-# - مستقیم Telegram API را صدا نمی‌زند.
-# - مستقیم Bale API را صدا نمی‌زند.
-# - Publication Engine را صدا نمی‌زند.
-# - Legacy / Workspace را تغییر نمی‌دهد.
+# - publish directly to Telegram
+# - publish directly to Bale
+# - bypass PublicationPlan
+# - modify Legacy / Workspace routing
 #
-# مرحله بعد، همین Controller از webhook/callback handler
-# فراخوانی خواهد شد.
+# Confirmed translated content will later be handed to the
+# existing Shared Publication Engine by webhook_handler.py.
 #
 # =========================================================
 
@@ -106,8 +104,6 @@ RESULT_LANGUAGE_MENU = "language_menu"
 RESULT_MORE_LANGUAGES = "more_languages"
 
 RESULT_CUSTOM_LANGUAGE_INPUT = "custom_language_input"
-
-RESULT_TRANSLATING = "translating"
 
 RESULT_PREVIEW = "preview"
 
@@ -126,6 +122,8 @@ RESULT_FORBIDDEN = "forbidden"
 RESULT_INVALID_LANGUAGE = "invalid_language"
 
 RESULT_INVALID_STATE = "invalid_state"
+
+RESULT_ORIGINAL = "original"
 
 
 # =========================================================
@@ -154,7 +152,9 @@ class TranslationControllerResult:
 
     reason: str = ""
 
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any] = field(
+        default_factory=dict
+    )
 
 
 # =========================================================
@@ -162,8 +162,9 @@ class TranslationControllerResult:
 # =========================================================
 
 def _keyboard_markup(
-    keyboard
+    keyboard,
 ) -> Dict[str, Any]:
+
     return keyboard_to_telegram_markup(
         keyboard
     )
@@ -175,7 +176,9 @@ def _state_security_check(
     chat_id: int,
     user_id: int,
 ) -> Optional[TranslationControllerResult]:
+
     if state is None:
+
         return TranslationControllerResult(
             success=False,
             action=RESULT_NOT_FOUND,
@@ -187,6 +190,7 @@ def _state_security_check(
         chat_id=chat_id,
         user_id=user_id,
     ):
+
         logger.warning(
             "⚠️ Translation state ownership rejected | "
             "review_id=%s | chat_id=%s | user_id=%s",
@@ -199,10 +203,140 @@ def _state_security_check(
             success=False,
             action=RESULT_FORBIDDEN,
             review_id=state.review_id,
+            state=state,
             reason="translation_state_forbidden",
         )
 
     return None
+
+
+def _result_validation_errors(
+    result: TranslationResult,
+) -> list:
+
+    validation = getattr(
+        result,
+        "validation",
+        None,
+    )
+
+    if validation is None:
+        return []
+
+    return list(
+        getattr(
+            validation,
+            "errors",
+            [],
+        )
+        or []
+    )
+
+
+def _result_validation_warnings(
+    result: TranslationResult,
+) -> list:
+
+    validation = getattr(
+        result,
+        "validation",
+        None,
+    )
+
+    if validation is None:
+        return []
+
+    return list(
+        getattr(
+            validation,
+            "warnings",
+            [],
+        )
+        or []
+    )
+
+
+def _result_attempts(
+    result: TranslationResult,
+) -> int:
+
+    metadata = getattr(
+        result,
+        "metadata",
+        {},
+    )
+
+    if isinstance(
+        metadata,
+        dict,
+    ):
+
+        try:
+            return int(
+                metadata.get(
+                    "attempts",
+                    1,
+                )
+                or 1
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            pass
+
+    try:
+        return int(
+            getattr(
+                result,
+                "attempts",
+                1,
+            )
+            or 1
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return 1
+
+
+def _result_reason(
+    result: TranslationResult,
+) -> str:
+
+    reason = getattr(
+        result,
+        "reason",
+        "",
+    )
+
+    if reason:
+        return str(
+            reason
+        )
+
+    validation_errors = (
+        _result_validation_errors(
+            result
+        )
+    )
+
+    if validation_errors:
+        return str(
+            validation_errors[0]
+        )
+
+    if not getattr(
+        result,
+        "success",
+        False,
+    ):
+        return "translation_failed"
+
+    return "translation_completed"
 
 
 # =========================================================
@@ -219,18 +353,14 @@ def start_translation(
     source_key: str = "",
     metadata: Optional[Dict[str, Any]] = None,
 ) -> TranslationControllerResult:
-    """
-    شروع Session ترجمه.
-
-    این تابع متن را ترجمه نمی‌کند.
-    فقط State می‌سازد و منوی انتخاب زبان را برمی‌گرداند.
-    """
 
     text = str(
-        original_text or ""
+        original_text
+        or ""
     )
 
     if not text.strip():
+
         return TranslationControllerResult(
             success=False,
             action=RESULT_FAILED,
@@ -238,6 +368,7 @@ def start_translation(
         )
 
     try:
+
         state = create_translation_state(
             chat_id=chat_id,
             user_id=user_id,
@@ -249,6 +380,7 @@ def start_translation(
         )
 
     except Exception as exc:
+
         logger.exception(
             "❌ Could not create translation state | "
             "chat_id=%s | user_id=%s",
@@ -259,13 +391,15 @@ def start_translation(
         return TranslationControllerResult(
             success=False,
             action=RESULT_FAILED,
-            reason=str(exc),
+            reason=str(
+                exc
+            ),
         )
 
     logger.info(
         "🌐 Translation workflow started | "
-        "review_id=%s | chat_id=%s | user_id=%s | "
-        "source_kind=%s",
+        "review_id=%s | chat_id=%s | "
+        "user_id=%s | source_kind=%s",
         state.review_id,
         chat_id,
         user_id,
@@ -275,7 +409,9 @@ def start_translation(
     return TranslationControllerResult(
         success=True,
         action=RESULT_LANGUAGE_MENU,
-        text=build_language_selection_text(),
+        text=(
+            build_language_selection_text()
+        ),
         reply_markup=_keyboard_markup(
             build_language_keyboard()
         ),
@@ -285,7 +421,7 @@ def start_translation(
 
 
 # =========================================================
-# SHOW LANGUAGE MENU
+# LANGUAGE MENU
 # =========================================================
 
 def show_translation_language_menu(
@@ -294,14 +430,17 @@ def show_translation_language_menu(
     chat_id: int,
     user_id: int,
 ) -> TranslationControllerResult:
+
     state = get_translation_state(
         review_id
     )
 
-    security_result = _state_security_check(
-        state,
-        chat_id=chat_id,
-        user_id=user_id,
+    security_result = (
+        _state_security_check(
+            state,
+            chat_id=chat_id,
+            user_id=user_id,
+        )
     )
 
     if security_result:
@@ -310,7 +449,9 @@ def show_translation_language_menu(
     return TranslationControllerResult(
         success=True,
         action=RESULT_LANGUAGE_MENU,
-        text=build_language_selection_text(),
+        text=(
+            build_language_selection_text()
+        ),
         reply_markup=_keyboard_markup(
             build_language_keyboard()
         ),
@@ -330,14 +471,17 @@ def show_more_translation_languages(
     user_id: int,
     page: int = 0,
 ) -> TranslationControllerResult:
+
     state = get_translation_state(
         review_id
     )
 
-    security_result = _state_security_check(
-        state,
-        chat_id=chat_id,
-        user_id=user_id,
+    security_result = (
+        _state_security_check(
+            state,
+            chat_id=chat_id,
+            user_id=user_id,
+        )
     )
 
     if security_result:
@@ -360,7 +504,7 @@ def show_more_translation_languages(
 
 
 # =========================================================
-# CUSTOM LANGUAGE MODE
+# CUSTOM LANGUAGE
 # =========================================================
 
 def request_custom_translation_language(
@@ -369,42 +513,52 @@ def request_custom_translation_language(
     chat_id: int,
     user_id: int,
 ) -> TranslationControllerResult:
+
     state = get_translation_state(
         review_id
     )
 
-    security_result = _state_security_check(
-        state,
-        chat_id=chat_id,
-        user_id=user_id,
+    security_result = (
+        _state_security_check(
+            state,
+            chat_id=chat_id,
+            user_id=user_id,
+        )
     )
 
     if security_result:
         return security_result
 
-    updated = mark_waiting_custom_language(
-        review_id
+    updated = (
+        mark_waiting_custom_language(
+            review_id
+        )
     )
 
     if updated is None:
+
         return TranslationControllerResult(
             success=False,
             action=RESULT_FAILED,
             review_id=review_id,
-            reason="could_not_mark_custom_language_wait",
+            reason=(
+                "could_not_mark_custom_language_wait"
+            ),
         )
 
     return TranslationControllerResult(
         success=True,
         action=RESULT_CUSTOM_LANGUAGE_INPUT,
-        text=build_custom_language_prompt(),
+        text=(
+            build_custom_language_prompt()
+        ),
         review_id=review_id,
         state=updated,
     )
 
 
 # =========================================================
-# TRANSLATION ENGINE EXECUTION
+# EXECUTE TRANSLATION
 # =========================================================
 
 def _execute_translation(
@@ -413,21 +567,30 @@ def _execute_translation(
     target_language: str,
     target_language_code: str = "",
 ) -> TranslationControllerResult:
-    provider = get_default_translation_provider()
+
+    provider = (
+        get_default_translation_provider()
+    )
 
     if provider is None:
+
         provider_status = (
             get_translation_provider_status()
         )
 
-        failed_state = mark_translation_failed(
-            state.review_id,
-            reason=provider_status.reason,
+        failed_state = (
+            mark_translation_failed(
+                state.review_id,
+                reason=(
+                    provider_status.reason
+                ),
+            )
         )
 
         logger.error(
             "❌ Translation provider unavailable | "
-            "review_id=%s | provider=%s | model=%s | reason=%s",
+            "review_id=%s | provider=%s | "
+            "model=%s | reason=%s",
             state.review_id,
             provider_status.provider,
             provider_status.model,
@@ -446,132 +609,217 @@ def _execute_translation(
             reason=provider_status.reason,
         )
 
-    language_state = set_translation_language(
-        state.review_id,
-        target_language=target_language,
-        target_language_code=target_language_code,
+    language_state = (
+        set_translation_language(
+            state.review_id,
+            target_language=(
+                target_language
+            ),
+            target_language_code=(
+                target_language_code
+            ),
+        )
     )
 
     if language_state is None:
+
         return TranslationControllerResult(
             success=False,
             action=RESULT_FAILED,
             review_id=state.review_id,
-            reason="could_not_set_translation_language",
+            reason=(
+                "could_not_set_translation_language"
+            ),
         )
-
-    request = TranslationRequest(
-        text=language_state.original_text,
-        source_language=(
-            language_state.source_language
-        ),
-        target_language=target_language,
-        metadata={
-            **dict(
-                language_state.metadata
-            ),
-            "review_id": (
-                language_state.review_id
-            ),
-            "source_kind": (
-                language_state.source_kind
-            ),
-            "source_key": (
-                language_state.source_key
-            ),
-        },
-    )
 
     logger.info(
         "🌐 Translation execution started | "
-        "review_id=%s | source=%s | target=%s | code=%s",
+        "review_id=%s | source=%s | "
+        "target=%s | code=%s",
         language_state.review_id,
         language_state.source_language,
         target_language,
         target_language_code,
     )
 
-    result = translate_text_safely(
-        request=request,
-        provider=provider,
-    )
+    try:
 
-    if (
-        not result.success
-        or not result.validation_passed
-    ):
-        failed_state = mark_translation_failed(
-            language_state.review_id,
-            reason=result.reason,
+        result = translate_text(
+            text=language_state.original_text,
+            target_language=target_language,
+            provider=provider,
+            source_language=(
+                language_state.source_language
+            ),
         )
 
-        logger.warning(
-            "⚠️ Translation workflow failed | "
-            "review_id=%s | reason=%s | attempts=%s | "
-            "validation_errors=%s",
+    except Exception as exc:
+
+        logger.exception(
+            "❌ Translation service raised error | "
+            "review_id=%s | target=%s",
             language_state.review_id,
-            result.reason,
-            result.attempts,
-            list(
-                result.validation.errors
-            ),
+            target_language,
+        )
+
+        failed_state = (
+            mark_translation_failed(
+                language_state.review_id,
+                reason=(
+                    "translation_service_error"
+                ),
+            )
         )
 
         return TranslationControllerResult(
             success=False,
             action=RESULT_FAILED,
             text=build_translation_failed_text(
-                result.reason
+                "translation_service_error"
             ),
-            review_id=language_state.review_id,
-            target_language=target_language,
-            state=failed_state,
-            translation_result=result,
-            reason=result.reason,
-        )
-
-    preview_state = set_translation_preview(
-        language_state.review_id,
-        translated_text=(
-            result.translated_text
-        ),
-        metadata={
-            "translation_attempts": (
-                result.attempts
+            review_id=(
+                language_state.review_id
             ),
-            "translation_validation_passed": (
-                result.validation_passed
-            ),
-            "translation_validation_warnings": list(
-                result.validation.warnings
-            ),
-            "translation_target_language": (
+            target_language=(
                 target_language
             ),
-            "translation_target_language_code": (
-                target_language_code
+            state=failed_state,
+            reason=str(
+                exc
             ),
-        },
+        )
+
+    success = bool(
+        getattr(
+            result,
+            "success",
+            False,
+        )
     )
 
-    if preview_state is None:
+    translated_text = str(
+        getattr(
+            result,
+            "translated_text",
+            "",
+        )
+        or ""
+    ).strip()
+
+    reason = _result_reason(
+        result
+    )
+
+    validation_errors = (
+        _result_validation_errors(
+            result
+        )
+    )
+
+    validation_warnings = (
+        _result_validation_warnings(
+            result
+        )
+    )
+
+    attempts = _result_attempts(
+        result
+    )
+
+    if (
+        not success
+        or not translated_text
+        or validation_errors
+    ):
+
+        failed_state = (
+            mark_translation_failed(
+                language_state.review_id,
+                reason=reason,
+            )
+        )
+
+        logger.warning(
+            "⚠️ Translation workflow failed | "
+            "review_id=%s | reason=%s | "
+            "attempts=%s | validation_errors=%s",
+            language_state.review_id,
+            reason,
+            attempts,
+            validation_errors,
+        )
+
         return TranslationControllerResult(
             success=False,
             action=RESULT_FAILED,
-            review_id=language_state.review_id,
+            text=build_translation_failed_text(
+                reason
+            ),
+            review_id=(
+                language_state.review_id
+            ),
+            target_language=(
+                target_language
+            ),
+            state=failed_state,
             translation_result=result,
-            reason="could_not_store_translation_preview",
+            reason=reason,
+            metadata={
+                "validation_errors":
+                    validation_errors,
+                "validation_warnings":
+                    validation_warnings,
+                "attempts":
+                    attempts,
+            },
+        )
+
+    preview_state = (
+        set_translation_preview(
+            language_state.review_id,
+            translated_text=translated_text,
+            metadata={
+                "translation_attempts":
+                    attempts,
+
+                "translation_validation_errors":
+                    validation_errors,
+
+                "translation_validation_warnings":
+                    validation_warnings,
+
+                "translation_target_language":
+                    target_language,
+
+                "translation_target_language_code":
+                    target_language_code,
+            },
+        )
+    )
+
+    if preview_state is None:
+
+        return TranslationControllerResult(
+            success=False,
+            action=RESULT_FAILED,
+            review_id=(
+                language_state.review_id
+            ),
+            translation_result=result,
+            reason=(
+                "could_not_store_translation_preview"
+            ),
         )
 
     logger.info(
         "✅ Translation preview ready | "
-        "review_id=%s | target=%s | attempts=%s | "
-        "output_length=%s",
+        "review_id=%s | target=%s | "
+        "attempts=%s | output_length=%s",
         preview_state.review_id,
         target_language,
-        result.attempts,
+        attempts,
         len(
-            result.translated_text
+            translated_text
         ),
     )
 
@@ -584,19 +832,31 @@ def _execute_translation(
         reply_markup=_keyboard_markup(
             build_translation_preview_keyboard()
         ),
-        review_id=preview_state.review_id,
+        review_id=(
+            preview_state.review_id
+        ),
         translated_text=(
             preview_state.translated_text
         ),
-        target_language=target_language,
+        target_language=(
+            target_language
+        ),
         state=preview_state,
         translation_result=result,
-        reason="translation_preview_ready",
+        reason=(
+            "translation_preview_ready"
+        ),
+        metadata={
+            "validation_warnings":
+                validation_warnings,
+            "attempts":
+                attempts,
+        },
     )
 
 
 # =========================================================
-# SELECT REGISTERED LANGUAGE
+# REGISTERED LANGUAGE
 # =========================================================
 
 def select_translation_language(
@@ -606,14 +866,17 @@ def select_translation_language(
     user_id: int,
     language_code: str,
 ) -> TranslationControllerResult:
+
     state = get_translation_state(
         review_id
     )
 
-    security_result = _state_security_check(
-        state,
-        chat_id=chat_id,
-        user_id=user_id,
+    security_result = (
+        _state_security_check(
+            state,
+            chat_id=chat_id,
+            user_id=user_id,
+        )
     )
 
     if security_result:
@@ -626,8 +889,9 @@ def select_translation_language(
     )
 
     if language is None:
+
         logger.warning(
-            "⚠️ Unknown translation language code | "
+            "⚠️ Unknown translation language | "
             "review_id=%s | code=%s",
             review_id,
             language_code,
@@ -637,7 +901,10 @@ def select_translation_language(
             success=False,
             action=RESULT_INVALID_LANGUAGE,
             review_id=review_id,
-            reason="unknown_translation_language",
+            state=state,
+            reason=(
+                "unknown_translation_language"
+            ),
         )
 
     return _execute_translation(
@@ -652,7 +919,7 @@ def select_translation_language(
 
 
 # =========================================================
-# SELECT CUSTOM LANGUAGE
+# CUSTOM LANGUAGE SUBMISSION
 # =========================================================
 
 def submit_custom_translation_language(
@@ -661,15 +928,20 @@ def submit_custom_translation_language(
     user_id: int,
     target_language: str,
 ) -> TranslationControllerResult:
-    state = get_active_translation_state(
-        chat_id=chat_id,
-        user_id=user_id,
+
+    state = (
+        get_active_translation_state(
+            chat_id=chat_id,
+            user_id=user_id,
+        )
     )
 
-    security_result = _state_security_check(
-        state,
-        chat_id=chat_id,
-        user_id=user_id,
+    security_result = (
+        _state_security_check(
+            state,
+            chat_id=chat_id,
+            user_id=user_id,
+        )
     )
 
     if security_result:
@@ -679,35 +951,46 @@ def submit_custom_translation_language(
         state.status
         != STATE_WAITING_CUSTOM_LANGUAGE
     ):
+
         return TranslationControllerResult(
             success=False,
             action=RESULT_INVALID_STATE,
             review_id=state.review_id,
             state=state,
-            reason="not_waiting_for_custom_language",
+            reason=(
+                "not_waiting_for_custom_language"
+            ),
         )
 
     language_name = str(
-        target_language or ""
+        target_language
+        or ""
     ).strip()
 
     if not language_name:
+
         return TranslationControllerResult(
             success=False,
             action=RESULT_INVALID_LANGUAGE,
             review_id=state.review_id,
             state=state,
-            reason="empty_custom_language",
+            reason=(
+                "empty_custom_language"
+            ),
         )
 
-    # جلوگیری از ورودی‌های غیرمنطقی و متن‌های بسیار طولانی
-    if len(language_name) > 80:
+    if len(
+        language_name
+    ) > 80:
+
         return TranslationControllerResult(
             success=False,
             action=RESULT_INVALID_LANGUAGE,
             review_id=state.review_id,
             state=state,
-            reason="custom_language_too_long",
+            reason=(
+                "custom_language_too_long"
+            ),
         )
 
     return _execute_translation(
@@ -727,38 +1010,49 @@ def request_translation_edit(
     chat_id: int,
     user_id: int,
 ) -> TranslationControllerResult:
+
     state = get_translation_state(
         review_id
     )
 
-    security_result = _state_security_check(
-        state,
-        chat_id=chat_id,
-        user_id=user_id,
+    security_result = (
+        _state_security_check(
+            state,
+            chat_id=chat_id,
+            user_id=user_id,
+        )
     )
 
     if security_result:
         return security_result
 
     if state.status != STATE_PREVIEW:
+
         return TranslationControllerResult(
             success=False,
             action=RESULT_INVALID_STATE,
             review_id=review_id,
             state=state,
-            reason="translation_not_in_preview",
+            reason=(
+                "translation_not_in_preview"
+            ),
         )
 
-    updated = mark_waiting_translation_edit(
-        review_id
+    updated = (
+        mark_waiting_translation_edit(
+            review_id
+        )
     )
 
     if updated is None:
+
         return TranslationControllerResult(
             success=False,
             action=RESULT_FAILED,
             review_id=review_id,
-            reason="could_not_enter_translation_edit",
+            reason=(
+                "could_not_enter_translation_edit"
+            ),
         )
 
     return TranslationControllerResult(
@@ -766,7 +1060,8 @@ def request_translation_edit(
         action=RESULT_EDIT_INPUT,
         text=(
             "✏️ متن ترجمه‌شده را اصلاح کنید.\n\n"
-            "نسخه کامل اصلاح‌شده را در پیام بعدی ارسال کنید."
+            "نسخه کامل اصلاح‌شده را در پیام بعدی "
+            "ارسال کنید."
         ),
         review_id=review_id,
         translated_text=(
@@ -789,53 +1084,73 @@ def submit_translation_edit(
     user_id: int,
     translated_text: str,
 ) -> TranslationControllerResult:
-    state = get_active_translation_state(
-        chat_id=chat_id,
-        user_id=user_id,
+
+    state = (
+        get_active_translation_state(
+            chat_id=chat_id,
+            user_id=user_id,
+        )
     )
 
-    security_result = _state_security_check(
-        state,
-        chat_id=chat_id,
-        user_id=user_id,
+    security_result = (
+        _state_security_check(
+            state,
+            chat_id=chat_id,
+            user_id=user_id,
+        )
     )
 
     if security_result:
         return security_result
 
-    if state.status != STATE_WAITING_EDIT:
+    if (
+        state.status
+        != STATE_WAITING_EDIT
+    ):
+
         return TranslationControllerResult(
             success=False,
             action=RESULT_INVALID_STATE,
             review_id=state.review_id,
             state=state,
-            reason="not_waiting_for_translation_edit",
+            reason=(
+                "not_waiting_for_translation_edit"
+            ),
         )
 
     text = str(
-        translated_text or ""
+        translated_text
+        or ""
     ).strip()
 
     if not text:
+
         return TranslationControllerResult(
             success=False,
             action=RESULT_FAILED,
             review_id=state.review_id,
             state=state,
-            reason="empty_translation_edit",
+            reason=(
+                "empty_translation_edit"
+            ),
         )
 
-    updated = apply_translation_edit(
-        state.review_id,
-        translated_text=text,
+    updated = (
+        apply_translation_edit(
+            state.review_id,
+            translated_text=text,
+        )
     )
 
     if updated is None:
+
         return TranslationControllerResult(
             success=False,
             action=RESULT_FAILED,
             review_id=state.review_id,
-            reason="could_not_apply_translation_edit",
+            reason=(
+                "could_not_apply_translation_edit"
+            ),
         )
 
     return TranslationControllerResult(
@@ -848,10 +1163,16 @@ def submit_translation_edit(
             build_translation_preview_keyboard()
         ),
         review_id=updated.review_id,
-        translated_text=updated.translated_text,
-        target_language=updated.target_language,
+        translated_text=(
+            updated.translated_text
+        ),
+        target_language=(
+            updated.target_language
+        ),
         state=updated,
-        reason="translation_edit_applied",
+        reason=(
+            "translation_edit_applied"
+        ),
     )
 
 
@@ -865,35 +1186,44 @@ def confirm_translation(
     chat_id: int,
     user_id: int,
 ) -> TranslationControllerResult:
+
     state = get_translation_state(
         review_id
     )
 
-    security_result = _state_security_check(
-        state,
-        chat_id=chat_id,
-        user_id=user_id,
+    security_result = (
+        _state_security_check(
+            state,
+            chat_id=chat_id,
+            user_id=user_id,
+        )
     )
 
     if security_result:
         return security_result
 
-    confirmed = confirm_translation_state(
-        review_id
+    confirmed = (
+        confirm_translation_state(
+            review_id
+        )
     )
 
     if confirmed is None:
+
         return TranslationControllerResult(
             success=False,
             action=RESULT_INVALID_STATE,
             review_id=review_id,
             state=state,
-            reason="translation_cannot_be_confirmed",
+            reason=(
+                "translation_cannot_be_confirmed"
+            ),
         )
 
     logger.info(
         "✅ Translation confirmed | "
-        "review_id=%s | target=%s | source_kind=%s",
+        "review_id=%s | target=%s | "
+        "source_kind=%s",
         confirmed.review_id,
         confirmed.target_language,
         confirmed.source_kind,
@@ -903,26 +1233,34 @@ def confirm_translation(
         success=True,
         action=RESULT_CONFIRMED,
         review_id=confirmed.review_id,
-        translated_text=confirmed.translated_text,
-        target_language=confirmed.target_language,
+        translated_text=(
+            confirmed.translated_text
+        ),
+        target_language=(
+            confirmed.target_language
+        ),
         state=confirmed,
         reason="translation_confirmed",
         metadata={
-            "source_kind": (
-                confirmed.source_kind
-            ),
-            "source_key": (
-                confirmed.source_key
-            ),
-            "original_text": (
-                confirmed.original_text
+            "source_kind":
+                confirmed.source_kind,
+
+            "source_key":
+                confirmed.source_key,
+
+            "original_text":
+                confirmed.original_text,
+
+            **dict(
+                confirmed.metadata
+                or {}
             ),
         },
     )
 
 
 # =========================================================
-# CANCEL TRANSLATION
+# CANCEL
 # =========================================================
 
 def cancel_translation(
@@ -931,29 +1269,37 @@ def cancel_translation(
     chat_id: int,
     user_id: int,
 ) -> TranslationControllerResult:
+
     state = get_translation_state(
         review_id
     )
 
-    security_result = _state_security_check(
-        state,
-        chat_id=chat_id,
-        user_id=user_id,
+    security_result = (
+        _state_security_check(
+            state,
+            chat_id=chat_id,
+            user_id=user_id,
+        )
     )
 
     if security_result:
         return security_result
 
-    cancelled = cancel_translation_state(
-        review_id
+    cancelled = (
+        cancel_translation_state(
+            review_id
+        )
     )
 
     if cancelled is None:
+
         return TranslationControllerResult(
             success=False,
             action=RESULT_FAILED,
             review_id=review_id,
-            reason="translation_cancel_failed",
+            reason=(
+                "translation_cancel_failed"
+            ),
         )
 
     logger.info(
@@ -968,7 +1314,9 @@ def cancel_translation(
         text="❌ ترجمه لغو شد.",
         review_id=review_id,
         state=cancelled,
-        reason="translation_cancelled",
+        reason=(
+            "translation_cancelled"
+        ),
     )
 
 
@@ -982,14 +1330,17 @@ def get_translation_original(
     chat_id: int,
     user_id: int,
 ) -> TranslationControllerResult:
+
     state = get_translation_state(
         review_id
     )
 
-    security_result = _state_security_check(
-        state,
-        chat_id=chat_id,
-        user_id=user_id,
+    security_result = (
+        _state_security_check(
+            state,
+            chat_id=chat_id,
+            user_id=user_id,
+        )
     )
 
     if security_result:
@@ -997,7 +1348,7 @@ def get_translation_original(
 
     return TranslationControllerResult(
         success=True,
-        action="original",
+        action=RESULT_ORIGINAL,
         text=state.original_text,
         review_id=review_id,
         translated_text=(
@@ -1019,24 +1370,29 @@ def handle_translation_text_input(
     chat_id: int,
     user_id: int,
     text: str,
-) -> Optional[TranslationControllerResult]:
+) -> Optional[
+    TranslationControllerResult
+]:
+
     """
-    Pending Guard مخصوص Translation.
+    Translation Pending Guard.
 
-    اگر کاربر در مرحله دریافت:
-    - زبان دلخواه
-    - یا متن اصلاح‌شده
+    Only consumes the next text message when Translation
+    explicitly expects text input:
 
-    باشد، پیام بعدی باید ابتدا توسط Translation مصرف شود
-    و نباید وارد مسیر Normal Publication شود.
+    - custom target language
+    - manual translation edit
 
-    اگر Translation Pending وجود نداشته باشد:
-    None برمی‌گرداند تا Webhook مسیر عادی خود را ادامه دهد.
+    Otherwise returns None so the existing webhook continues
+    through its normal Editorial / External Review /
+    Publication flow.
     """
 
-    state = get_active_translation_state(
-        chat_id=chat_id,
-        user_id=user_id,
+    state = (
+        get_active_translation_state(
+            chat_id=chat_id,
+            user_id=user_id,
+        )
     )
 
     if state is None:
@@ -1046,16 +1402,20 @@ def handle_translation_text_input(
         state.status
         == STATE_WAITING_CUSTOM_LANGUAGE
     ):
-        return submit_custom_translation_language(
-            chat_id=chat_id,
-            user_id=user_id,
-            target_language=text,
+
+        return (
+            submit_custom_translation_language(
+                chat_id=chat_id,
+                user_id=user_id,
+                target_language=text,
+            )
         )
 
     if (
         state.status
         == STATE_WAITING_EDIT
     ):
+
         return submit_translation_edit(
             chat_id=chat_id,
             user_id=user_id,
@@ -1070,13 +1430,14 @@ def handle_translation_text_input(
 # =========================================================
 
 def complete_translation_workflow(
-    review_id: str
+    review_id: str,
 ) -> bool:
-    """
-    بعد از اینکه Shared Publication Engine انتشار تأییدشده
-    را دریافت کرد، State موقت ترجمه حذف می‌شود.
 
-    این تابع Publication را انجام نمی‌دهد.
+    """
+    Called only AFTER the existing Shared Publication Engine
+    accepts/completes the confirmed translated publication.
+
+    This function never publishes content itself.
     """
 
     removed = remove_translation_state(
