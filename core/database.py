@@ -3304,3 +3304,909 @@ def mark_persistent_publication_source(
         )
 
     return rows[0]
+
+# =========================================================
+# PERSISTENT TRANSLATION REVIEW STATE
+# =========================================================
+#
+# Durable backend for core.translation_state.
+#
+# Table:
+#     public.translation_reviews
+#
+# IMPORTANT:
+#
+# - Uses service_supabase because translation_reviews has RLS.
+# - Does not publish anything.
+# - Does not contain translation/provider logic.
+# - Does not modify Editorial / Workspace behaviour.
+# - source_kind is persisted as content_kind.
+# - source_key and target_language_code are stored in metadata
+#   so the public TranslationState API can remain unchanged.
+#
+# =========================================================
+
+
+PERSISTENT_TRANSLATION_ACTIVE_STATUSES = (
+    "waiting_language",
+    "waiting_custom_language",
+    "translating",
+    "preview",
+    "waiting_edit",
+)
+
+
+PERSISTENT_TRANSLATION_TERMINAL_STATUSES = (
+    "confirmed",
+    "cancelled",
+    "failed",
+)
+
+
+PERSISTENT_TRANSLATION_ALLOWED_STATUSES = (
+    PERSISTENT_TRANSLATION_ACTIVE_STATUSES
+    + PERSISTENT_TRANSLATION_TERMINAL_STATUSES
+)
+
+
+def _translation_service_client():
+    """
+    Return the privileged client used by persistent translation
+    workflow state.
+
+    translation_reviews has RLS enabled, therefore this state
+    must only be accessed through the trusted backend.
+    """
+
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent translation state is not configured"
+        )
+
+    return service_supabase
+
+
+def _normalize_translation_metadata(
+    metadata: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+
+    if not isinstance(
+        metadata,
+        dict,
+    ):
+        return {}
+
+    return dict(
+        metadata
+    )
+
+
+def _validate_persistent_translation_status(
+    status: str,
+) -> str:
+
+    value = str(
+        status
+        or ""
+    ).strip()
+
+    if (
+        value
+        not in
+        PERSISTENT_TRANSLATION_ALLOWED_STATUSES
+    ):
+        raise ValueError(
+            f"Invalid persistent translation status: {value}"
+        )
+
+    return value
+
+
+@with_retry
+def cleanup_expired_persistent_translation_reviews() -> int:
+    """
+    Delete translation workflows whose TTL has expired.
+
+    SQL function was created by:
+        schema/024_translation_reviews.sql
+    """
+
+    client = (
+        _translation_service_client()
+    )
+
+    result = (
+        client
+        .rpc(
+            "cleanup_expired_translation_reviews"
+        )
+        .execute()
+    )
+
+    value = result.data
+
+    if isinstance(
+        value,
+        list,
+    ):
+        if not value:
+            return 0
+
+        value = value[0]
+
+    if isinstance(
+        value,
+        dict,
+    ):
+        for key in (
+            "cleanup_expired_translation_reviews",
+            "deleted_count",
+            "count",
+        ):
+            if key in value:
+                value = value[
+                    key
+                ]
+                break
+
+    try:
+        return max(
+            0,
+            int(
+                value
+                or 0
+            ),
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        logger.warning(
+            "⚠️ Unexpected translation cleanup result | "
+            f"value={value!r}"
+        )
+
+        return 0
+
+
+@with_retry
+def get_persistent_translation_review(
+    review_id: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Return one translation workflow by stable review_id.
+    """
+
+    normalized_review_id = str(
+        review_id
+        or ""
+    ).strip()
+
+    if not normalized_review_id:
+        return None
+
+    client = (
+        _translation_service_client()
+    )
+
+    result = (
+        client
+        .table(
+            "translation_reviews"
+        )
+        .select("*")
+        .eq(
+            "review_id",
+            normalized_review_id,
+        )
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        return None
+
+    return result.data[0]
+
+
+@with_retry
+def get_active_persistent_translation_review(
+    *,
+    chat_id: int,
+    user_id: int,
+) -> Optional[Dict[str, Any]]:
+    """
+    Return the active translation workflow for one user/chat.
+
+    Expired rows are cleaned first so stale workflow state cannot
+    intercept a future Telegram message.
+    """
+
+    client = (
+        _translation_service_client()
+    )
+
+    # Best-effort expiry cleanup.
+    #
+    # Failure is logged but does not hide an otherwise valid
+    # translation state read.
+    try:
+        cleanup_expired_persistent_translation_reviews()
+
+    except Exception as exc:
+        logger.warning(
+            "⚠️ Translation expiry cleanup failed before active read | "
+            f"chat_id={chat_id} | "
+            f"user_id={user_id} | "
+            f"error={exc}"
+        )
+
+    result = (
+        client
+        .table(
+            "translation_reviews"
+        )
+        .select("*")
+        .eq(
+            "chat_id",
+            int(
+                chat_id
+            ),
+        )
+        .eq(
+            "user_id",
+            int(
+                user_id
+            ),
+        )
+        .in_(
+            "status",
+            list(
+                PERSISTENT_TRANSLATION_ACTIVE_STATUSES
+            ),
+        )
+        .order(
+            "created_at",
+            desc=True,
+        )
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        return None
+
+    return result.data[0]
+
+
+@with_retry
+def create_persistent_translation_review(
+    *,
+    review_id: str,
+    chat_id: int,
+    user_id: int,
+    original_text: str,
+    source_language: str = "auto",
+    source_kind: str = "message",
+    source_key: str = "",
+    metadata: Optional[
+        Dict[str, Any]
+    ] = None,
+    target_language: str = "",
+    target_language_code: str = "",
+    status: str = "waiting_language",
+    source_review_id: Optional[str] = None,
+    source_message_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Create one durable translation workflow.
+
+    Existing ACTIVE state for the same user/chat is cancelled
+    before insertion, matching the existing controller contract:
+    one active translation workflow per user/chat.
+
+    review_id itself remains unique/idempotent.
+    """
+
+    normalized_review_id = str(
+        review_id
+        or ""
+    ).strip()
+
+    if not normalized_review_id:
+        raise ValueError(
+            "Translation review_id is required"
+        )
+
+    normalized_original_text = str(
+        original_text
+        or ""
+    )
+
+    if not normalized_original_text.strip():
+        raise ValueError(
+            "Translation original_text is required"
+        )
+
+    normalized_status = (
+        _validate_persistent_translation_status(
+            status
+        )
+    )
+
+    client = (
+        _translation_service_client()
+    )
+
+    # If this exact review already exists, return it.
+    #
+    # This makes webhook/callback redelivery safe.
+    existing = (
+        get_persistent_translation_review(
+            normalized_review_id
+        )
+    )
+
+    if existing is not None:
+        return existing
+
+    # One active translation workflow per user/chat.
+    #
+    # The DB also enforces this with its partial unique index.
+    (
+        client
+        .table(
+            "translation_reviews"
+        )
+        .update({
+            "status":
+                "cancelled",
+        })
+        .eq(
+            "chat_id",
+            int(
+                chat_id
+            ),
+        )
+        .eq(
+            "user_id",
+            int(
+                user_id
+            ),
+        )
+        .in_(
+            "status",
+            list(
+                PERSISTENT_TRANSLATION_ACTIVE_STATUSES
+            ),
+        )
+        .execute()
+    )
+
+    normalized_metadata = (
+        _normalize_translation_metadata(
+            metadata
+        )
+    )
+
+    if source_key:
+
+        normalized_metadata[
+            "source_key"
+        ] = str(
+            source_key
+        )
+
+    if target_language_code:
+
+        normalized_metadata[
+            "target_language_code"
+        ] = str(
+            target_language_code
+        )
+
+    normalized_source_kind = str(
+        source_kind
+        or "message"
+    ).strip() or "message"
+
+    payload: Dict[str, Any] = {
+        "review_id":
+            normalized_review_id,
+
+        "user_id":
+            int(
+                user_id
+            ),
+
+        "chat_id":
+            int(
+                chat_id
+            ),
+
+        "source_language":
+            str(
+                source_language
+                or "auto"
+            ).strip()
+            or "auto",
+
+        "target_language": (
+            str(
+                target_language
+            ).strip()
+            if target_language
+            else None
+        ),
+
+        "original_text":
+            normalized_original_text,
+
+        "translated_text":
+            None,
+
+        "edited_text":
+            None,
+
+        "status":
+            normalized_status,
+
+        # Schema name = content_kind
+        # TranslationState name = source_kind
+        "content_kind":
+            normalized_source_kind,
+
+        "source_review_id": (
+            str(
+                source_review_id
+            ).strip()
+            if source_review_id
+            else None
+        ),
+
+        "source_message_id": (
+            int(
+                source_message_id
+            )
+            if source_message_id
+            is not None
+            else None
+        ),
+
+        "metadata":
+            normalized_metadata,
+
+        "validation_errors":
+            [],
+
+        "validation_warnings":
+            [],
+
+        "translation_attempts":
+            0,
+    }
+
+    result = (
+        client
+        .table(
+            "translation_reviews"
+        )
+        .insert(
+            payload
+        )
+        .execute()
+    )
+
+    rows = (
+        result.data
+        or []
+    )
+
+    if not rows:
+        raise RuntimeError(
+            "Persistent translation review insert returned no row"
+        )
+
+    logger.info(
+        "💾 Persistent translation review created | "
+        f"review_id={normalized_review_id} | "
+        f"chat_id={chat_id} | "
+        f"user_id={user_id} | "
+        f"source_kind={normalized_source_kind}"
+    )
+
+    return rows[0]
+
+
+@with_retry
+def update_persistent_translation_review(
+    review_id: str,
+    *,
+    status: Optional[str] = None,
+    source_language: Optional[str] = None,
+    target_language: Optional[str] = None,
+    target_language_code: Optional[str] = None,
+    translated_text: Optional[str] = None,
+    edited_text: Optional[str] = None,
+    source_kind: Optional[str] = None,
+    source_key: Optional[str] = None,
+    metadata: Optional[
+        Dict[str, Any]
+    ] = None,
+    validation_errors: Optional[
+        List[Any]
+    ] = None,
+    validation_warnings: Optional[
+        List[Any]
+    ] = None,
+    translation_attempts: Optional[int] = None,
+    source_review_id: Optional[str] = None,
+    source_message_id: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Update one durable translation workflow.
+
+    Metadata is MERGED with existing metadata instead of replaced.
+    This preserves source/editorial/publication context across
+    multiple translation workflow stages.
+    """
+
+    normalized_review_id = str(
+        review_id
+        or ""
+    ).strip()
+
+    if not normalized_review_id:
+        return None
+
+    client = (
+        _translation_service_client()
+    )
+
+    existing = (
+        get_persistent_translation_review(
+            normalized_review_id
+        )
+    )
+
+    if existing is None:
+        return None
+
+    payload: Dict[str, Any] = {}
+
+    if status is not None:
+
+        payload[
+            "status"
+        ] = (
+            _validate_persistent_translation_status(
+                status
+            )
+        )
+
+    if source_language is not None:
+
+        payload[
+            "source_language"
+        ] = str(
+            source_language
+            or "auto"
+        ).strip() or "auto"
+
+    if target_language is not None:
+
+        normalized_target = str(
+            target_language
+            or ""
+        ).strip()
+
+        payload[
+            "target_language"
+        ] = (
+            normalized_target
+            or None
+        )
+
+    if translated_text is not None:
+
+        payload[
+            "translated_text"
+        ] = str(
+            translated_text
+        )
+
+    if edited_text is not None:
+
+        payload[
+            "edited_text"
+        ] = str(
+            edited_text
+        )
+
+    if source_kind is not None:
+
+        payload[
+            "content_kind"
+        ] = (
+            str(
+                source_kind
+                or "message"
+            ).strip()
+            or "message"
+        )
+
+    if validation_errors is not None:
+
+        payload[
+            "validation_errors"
+        ] = list(
+            validation_errors
+            or []
+        )
+
+    if validation_warnings is not None:
+
+        payload[
+            "validation_warnings"
+        ] = list(
+            validation_warnings
+            or []
+        )
+
+    if translation_attempts is not None:
+
+        payload[
+            "translation_attempts"
+        ] = max(
+            0,
+            int(
+                translation_attempts
+            ),
+        )
+
+    if source_review_id is not None:
+
+        normalized_source_review_id = str(
+            source_review_id
+            or ""
+        ).strip()
+
+        payload[
+            "source_review_id"
+        ] = (
+            normalized_source_review_id
+            or None
+        )
+
+    if source_message_id is not None:
+
+        payload[
+            "source_message_id"
+        ] = int(
+            source_message_id
+        )
+
+    # =====================================================
+    # METADATA MERGE
+    # =====================================================
+
+    metadata_changed = (
+        metadata is not None
+        or source_key is not None
+        or target_language_code is not None
+    )
+
+    if metadata_changed:
+
+        merged_metadata = dict(
+            existing.get(
+                "metadata"
+            )
+            or {}
+        )
+
+        if metadata is not None:
+
+            merged_metadata.update(
+                _normalize_translation_metadata(
+                    metadata
+                )
+            )
+
+        if source_key is not None:
+
+            normalized_source_key = str(
+                source_key
+                or ""
+            ).strip()
+
+            if normalized_source_key:
+
+                merged_metadata[
+                    "source_key"
+                ] = (
+                    normalized_source_key
+                )
+
+            else:
+
+                merged_metadata.pop(
+                    "source_key",
+                    None,
+                )
+
+        if target_language_code is not None:
+
+            normalized_target_code = str(
+                target_language_code
+                or ""
+            ).strip()
+
+            if normalized_target_code:
+
+                merged_metadata[
+                    "target_language_code"
+                ] = (
+                    normalized_target_code
+                )
+
+            else:
+
+                merged_metadata.pop(
+                    "target_language_code",
+                    None,
+                )
+
+        payload[
+            "metadata"
+        ] = merged_metadata
+
+    if not payload:
+        return existing
+
+    result = (
+        client
+        .table(
+            "translation_reviews"
+        )
+        .update(
+            payload
+        )
+        .eq(
+            "review_id",
+            normalized_review_id,
+        )
+        .execute()
+    )
+
+    rows = (
+        result.data
+        or []
+    )
+
+    if not rows:
+        raise RuntimeError(
+            "Persistent translation review update returned no row"
+        )
+
+    return rows[0]
+
+
+@with_retry
+def delete_persistent_translation_review(
+    review_id: str,
+) -> bool:
+    """
+    Remove one translation workflow after successful completion.
+
+    Terminal state may be kept until publication succeeds; the
+    Translation Controller decides when this cleanup is called.
+    """
+
+    normalized_review_id = str(
+        review_id
+        or ""
+    ).strip()
+
+    if not normalized_review_id:
+        return False
+
+    client = (
+        _translation_service_client()
+    )
+
+    existing = (
+        get_persistent_translation_review(
+            normalized_review_id
+        )
+    )
+
+    if existing is None:
+        return False
+
+    (
+        client
+        .table(
+            "translation_reviews"
+        )
+        .delete()
+        .eq(
+            "review_id",
+            normalized_review_id,
+        )
+        .execute()
+    )
+
+    logger.info(
+        "🧹 Persistent translation review deleted | "
+        f"review_id={normalized_review_id}"
+    )
+
+    return True
+
+
+@with_retry
+def mark_persistent_translation_review_failed(
+    review_id: str,
+    *,
+    reason: str = "",
+    metadata: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Convenience helper used by TranslationState when a provider,
+    validation or quality stage fails.
+    """
+
+    failure_metadata = (
+        _normalize_translation_metadata(
+            metadata
+        )
+    )
+
+    if reason:
+
+        failure_metadata[
+            "failure_reason"
+        ] = str(
+            reason
+        )
+
+    return update_persistent_translation_review(
+        review_id,
+        status="failed",
+        metadata=failure_metadata,
+    )
+
+
+@with_retry
+def mark_persistent_translation_review_cancelled(
+    review_id: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Mark workflow terminal without deleting it immediately.
+    """
+
+    return update_persistent_translation_review(
+        review_id,
+        status="cancelled",
+    )
+
+
+@with_retry
+def mark_persistent_translation_review_confirmed(
+    review_id: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Mark translation approved by the user.
+
+    Publication remains the responsibility of the existing Shared
+    Publication Engine.
+    """
+
+    return update_persistent_translation_review(
+        review_id,
+        status="confirmed",
+    )
