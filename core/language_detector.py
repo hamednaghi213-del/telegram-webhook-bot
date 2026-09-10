@@ -4,85 +4,63 @@ import logging
 import re
 import unicodedata
 
+from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 
 logger = logging.getLogger(__name__)
 
 
 # =========================================================
-# LANGUAGE DETECTOR
+# SHARED MULTILINGUAL LANGUAGE DETECTOR
 # =========================================================
 #
-# Shared lightweight language detection layer.
+# EXISTING FILE — FULL REPLACEMENT
 #
-# Responsibilities:
+# This module is intentionally:
 #
-# Incoming Content
-#       ↓
-# Language Detection
-#       ↓
-# Translation Policy
-#       ↓
-# Translation Service
+# - deterministic
+# - lightweight
+# - provider-free
+# - publication-free
+# - database-free
+#
+# It performs fast local language detection where the evidence
+# is strong enough.
 #
 # IMPORTANT:
 #
-# - This module does NOT translate content.
-# - This module does NOT publish content.
-# - This module does NOT modify Workspace/Legacy settings.
-# - This module does NOT write to the database.
-# - This module does NOT call Telegram/Bale.
+# A script is NOT automatically a language.
 #
-# The detector is deliberately language-agnostic.
+# Examples:
 #
-# It uses deterministic Unicode/script analysis first.
-# When exact language cannot be identified safely from script
-# alone, it returns a conservative result instead of guessing.
+# - Devanagari != Hindi
+# - Arabic script != Arabic
+# - Cyrillic != Russian
+# - Latin != English
 #
-# A model/provider based detector can later be added behind
-# the same API without changing callers.
+# Shared / ambiguous scripts return an uncertain result so the
+# shared Translation Pipeline can invoke:
+#
+#     language_detection_provider.py
+#
+# This prevents false confidence and supports arbitrary source
+# languages more safely.
+#
 # =========================================================
 
 
 # =========================================================
-# LANGUAGE CONSTANTS
+# CONSTANTS
 # =========================================================
 
 LANGUAGE_AUTO = "auto"
-LANGUAGE_UNKNOWN = "unknown"
-LANGUAGE_MIXED = "mixed"
+LANGUAGE_UNKNOWN = "auto"
 
-
-# =========================================================
-# SCRIPT CONSTANTS
-# =========================================================
-
-SCRIPT_ARABIC = "arabic"
-SCRIPT_LATIN = "latin"
-SCRIPT_CYRILLIC = "cyrillic"
-SCRIPT_HAN = "han"
-SCRIPT_HIRAGANA = "hiragana"
-SCRIPT_KATAKANA = "katakana"
-SCRIPT_HANGUL = "hangul"
-SCRIPT_DEVANAGARI = "devanagari"
-SCRIPT_HEBREW = "hebrew"
-SCRIPT_GREEK = "greek"
-SCRIPT_THAI = "thai"
-SCRIPT_GEORGIAN = "georgian"
-SCRIPT_ARMENIAN = "armenian"
-SCRIPT_UNKNOWN = "unknown"
-
-
-# =========================================================
-# CONFIDENCE LEVELS
-# =========================================================
-
-CONFIDENCE_HIGH = "high"
-CONFIDENCE_MEDIUM = "medium"
 CONFIDENCE_LOW = "low"
-CONFIDENCE_UNKNOWN = "unknown"
+CONFIDENCE_MEDIUM = "medium"
+CONFIDENCE_HIGH = "high"
 
 
 # =========================================================
@@ -91,21 +69,23 @@ CONFIDENCE_UNKNOWN = "unknown"
 
 @dataclass(frozen=True)
 class LanguageDetectionResult:
-    language: str
+    language: str = LANGUAGE_AUTO
 
-    confidence: float
+    confidence: float = 0.0
 
-    confidence_level: str
+    confidence_level: str = CONFIDENCE_LOW
 
-    script: str
+    script: str = ""
 
-    reliable: bool
+    reliable: bool = False
 
     is_mixed: bool = False
 
-    alternatives: Tuple[str, ...] = ()
+    alternatives: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
 
-    detected_by: str = "unicode"
+    detected_by: str = "deterministic"
 
     metadata: Dict[str, Any] = field(
         default_factory=dict
@@ -113,71 +93,547 @@ class LanguageDetectionResult:
 
 
 # =========================================================
-# TEXT CLEANUP
+# BASIC PATTERNS
 # =========================================================
 
-_URL_RE = re.compile(
-    r"https?://\S+|www\.\S+",
-    flags=re.IGNORECASE,
+URL_RE = re.compile(
+    r"https?://[^\s]+|www\.[^\s]+",
+    re.IGNORECASE,
 )
 
-_MENTION_RE = re.compile(
-    r"(?<!\w)@[A-Za-z0-9_]{2,}",
+MENTION_RE = re.compile(
+    r"(?<!\w)@[A-Za-z0-9_]{2,}"
 )
 
-_HASHTAG_RE = re.compile(
-    r"(?<!\w)#[^\s#]+",
+HASHTAG_RE = re.compile(
+    r"(?<!\w)#[^\s#]+"
 )
 
-_NUMBER_RE = re.compile(
+NUMBER_RE = re.compile(
     r"[0-9۰-۹٠-٩]+(?:[.,٫٬:/\-][0-9۰-۹٠-٩]+)*"
 )
 
-_WHITESPACE_RE = re.compile(
+WHITESPACE_RE = re.compile(
     r"\s+"
 )
 
 
-def _clean_text_for_detection(
+# =========================================================
+# SCRIPT RANGES
+# =========================================================
+
+SCRIPT_RANGES: Dict[str, Tuple[Tuple[int, int], ...]] = {
+    "arabic": (
+        (0x0600, 0x06FF),
+        (0x0750, 0x077F),
+        (0x08A0, 0x08FF),
+        (0xFB50, 0xFDFF),
+        (0xFE70, 0xFEFF),
+    ),
+
+    "latin": (
+        (0x0041, 0x005A),
+        (0x0061, 0x007A),
+        (0x00C0, 0x024F),
+        (0x1E00, 0x1EFF),
+    ),
+
+    "cyrillic": (
+        (0x0400, 0x04FF),
+        (0x0500, 0x052F),
+    ),
+
+    "devanagari": (
+        (0x0900, 0x097F),
+        (0xA8E0, 0xA8FF),
+    ),
+
+    "han": (
+        (0x3400, 0x4DBF),
+        (0x4E00, 0x9FFF),
+        (0xF900, 0xFAFF),
+    ),
+
+    "hiragana": (
+        (0x3040, 0x309F),
+    ),
+
+    "katakana": (
+        (0x30A0, 0x30FF),
+        (0x31F0, 0x31FF),
+    ),
+
+    "hangul": (
+        (0x1100, 0x11FF),
+        (0x3130, 0x318F),
+        (0xAC00, 0xD7AF),
+    ),
+
+    "hebrew": (
+        (0x0590, 0x05FF),
+        (0xFB1D, 0xFB4F),
+    ),
+
+    "greek": (
+        (0x0370, 0x03FF),
+        (0x1F00, 0x1FFF),
+    ),
+
+    "thai": (
+        (0x0E00, 0x0E7F),
+    ),
+
+    "georgian": (
+        (0x10A0, 0x10FF),
+        (0x2D00, 0x2D2F),
+        (0x1C90, 0x1CBF),
+    ),
+
+    "armenian": (
+        (0x0530, 0x058F),
+    ),
+}
+
+
+# =========================================================
+# SHARED SCRIPT POLICY
+# =========================================================
+#
+# These scripts are used by multiple natural languages.
+#
+# A script-only result for these scripts MUST NOT be treated
+# as reliable language identification.
+# =========================================================
+
+SHARED_LANGUAGE_SCRIPTS: Set[str] = {
+    "arabic",
+    "latin",
+    "cyrillic",
+    "devanagari",
+    "han",
+}
+
+
+# =========================================================
+# LANGUAGE WORD MARKERS
+# =========================================================
+
+PERSIAN_WORDS: Set[str] = {
+    "است",
+    "این",
+    "آن",
+    "که",
+    "را",
+    "با",
+    "برای",
+    "از",
+    "در",
+    "به",
+    "یک",
+    "شد",
+    "شده",
+    "می",
+    "نیز",
+    "اما",
+    "اگر",
+    "تا",
+    "بر",
+    "خواهد",
+    "بود",
+    "کرد",
+    "کرده",
+    "گفت",
+    "کشور",
+    "ایران",
+}
+
+ARABIC_WORDS: Set[str] = {
+    "في",
+    "من",
+    "إلى",
+    "على",
+    "عن",
+    "هذا",
+    "هذه",
+    "التي",
+    "الذي",
+    "مع",
+    "كان",
+    "وقد",
+    "بعد",
+    "قبل",
+    "بين",
+    "وقال",
+    "لكن",
+    "هناك",
+    "أن",
+    "إن",
+    "هو",
+    "هي",
+}
+
+URDU_WORDS: Set[str] = {
+    "ہے",
+    "ہیں",
+    "کے",
+    "کی",
+    "کا",
+    "کو",
+    "سے",
+    "میں",
+    "اور",
+    "یہ",
+    "وہ",
+    "ایک",
+    "پر",
+    "نے",
+    "کہ",
+    "بھی",
+    "تھا",
+    "تھی",
+    "گیا",
+    "کیا",
+}
+
+
+ENGLISH_WORDS: Set[str] = {
+    "the",
+    "and",
+    "of",
+    "to",
+    "in",
+    "for",
+    "on",
+    "with",
+    "that",
+    "is",
+    "was",
+    "are",
+    "as",
+    "at",
+    "from",
+    "by",
+    "this",
+    "will",
+    "has",
+    "have",
+    "said",
+}
+
+FRENCH_WORDS: Set[str] = {
+    "le",
+    "la",
+    "les",
+    "de",
+    "des",
+    "du",
+    "et",
+    "en",
+    "un",
+    "une",
+    "est",
+    "dans",
+    "pour",
+    "sur",
+    "avec",
+    "que",
+    "qui",
+    "au",
+    "aux",
+    "par",
+}
+
+GERMAN_WORDS: Set[str] = {
+    "der",
+    "die",
+    "das",
+    "und",
+    "ist",
+    "in",
+    "den",
+    "von",
+    "zu",
+    "mit",
+    "auf",
+    "für",
+    "ein",
+    "eine",
+    "als",
+    "auch",
+    "dem",
+    "des",
+    "nicht",
+    "wird",
+}
+
+SPANISH_WORDS: Set[str] = {
+    "el",
+    "la",
+    "los",
+    "las",
+    "de",
+    "del",
+    "y",
+    "en",
+    "que",
+    "un",
+    "una",
+    "por",
+    "para",
+    "con",
+    "es",
+    "se",
+    "al",
+    "como",
+    "más",
+    "ha",
+}
+
+ITALIAN_WORDS: Set[str] = {
+    "il",
+    "lo",
+    "la",
+    "gli",
+    "le",
+    "di",
+    "del",
+    "della",
+    "e",
+    "in",
+    "che",
+    "un",
+    "una",
+    "per",
+    "con",
+    "è",
+    "sono",
+    "al",
+    "come",
+    "ha",
+}
+
+PORTUGUESE_WORDS: Set[str] = {
+    "o",
+    "a",
+    "os",
+    "as",
+    "de",
+    "do",
+    "da",
+    "e",
+    "em",
+    "que",
+    "um",
+    "uma",
+    "para",
+    "por",
+    "com",
+    "é",
+    "no",
+    "na",
+    "como",
+    "não",
+}
+
+TURKISH_WORDS: Set[str] = {
+    "ve",
+    "bir",
+    "bu",
+    "için",
+    "ile",
+    "da",
+    "de",
+    "olan",
+    "olarak",
+    "gibi",
+    "çok",
+    "daha",
+    "sonra",
+    "ancak",
+    "ise",
+    "tarafından",
+    "oldu",
+    "olduğunu",
+    "var",
+    "yeni",
+}
+
+INDONESIAN_WORDS: Set[str] = {
+    "dan",
+    "yang",
+    "di",
+    "ke",
+    "dari",
+    "untuk",
+    "dengan",
+    "ini",
+    "itu",
+    "pada",
+    "adalah",
+    "dalam",
+    "akan",
+    "telah",
+    "tidak",
+    "juga",
+    "sebagai",
+    "oleh",
+    "atau",
+    "karena",
+}
+
+MALAY_WORDS: Set[str] = {
+    "dan",
+    "yang",
+    "di",
+    "ke",
+    "dari",
+    "untuk",
+    "dengan",
+    "ini",
+    "itu",
+    "pada",
+    "adalah",
+    "dalam",
+    "akan",
+    "telah",
+    "tidak",
+    "juga",
+    "sebagai",
+    "oleh",
+    "atau",
+    "kerana",
+}
+
+
+RUSSIAN_WORDS: Set[str] = {
+    "и",
+    "в",
+    "во",
+    "не",
+    "на",
+    "что",
+    "он",
+    "она",
+    "как",
+    "это",
+    "по",
+    "из",
+    "за",
+    "для",
+    "с",
+    "со",
+    "был",
+    "будет",
+    "также",
+    "после",
+}
+
+UKRAINIAN_WORDS: Set[str] = {
+    "і",
+    "й",
+    "в",
+    "у",
+    "не",
+    "на",
+    "що",
+    "це",
+    "як",
+    "для",
+    "з",
+    "із",
+    "до",
+    "від",
+    "після",
+    "також",
+    "було",
+    "буде",
+    "його",
+    "її",
+}
+
+
+# =========================================================
+# UNIQUE / STRONG CHARACTER MARKERS
+# =========================================================
+
+PERSIAN_STRONG_CHARS: Set[str] = set(
+    "پچژگک‌ی"
+)
+
+URDU_STRONG_CHARS: Set[str] = set(
+    "ٹڈڑںھہۓے"
+)
+
+ARABIC_STRONG_CHARS: Set[str] = set(
+    "ةثذظضصط"
+)
+
+UKRAINIAN_STRONG_CHARS: Set[str] = set(
+    "іїєґ"
+)
+
+RUSSIAN_STRONG_CHARS: Set[str] = set(
+    "ыэъё"
+)
+
+TURKISH_STRONG_CHARS: Set[str] = set(
+    "çğıöşüÇĞİÖŞÜ"
+)
+
+GERMAN_STRONG_CHARS: Set[str] = set(
+    "äöüßÄÖÜ"
+)
+
+FRENCH_STRONG_CHARS: Set[str] = set(
+    "àâæçéèêëîïôœùûüÿÀÂÆÇÉÈÊËÎÏÔŒÙÛÜŸ"
+)
+
+SPANISH_STRONG_CHARS: Set[str] = set(
+    "ñ¿¡Ñ"
+)
+
+PORTUGUESE_STRONG_CHARS: Set[str] = set(
+    "ãõÃÕ"
+)
+
+
+# =========================================================
+# TEXT NORMALIZATION
+# =========================================================
+
+def normalize_detection_text(
     text: Optional[str],
 ) -> str:
-    """
-    Remove content that should not influence language
-    detection significantly.
-
-    URLs, mentions, hashtags and standalone numeric material
-    are ignored for primary language identification.
-    """
 
     value = str(
         text
         or ""
     )
 
-    if not value.strip():
+    if not value:
         return ""
 
-    value = _URL_RE.sub(
+    value = URL_RE.sub(
         " ",
         value,
     )
 
-    value = _MENTION_RE.sub(
+    value = MENTION_RE.sub(
         " ",
         value,
     )
 
-    value = _HASHTAG_RE.sub(
+    value = HASHTAG_RE.sub(
         " ",
         value,
     )
 
-    value = _NUMBER_RE.sub(
+    value = NUMBER_RE.sub(
         " ",
         value,
     )
 
-    value = _WHITESPACE_RE.sub(
+    value = WHITESPACE_RE.sub(
         " ",
         value,
     )
@@ -186,494 +642,536 @@ def _clean_text_for_detection(
 
 
 # =========================================================
-# UNICODE SCRIPT DETECTION
+# CHARACTER HELPERS
 # =========================================================
 
-def _char_script(
+def _in_ranges(
     char: str,
-) -> Optional[str]:
+    ranges: Tuple[
+        Tuple[int, int],
+        ...
+    ],
+) -> bool:
 
     if not char:
-        return None
+        return False
 
-    code = ord(char)
+    codepoint = ord(
+        char
+    )
 
-    # Arabic / Persian / Urdu etc.
-    if (
-        0x0600 <= code <= 0x06FF
-        or 0x0750 <= code <= 0x077F
-        or 0x08A0 <= code <= 0x08FF
-        or 0xFB50 <= code <= 0xFDFF
-        or 0xFE70 <= code <= 0xFEFF
+    for start, end in ranges:
+
+        if start <= codepoint <= end:
+            return True
+
+    return False
+
+
+def detect_character_script(
+    char: str,
+) -> str:
+
+    if not char:
+        return ""
+
+    for script, ranges in (
+        SCRIPT_RANGES.items()
     ):
-        return SCRIPT_ARABIC
 
-    # Latin
-    if (
-        0x0041 <= code <= 0x005A
-        or 0x0061 <= code <= 0x007A
-        or 0x00C0 <= code <= 0x024F
-        or 0x1E00 <= code <= 0x1EFF
-    ):
-        return SCRIPT_LATIN
+        if _in_ranges(
+            char,
+            ranges,
+        ):
+            return script
 
-    # Cyrillic
-    if (
-        0x0400 <= code <= 0x052F
-        or 0x2DE0 <= code <= 0x2DFF
-        or 0xA640 <= code <= 0xA69F
-    ):
-        return SCRIPT_CYRILLIC
-
-    # Han / Chinese ideographs
-    if (
-        0x3400 <= code <= 0x4DBF
-        or 0x4E00 <= code <= 0x9FFF
-        or 0xF900 <= code <= 0xFAFF
-    ):
-        return SCRIPT_HAN
-
-    # Japanese
-    if 0x3040 <= code <= 0x309F:
-        return SCRIPT_HIRAGANA
-
-    if 0x30A0 <= code <= 0x30FF:
-        return SCRIPT_KATAKANA
-
-    # Korean
-    if (
-        0x1100 <= code <= 0x11FF
-        or 0x3130 <= code <= 0x318F
-        or 0xAC00 <= code <= 0xD7AF
-    ):
-        return SCRIPT_HANGUL
-
-    # Hindi / Devanagari family
-    if 0x0900 <= code <= 0x097F:
-        return SCRIPT_DEVANAGARI
-
-    # Hebrew
-    if 0x0590 <= code <= 0x05FF:
-        return SCRIPT_HEBREW
-
-    # Greek
-    if (
-        0x0370 <= code <= 0x03FF
-        or 0x1F00 <= code <= 0x1FFF
-    ):
-        return SCRIPT_GREEK
-
-    # Thai
-    if 0x0E00 <= code <= 0x0E7F:
-        return SCRIPT_THAI
-
-    # Georgian
-    if (
-        0x10A0 <= code <= 0x10FF
-        or 0x2D00 <= code <= 0x2D2F
-    ):
-        return SCRIPT_GEORGIAN
-
-    # Armenian
-    if 0x0530 <= code <= 0x058F:
-        return SCRIPT_ARMENIAN
-
-    return None
+    return ""
 
 
-def _script_counts(
+def _is_letter(
+    char: str,
+) -> bool:
+
+    try:
+
+        return unicodedata.category(
+            char
+        ).startswith(
+            "L"
+        )
+
+    except Exception:
+        return False
+
+
+# =========================================================
+# SCRIPT PROFILE
+# =========================================================
+
+def script_profile(
     text: str,
 ) -> Dict[str, int]:
 
-    counts: Dict[str, int] = {}
+    counter: Counter = Counter()
 
     for char in text:
 
-        if (
-            char.isspace()
-            or char.isdigit()
+        if not _is_letter(
+            char
         ):
             continue
 
-        category = unicodedata.category(
+        script = detect_character_script(
             char
         )
 
-        if not category.startswith(
-            ("L", "M")
-        ):
-            continue
+        if script:
+            counter[
+                script
+            ] += 1
 
-        script = _char_script(
-            char
-        )
-
-        if not script:
-            continue
-
-        counts[script] = (
-            counts.get(
-                script,
-                0
-            )
-            + 1
-        )
-
-    return counts
+    return dict(
+        counter
+    )
 
 
-def _dominant_script(
-    counts: Dict[str, int],
+def dominant_script(
+    text: str,
 ) -> Tuple[
     str,
     float,
     bool,
+    Dict[str, int],
 ]:
-    """
-    Return:
-        script
-        dominance ratio
-        mixed
-    """
 
-    if not counts:
-        return (
-            SCRIPT_UNKNOWN,
-            0.0,
-            False,
-        )
-
-    total = sum(
-        counts.values()
+    profile = script_profile(
+        text
     )
 
-    ranked = sorted(
-        counts.items(),
+    total = sum(
+        profile.values()
+    )
+
+    if total <= 0:
+
+        return (
+            "",
+            0.0,
+            False,
+            profile,
+        )
+
+    ordered = sorted(
+        profile.items(),
         key=lambda item: item[1],
         reverse=True,
     )
 
-    script, amount = ranked[0]
-
-    ratio = (
-        amount / total
-        if total
-        else 0.0
+    top_script, top_count = (
+        ordered[0]
     )
 
-    meaningful_scripts = [
-        value
-        for value
-        in counts.values()
+    ratio = (
+        top_count
+        / total
+    )
+
+    substantial_scripts = [
+        script
+        for script, count
+        in ordered
         if (
-            value / total
-            >= 0.15
+            count >= 3
+            and count / total >= 0.15
         )
     ]
 
-    mixed = (
+    is_mixed = (
         len(
-            meaningful_scripts
+            substantial_scripts
         )
         > 1
     )
 
     return (
-        script,
+        top_script,
         ratio,
-        mixed,
+        is_mixed,
+        profile,
     )
 
 
 # =========================================================
-# ARABIC-SCRIPT LANGUAGE DETECTION
+# WORD TOKENIZATION
 # =========================================================
 
-# Characters strongly associated with Persian.
-_PERSIAN_SPECIFIC = set(
-    "پچژگ"
+WORD_RE = re.compile(
+    r"[^\W\d_]+",
+    re.UNICODE,
 )
 
-# Urdu-specific / highly indicative letters.
-_URDU_SPECIFIC = set(
-    "ٹڈڑںھہےۓ"
-)
 
-# Arabic-specific characters / forms that are strong
-# indicators when they occur repeatedly.
-_ARABIC_INDICATIVE = set(
-    "ةثذظضصط"
-)
-
-# Persian common words.
-_PERSIAN_WORDS = {
-    "است",
-    "این",
-    "آن",
-    "که",
-    "را",
-    "برای",
-    "با",
-    "از",
-    "به",
-    "در",
-    "یک",
-    "می",
-    "شود",
-    "کرد",
-    "گفت",
-    "خواهد",
-    "اما",
-    "نیز",
-    "بر",
-    "خود",
-    "کشور",
-    "دولت",
-    "خبر",
-    "گزارش",
-}
-
-# Arabic common words.
-_ARABIC_WORDS = {
-    "في",
-    "من",
-    "إلى",
-    "على",
-    "أن",
-    "إن",
-    "هذا",
-    "هذه",
-    "التي",
-    "الذي",
-    "كان",
-    "كانت",
-    "مع",
-    "عن",
-    "بعد",
-    "قبل",
-    "وقد",
-    "قال",
-    "وقال",
-    "هناك",
-    "بين",
-    "دولة",
-    "الحكومة",
-}
-
-# Urdu common words.
-_URDU_WORDS = {
-    "ہے",
-    "ہیں",
-    "اور",
-    "میں",
-    "سے",
-    "کے",
-    "کی",
-    "کو",
-    "یہ",
-    "وہ",
-    "پر",
-    "نے",
-    "تھا",
-    "تھی",
-    "کہ",
-    "ایک",
-}
-
-
-def _words(
+def tokenize_words(
     text: str,
 ) -> List[str]:
 
     return [
-        word.strip(
-            ".,!?؟،؛:()[]{}«»\"'"
+        token.casefold()
+        for token in WORD_RE.findall(
+            text
         )
-        for word in text.split()
-        if word.strip()
+        if token.strip()
     ]
 
 
-def _detect_arabic_script_language(
+def _word_marker_score(
+    words: Iterable[str],
+    markers: Set[str],
+) -> int:
+
+    marker_set = {
+        value.casefold()
+        for value in markers
+    }
+
+    return sum(
+        1
+        for word in words
+        if word.casefold()
+        in marker_set
+    )
+
+
+def _character_marker_score(
     text: str,
+    markers: Set[str],
+) -> int:
+
+    return sum(
+        1
+        for char in text
+        if char in markers
+    )
+
+
+# =========================================================
+# RESULT FACTORY
+# =========================================================
+
+def _confidence_level(
+    confidence: float,
+) -> str:
+
+    if confidence >= 0.90:
+        return CONFIDENCE_HIGH
+
+    if confidence >= 0.70:
+        return CONFIDENCE_MEDIUM
+
+    return CONFIDENCE_LOW
+
+
+def _make_result(
+    *,
+    language: str,
+    confidence: float,
+    script: str,
+    reliable: bool,
+    is_mixed: bool = False,
+    alternatives: Optional[
+        Iterable[str]
+    ] = None,
+    reason: str = "",
+    metadata: Optional[
+        Dict[str, Any]
+    ] = None,
 ) -> LanguageDetectionResult:
 
-    words = _words(
+    confidence = max(
+        0.0,
+        min(
+            1.0,
+            float(
+                confidence
+                or 0.0
+            ),
+        ),
+    )
+
+    data = dict(
+        metadata
+        or {}
+    )
+
+    if reason:
+        data[
+            "reason"
+        ] = reason
+
+    return LanguageDetectionResult(
+        language=(
+            language
+            or LANGUAGE_AUTO
+        ),
+        confidence=confidence,
+        confidence_level=(
+            _confidence_level(
+                confidence
+            )
+        ),
+        script=script,
+        reliable=bool(
+            reliable
+        ),
+        is_mixed=bool(
+            is_mixed
+        ),
+        alternatives=tuple(
+            alternatives
+            or ()
+        ),
+        detected_by="deterministic",
+        metadata=data,
+    )
+
+
+def _unknown_result(
+    *,
+    script: str = "",
+    confidence: float = 0.0,
+    is_mixed: bool = False,
+    alternatives: Optional[
+        Iterable[str]
+    ] = None,
+    reason: str = "",
+    metadata: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> LanguageDetectionResult:
+
+    return _make_result(
+        language=LANGUAGE_AUTO,
+        confidence=confidence,
+        script=script,
+        reliable=False,
+        is_mixed=is_mixed,
+        alternatives=alternatives,
+        reason=reason,
+        metadata=metadata,
+    )
+
+
+# =========================================================
+# ARABIC-SCRIPT DETECTION
+# =========================================================
+
+def _detect_arabic_script_language(
+    text: str,
+    *,
+    is_mixed: bool,
+    profile: Dict[str, int],
+) -> LanguageDetectionResult:
+
+    words = tokenize_words(
         text
     )
 
-    word_set = set(
-        words
+    fa_words = _word_marker_score(
+        words,
+        PERSIAN_WORDS,
     )
 
-    persian_chars = sum(
-        1
-        for char in text
-        if char in _PERSIAN_SPECIFIC
+    ar_words = _word_marker_score(
+        words,
+        ARABIC_WORDS,
     )
 
-    urdu_chars = sum(
-        1
-        for char in text
-        if char in _URDU_SPECIFIC
+    ur_words = _word_marker_score(
+        words,
+        URDU_WORDS,
     )
 
-    arabic_chars = sum(
-        1
-        for char in text
-        if char in _ARABIC_INDICATIVE
+    fa_chars = _character_marker_score(
+        text,
+        PERSIAN_STRONG_CHARS,
     )
 
-    persian_words = sum(
-        1
-        for word in word_set
-        if word in _PERSIAN_WORDS
+    ar_chars = _character_marker_score(
+        text,
+        ARABIC_STRONG_CHARS,
     )
 
-    arabic_words = sum(
-        1
-        for word in word_set
-        if word in _ARABIC_WORDS
-    )
-
-    urdu_words = sum(
-        1
-        for word in word_set
-        if word in _URDU_WORDS
-    )
-
-    persian_score = (
-        persian_chars * 3
-        + persian_words * 2
-    )
-
-    arabic_score = (
-        arabic_chars
-        + arabic_words * 2
-    )
-
-    urdu_score = (
-        urdu_chars * 3
-        + urdu_words * 2
+    ur_chars = _character_marker_score(
+        text,
+        URDU_STRONG_CHARS,
     )
 
     scores = {
-        "fa": persian_score,
-        "ar": arabic_score,
-        "ur": urdu_score,
+        "fa":
+            fa_words * 2
+            + fa_chars,
+
+        "ar":
+            ar_words * 2
+            + ar_chars,
+
+        "ur":
+            ur_words * 2
+            + ur_chars * 2,
     }
 
-    ranked = sorted(
+    ordered = sorted(
         scores.items(),
         key=lambda item: item[1],
         reverse=True,
     )
 
-    best_language, best_score = (
-        ranked[0]
+    winner, winner_score = (
+        ordered[0]
     )
 
-    second_score = ranked[1][1]
+    second_score = (
+        ordered[1][1]
+        if len(
+            ordered
+        ) > 1
+        else 0
+    )
 
-    # Strong language evidence.
+    metadata = {
+        "script_profile":
+            profile,
+
+        "language_scores":
+            scores,
+
+        "marker_words": {
+            "fa":
+                fa_words,
+            "ar":
+                ar_words,
+            "ur":
+                ur_words,
+        },
+
+        "marker_characters": {
+            "fa":
+                fa_chars,
+            "ar":
+                ar_chars,
+            "ur":
+                ur_chars,
+        },
+    }
+
+    # Strong unique Urdu evidence.
     if (
-        best_score >= 4
-        and best_score
+        ur_chars >= 2
+        and winner == "ur"
+    ):
+
+        return _make_result(
+            language="ur",
+            confidence=0.96,
+            script="arabic",
+            reliable=True,
+            is_mixed=is_mixed,
+            alternatives=("fa", "ar"),
+            reason="strong_urdu_character_evidence",
+            metadata=metadata,
+        )
+
+    # Strong Persian-specific evidence.
+    if (
+        fa_chars >= 3
+        and winner == "fa"
+        and winner_score
         >= second_score + 2
     ):
-        confidence = min(
-            0.98,
-            0.72
-            + min(
-                best_score,
-                20
-            )
-            * 0.012
-        )
 
-        return LanguageDetectionResult(
-            language=best_language,
-            confidence=confidence,
-            confidence_level=(
-                CONFIDENCE_HIGH
-                if confidence >= 0.85
-                else CONFIDENCE_MEDIUM
-            ),
-            script=SCRIPT_ARABIC,
-            reliable=True,
-            alternatives=tuple(
-                language
-                for language, score
-                in ranked[1:]
-                if score > 0
-            ),
-            metadata={
-                "language_scores":
-                    scores,
-            },
-        )
-
-    # Persian-specific characters are very useful in short
-    # Persian texts.
-    if persian_chars >= 2:
-
-        return LanguageDetectionResult(
+        return _make_result(
             language="fa",
-            confidence=0.84,
-            confidence_level=(
-                CONFIDENCE_MEDIUM
-            ),
-            script=SCRIPT_ARABIC,
+            confidence=0.95,
+            script="arabic",
             reliable=True,
-            alternatives=(
-                "ar",
-                "ur",
-            ),
-            metadata={
-                "language_scores":
-                    scores,
-            },
+            is_mixed=is_mixed,
+            alternatives=("ar", "ur"),
+            reason="strong_persian_evidence",
+            metadata=metadata,
         )
 
-    if urdu_chars >= 2:
+    # Arabic needs lexical evidence, not merely Arabic script.
+    if (
+        winner == "ar"
+        and ar_words >= 3
+        and winner_score
+        >= second_score + 2
+    ):
 
-        return LanguageDetectionResult(
+        return _make_result(
+            language="ar",
+            confidence=0.92,
+            script="arabic",
+            reliable=True,
+            is_mixed=is_mixed,
+            alternatives=("fa", "ur"),
+            reason="strong_arabic_lexical_evidence",
+            metadata=metadata,
+        )
+
+    # Persian lexical evidence can identify Persian even where
+    # Persian-specific characters are absent.
+    if (
+        winner == "fa"
+        and fa_words >= 3
+        and winner_score
+        >= second_score + 2
+    ):
+
+        return _make_result(
+            language="fa",
+            confidence=0.91,
+            script="arabic",
+            reliable=True,
+            is_mixed=is_mixed,
+            alternatives=("ar", "ur"),
+            reason="strong_persian_lexical_evidence",
+            metadata=metadata,
+        )
+
+    # Urdu lexical evidence.
+    if (
+        winner == "ur"
+        and ur_words >= 3
+        and winner_score
+        >= second_score + 2
+    ):
+
+        return _make_result(
             language="ur",
-            confidence=0.84,
-            confidence_level=(
-                CONFIDENCE_MEDIUM
-            ),
-            script=SCRIPT_ARABIC,
+            confidence=0.92,
+            script="arabic",
             reliable=True,
-            alternatives=(
-                "fa",
-                "ar",
-            ),
-            metadata={
-                "language_scores":
-                    scores,
-            },
+            is_mixed=is_mixed,
+            alternatives=("fa", "ar"),
+            reason="strong_urdu_lexical_evidence",
+            metadata=metadata,
         )
 
-    # Arabic script alone is not enough to distinguish
-    # Arabic/Persian/Urdu safely.
-    return LanguageDetectionResult(
-        language=LANGUAGE_UNKNOWN,
-        confidence=0.45,
-        confidence_level=CONFIDENCE_LOW,
-        script=SCRIPT_ARABIC,
-        reliable=False,
+    # Shared script remains ambiguous.
+    return _unknown_result(
+        script="arabic",
+        confidence=0.55,
+        is_mixed=is_mixed,
         alternatives=(
             "fa",
             "ar",
             "ur",
         ),
-        metadata={
-            "language_scores":
-                scores,
-            "reason":
-                "ambiguous_arabic_script",
-        },
+        reason=(
+            "arabic_script_language_ambiguous"
+        ),
+        metadata=metadata,
     )
 
 
@@ -681,447 +1179,329 @@ def _detect_arabic_script_language(
 # CYRILLIC DETECTION
 # =========================================================
 
-_UKRAINIAN_SPECIFIC = set(
-    "іїєґІЇЄҐ"
-)
-
-_RUSSIAN_SPECIFIC = set(
-    "ыэъёЫЭЪЁ"
-)
-
-
 def _detect_cyrillic_language(
     text: str,
+    *,
+    is_mixed: bool,
+    profile: Dict[str, int],
 ) -> LanguageDetectionResult:
 
-    ukrainian_count = sum(
-        1
-        for char in text
-        if char in _UKRAINIAN_SPECIFIC
+    words = tokenize_words(
+        text
     )
 
-    russian_count = sum(
-        1
-        for char in text
-        if char in _RUSSIAN_SPECIFIC
+    ru_words = _word_marker_score(
+        words,
+        RUSSIAN_WORDS,
     )
 
-    if ukrainian_count >= 2:
+    uk_words = _word_marker_score(
+        words,
+        UKRAINIAN_WORDS,
+    )
 
-        return LanguageDetectionResult(
+    ru_chars = _character_marker_score(
+        text.casefold(),
+        RUSSIAN_STRONG_CHARS,
+    )
+
+    uk_chars = _character_marker_score(
+        text.casefold(),
+        UKRAINIAN_STRONG_CHARS,
+    )
+
+    ru_score = (
+        ru_words * 2
+        + ru_chars * 2
+    )
+
+    uk_score = (
+        uk_words * 2
+        + uk_chars * 3
+    )
+
+    metadata = {
+        "script_profile":
+            profile,
+
+        "language_scores": {
+            "ru":
+                ru_score,
+            "uk":
+                uk_score,
+        },
+    }
+
+    if (
+        uk_chars >= 2
+        or (
+            uk_words >= 3
+            and uk_score
+            >= ru_score + 2
+        )
+    ):
+
+        return _make_result(
             language="uk",
-            confidence=0.90,
-            confidence_level=CONFIDENCE_HIGH,
-            script=SCRIPT_CYRILLIC,
+            confidence=0.95,
+            script="cyrillic",
             reliable=True,
+            is_mixed=is_mixed,
             alternatives=("ru",),
-            metadata={
-                "ukrainian_specific":
-                    ukrainian_count,
-                "russian_specific":
-                    russian_count,
-            },
+            reason="strong_ukrainian_evidence",
+            metadata=metadata,
         )
 
-    if russian_count >= 2:
+    if (
+        ru_chars >= 2
+        or (
+            ru_words >= 4
+            and ru_score
+            >= uk_score + 3
+        )
+    ):
 
-        return LanguageDetectionResult(
+        return _make_result(
             language="ru",
-            confidence=0.88,
-            confidence_level=CONFIDENCE_HIGH,
-            script=SCRIPT_CYRILLIC,
+            confidence=0.93,
+            script="cyrillic",
             reliable=True,
+            is_mixed=is_mixed,
             alternatives=("uk",),
-            metadata={
-                "ukrainian_specific":
-                    ukrainian_count,
-                "russian_specific":
-                    russian_count,
-            },
+            reason="strong_russian_evidence",
+            metadata=metadata,
         )
 
-    return LanguageDetectionResult(
-        language=LANGUAGE_UNKNOWN,
+    # Bulgarian, Serbian, Macedonian, Belarusian, Kazakh,
+    # Kyrgyz, Tajik, Mongolian and others also use Cyrillic.
+    return _unknown_result(
+        script="cyrillic",
         confidence=0.50,
-        confidence_level=CONFIDENCE_LOW,
-        script=SCRIPT_CYRILLIC,
-        reliable=False,
+        is_mixed=is_mixed,
         alternatives=(
             "ru",
             "uk",
+            "bg",
+            "sr",
+            "mk",
+            "be",
+            "kk",
+            "ky",
+            "tg",
+            "mn",
         ),
-        metadata={
-            "reason":
-                "ambiguous_cyrillic_script",
-        },
+        reason=(
+            "cyrillic_language_ambiguous"
+        ),
+        metadata=metadata,
     )
 
 
 # =========================================================
-# LATIN-SCRIPT DETECTION
+# LATIN DETECTION
 # =========================================================
-#
-# Latin script is shared by many languages.
-# We intentionally avoid pretending that script detection
-# alone can reliably distinguish English/French/German/etc.
-#
-# Small high-signal word/character indicators are used only
-# when evidence is meaningful.
-# =========================================================
-
-_LATIN_LANGUAGE_WORDS = {
-    "en": {
-        "the",
-        "and",
-        "that",
-        "this",
-        "with",
-        "from",
-        "for",
-        "was",
-        "were",
-        "will",
-        "said",
-        "have",
-        "has",
-        "government",
-        "president",
-    },
-
-    "fr": {
-        "le",
-        "la",
-        "les",
-        "des",
-        "une",
-        "dans",
-        "avec",
-        "pour",
-        "que",
-        "qui",
-        "est",
-        "sont",
-        "sur",
-        "gouvernement",
-    },
-
-    "de": {
-        "der",
-        "die",
-        "das",
-        "und",
-        "ist",
-        "mit",
-        "für",
-        "von",
-        "auf",
-        "nicht",
-        "eine",
-        "einer",
-        "regierung",
-    },
-
-    "es": {
-        "el",
-        "la",
-        "los",
-        "las",
-        "una",
-        "que",
-        "con",
-        "para",
-        "por",
-        "del",
-        "está",
-        "gobierno",
-    },
-
-    "it": {
-        "il",
-        "lo",
-        "la",
-        "gli",
-        "una",
-        "che",
-        "con",
-        "per",
-        "del",
-        "della",
-        "governo",
-    },
-
-    "pt": {
-        "o",
-        "a",
-        "os",
-        "as",
-        "uma",
-        "que",
-        "com",
-        "para",
-        "por",
-        "do",
-        "da",
-        "governo",
-    },
-
-    "tr": {
-        "ve",
-        "bir",
-        "bu",
-        "ile",
-        "için",
-        "olan",
-        "olarak",
-        "de",
-        "da",
-        "hükümet",
-    },
-
-    "id": {
-        "dan",
-        "yang",
-        "ini",
-        "itu",
-        "dengan",
-        "untuk",
-        "dari",
-        "pada",
-        "pemerintah",
-    },
-
-    "ms": {
-        "dan",
-        "yang",
-        "ini",
-        "itu",
-        "dengan",
-        "untuk",
-        "dari",
-        "pada",
-        "kerajaan",
-    },
-}
-
 
 def _detect_latin_language(
     text: str,
+    *,
+    is_mixed: bool,
+    profile: Dict[str, int],
 ) -> LanguageDetectionResult:
 
-    words = [
-        word.lower()
-        for word in _words(
-            text
-        )
-    ]
+    words = tokenize_words(
+        text
+    )
+
+    marker_sets = {
+        "en":
+            ENGLISH_WORDS,
+
+        "fr":
+            FRENCH_WORDS,
+
+        "de":
+            GERMAN_WORDS,
+
+        "es":
+            SPANISH_WORDS,
+
+        "it":
+            ITALIAN_WORDS,
+
+        "pt":
+            PORTUGUESE_WORDS,
+
+        "tr":
+            TURKISH_WORDS,
+
+        "id":
+            INDONESIAN_WORDS,
+
+        "ms":
+            MALAY_WORDS,
+    }
 
     scores: Dict[str, int] = {}
 
     for language, markers in (
-        _LATIN_LANGUAGE_WORDS.items()
+        marker_sets.items()
     ):
 
-        score = sum(
-            1
-            for word in words
-            if word in markers
+        scores[
+            language
+        ] = _word_marker_score(
+            words,
+            markers,
         )
 
-        scores[language] = score
+    # Strong orthographic evidence.
+    scores["tr"] += (
+        _character_marker_score(
+            text,
+            TURKISH_STRONG_CHARS,
+        )
+        * 2
+    )
 
-    # Character-specific boosts.
-    lowered = text.lower()
+    scores["de"] += (
+        _character_marker_score(
+            text,
+            GERMAN_STRONG_CHARS,
+        )
+        * 2
+    )
 
-    if any(
-        char in lowered
-        for char in "ğışçöü"
-    ):
-        scores["tr"] += 3
+    scores["fr"] += (
+        _character_marker_score(
+            text,
+            FRENCH_STRONG_CHARS,
+        )
+    )
 
-    if any(
-        char in lowered
-        for char in "ñ¿¡"
-    ):
-        scores["es"] += 2
+    scores["es"] += (
+        _character_marker_score(
+            text,
+            SPANISH_STRONG_CHARS,
+        )
+        * 2
+    )
 
-    if any(
-        char in lowered
-        for char in "ßäöü"
-    ):
-        scores["de"] += 2
+    scores["pt"] += (
+        _character_marker_score(
+            text,
+            PORTUGUESE_STRONG_CHARS,
+        )
+        * 2
+    )
 
-    if any(
-        char in lowered
-        for char in "àâçéèêëîïôûùüÿœ"
-    ):
-        scores["fr"] += 1
-
-    if any(
-        char in lowered
-        for char in "ãõ"
-    ):
-        scores["pt"] += 2
-
-    ranked = sorted(
+    ordered = sorted(
         scores.items(),
         key=lambda item: item[1],
         reverse=True,
     )
 
-    best_language, best_score = (
-        ranked[0]
+    winner, winner_score = (
+        ordered[0]
     )
 
-    second_score = ranked[1][1]
+    second_score = (
+        ordered[1][1]
+        if len(
+            ordered
+        ) > 1
+        else 0
+    )
 
+    metadata = {
+        "script_profile":
+            profile,
+
+        "language_scores":
+            scores,
+
+        "word_count":
+            len(
+                words
+            ),
+    }
+
+    # We intentionally require more than a single common marker.
+    #
+    # This prevents Latin text from silently becoming English.
     if (
-        best_score >= 3
-        and best_score
+        winner_score >= 4
+        and winner_score
         >= second_score + 2
     ):
 
         confidence = min(
-            0.95,
-            0.68
+            0.96,
+            0.82
             + min(
-                best_score,
-                15
+                winner_score,
+                10,
             )
-            * 0.02
+            * 0.014,
         )
 
-        return LanguageDetectionResult(
-            language=best_language,
+        return _make_result(
+            language=winner,
             confidence=confidence,
-            confidence_level=(
-                CONFIDENCE_HIGH
-                if confidence >= 0.85
-                else CONFIDENCE_MEDIUM
-            ),
-            script=SCRIPT_LATIN,
+            script="latin",
             reliable=True,
+            is_mixed=is_mixed,
             alternatives=tuple(
                 language
-                for language, score
-                in ranked[1:4]
-                if score > 0
+                for language, _
+                in ordered[1:4]
             ),
-            metadata={
-                "language_scores":
-                    scores,
-            },
+            reason="strong_latin_language_evidence",
+            metadata=metadata,
         )
 
-    return LanguageDetectionResult(
-        language=LANGUAGE_UNKNOWN,
-        confidence=0.40,
-        confidence_level=CONFIDENCE_LOW,
-        script=SCRIPT_LATIN,
-        reliable=False,
+    # A longer text with several coherent markers can be accepted
+    # with slightly lower margin.
+    if (
+        len(
+            words
+        ) >= 12
+        and winner_score >= 3
+        and winner_score
+        >= second_score + 2
+    ):
+
+        return _make_result(
+            language=winner,
+            confidence=0.84,
+            script="latin",
+            reliable=True,
+            is_mixed=is_mixed,
+            alternatives=tuple(
+                language
+                for language, _
+                in ordered[1:4]
+            ),
+            reason="sufficient_latin_lexical_evidence",
+            metadata=metadata,
+        )
+
+    # Latin is shared by hundreds of languages.
+    return _unknown_result(
+        script="latin",
+        confidence=0.45,
+        is_mixed=is_mixed,
         alternatives=tuple(
             language
             for language, _
-            in ranked[:5]
+            in ordered[:5]
+            if scores.get(
+                language,
+                0,
+            ) > 0
         ),
-        metadata={
-            "language_scores":
-                scores,
-            "reason":
-                "ambiguous_latin_script",
-        },
+        reason="latin_language_ambiguous",
+        metadata=metadata,
     )
-
-
-# =========================================================
-# SCRIPT-BASED DIRECT LANGUAGES
-# =========================================================
-
-def _direct_script_language(
-    script: str,
-    text: str,
-) -> Optional[
-    LanguageDetectionResult
-]:
-
-    if script == SCRIPT_HANGUL:
-
-        return LanguageDetectionResult(
-            language="ko",
-            confidence=0.98,
-            confidence_level=CONFIDENCE_HIGH,
-            script=script,
-            reliable=True,
-        )
-
-    if script == SCRIPT_DEVANAGARI:
-
-        # Hindi is the default shortcut here, but the script
-        # is shared by multiple languages. Therefore medium
-        # rather than absolute confidence.
-        return LanguageDetectionResult(
-            language="hi",
-            confidence=0.80,
-            confidence_level=CONFIDENCE_MEDIUM,
-            script=script,
-            reliable=True,
-            alternatives=(),
-            metadata={
-                "script_family":
-                    "devanagari",
-            },
-        )
-
-    if script == SCRIPT_HEBREW:
-
-        return LanguageDetectionResult(
-            language="he",
-            confidence=0.96,
-            confidence_level=CONFIDENCE_HIGH,
-            script=script,
-            reliable=True,
-        )
-
-    if script == SCRIPT_GREEK:
-
-        return LanguageDetectionResult(
-            language="el",
-            confidence=0.96,
-            confidence_level=CONFIDENCE_HIGH,
-            script=script,
-            reliable=True,
-        )
-
-    if script == SCRIPT_THAI:
-
-        return LanguageDetectionResult(
-            language="th",
-            confidence=0.96,
-            confidence_level=CONFIDENCE_HIGH,
-            script=script,
-            reliable=True,
-        )
-
-    if script == SCRIPT_GEORGIAN:
-
-        return LanguageDetectionResult(
-            language="ka",
-            confidence=0.96,
-            confidence_level=CONFIDENCE_HIGH,
-            script=script,
-            reliable=True,
-        )
-
-    if script == SCRIPT_ARMENIAN:
-
-        return LanguageDetectionResult(
-            language="hy",
-            confidence=0.96,
-            confidence_level=CONFIDENCE_HIGH,
-            script=script,
-            reliable=True,
-        )
-
-    return None
 
 
 # =========================================================
@@ -1129,457 +1509,506 @@ def _direct_script_language(
 # =========================================================
 
 def _detect_cjk_language(
-    text: str,
-    counts: Dict[str, int],
-) -> LanguageDetectionResult:
-
-    han = counts.get(
-        SCRIPT_HAN,
-        0
-    )
-
-    hiragana = counts.get(
-        SCRIPT_HIRAGANA,
-        0
-    )
-
-    katakana = counts.get(
-        SCRIPT_KATAKANA,
-        0
-    )
-
-    hangul = counts.get(
-        SCRIPT_HANGUL,
-        0
-    )
-
-    if hangul > 0:
-
-        return LanguageDetectionResult(
-            language="ko",
-            confidence=0.98,
-            confidence_level=CONFIDENCE_HIGH,
-            script=SCRIPT_HANGUL,
-            reliable=True,
-            metadata={
-                "han":
-                    han,
-                "hangul":
-                    hangul,
-            },
-        )
-
-    if (
-        hiragana > 0
-        or katakana > 0
-    ):
-
-        return LanguageDetectionResult(
-            language="ja",
-            confidence=0.98,
-            confidence_level=CONFIDENCE_HIGH,
-            script=(
-                SCRIPT_HIRAGANA
-                if hiragana >= katakana
-                else SCRIPT_KATAKANA
-            ),
-            reliable=True,
-            metadata={
-                "han":
-                    han,
-                "hiragana":
-                    hiragana,
-                "katakana":
-                    katakana,
-            },
-        )
-
-    if han > 0:
-
-        return LanguageDetectionResult(
-            language="zh",
-            confidence=0.88,
-            confidence_level=CONFIDENCE_HIGH,
-            script=SCRIPT_HAN,
-            reliable=True,
-            alternatives=(),
-            metadata={
-                "han":
-                    han,
-            },
-        )
-
-    return LanguageDetectionResult(
-        language=LANGUAGE_UNKNOWN,
-        confidence=0.0,
-        confidence_level=CONFIDENCE_UNKNOWN,
-        script=SCRIPT_UNKNOWN,
-        reliable=False,
-    )
-
-
-# =========================================================
-# PRIMARY DETECTOR
-# =========================================================
-
-def detect_language(
-    text: Optional[str],
-) -> LanguageDetectionResult:
-    """
-    Detect source language conservatively.
-
-    The result should be passed to translation_policy.py.
-
-    If exact language is ambiguous, language="unknown" is
-    returned and the Translation Service can use
-    source_language="auto".
-    """
-
-    cleaned = _clean_text_for_detection(
-        text
-    )
-
-    if not cleaned:
-
-        return LanguageDetectionResult(
-            language=LANGUAGE_UNKNOWN,
-            confidence=0.0,
-            confidence_level=CONFIDENCE_UNKNOWN,
-            script=SCRIPT_UNKNOWN,
-            reliable=False,
-            metadata={
-                "reason":
-                    "empty_or_nonlinguistic_text",
-            },
-        )
-
-    counts = _script_counts(
-        cleaned
-    )
-
-    dominant_script, dominance, mixed = (
-        _dominant_script(
-            counts
-        )
-    )
-
-    # =====================================================
-    # CJK
-    # =====================================================
-
-    if any(
-        counts.get(
-            script,
-            0
-        )
-        > 0
-        for script in (
-            SCRIPT_HAN,
-            SCRIPT_HIRAGANA,
-            SCRIPT_KATAKANA,
-            SCRIPT_HANGUL,
-        )
-    ):
-
-        result = _detect_cjk_language(
-            cleaned,
-            counts,
-        )
-
-        return _with_common_metadata(
-            result,
-            counts=counts,
-            dominance=dominance,
-            mixed=mixed,
-        )
-
-    # =====================================================
-    # MIXED SCRIPT
-    # =====================================================
-
-    if (
-        mixed
-        and dominance < 0.70
-    ):
-
-        return LanguageDetectionResult(
-            language=LANGUAGE_MIXED,
-            confidence=dominance,
-            confidence_level=CONFIDENCE_LOW,
-            script=dominant_script,
-            reliable=False,
-            is_mixed=True,
-            metadata={
-                "script_counts":
-                    counts,
-                "dominance":
-                    dominance,
-                "reason":
-                    "multiple_meaningful_scripts",
-            },
-        )
-
-    # =====================================================
-    # ARABIC SCRIPT
-    # =====================================================
-
-    if (
-        dominant_script
-        == SCRIPT_ARABIC
-    ):
-
-        result = (
-            _detect_arabic_script_language(
-                cleaned
-            )
-        )
-
-        return _with_common_metadata(
-            result,
-            counts=counts,
-            dominance=dominance,
-            mixed=mixed,
-        )
-
-    # =====================================================
-    # LATIN SCRIPT
-    # =====================================================
-
-    if (
-        dominant_script
-        == SCRIPT_LATIN
-    ):
-
-        result = (
-            _detect_latin_language(
-                cleaned
-            )
-        )
-
-        return _with_common_metadata(
-            result,
-            counts=counts,
-            dominance=dominance,
-            mixed=mixed,
-        )
-
-    # =====================================================
-    # CYRILLIC
-    # =====================================================
-
-    if (
-        dominant_script
-        == SCRIPT_CYRILLIC
-    ):
-
-        result = (
-            _detect_cyrillic_language(
-                cleaned
-            )
-        )
-
-        return _with_common_metadata(
-            result,
-            counts=counts,
-            dominance=dominance,
-            mixed=mixed,
-        )
-
-    # =====================================================
-    # DIRECT SCRIPT MAPPINGS
-    # =====================================================
-
-    direct = _direct_script_language(
-        dominant_script,
-        cleaned,
-    )
-
-    if direct:
-
-        return _with_common_metadata(
-            direct,
-            counts=counts,
-            dominance=dominance,
-            mixed=mixed,
-        )
-
-    # =====================================================
-    # UNKNOWN
-    # =====================================================
-
-    return LanguageDetectionResult(
-        language=LANGUAGE_UNKNOWN,
-        confidence=dominance,
-        confidence_level=CONFIDENCE_UNKNOWN,
-        script=dominant_script,
-        reliable=False,
-        is_mixed=mixed,
-        metadata={
-            "script_counts":
-                counts,
-            "dominance":
-                dominance,
-            "reason":
-                "language_not_identified",
-        },
-    )
-
-
-# =========================================================
-# RESULT METADATA
-# =========================================================
-
-def _with_common_metadata(
-    result: LanguageDetectionResult,
     *,
-    counts: Dict[str, int],
-    dominance: float,
-    mixed: bool,
+    script: str,
+    is_mixed: bool,
+    profile: Dict[str, int],
 ) -> LanguageDetectionResult:
+
+    hiragana = profile.get(
+        "hiragana",
+        0,
+    )
+
+    katakana = profile.get(
+        "katakana",
+        0,
+    )
+
+    hangul = profile.get(
+        "hangul",
+        0,
+    )
+
+    han = profile.get(
+        "han",
+        0,
+    )
 
     metadata = {
-        **(
-            result.metadata
-            or {}
-        ),
-        "script_counts":
-            dict(
-                counts
-            ),
-        "dominance":
-            dominance,
+        "script_profile":
+            profile,
     }
 
-    return LanguageDetectionResult(
-        language=result.language,
-        confidence=result.confidence,
-        confidence_level=(
-            result.confidence_level
-        ),
-        script=result.script,
-        reliable=result.reliable,
-        is_mixed=mixed,
-        alternatives=(
-            result.alternatives
-        ),
-        detected_by=(
-            result.detected_by
-        ),
+    # Hangul is highly informative for Korean.
+    if hangul >= 2:
+
+        return _make_result(
+            language="ko",
+            confidence=0.98,
+            script="hangul",
+            reliable=True,
+            is_mixed=is_mixed,
+            alternatives=(),
+            reason="hangul_language_evidence",
+            metadata=metadata,
+        )
+
+    # Kana strongly identifies Japanese.
+    if (
+        hiragana >= 2
+        or katakana >= 2
+    ):
+
+        return _make_result(
+            language="ja",
+            confidence=0.98,
+            script=(
+                "hiragana"
+                if hiragana >= katakana
+                else "katakana"
+            ),
+            reliable=True,
+            is_mixed=is_mixed,
+            alternatives=(),
+            reason="japanese_kana_evidence",
+            metadata=metadata,
+        )
+
+    # Han-only text may be Chinese, Japanese, Classical Chinese,
+    # or another context. Do not force Chinese solely from Han.
+    if han > 0:
+
+        return _unknown_result(
+            script="han",
+            confidence=0.60,
+            is_mixed=is_mixed,
+            alternatives=(
+                "zh",
+                "ja",
+            ),
+            reason="han_only_language_ambiguous",
+            metadata=metadata,
+        )
+
+    return _unknown_result(
+        script=script,
+        confidence=0.30,
+        is_mixed=is_mixed,
+        reason="cjk_language_unknown",
         metadata=metadata,
     )
 
 
 # =========================================================
-# SAFE SOURCE LANGUAGE
+# DEVANAGARI DETECTION
 # =========================================================
 
-def get_translation_source_language(
-    result: LanguageDetectionResult,
-) -> str:
+def _detect_devanagari_language(
+    *,
+    is_mixed: bool,
+    profile: Dict[str, int],
+) -> LanguageDetectionResult:
     """
-    Return the language value safe to pass into the
-    Translation Service.
+    Deliberately NEVER maps Devanagari directly to Hindi.
 
-    Reliable detection:
-        fa / en / ar / ...
+    Devanagari is used by several languages including Hindi,
+    Marathi, Nepali, Sanskrit and others.
 
-    Ambiguous detection:
-        auto
-    """
+    The deterministic layer does not contain enough robust
+    linguistic evidence to distinguish all of them safely.
 
-    if (
-        result.reliable
-        and result.language
-        not in {
-            LANGUAGE_UNKNOWN,
-            LANGUAGE_MIXED,
-            LANGUAGE_AUTO,
-        }
-    ):
-        return result.language
-
-    return LANGUAGE_AUTO
-
-
-# =========================================================
-# POLICY HELPER
-# =========================================================
-
-def detection_requires_provider(
-    result: LanguageDetectionResult,
-) -> bool:
-    """
-    Whether deterministic detection is insufficient and a
-    future provider/model language detector may improve the
-    result.
+    Provider fallback is therefore REQUIRED.
     """
 
-    return not bool(
-        result.reliable
+    return _unknown_result(
+        script="devanagari",
+        confidence=0.55,
+        is_mixed=is_mixed,
+        alternatives=(
+            "hi",
+            "mr",
+            "ne",
+            "sa",
+        ),
+        reason=(
+            "devanagari_shared_script_requires_provider"
+        ),
+        metadata={
+            "script_profile":
+                profile,
+
+            "provider_fallback_recommended":
+                True,
+        },
     )
 
 
 # =========================================================
-# CONTENT-FIELD DETECTION
+# DIRECT SCRIPT LANGUAGES
+# =========================================================
+#
+# These mappings are substantially safer because the script is
+# strongly associated with the language in ordinary modern text.
+# =========================================================
+
+DIRECT_SCRIPT_LANGUAGES: Dict[
+    str,
+    Tuple[str, float]
+] = {
+    "hebrew":
+        ("he", 0.97),
+
+    "greek":
+        ("el", 0.98),
+
+    "thai":
+        ("th", 0.98),
+
+    "georgian":
+        ("ka", 0.98),
+
+    "armenian":
+        ("hy", 0.98),
+}
+
+
+# =========================================================
+# MAIN DETECTOR
+# =========================================================
+
+def detect_language(
+    text: Optional[str],
+) -> LanguageDetectionResult:
+
+    normalized = normalize_detection_text(
+        text
+    )
+
+    if not normalized:
+
+        return _unknown_result(
+            reason="empty_or_nonlinguistic_text",
+        )
+
+    (
+        script,
+        script_ratio,
+        is_mixed,
+        profile,
+    ) = dominant_script(
+        normalized
+    )
+
+    metadata = {
+        "script_profile":
+            profile,
+
+        "dominant_script_ratio":
+            script_ratio,
+
+        "normalized_length":
+            len(
+                normalized
+            ),
+    }
+
+    if not script:
+
+        return _unknown_result(
+            reason="no_supported_script_detected",
+            metadata=metadata,
+        )
+
+    # Highly mixed text should be conservative.
+    #
+    # We still allow Japanese/Korean where mixed Han + Kana/Hangul
+    # is normal for the language itself.
+    if (
+        is_mixed
+        and script not in {
+            "han",
+            "hiragana",
+            "katakana",
+            "hangul",
+        }
+        and script_ratio < 0.70
+    ):
+
+        return _unknown_result(
+            script=script,
+            confidence=0.40,
+            is_mixed=True,
+            reason="mixed_script_language_ambiguous",
+            metadata=metadata,
+        )
+
+    if script == "arabic":
+
+        return _detect_arabic_script_language(
+            normalized,
+            is_mixed=is_mixed,
+            profile=profile,
+        )
+
+    if script == "cyrillic":
+
+        return _detect_cyrillic_language(
+            normalized,
+            is_mixed=is_mixed,
+            profile=profile,
+        )
+
+    if script == "latin":
+
+        return _detect_latin_language(
+            normalized,
+            is_mixed=is_mixed,
+            profile=profile,
+        )
+
+    if script == "devanagari":
+
+        return _detect_devanagari_language(
+            is_mixed=is_mixed,
+            profile=profile,
+        )
+
+    if script in {
+        "han",
+        "hiragana",
+        "katakana",
+        "hangul",
+    }:
+
+        return _detect_cjk_language(
+            script=script,
+            is_mixed=is_mixed,
+            profile=profile,
+        )
+
+    direct = (
+        DIRECT_SCRIPT_LANGUAGES.get(
+            script
+        )
+    )
+
+    if direct is not None:
+
+        language, confidence = (
+            direct
+        )
+
+        return _make_result(
+            language=language,
+            confidence=confidence,
+            script=script,
+            reliable=True,
+            is_mixed=is_mixed,
+            reason="strong_script_language_mapping",
+            metadata=metadata,
+        )
+
+    return _unknown_result(
+        script=script,
+        confidence=0.35,
+        is_mixed=is_mixed,
+        reason="unsupported_or_ambiguous_script",
+        metadata=metadata,
+    )
+
+
+# =========================================================
+# PIPELINE SOURCE LANGUAGE
+# =========================================================
+
+def get_translation_source_language(
+    result: Optional[
+        LanguageDetectionResult
+    ],
+) -> str:
+    """
+    Return a source language only when deterministic detection is
+    safe enough for the Translation Pipeline.
+
+    Any uncertain result becomes "auto", which instructs the
+    pipeline to use provider language detection.
+    """
+
+    if result is None:
+        return LANGUAGE_AUTO
+
+    language = str(
+        getattr(
+            result,
+            "language",
+            LANGUAGE_AUTO,
+        )
+        or LANGUAGE_AUTO
+    ).strip().lower()
+
+    reliable = bool(
+        getattr(
+            result,
+            "reliable",
+            False,
+        )
+    )
+
+    confidence = float(
+        getattr(
+            result,
+            "confidence",
+            0.0,
+        )
+        or 0.0
+    )
+
+    script = str(
+        getattr(
+            result,
+            "script",
+            "",
+        )
+        or ""
+    ).lower()
+
+    if not reliable:
+        return LANGUAGE_AUTO
+
+    if language in {
+        "",
+        LANGUAGE_AUTO,
+        "unknown",
+        "und",
+    }:
+        return LANGUAGE_AUTO
+
+    # Stronger threshold for shared scripts.
+    #
+    # Even when a heuristic says "reliable", a shared script
+    # requires high confidence before provider fallback is skipped.
+    if (
+        script
+        in SHARED_LANGUAGE_SCRIPTS
+        and confidence < 0.88
+    ):
+        return LANGUAGE_AUTO
+
+    if confidence < 0.75:
+        return LANGUAGE_AUTO
+
+    return language
+
+
+# =========================================================
+# PROVIDER FALLBACK DECISION
+# =========================================================
+
+def detection_requires_provider(
+    result: Optional[
+        LanguageDetectionResult
+    ],
+) -> bool:
+
+    if result is None:
+        return True
+
+    source_language = (
+        get_translation_source_language(
+            result
+        )
+    )
+
+    if source_language == LANGUAGE_AUTO:
+        return True
+
+    script = str(
+        getattr(
+            result,
+            "script",
+            "",
+        )
+        or ""
+    ).lower()
+
+    confidence = float(
+        getattr(
+            result,
+            "confidence",
+            0.0,
+        )
+        or 0.0
+    )
+
+    is_mixed = bool(
+        getattr(
+            result,
+            "is_mixed",
+            False,
+        )
+    )
+
+    # Mixed text deserves provider verification unless deterministic
+    # evidence is extremely strong.
+    if (
+        is_mixed
+        and confidence < 0.94
+    ):
+        return True
+
+    # Shared scripts need higher confidence.
+    if (
+        script
+        in SHARED_LANGUAGE_SCRIPTS
+        and confidence < 0.90
+    ):
+        return True
+
+    return False
+
+
+# =========================================================
+# CONTENT LANGUAGE
 # =========================================================
 
 def detect_content_language(
     *,
-    main_text: Optional[str] = None,
-    caption: Optional[str] = None,
-    title: Optional[str] = None,
-    body: Optional[str] = None,
+    text: str = "",
+    caption: str = "",
+    title: str = "",
+    body: str = "",
 ) -> LanguageDetectionResult:
     """
-    Detect the language of a structured content object.
+    Detect language from generic content fields without making any
+    assumptions about the content type.
 
-    Body/main_text receives the greatest practical weight by
-    simply forming the largest portion of the combined text.
-
-    This works for:
-    - normal text
-    - media captions
-    - albums
-    - External Review articles
-    - notes
-    - analysis
+    Longer semantic body text is preferred, but all available
+    fields are combined.
     """
 
     parts: List[str] = []
 
-    if title:
-        parts.append(
-            str(
-                title
-            )
-        )
+    for value in (
+        title,
+        text,
+        caption,
+        body,
+    ):
 
-    if main_text:
-        parts.append(
-            str(
-                main_text
-            )
-        )
+        value = str(
+            value
+            or ""
+        ).strip()
 
-    if body:
-        parts.append(
-            str(
-                body
+        if value:
+            parts.append(
+                value
             )
-        )
-
-    if caption:
-        parts.append(
-            str(
-                caption
-            )
-        )
 
     combined = "\n\n".join(
-        part.strip()
-        for part in parts
-        if part.strip()
-    )
+        parts
+    ).strip()
 
     return detect_language(
         combined
@@ -1587,17 +2016,62 @@ def detect_content_language(
 
 
 # =========================================================
-# MULTI-FIELD DIAGNOSTICS
+# CONVENIENCE LANGUAGE CODE
 # =========================================================
 
-def describe_language_detection(
-    result: LanguageDetectionResult,
-) -> Dict[str, Any]:
-    """
-    Safe diagnostic representation.
+def detect_language_code(
+    text: Optional[str],
+) -> str:
 
-    No source content is returned.
-    """
+    result = detect_language(
+        text
+    )
+
+    return get_translation_source_language(
+        result
+    )
+
+
+# =========================================================
+# DIAGNOSTICS
+# =========================================================
+
+def language_detection_diagnostics(
+    result: Optional[
+        LanguageDetectionResult
+    ],
+) -> Dict[str, Any]:
+
+    if result is None:
+
+        return {
+            "language":
+                LANGUAGE_AUTO,
+
+            "confidence":
+                0.0,
+
+            "confidence_level":
+                CONFIDENCE_LOW,
+
+            "script":
+                "",
+
+            "reliable":
+                False,
+
+            "is_mixed":
+                False,
+
+            "alternatives":
+                [],
+
+            "detected_by":
+                "deterministic",
+
+            "provider_required":
+                True,
+        }
 
     return {
         "language":
@@ -1626,6 +2100,11 @@ def describe_language_detection(
         "detected_by":
             result.detected_by,
 
+        "provider_required":
+            detection_requires_provider(
+                result
+            ),
+
         "metadata":
             dict(
                 result.metadata
@@ -1635,20 +2114,14 @@ def describe_language_detection(
 
 
 # =========================================================
-# CONVENIENCE
+# COMPATIBILITY ALIAS
 # =========================================================
 
-def detect_language_code(
+def describe_language_detection(
     text: Optional[str],
-) -> str:
-    """
-    Convenience API.
+) -> Dict[str, Any]:
 
-    Returns a reliable language code when possible.
-    Otherwise returns "auto".
-    """
-
-    return get_translation_source_language(
+    return language_detection_diagnostics(
         detect_language(
             text
         )
