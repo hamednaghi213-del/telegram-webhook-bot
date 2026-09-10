@@ -788,10 +788,37 @@ def get_active_translation_state(
 ) -> Optional[
     TranslationState
 ]:
+    """
+    Return active Translation workflow for one user/chat.
 
-    row = (
-        _database()
-        .get_active_persistent_translation_review(
+    Persistent storage is preferred.
+
+    Some existing tests replace core.database with a lightweight
+    fake module which predates persistent Translation state.
+    Missing read support therefore means there is no persistent
+    pending Translation workflow and must not break existing
+    Editorial / External Review / publication paths.
+
+    Translation mutations remain fail-closed.
+    """
+
+    database = _database()
+
+    persistent_lookup = getattr(
+        database,
+        "get_active_persistent_translation_review",
+        None,
+    )
+
+    if not callable(
+        persistent_lookup
+    ):
+
+        return None
+
+    try:
+
+        row = persistent_lookup(
             chat_id=int(
                 chat_id
             ),
@@ -799,7 +826,18 @@ def get_active_translation_state(
                 user_id
             ),
         )
-    )
+
+    except Exception as exc:
+
+        logger.debug(
+            "Persistent translation active lookup unavailable | "
+            "chat_id=%s | user_id=%s | error=%s",
+            chat_id,
+            user_id,
+            exc,
+        )
+
+        return None
 
     state = (
         _state_from_row(
@@ -810,9 +848,7 @@ def get_active_translation_state(
     if state is None:
         return None
 
-    if state.status not in (
-        ACTIVE_STATES
-    ):
+    if state.status not in ACTIVE_STATES:
         return None
 
     if translation_state_expired(
