@@ -3405,19 +3405,26 @@ def _validate_persistent_translation_status(
 @with_retry
 def cleanup_expired_persistent_translation_reviews() -> int:
     """
-    Delete translation workflows whose TTL has expired.
+    Delete expired persistent translation reviews.
 
-    SQL function was created by:
-        schema/024_translation_reviews.sql
+    This maintenance task must never break normal webhook paths.
+    In tests, service_supabase may be missing or may not provide RPC.
     """
 
-    client = (
-        _translation_service_client()
+    if service_supabase is None:
+        return 0
+
+    rpc_method = getattr(
+        service_supabase,
+        "rpc",
+        None,
     )
 
+    if not callable(rpc_method):
+        return 0
+
     result = (
-        client
-        .rpc(
+        rpc_method(
             "cleanup_expired_translation_reviews"
         )
         .execute()
@@ -3425,39 +3432,26 @@ def cleanup_expired_persistent_translation_reviews() -> int:
 
     value = result.data
 
-    if isinstance(
-        value,
-        list,
-    ):
+    if isinstance(value, list):
         if not value:
             return 0
-
         value = value[0]
 
-    if isinstance(
-        value,
-        dict,
-    ):
+    if isinstance(value, dict):
         for key in (
             "cleanup_expired_translation_reviews",
             "deleted_count",
             "count",
         ):
             if key in value:
-                value = value[
-                    key
-                ]
+                value = value[key]
                 break
 
     try:
         return max(
             0,
-            int(
-                value
-                or 0
-            ),
+            int(value or 0),
         )
-
     except (
         TypeError,
         ValueError,
@@ -3466,7 +3460,6 @@ def cleanup_expired_persistent_translation_reviews() -> int:
             "⚠️ Unexpected translation cleanup result | "
             f"value={value!r}"
         )
-
         return 0
 
 
@@ -3517,67 +3510,146 @@ def get_active_persistent_translation_review(
     user_id: int,
 ) -> Optional[Dict[str, Any]]:
     """
-    Return the active translation workflow for one user/chat.
+    Return the newest non-expired active translation workflow.
 
-    Expired rows are cleaned first so stale workflow state cannot
-    intercept a future Telegram message.
+    This is a read-only pending-guard lookup.
+
+    If persistent translation storage is unavailable, this must
+    behave as "no active translation workflow" so existing webhook
+    paths continue normally.
+
+    Translation mutations remain fail-closed elsewhere.
     """
 
-    client = (
-        _translation_service_client()
-    )
-
-    # Best-effort expiry cleanup.
-    #
-    # Failure is logged but does not hide an otherwise valid
-    # translation state read.
-    try:
-        cleanup_expired_persistent_translation_reviews()
-
-    except Exception as exc:
-        logger.warning(
-            "⚠️ Translation expiry cleanup failed before active read | "
-            f"chat_id={chat_id} | "
-            f"user_id={user_id} | "
-            f"error={exc}"
-        )
-
-    result = (
-        client
-        .table(
-            "translation_reviews"
-        )
-        .select("*")
-        .eq(
-            "chat_id",
-            int(
-                chat_id
-            ),
-        )
-        .eq(
-            "user_id",
-            int(
-                user_id
-            ),
-        )
-        .in_(
-            "status",
-            list(
-                PERSISTENT_TRANSLATION_ACTIVE_STATUSES
-            ),
-        )
-        .order(
-            "created_at",
-            desc=True,
-        )
-        .limit(1)
-        .execute()
-    )
-
-    if not result.data:
+    if service_supabase is None:
         return None
 
-    return result.data[0]
+    try:
+        result = (
+            service_supabase
+            .table(
+                "translation_reviews"
+            )
+            .select("*")
+            .eq(
+                "chat_id",
+                int(chat_id),
+            )
+            .eq(
+                "user_id",
+                int(user_id),
+            )
+            .execute()
+        )
+
+    except Exception as exc:
+        logger.debug(
+            "Translation active-state lookup unavailable | "
+            "chat_id=%s | user_id=%s | error=%s",
+            chat_id,
+            user_id,
+            exc,
+        )
+        return None
+
+    rows = list(
+        result.data
+        or []
+    )
+
+    if not rows:
+        return None
+
+    active_rows = [
+        row
+        for row in rows
+        if str(
+            row.get("status")
+            or ""
+        )
+        in PERSISTENT_TRANSLATION_ACTIVE_STATUSES
+    ]
+
+    if not active_rows:
+        return None
+
+    from datetime import (
+        datetime,
+        timezone,
+    )
+
+    now = datetime.now(
+        timezone.utc
+    )
+
+    valid_rows = []
+
+    for row in active_rows:
+        expires_at = row.get(
+            "expires_at"
+        )
+
+        if expires_at:
+            try:
+                normalized_expires_at = str(
+                    expires_at
+                ).strip()
+
+                if normalized_expires_at.endswith("Z"):
+                    normalized_expires_at = (
+                        normalized_expires_at[:-1]
+                        + "+00:00"
+                    )
+
+                expires_datetime = (
+                    datetime.fromisoformat(
+                        normalized_expires_at
+                    )
+                )
+
+                if expires_datetime.tzinfo is None:
+                    expires_datetime = (
+                        expires_datetime.replace(
+                            tzinfo=timezone.utc
+                        )
+                    )
+
+                if expires_datetime <= now:
+                    continue
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+                pass
+
+        valid_rows.append(
+            row
+        )
+
+    if not valid_rows:
+        return None
+
+    def _translation_review_sort_key(
+        row: Dict[str, Any],
+    ):
+        return (
+            str(
+                row.get("created_at")
+                or ""
+            ),
+            int(
+                row.get("id")
+                or 0
+            ),
+        )
+
+    valid_rows.sort(
+        key=_translation_review_sort_key,
+        reverse=True,
+    )
+
+    return valid_rows[0]
 
 
 @with_retry
