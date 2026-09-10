@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, Optional
+
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Optional,
+)
+
 
 from core.translation_controller import (
     RESULT_CANCELLED,
@@ -27,8 +34,14 @@ from core.translation_controller import (
     show_translation_language_menu,
 )
 
+from core.translation_publication import (
+    publish_confirmed_translation,
+    translation_publication_message,
+)
+
 from core.translation_state import (
     get_active_translation_state,
+    get_translation_state,
 )
 
 from core.translation_ui import (
@@ -50,37 +63,44 @@ logger = logging.getLogger(__name__)
 
 
 # =========================================================
-# TRANSLATION TELEGRAM ADAPTER
+# TELEGRAM TRANSLATION CALLBACK ADAPTER
 # =========================================================
-#
-# NEW FILE
-#
-# Telegram-specific adapter for the shared Translation flow.
 #
 # Responsibilities:
 #
-# - recognize tr:* callbacks
-# - resolve user/chat identity
-# - resolve active TranslationState
-# - route callbacks to TranslationController
-# - render controller results in Telegram
+# Telegram callback
+#       ↓
+# Translation Controller
+#       ↓
+# Translation Review
+#       ↓
+# Confirm
+#       ↓
+# Translation Publication Bridge
+#       ↓
+# Existing Shared Publication Engine
 #
-# It DOES NOT:
+# IMPORTANT:
 #
-# - translate content itself
-# - call Gemini directly
-# - create publication logic
-# - duplicate PublicationPlan
-# - change Legacy / Workspace routing
+# - No direct Telegram channel publication.
+# - No direct Bale publication.
+# - No duplicate Publication Engine.
+# - Final publication is delegated to:
 #
-# Confirmed content is returned to the caller.
-# Publication remains the responsibility of the Shared Engine.
+#       publish_confirmed_translation()
+#
+# which itself reuses the existing:
+#
+#       publish_prepared_text()
 #
 # =========================================================
 
 
 SendMessage = Callable[..., Any]
+
 AnswerCallback = Callable[..., Any]
+
+PublishPreparedText = Callable[..., Any]
 
 
 # =========================================================
@@ -90,53 +110,61 @@ AnswerCallback = Callable[..., Any]
 def _callback_id(
     callback_query: Dict[str, Any],
 ) -> str:
+
     return str(
         callback_query.get(
             "id",
             "",
         )
         or ""
-    )
+    ).strip()
 
 
 def _callback_data(
     callback_query: Dict[str, Any],
 ) -> str:
+
     return str(
         callback_query.get(
             "data",
             "",
         )
         or ""
-    )
+    ).strip()
 
 
 def _callback_user_id(
     callback_query: Dict[str, Any],
 ) -> Optional[int]:
 
-    value = (
+    from_user = (
         callback_query.get(
             "from",
             {},
         )
         or {}
-    ).get(
-        "id"
     )
 
-    if value is None:
+    user_id = (
+        from_user.get(
+            "id"
+        )
+    )
+
+    if user_id is None:
         return None
 
     try:
+
         return int(
-            value
+            user_id
         )
 
     except (
         TypeError,
         ValueError,
     ):
+
         return None
 
 
@@ -160,30 +188,34 @@ def _callback_chat_id(
         or {}
     )
 
-    value = chat.get(
-        "id"
+    chat_id = (
+        chat.get(
+            "id"
+        )
     )
 
-    if value is None:
+    if chat_id is None:
+
+        # In private bot conversations Telegram user_id and
+        # chat_id are normally identical. Keep this fallback
+        # for callbacks whose message envelope is unavailable.
         return _callback_user_id(
             callback_query
         )
 
     try:
+
         return int(
-            value
+            chat_id
         )
 
     except (
         TypeError,
         ValueError,
     ):
+
         return None
 
-
-# =========================================================
-# ACTIVE REVIEW
-# =========================================================
 
 def _active_review_id(
     *,
@@ -202,13 +234,39 @@ def _active_review_id(
         return ""
 
     return str(
-        state.review_id
+        getattr(
+            state,
+            "review_id",
+            "",
+        )
         or ""
+    ).strip()
+
+
+# =========================================================
+# RESULT FACTORY
+# =========================================================
+
+def _controller_result(
+    *,
+    success: bool,
+    action: str,
+    text: str = "",
+    review_id: str = "",
+    reason: str = "",
+) -> TranslationControllerResult:
+
+    return TranslationControllerResult(
+        success=success,
+        action=action,
+        text=text,
+        review_id=review_id,
+        reason=reason,
     )
 
 
 # =========================================================
-# TELEGRAM RESULT RENDERER
+# RESULT RENDERER
 # =========================================================
 
 def render_translation_result(
@@ -217,96 +275,133 @@ def render_translation_result(
     chat_id: int,
     send_message: SendMessage,
 ) -> None:
+    """
+    Convert TranslationControllerResult to Telegram user
+    messages.
 
-    # -----------------------------------------
-    # PREVIEW
-    # -----------------------------------------
+    Publication itself is NOT performed here.
+    """
 
-    if result.action == RESULT_PREVIEW:
+    if result is None:
+        return
 
-        preview_text = str(
-            result.translated_text
-            or ""
-        ).strip()
+    action = str(
+        getattr(
+            result,
+            "action",
+            "",
+        )
+        or ""
+    )
 
-        header = str(
-            result.text
-            or ""
-        ).strip()
+    text = str(
+        getattr(
+            result,
+            "text",
+            "",
+        )
+        or ""
+    ).strip()
 
-        if header and preview_text:
-            output = (
-                f"{header}\n\n"
-                f"{preview_text}"
+    reply_markup = getattr(
+        result,
+        "reply_markup",
+        None,
+    )
+
+    translated_text = str(
+        getattr(
+            result,
+            "translated_text",
+            "",
+        )
+        or ""
+    ).strip()
+
+    # =====================================================
+    # TRANSLATION PREVIEW
+    # =====================================================
+
+    if action == RESULT_PREVIEW:
+
+        parts = []
+
+        if text:
+            parts.append(
+                text
             )
 
-        else:
-            output = (
-                preview_text
-                or header
-                or "ترجمه آماده است."
+        if translated_text:
+            parts.append(
+                translated_text
+            )
+
+        preview = "\n\n".join(
+            part
+            for part in parts
+            if part
+        ).strip()
+
+        if not preview:
+            preview = (
+                "🌐 ترجمه آماده بررسی است."
             )
 
         send_message(
             chat_id,
-            output,
-            reply_markup=(
-                result.reply_markup
-            ),
+            preview,
+            reply_markup=reply_markup,
         )
 
         return
 
-    # -----------------------------------------
-    # ORIGINAL
-    # -----------------------------------------
+    # =====================================================
+    # ORIGINAL TEXT
+    # =====================================================
 
-    if result.action == RESULT_ORIGINAL:
+    if action == RESULT_ORIGINAL:
 
-        send_message(
-            chat_id,
-            result.text
-            or "متن اصلی در دسترس نیست.",
-        )
+        if text:
 
-        return
-
-    # -----------------------------------------
-    # CONFIRMED
-    # -----------------------------------------
-
-    if result.action == RESULT_CONFIRMED:
-
-        send_message(
-            chat_id,
-            (
-                "✅ ترجمه تأیید شد.\n\n"
-                "نسخه ترجمه‌شده برای مرحله انتشار "
-                "آماده است."
-            ),
-        )
+            send_message(
+                chat_id,
+                text,
+                reply_markup=reply_markup,
+            )
 
         return
 
-    # -----------------------------------------
-    # CANCELLED
-    # -----------------------------------------
+    # =====================================================
+    # CONFIRM
+    # =====================================================
 
-    if result.action == RESULT_CANCELLED:
+    if action == RESULT_CONFIRMED:
+
+        # Final publication acknowledgement is sent by the
+        # publication bridge section after actual Shared
+        # Engine execution.
+        return
+
+    # =====================================================
+    # CANCEL
+    # =====================================================
+
+    if action == RESULT_CANCELLED:
 
         send_message(
             chat_id,
-            result.text
+            text
             or "❌ ترجمه لغو شد.",
+            reply_markup=reply_markup,
         )
 
         return
 
-    # -----------------------------------------
-    # FAILURES
-    # -----------------------------------------
+    # =====================================================
+    # ERRORS
+    # =====================================================
 
-    if result.action in {
+    if action in {
         RESULT_FAILED,
         RESULT_NOT_FOUND,
         RESULT_INVALID_LANGUAGE,
@@ -315,32 +410,28 @@ def render_translation_result(
 
         send_message(
             chat_id,
-            result.text
-            or (
-                "❌ انجام این مرحله ترجمه ممکن نشد. "
-                "لطفاً دوباره تلاش کنید."
-            ),
+            text
+            or "❌ پردازش ترجمه با خطا روبرو شد.",
+            reply_markup=reply_markup,
         )
 
         return
 
-    # -----------------------------------------
+    # =====================================================
     # NORMAL CONTROLLER MESSAGE
-    # -----------------------------------------
+    # =====================================================
 
-    if result.text:
+    if text:
 
         send_message(
             chat_id,
-            result.text,
-            reply_markup=(
-                result.reply_markup
-            ),
+            text,
+            reply_markup=reply_markup,
         )
 
 
 # =========================================================
-# TRANSLATION CALLBACK ROUTER
+# CALLBACK HANDLER
 # =========================================================
 
 def handle_translation_telegram_callback(
@@ -348,31 +439,62 @@ def handle_translation_telegram_callback(
     callback_query: Dict[str, Any],
     answer_callback_query: AnswerCallback,
     send_message: SendMessage,
+    publish_prepared_text: PublishPreparedText,
     req_id: str = "",
 ) -> Optional[
     TranslationControllerResult
 ]:
+    """
+    Handle Telegram callbacks beginning with:
 
-    callback_data = _callback_data(
-        callback_query
+        tr:
+
+    Returns:
+        None
+            callback does not belong to Translation
+
+        TranslationControllerResult
+            callback was handled
+
+    IMPORTANT:
+
+    `publish_prepared_text` is injected by webhook_handler so
+    Translation never owns a separate publication engine.
+    """
+
+    callback_data = (
+        _callback_data(
+            callback_query
+        )
     )
 
     if not is_translation_callback(
         callback_data
     ):
+
         return None
 
-    callback_id = _callback_id(
-        callback_query
+    callback_id = (
+        _callback_id(
+            callback_query
+        )
     )
 
-    user_id = _callback_user_id(
-        callback_query
+    user_id = (
+        _callback_user_id(
+            callback_query
+        )
     )
 
-    chat_id = _callback_chat_id(
-        callback_query
+    chat_id = (
+        _callback_chat_id(
+            callback_query
+        )
     )
+
+    # =====================================================
+    # IDENTITY
+    # =====================================================
 
     if (
         user_id is None
@@ -381,68 +503,47 @@ def handle_translation_telegram_callback(
 
         answer_callback_query(
             callback_id,
-            "کاربر قابل تشخیص نیست.",
+            "کاربر قابل تشخیص نیست."
         )
 
-        return TranslationControllerResult(
+        return _controller_result(
             success=False,
             action=RESULT_FAILED,
-            reason="telegram_identity_missing",
+            text=(
+                "❌ امکان تشخیص کاربر برای ترجمه وجود ندارد."
+            ),
+            reason=(
+                "translation_user_not_found"
+            ),
         )
 
-    parsed = parse_translation_callback(
-        callback_data
+    # =====================================================
+    # CALLBACK PARSE
+    # =====================================================
+
+    parsed = (
+        parse_translation_callback(
+            callback_data
+        )
     )
 
     if not parsed.valid:
 
         answer_callback_query(
             callback_id,
-            "دستور ترجمه نامعتبر است.",
-        )
-
-        return TranslationControllerResult(
-            success=False,
-            action=RESULT_FAILED,
-            reason="invalid_translation_callback",
-        )
-
-    review_id = _active_review_id(
-        chat_id=chat_id,
-        user_id=user_id,
-    )
-
-    # tr:open is only valid after the caller has created
-    # TranslationState from the actual source content.
-    #
-    # This prevents the Telegram adapter from guessing which
-    # message/review should be translated.
-
-    if parsed.action == ACTION_OPEN:
-
-        if not review_id:
-
-            answer_callback_query(
-                callback_id,
-                "محتوایی برای ترجمه انتخاب نشده است.",
-            )
-
-            return TranslationControllerResult(
-                success=False,
-                action=RESULT_NOT_FOUND,
-                reason="translation_source_not_initialized",
-            )
-
-        answer_callback_query(
-            callback_id,
-            "انتخاب زبان",
+            "دستور ترجمه نامعتبر است."
         )
 
         result = (
-            show_translation_language_menu(
-                review_id=review_id,
-                chat_id=chat_id,
-                user_id=user_id,
+            _controller_result(
+                success=False,
+                action=RESULT_FAILED,
+                text=(
+                    "❌ دستور ترجمه معتبر نیست."
+                ),
+                reason=(
+                    "invalid_translation_callback"
+                ),
             )
         )
 
@@ -454,47 +555,97 @@ def handle_translation_telegram_callback(
 
         return result
 
+    # =====================================================
+    # ACTIVE REVIEW
+    # =====================================================
+
+    review_id = (
+        _active_review_id(
+            chat_id=chat_id,
+            user_id=user_id,
+        )
+    )
+
+    # tr:open does NOT itself create a translation state.
+    #
+    # The source path — Editorial, External Review, normal
+    # content, etc. — must first bind the actual source
+    # content to a TranslationState.
     if not review_id:
 
         answer_callback_query(
             callback_id,
-            "این درخواست ترجمه منقضی شده است.",
+            "درخواست ترجمه پیدا نشد."
         )
 
-        return TranslationControllerResult(
-            success=False,
-            action=RESULT_NOT_FOUND,
-            reason="translation_state_not_found",
-        )
-
-    # -----------------------------------------
-    # LANGUAGE
-    # -----------------------------------------
-
-    if parsed.action == ACTION_LANGUAGE:
-
-        language_code = str(
-            parsed.value
-            or ""
-        ).strip()
-
-        if not language_code:
-
-            answer_callback_query(
-                callback_id,
-                "زبان نامعتبر است.",
-            )
-
-            return TranslationControllerResult(
+        result = (
+            _controller_result(
                 success=False,
-                action=RESULT_INVALID_LANGUAGE,
-                review_id=review_id,
-                reason="missing_language_code",
+                action=RESULT_NOT_FOUND,
+                text=(
+                    "❌ درخواست ترجمه پیدا نشد یا منقضی شده است."
+                ),
+                reason=(
+                    "translation_state_not_found"
+                ),
             )
+        )
+
+        render_translation_result(
+            result=result,
+            chat_id=chat_id,
+            send_message=send_message,
+        )
+
+        return result
+
+    logger.info(
+        "[%s] 🌐 TRANSLATION-CALLBACK | "
+        "action=%s | review_id=%s | "
+        "user=%s | chat=%s",
+        req_id,
+        parsed.action,
+        review_id,
+        user_id,
+        chat_id,
+    )
+
+    # =====================================================
+    # OPEN
+    # =====================================================
+
+    if parsed.action == ACTION_OPEN:
+
+        result = (
+            show_translation_language_menu(
+                review_id=review_id,
+                chat_id=chat_id,
+                user_id=user_id,
+            )
+        )
 
         answer_callback_query(
             callback_id,
-            "در حال ترجمه...",
+            "زبان ترجمه را انتخاب کنید."
+        )
+
+        render_translation_result(
+            result=result,
+            chat_id=chat_id,
+            send_message=send_message,
+        )
+
+        return result
+
+    # =====================================================
+    # LANGUAGE
+    # =====================================================
+
+    if parsed.action == ACTION_LANGUAGE:
+
+        answer_callback_query(
+            callback_id,
+            "در حال ترجمه..."
         )
 
         result = (
@@ -502,7 +653,9 @@ def handle_translation_telegram_callback(
                 review_id=review_id,
                 chat_id=chat_id,
                 user_id=user_id,
-                language_code=language_code,
+                language_code=(
+                    parsed.value
+                ),
             )
         )
 
@@ -514,37 +667,24 @@ def handle_translation_telegram_callback(
 
         return result
 
-    # -----------------------------------------
+    # =====================================================
     # MORE LANGUAGES
-    # -----------------------------------------
+    # =====================================================
 
     if parsed.action == ACTION_MORE:
-
-        try:
-            page = int(
-                parsed.value
-                or parsed.page
-                or 0
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-            page = 0
-
-        answer_callback_query(
-            callback_id,
-            "زبان‌های بیشتر",
-        )
 
         result = (
             show_more_translation_languages(
                 review_id=review_id,
                 chat_id=chat_id,
                 user_id=user_id,
-                page=page,
+                page=parsed.page,
             )
+        )
+
+        answer_callback_query(
+            callback_id,
+            "زبان‌های بیشتر"
         )
 
         render_translation_result(
@@ -555,16 +695,11 @@ def handle_translation_telegram_callback(
 
         return result
 
-    # -----------------------------------------
+    # =====================================================
     # BACK
-    # -----------------------------------------
+    # =====================================================
 
     if parsed.action == ACTION_BACK:
-
-        answer_callback_query(
-            callback_id,
-            "بازگشت",
-        )
 
         result = (
             show_translation_language_menu(
@@ -574,6 +709,11 @@ def handle_translation_telegram_callback(
             )
         )
 
+        answer_callback_query(
+            callback_id,
+            "بازگشت"
+        )
+
         render_translation_result(
             result=result,
             chat_id=chat_id,
@@ -582,16 +722,11 @@ def handle_translation_telegram_callback(
 
         return result
 
-    # -----------------------------------------
+    # =====================================================
     # CUSTOM LANGUAGE
-    # -----------------------------------------
+    # =====================================================
 
     if parsed.action == ACTION_CUSTOM:
-
-        answer_callback_query(
-            callback_id,
-            "زبان دلخواه",
-        )
 
         result = (
             request_custom_translation_language(
@@ -601,6 +736,11 @@ def handle_translation_telegram_callback(
             )
         )
 
+        answer_callback_query(
+            callback_id,
+            "نام زبان را ارسال کنید."
+        )
+
         render_translation_result(
             result=result,
             chat_id=chat_id,
@@ -609,16 +749,11 @@ def handle_translation_telegram_callback(
 
         return result
 
-    # -----------------------------------------
+    # =====================================================
     # EDIT
-    # -----------------------------------------
+    # =====================================================
 
     if parsed.action == ACTION_EDIT:
-
-        answer_callback_query(
-            callback_id,
-            "اصلاح ترجمه",
-        )
 
         result = (
             request_translation_edit(
@@ -628,6 +763,11 @@ def handle_translation_telegram_callback(
             )
         )
 
+        answer_callback_query(
+            callback_id,
+            "متن اصلاح‌شده را ارسال کنید."
+        )
+
         render_translation_result(
             result=result,
             chat_id=chat_id,
@@ -636,16 +776,11 @@ def handle_translation_telegram_callback(
 
         return result
 
-    # -----------------------------------------
+    # =====================================================
     # ORIGINAL
-    # -----------------------------------------
+    # =====================================================
 
     if parsed.action == ACTION_ORIGINAL:
-
-        answer_callback_query(
-            callback_id,
-            "متن اصلی",
-        )
 
         result = (
             get_translation_original(
@@ -655,6 +790,11 @@ def handle_translation_telegram_callback(
             )
         )
 
+        answer_callback_query(
+            callback_id,
+            "متن اصلی"
+        )
+
         render_translation_result(
             result=result,
             chat_id=chat_id,
@@ -663,16 +803,11 @@ def handle_translation_telegram_callback(
 
         return result
 
-    # -----------------------------------------
+    # =====================================================
     # CANCEL
-    # -----------------------------------------
+    # =====================================================
 
     if parsed.action == ACTION_CANCEL:
-
-        answer_callback_query(
-            callback_id,
-            "ترجمه لغو شد.",
-        )
 
         result = (
             cancel_translation(
@@ -682,6 +817,11 @@ def handle_translation_telegram_callback(
             )
         )
 
+        answer_callback_query(
+            callback_id,
+            "ترجمه لغو شد."
+        )
+
         render_translation_result(
             result=result,
             chat_id=chat_id,
@@ -690,16 +830,11 @@ def handle_translation_telegram_callback(
 
         return result
 
-    # -----------------------------------------
-    # CONFIRM
-    # -----------------------------------------
+    # =====================================================
+    # CONFIRM + SHARED PUBLICATION
+    # =====================================================
 
     if parsed.action == ACTION_CONFIRM:
-
-        answer_callback_query(
-            callback_id,
-            "ترجمه تأیید شد.",
-        )
 
         result = (
             confirm_translation(
@@ -709,38 +844,129 @@ def handle_translation_telegram_callback(
             )
         )
 
-        # IMPORTANT:
-        #
-        # We intentionally DO NOT publish here.
-        #
-        # The caller receives RESULT_CONFIRMED and will hand
-        # the translated content to the existing Shared
-        # Publication Engine in the integration stage.
+        if not result.success:
 
-        render_translation_result(
-            result=result,
-            chat_id=chat_id,
-            send_message=send_message,
+            answer_callback_query(
+                callback_id,
+                "تأیید ترجمه انجام نشد."
+            )
+
+            render_translation_result(
+                result=result,
+                chat_id=chat_id,
+                send_message=send_message,
+            )
+
+            return result
+
+        confirmed_state = (
+            result.state
+            or get_translation_state(
+                review_id
+            )
+        )
+
+        if confirmed_state is None:
+
+            answer_callback_query(
+                callback_id,
+                (
+                    "ترجمه تأیید شد اما وضعیت آن "
+                    "پیدا نشد."
+                )
+            )
+
+            send_message(
+                chat_id,
+                (
+                    "❌ امکان آماده‌سازی ترجمه "
+                    "برای انتشار وجود نداشت."
+                )
+            )
+
+            return result
+
+        answer_callback_query(
+            callback_id,
+            "در حال انتشار نسخه ترجمه‌شده..."
+        )
+
+        try:
+
+            publication = (
+                publish_confirmed_translation(
+                    state=confirmed_state,
+                    publish_prepared_text=(
+                        publish_prepared_text
+                    ),
+                )
+            )
+
+        except Exception as exc:
+
+            logger.exception(
+                "[%s] ❌ Translation publication failed | "
+                "review_id=%s | %s",
+                req_id,
+                review_id,
+                exc,
+            )
+
+            send_message(
+                chat_id,
+                (
+                    "❌ انتشار نسخه ترجمه‌شده "
+                    "با خطا روبرو شد."
+                )
+            )
+
+            return result
+
+        send_message(
+            chat_id,
+            translation_publication_message(
+                publication
+            ),
+        )
+
+        logger.info(
+            "[%s] 🌐 TRANSLATION-CONFIRM-PUBLICATION | "
+            "review_id=%s | success=%s | published=%s",
+            req_id,
+            review_id,
+            publication.success,
+            publication.published,
         )
 
         return result
 
+    # =====================================================
+    # UNKNOWN ACTION
+    # =====================================================
+
     answer_callback_query(
         callback_id,
-        "دستور ترجمه شناخته نشد.",
+        "دستور ترجمه شناخته نشد."
     )
 
-    logger.warning(
-        "[%s] ⚠️ Unknown translation callback | "
-        "data=%s | user=%s",
-        req_id,
-        callback_data,
-        user_id,
+    result = (
+        _controller_result(
+            success=False,
+            action=RESULT_FAILED,
+            text=(
+                "❌ این عملیات ترجمه پشتیبانی نمی‌شود."
+            ),
+            review_id=review_id,
+            reason=(
+                "unsupported_translation_action"
+            ),
+        )
     )
 
-    return TranslationControllerResult(
-        success=False,
-        action=RESULT_FAILED,
-        review_id=review_id,
-        reason="unknown_translation_callback",
+    render_translation_result(
+        result=result,
+        chat_id=chat_id,
+        send_message=send_message,
     )
+
+    return result
