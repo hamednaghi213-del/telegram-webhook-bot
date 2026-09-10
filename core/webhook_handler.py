@@ -4576,6 +4576,60 @@ def handle_webhook() -> Tuple[
                     "callback_handled": True
                 }, 200
 
+            # =================================================
+            # TRANSLATION CALLBACK
+            # =================================================
+
+            if callback_data.startswith(
+                "tr:"
+            ):
+                try:
+                    from core.translation_telegram import (
+                        handle_translation_telegram_callback,
+                    )
+
+                    translation_result = (
+                        handle_translation_telegram_callback(
+                            callback_query=callback_query,
+                            answer_callback_query=(
+                                answer_callback_query
+                            ),
+                            send_message=send_message,
+                            req_id=req_id,
+                        )
+                    )
+
+                    # Translation callbacks are fully consumed here.
+                    # Publication is intentionally NOT duplicated here.
+                    # A confirmed translation will be handed to the
+                    # Shared Publication Engine in the publication
+                    # integration step.
+
+                except Exception as e:
+                    logger.exception(
+                        f"[{req_id}] ❌ Translation callback "
+                        f"routing failed | {e}"
+                    )
+
+                    callback_id = str(
+                        callback_query.get(
+                            "id",
+                            ""
+                        )
+                        or ""
+                    )
+
+                    answer_callback_query(
+                        callback_id,
+                        "خطا در پردازش ترجمه."
+                    )
+
+                return {
+                    "ok": True,
+                    "callback_handled": True,
+                    "translation": True,
+                }, 200
+            
             handled = (
                 handle_editorial_callback(
                     callback_query,
@@ -4709,6 +4763,88 @@ def handle_webhook() -> Tuple[
                 "ok": True
             }, 200
 
+        # =================================================
+        # TRANSLATION TEXT INPUT GUARD
+        # =================================================
+        #
+        # Translation consumes normal text ONLY while it is
+        # explicitly waiting for:
+        #
+        # - custom target language
+        # - manual translation edit
+        #
+        # Otherwise normal Editorial / Workspace / Publication
+        # flow continues unchanged.
+        # =================================================
+
+        if command_text.strip():
+            try:
+                from core.translation_controller import (
+                    handle_translation_text_input,
+                    RESULT_PREVIEW,
+                    RESULT_FAILED,
+                    RESULT_INVALID_LANGUAGE,
+                    RESULT_INVALID_STATE,
+                )
+
+                from core.translation_telegram import (
+                    render_translation_result,
+                )
+
+                translation_input_result = (
+                    handle_translation_text_input(
+                        chat_id=chat_id,
+                        user_id=chat_id,
+                        text=command_text,
+                    )
+                )
+
+                if translation_input_result is not None:
+
+                    render_translation_result(
+                        result=translation_input_result,
+                        chat_id=chat_id,
+                        send_message=send_message,
+                    )
+
+                    logger.info(
+                        f"[{req_id}] 🌐 TRANSLATION-TEXT-GUARD | "
+                        f"user={chat_id} | "
+                        f"action={translation_input_result.action} | "
+                        f"success={translation_input_result.success}"
+                    )
+
+                    return {
+                        "ok": True,
+                        "translation_input": True,
+                        "translation_action": (
+                            translation_input_result.action
+                        ),
+                    }, 200
+
+            except ImportError as e:
+                logger.exception(
+                    f"[{req_id}] ❌ Translation input "
+                    f"import failed | {e}"
+                )
+
+            except Exception as e:
+                logger.exception(
+                    f"[{req_id}] ❌ Translation input "
+                    f"guard failed | {e}"
+                )
+
+                send_message(
+                    chat_id,
+                    "❌ خطا در پردازش ورودی ترجمه."
+                )
+
+                return {
+                    "ok": True,
+                    "translation_input": True,
+                    "error": str(e),
+                }, 200
+        
         # Pending Editorial has priority over every bare setup/name input.
         if command_text.strip():
             try:
