@@ -5911,6 +5911,179 @@ def handle_webhook() -> Tuple[
                 "rich_message": True,
                 "error": str(e)
             }, 200
+
+
+# =========================================================
+# AUTOMATIC PERSIAN TRANSLATION REVIEW GATE
+# =========================================================
+
+def try_automatic_persian_translation_gate(
+    *,
+    chat_id: int,
+    text: str,
+    source_kind: str,
+    source_key: str,
+    files: Optional[List[Dict[str, Any]]] = None,
+    media_presentation: str = "",
+) -> Optional[Dict[str, Any]]:
+
+    source_text = str(
+        text
+        or ""
+    ).strip()
+
+    if not source_text:
+        return None
+
+    try:
+        from core.automatic_translation_review import (
+            ACTION_BLOCKED,
+            ACTION_FAILED,
+            ACTION_PASSTHROUGH,
+            ACTION_PREVIEW,
+            start_automatic_persian_translation_review,
+        )
+
+        from core.translation_telegram import (
+            render_translation_result,
+        )
+
+        result = (
+            start_automatic_persian_translation_review(
+                chat_id=chat_id,
+                user_id=chat_id,
+                original_text=source_text,
+                source_kind=source_kind,
+                source_key=source_key,
+                metadata={
+                    "files": list(
+                        files
+                        or []
+                    ),
+                    "media_presentation": (
+                        media_presentation
+                    ),
+                    "editorial_finalized": False,
+                    "require_single_message": False,
+                },
+            )
+        )
+
+        if result.action == ACTION_PASSTHROUGH:
+            return None
+
+        if (
+            result.action == ACTION_PREVIEW
+            and result.controller_result is not None
+        ):
+            render_translation_result(
+                result=result.controller_result,
+                chat_id=chat_id,
+                send_message=send_message,
+            )
+
+            logger.info(
+                "🌐 AUTOMATIC-TRANSLATION-PREVIEW | "
+                "user=%s | source=%s | "
+                "target=fa | kind=%s | review=%s",
+                chat_id,
+                result.source_language,
+                source_kind,
+                result.review_id,
+            )
+
+            return {
+                "ok": True,
+                "automatic_translation": True,
+                "translation_preview": True,
+                "review_id": result.review_id,
+            }
+
+        if result.action in {
+            ACTION_BLOCKED,
+            ACTION_FAILED,
+        }:
+            if (
+                result.controller_result is not None
+                and getattr(
+                    result.controller_result,
+                    "text",
+                    "",
+                )
+            ):
+                render_translation_result(
+                    result=result.controller_result,
+                    chat_id=chat_id,
+                    send_message=send_message,
+                )
+            else:
+                send_message(
+                    chat_id,
+                    (
+                        "❌ زبان پیام یا ترجمه آن با اطمینان "
+                        "کافی قابل پردازش نبود؛ بنابراین "
+                        "محتوا منتشر نشد."
+                    ),
+                )
+
+            logger.warning(
+                "⚠️ AUTOMATIC-TRANSLATION-BLOCKED | "
+                "user=%s | kind=%s | reason=%s",
+                chat_id,
+                source_kind,
+                result.reason,
+            )
+
+            return {
+                "ok": True,
+                "automatic_translation": True,
+                "translation_blocked": True,
+                "reason": result.reason,
+            }
+
+        send_message(
+            chat_id,
+            (
+                "❌ ترجمه خودکار این محتوا کامل نشد؛ "
+                "محتوا منتشر نشد."
+            ),
+        )
+
+        return {
+            "ok": True,
+            "automatic_translation": True,
+            "translation_blocked": True,
+            "reason": (
+                result.reason
+                or "unexpected_translation_result"
+            ),
+        }
+
+    except Exception as exc:
+        logger.exception(
+            "❌ AUTOMATIC-TRANSLATION-GATE failed | "
+            "user=%s | kind=%s | %s",
+            chat_id,
+            source_kind,
+            exc,
+        )
+
+        send_message(
+            chat_id,
+            (
+                "❌ بررسی زبان و ترجمه خودکار با خطا "
+                "روبرو شد؛ محتوا منتشر نشد."
+            ),
+        )
+
+        return {
+            "ok": True,
+            "automatic_translation": True,
+            "translation_blocked": True,
+            "reason": (
+                "automatic_translation_gate_exception"
+            ),
+        }
         
         # =================================================
         # MEDIA INFO
@@ -6034,6 +6207,29 @@ def handle_webhook() -> Tuple[
             and file_id
         ):
 
+            translation_gate = (
+                try_automatic_persian_translation_gate(
+                    chat_id=chat_id,
+                    text=caption,
+                    source_kind="media",
+                    source_key=(
+                        incoming_source_key
+                    ),
+                    files=[
+                        {
+                            "type": media_type,
+                            "file_id": file_id,
+                        }
+                    ],
+                )
+            )
+
+            if translation_gate is not None:
+                return (
+                    translation_gate,
+                    200,
+                )
+            
             kwargs = {
                 "chat_id":
                     chat_id,
@@ -6232,6 +6428,23 @@ def handle_webhook() -> Tuple[
                         True
                 }, 200
 
+            translation_gate = (
+                try_automatic_persian_translation_gate(
+                    chat_id=chat_id,
+                    text=publication_text,
+                    source_kind="message",
+                    source_key=(
+                        incoming_source_key
+                    ),
+                )
+            )
+
+            if translation_gate is not None:
+                return (
+                    translation_gate,
+                    200,
+                )
+            
             # =============================================
             # NORMAL NEWS PUBLICATION
             # =============================================
