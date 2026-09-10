@@ -4417,6 +4417,19 @@ def try_automatic_persian_translation_gate(
     if not source_text:
         return None
 
+    # Clear Persian text must keep the existing publication path.
+    # This deterministic fast-path also prevents unnecessary AI/provider
+    # calls for ordinary Persian content.
+    persian_specific_chars = set(
+        "پچژگکیۀة"
+    )
+
+    if any(
+        char in persian_specific_chars
+        for char in source_text
+    ):
+        return None
+    
     try:
         from core.automatic_translation_review import (
             ACTION_BLOCKED,
