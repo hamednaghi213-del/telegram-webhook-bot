@@ -1,17 +1,27 @@
 from __future__ import annotations
 
 import logging
+
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
-from core.translation_provider import (
-    get_default_translation_provider,
-    get_translation_provider_status,
+
+from core.translation_pipeline import (
+    PIPELINE_BLOCKED,
+    PIPELINE_FAILED,
+    PIPELINE_PASSTHROUGH,
+    PIPELINE_REVIEW_REQUIRED,
+    PIPELINE_TRANSLATED,
+    TranslationPipelineResult,
+    run_manual_translation_pipeline,
+)
+
+from core.translation_policy import (
+    build_legacy_default_policy,
 )
 
 from core.translation_service import (
     TranslationResult,
-    translate_text,
 )
 
 from core.translation_state import (
@@ -60,10 +70,26 @@ logger = logging.getLogger(__name__)
 #
 # Shared Translation workflow controller.
 #
+# New execution path:
+#
+# translation_controller.py
+#          ↓
+# translation_pipeline.py
+#          ↓
+# language_detector.py
+#          ↓
+# language_detection_provider.py
+#          ↓
+# translation_policy.py
+#          ↓
 # translation_service.py
-#          ↑
-# translation_provider.py
-#          ↑
+#          ↓
+# translation_quality.py
+#          ↓
+# translation_quality_provider.py
+#
+# State / UI remain controlled here:
+#
 # translation_controller.py
 #          ↓
 # translation_state.py
@@ -75,8 +101,13 @@ logger = logging.getLogger(__name__)
 # - create translation review
 # - language selection
 # - custom language
-# - execute translation
-# - validation result handling
+# - execute MANUAL translation through shared pipeline
+# - language detection
+# - provider fallback when detection is uncertain
+# - translation policy
+# - deterministic translation validation
+# - semantic / linguistic quality validation
+# - bounded quality retry
 # - preview
 # - manual edit
 # - confirmation
@@ -88,9 +119,11 @@ logger = logging.getLogger(__name__)
 # - publish directly to Bale
 # - bypass PublicationPlan
 # - modify Legacy / Workspace routing
+# - apply destination branding
+# - resolve destinations
 #
-# Confirmed translated content will later be handed to the
-# existing Shared Publication Engine by webhook_handler.py.
+# Confirmed translated content is handed to the existing
+# Shared Publication Engine by the Telegram/webhook bridge.
 #
 # =========================================================
 
@@ -138,7 +171,9 @@ class TranslationControllerResult:
 
     text: str = ""
 
-    reply_markup: Optional[Dict[str, Any]] = None
+    reply_markup: Optional[
+        Dict[str, Any]
+    ] = None
 
     review_id: str = ""
 
@@ -146,9 +181,18 @@ class TranslationControllerResult:
 
     target_language: str = ""
 
-    state: Optional[TranslationState] = None
+    state: Optional[
+        TranslationState
+    ] = None
 
-    translation_result: Optional[TranslationResult] = None
+    # Keep the existing public Controller API.
+    #
+    # The shared pipeline itself returns TranslationPipelineResult,
+    # but this field continues exposing the underlying
+    # TranslationResult for compatibility with existing callers.
+    translation_result: Optional[
+        TranslationResult
+    ] = None
 
     reason: str = ""
 
@@ -171,11 +215,15 @@ def _keyboard_markup(
 
 
 def _state_security_check(
-    state: Optional[TranslationState],
+    state: Optional[
+        TranslationState
+    ],
     *,
     chat_id: int,
     user_id: int,
-) -> Optional[TranslationControllerResult]:
+) -> Optional[
+    TranslationControllerResult
+]:
 
     if state is None:
 
@@ -210,45 +258,94 @@ def _state_security_check(
     return None
 
 
-def _result_validation_errors(
-    result: TranslationResult,
-) -> list:
+def _pipeline_translation_result(
+    result: TranslationPipelineResult,
+) -> Optional[
+    TranslationResult
+]:
 
-    validation = getattr(
+    value = getattr(
         result,
-        "validation",
+        "translation_result",
         None,
     )
 
-    if validation is None:
-        return []
+    return value
 
-    return list(
+
+def _pipeline_output_text(
+    result: TranslationPipelineResult,
+) -> str:
+
+    return str(
         getattr(
-            validation,
-            "errors",
-            [],
+            result,
+            "output_text",
+            "",
         )
-        or []
-    )
+        or ""
+    ).strip()
 
 
-def _result_validation_warnings(
-    result: TranslationResult,
-) -> list:
+def _pipeline_reason(
+    result: TranslationPipelineResult,
+) -> str:
 
-    validation = getattr(
+    reason = str(
+        getattr(
+            result,
+            "reason",
+            "",
+        )
+        or ""
+    ).strip()
+
+    if reason:
+        return reason
+
+    if not getattr(
         result,
-        "validation",
-        None,
-    )
+        "success",
+        False,
+    ):
+        return "translation_pipeline_failed"
 
-    if validation is None:
-        return []
+    return "translation_completed"
+
+
+def _pipeline_attempts(
+    result: TranslationPipelineResult,
+) -> int:
+
+    try:
+
+        return max(
+            0,
+            int(
+                getattr(
+                    result,
+                    "attempts",
+                    0,
+                )
+                or 0
+            ),
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return 0
+
+
+def _pipeline_warnings(
+    result: TranslationPipelineResult,
+) -> list:
 
     return list(
         getattr(
-            validation,
+            result,
             "warnings",
             [],
         )
@@ -256,9 +353,9 @@ def _result_validation_warnings(
     )
 
 
-def _result_attempts(
-    result: TranslationResult,
-) -> int:
+def _pipeline_metadata(
+    result: TranslationPipelineResult,
+) -> Dict[str, Any]:
 
     metadata = getattr(
         result,
@@ -266,77 +363,217 @@ def _result_attempts(
         {},
     )
 
-    if isinstance(
+    if not isinstance(
         metadata,
         dict,
     ):
+        metadata = {}
 
-        try:
-            return int(
-                metadata.get(
-                    "attempts",
-                    1,
-                )
-                or 1
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-            pass
-
-    try:
-        return int(
-            getattr(
-                result,
-                "attempts",
-                1,
-            )
-            or 1
-        )
-
-    except (
-        TypeError,
-        ValueError,
-    ):
-        return 1
-
-
-def _result_reason(
-    result: TranslationResult,
-) -> str:
-
-    reason = getattr(
-        result,
-        "reason",
-        "",
+    return dict(
+        metadata
     )
 
-    if reason:
-        return str(
-            reason
+
+def _quality_metadata(
+    result: TranslationPipelineResult,
+) -> Dict[str, Any]:
+
+    quality_result = getattr(
+        result,
+        "quality_result",
+        None,
+    )
+
+    if quality_result is None:
+
+        return {
+            "quality_checked": False,
+            "quality_passed": None,
+            "quality_status": "",
+            "quality_score": None,
+        }
+
+    quality_status = str(
+        getattr(
+            quality_result,
+            "status",
+            "",
+        )
+        or ""
+    ).strip()
+
+    quality_score = getattr(
+        quality_result,
+        "score",
+        None,
+    )
+
+    quality_passed = bool(
+        getattr(
+            quality_result,
+            "passed",
+            False,
+        )
+    )
+
+    return {
+        "quality_checked": True,
+        "quality_passed":
+            quality_passed,
+        "quality_status":
+            quality_status,
+        "quality_score":
+            quality_score,
+    }
+
+
+def _detection_metadata(
+    result: TranslationPipelineResult,
+) -> Dict[str, Any]:
+
+    source_language = str(
+        getattr(
+            result,
+            "source_language",
+            "auto",
+        )
+        or "auto"
+    )
+
+    provider_detection = getattr(
+        result,
+        "provider_detection",
+        None,
+    )
+
+    provider_confidence = None
+
+    if provider_detection is not None:
+
+        provider_confidence = getattr(
+            provider_detection,
+            "confidence",
+            None,
         )
 
-    validation_errors = (
-        _result_validation_errors(
+    pipeline_metadata = (
+        _pipeline_metadata(
             result
         )
     )
 
-    if validation_errors:
-        return str(
-            validation_errors[0]
+    return {
+        "detected_source_language":
+            source_language,
+
+        "language_detected_by":
+            pipeline_metadata.get(
+                "detected_by",
+                "",
+            ),
+
+        "provider_detection_confidence":
+            provider_confidence,
+    }
+
+
+def _build_pipeline_state_metadata(
+    result: TranslationPipelineResult,
+    *,
+    target_language: str,
+    target_language_code: str,
+) -> Dict[str, Any]:
+
+    metadata: Dict[str, Any] = {
+        "translation_attempts":
+            _pipeline_attempts(
+                result
+            ),
+
+        "translation_warnings":
+            _pipeline_warnings(
+                result
+            ),
+
+        "translation_target_language":
+            target_language,
+
+        "translation_target_language_code":
+            target_language_code,
+
+        "translation_pipeline_status":
+            str(
+                getattr(
+                    result,
+                    "status",
+                    "",
+                )
+                or ""
+            ),
+
+        "translation_pipeline_reason":
+            _pipeline_reason(
+                result
+            ),
+
+        "translation_requires_review":
+            bool(
+                getattr(
+                    result,
+                    "requires_review",
+                    False,
+                )
+            ),
+
+        "translation_blocked":
+            bool(
+                getattr(
+                    result,
+                    "blocked",
+                    False,
+                )
+            ),
+    }
+
+    metadata.update(
+        _detection_metadata(
+            result
         )
+    )
 
-    if not getattr(
-        result,
-        "success",
-        False,
-    ):
-        return "translation_failed"
+    metadata.update(
+        _quality_metadata(
+            result
+        )
+    )
 
-    return "translation_completed"
+    pipeline_metadata = (
+        _pipeline_metadata(
+            result
+        )
+    )
+
+    if pipeline_metadata:
+
+        metadata[
+            "translation_pipeline_metadata"
+        ] = pipeline_metadata
+
+    return metadata
+
+
+def _build_manual_translation_policy():
+    """
+    Manual 🌐 Translation must remain available even before
+    automatic Workspace/Destination language policy is wired
+    into onboarding/settings.
+
+    The Legacy default policy preserves existing publication
+    behavior. run_manual_translation_pipeline() supplies the
+    explicit manual override and target language.
+    """
+
+    return build_legacy_default_policy()
 
 
 # =========================================================
@@ -351,7 +588,9 @@ def start_translation(
     source_language: str = "auto",
     source_kind: str = "message",
     source_key: str = "",
-    metadata: Optional[Dict[str, Any]] = None,
+    metadata: Optional[
+        Dict[str, Any]
+    ] = None,
 ) -> TranslationControllerResult:
 
     text = str(
@@ -558,7 +797,7 @@ def request_custom_translation_language(
 
 
 # =========================================================
-# EXECUTE TRANSLATION
+# EXECUTE TRANSLATION THROUGH SHARED PIPELINE
 # =========================================================
 
 def _execute_translation(
@@ -567,47 +806,30 @@ def _execute_translation(
     target_language: str,
     target_language_code: str = "",
 ) -> TranslationControllerResult:
+    """
+    Execute manual translation through the Shared Translation
+    Pipeline.
 
-    provider = (
-        get_default_translation_provider()
-    )
+    IMPORTANT:
 
-    if provider is None:
+    The old Controller called translate_text() directly.
 
-        provider_status = (
-            get_translation_provider_status()
-        )
+    The Controller now delegates to:
 
-        failed_state = (
-            mark_translation_failed(
-                state.review_id,
-                reason=(
-                    provider_status.reason
-                ),
-            )
-        )
+        run_manual_translation_pipeline()
 
-        logger.error(
-            "❌ Translation provider unavailable | "
-            "review_id=%s | provider=%s | "
-            "model=%s | reason=%s",
-            state.review_id,
-            provider_status.provider,
-            provider_status.model,
-            provider_status.reason,
-        )
+    Therefore every manual translation receives:
 
-        return TranslationControllerResult(
-            success=False,
-            action=RESULT_FAILED,
-            text=build_translation_failed_text(
-                provider_status.reason
-            ),
-            review_id=state.review_id,
-            target_language=target_language,
-            state=failed_state,
-            reason=provider_status.reason,
-        )
+        - automatic source-language detection
+        - provider fallback for ambiguous language
+        - TranslationPolicy decision
+        - Translation Service validation
+        - semantic / linguistic quality validation
+        - bounded retry from ORIGINAL source
+        - fail-closed behavior
+
+    This function still does NOT publish anything.
+    """
 
     language_state = (
         set_translation_language(
@@ -633,8 +855,8 @@ def _execute_translation(
         )
 
     logger.info(
-        "🌐 Translation execution started | "
-        "review_id=%s | source=%s | "
+        "🌐 Translation pipeline started | "
+        "review_id=%s | stored_source=%s | "
         "target=%s | code=%s",
         language_state.review_id,
         language_state.source_language,
@@ -644,19 +866,32 @@ def _execute_translation(
 
     try:
 
-        result = translate_text(
-            text=language_state.original_text,
-            target_language=target_language,
-            provider=provider,
-            source_language=(
-                language_state.source_language
-            ),
+        policy = (
+            _build_manual_translation_policy()
+        )
+
+        pipeline_result = (
+            run_manual_translation_pipeline(
+                text=(
+                    language_state.original_text
+                ),
+                policy=policy,
+                target_language=(
+                    target_language
+                ),
+                content_kind=(
+                    language_state.source_kind
+                    or "text"
+                ),
+                semantic_quality=True,
+                quality_retries=1,
+            )
         )
 
     except Exception as exc:
 
         logger.exception(
-            "❌ Translation service raised error | "
+            "❌ Translation pipeline raised error | "
             "review_id=%s | target=%s",
             language_state.review_id,
             target_language,
@@ -666,7 +901,7 @@ def _execute_translation(
             mark_translation_failed(
                 language_state.review_id,
                 reason=(
-                    "translation_service_error"
+                    "translation_pipeline_error"
                 ),
             )
         )
@@ -675,7 +910,7 @@ def _execute_translation(
             success=False,
             action=RESULT_FAILED,
             text=build_translation_failed_text(
-                "translation_service_error"
+                "translation_pipeline_error"
             ),
             review_id=(
                 language_state.review_id
@@ -687,49 +922,85 @@ def _execute_translation(
             reason=str(
                 exc
             ),
+            metadata={
+                "pipeline_exception":
+                    type(
+                        exc
+                    ).__name__,
+            },
         )
 
-    success = bool(
+    pipeline_success = bool(
         getattr(
-            result,
+            pipeline_result,
             "success",
             False,
         )
     )
 
-    translated_text = str(
+    pipeline_status = str(
         getattr(
-            result,
-            "translated_text",
+            pipeline_result,
+            "status",
             "",
         )
         or ""
     ).strip()
 
-    reason = _result_reason(
-        result
-    )
-
-    validation_errors = (
-        _result_validation_errors(
-            result
+    translated_text = (
+        _pipeline_output_text(
+            pipeline_result
         )
     )
 
-    validation_warnings = (
-        _result_validation_warnings(
-            result
+    reason = (
+        _pipeline_reason(
+            pipeline_result
         )
     )
 
-    attempts = _result_attempts(
-        result
+    attempts = (
+        _pipeline_attempts(
+            pipeline_result
+        )
     )
+
+    warnings = (
+        _pipeline_warnings(
+            pipeline_result
+        )
+    )
+
+    translation_result = (
+        _pipeline_translation_result(
+            pipeline_result
+        )
+    )
+
+    pipeline_state_metadata = (
+        _build_pipeline_state_metadata(
+            pipeline_result,
+            target_language=(
+                target_language
+            ),
+            target_language_code=(
+                target_language_code
+            ),
+        )
+    )
+
+    # =====================================================
+    # PIPELINE FAILURE / BLOCK
+    # =====================================================
 
     if (
-        not success
+        not pipeline_success
+        or pipeline_status
+        in {
+            PIPELINE_BLOCKED,
+            PIPELINE_FAILED,
+        }
         or not translated_text
-        or validation_errors
     ):
 
         failed_state = (
@@ -740,13 +1011,14 @@ def _execute_translation(
         )
 
         logger.warning(
-            "⚠️ Translation workflow failed | "
-            "review_id=%s | reason=%s | "
-            "attempts=%s | validation_errors=%s",
+            "⚠️ Translation pipeline failed | "
+            "review_id=%s | status=%s | "
+            "reason=%s | attempts=%s | warnings=%s",
             language_state.review_id,
+            pipeline_status,
             reason,
             attempts,
-            validation_errors,
+            warnings,
         )
 
         return TranslationControllerResult(
@@ -762,38 +1034,128 @@ def _execute_translation(
                 target_language
             ),
             state=failed_state,
-            translation_result=result,
+            translation_result=(
+                translation_result
+            ),
             reason=reason,
-            metadata={
-                "validation_errors":
-                    validation_errors,
-                "validation_warnings":
-                    validation_warnings,
-                "attempts":
-                    attempts,
-            },
+            metadata=(
+                pipeline_state_metadata
+            ),
         )
+
+    # =====================================================
+    # MANUAL TRANSLATION MUST NOT PASSTHROUGH
+    # =====================================================
+    #
+    # A manual 🌐 request explicitly asks for translation.
+    # If the shared pipeline unexpectedly returns passthrough,
+    # we do not silently preview the original as translated.
+    # =====================================================
+
+    if pipeline_status == PIPELINE_PASSTHROUGH:
+
+        failed_state = (
+            mark_translation_failed(
+                language_state.review_id,
+                reason=(
+                    "manual_translation_unexpected_passthrough"
+                ),
+            )
+        )
+
+        logger.error(
+            "❌ Manual translation unexpectedly passthrough | "
+            "review_id=%s | target=%s",
+            language_state.review_id,
+            target_language,
+        )
+
+        return TranslationControllerResult(
+            success=False,
+            action=RESULT_FAILED,
+            text=build_translation_failed_text(
+                "manual_translation_unexpected_passthrough"
+            ),
+            review_id=(
+                language_state.review_id
+            ),
+            target_language=(
+                target_language
+            ),
+            state=failed_state,
+            translation_result=(
+                translation_result
+            ),
+            reason=(
+                "manual_translation_unexpected_passthrough"
+            ),
+            metadata=(
+                pipeline_state_metadata
+            ),
+        )
+
+    # =====================================================
+    # ACCEPT ONLY TRANSLATED / REVIEW-REQUIRED
+    # =====================================================
+
+    if pipeline_status not in {
+        PIPELINE_TRANSLATED,
+        PIPELINE_REVIEW_REQUIRED,
+    }:
+
+        failed_state = (
+            mark_translation_failed(
+                language_state.review_id,
+                reason=(
+                    "unexpected_translation_pipeline_status"
+                ),
+            )
+        )
+
+        logger.error(
+            "❌ Unexpected translation pipeline status | "
+            "review_id=%s | status=%s",
+            language_state.review_id,
+            pipeline_status,
+        )
+
+        return TranslationControllerResult(
+            success=False,
+            action=RESULT_FAILED,
+            text=build_translation_failed_text(
+                "unexpected_translation_pipeline_status"
+            ),
+            review_id=(
+                language_state.review_id
+            ),
+            target_language=(
+                target_language
+            ),
+            state=failed_state,
+            translation_result=(
+                translation_result
+            ),
+            reason=(
+                "unexpected_translation_pipeline_status"
+            ),
+            metadata=(
+                pipeline_state_metadata
+            ),
+        )
+
+    # =====================================================
+    # MANUAL FLOW ALWAYS REQUIRES PREVIEW
+    # =====================================================
 
     preview_state = (
         set_translation_preview(
             language_state.review_id,
-            translated_text=translated_text,
-            metadata={
-                "translation_attempts":
-                    attempts,
-
-                "translation_validation_errors":
-                    validation_errors,
-
-                "translation_validation_warnings":
-                    validation_warnings,
-
-                "translation_target_language":
-                    target_language,
-
-                "translation_target_language_code":
-                    target_language_code,
-            },
+            translated_text=(
+                translated_text
+            ),
+            metadata=(
+                pipeline_state_metadata
+            ),
         )
     )
 
@@ -805,18 +1167,30 @@ def _execute_translation(
             review_id=(
                 language_state.review_id
             ),
-            translation_result=result,
+            translation_result=(
+                translation_result
+            ),
             reason=(
                 "could_not_store_translation_preview"
+            ),
+            metadata=(
+                pipeline_state_metadata
             ),
         )
 
     logger.info(
-        "✅ Translation preview ready | "
-        "review_id=%s | target=%s | "
+        "✅ Translation pipeline preview ready | "
+        "review_id=%s | source=%s | "
+        "target=%s | status=%s | "
         "attempts=%s | output_length=%s",
         preview_state.review_id,
+        getattr(
+            pipeline_result,
+            "source_language",
+            "auto",
+        ),
         target_language,
+        pipeline_status,
         attempts,
         len(
             translated_text
@@ -842,16 +1216,15 @@ def _execute_translation(
             target_language
         ),
         state=preview_state,
-        translation_result=result,
+        translation_result=(
+            translation_result
+        ),
         reason=(
             "translation_preview_ready"
         ),
-        metadata={
-            "validation_warnings":
-                validation_warnings,
-            "attempts":
-                attempts,
-        },
+        metadata=(
+            pipeline_state_metadata
+        ),
     )
 
 
@@ -995,7 +1368,9 @@ def submit_custom_translation_language(
 
     return _execute_translation(
         state=state,
-        target_language=language_name,
+        target_language=(
+            language_name
+        ),
         target_language_code="custom",
     )
 
@@ -1373,7 +1748,6 @@ def handle_translation_text_input(
 ) -> Optional[
     TranslationControllerResult
 ]:
-
     """
     Translation Pending Guard.
 
@@ -1432,7 +1806,6 @@ def handle_translation_text_input(
 def complete_translation_workflow(
     review_id: str,
 ) -> bool:
-
     """
     Called only AFTER the existing Shared Publication Engine
     accepts/completes the confirmed translated publication.
