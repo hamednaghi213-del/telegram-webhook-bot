@@ -2726,6 +2726,15 @@ def build_editorial_keyboard(
     rows.append([
         {
             "text":
+                "🌐 ترجمه",
+            "callback_data":
+                f"ed:translate:{review_id}"
+        }
+    ])
+    
+    rows.append([
+        {
+            "text":
                 "❌ لغو",
             "callback_data":
                 f"ed:cancel:{review_id}"
@@ -3675,6 +3684,142 @@ def handle_editorial_callback(
             or ""
         )
 
+        # =================================================
+        # TRANSLATION
+        # =================================================
+
+        if action == "translate":
+
+            try:
+                from core.translation_controller import (
+                    start_translation,
+                )
+
+                translation_source = (
+                    metadata.get(
+                        "main_text",
+                        ""
+                    )
+                    or review.original_text
+                    or ""
+                ).strip()
+
+                if not translation_source:
+
+                    answer_callback_query(
+                        callback_id,
+                        "متنی برای ترجمه وجود ندارد."
+                    )
+
+                    return True
+
+                translation_state_result = (
+                    start_translation(
+                        chat_id=int(user_id),
+                        user_id=int(user_id),
+                        original_text=translation_source,
+                        source_kind="editorial",
+                        source_key=(
+                            metadata.get(
+                                "source_key",
+                                ""
+                            )
+                            or f"editorial:{review_id}"
+                        ),
+                        metadata={
+                            "editorial_review_id":
+                                review_id,
+
+                            "files":
+                                list(
+                                    metadata.get(
+                                        "files",
+                                        []
+                                    )
+                                    or []
+                                ),
+
+                            "blockquote_blocks":
+                                list(
+                                    metadata.get(
+                                        "blockquote_blocks",
+                                        []
+                                    )
+                                    or []
+                                ),
+
+                            "expandable_blocks":
+                                list(
+                                    metadata.get(
+                                        "expandable_blocks",
+                                        []
+                                    )
+                                    or []
+                                ),
+
+                            "other_entities":
+                                list(
+                                    metadata.get(
+                                        "other_entities",
+                                        []
+                                    )
+                                    or []
+                                ),
+
+                            "editorial_title":
+                                editorial_title,
+
+                            "editorial_author":
+                                editorial_author,
+
+                            "editorial_finalized":
+                                True,
+                        },
+                    )
+                )
+
+                answer_callback_query(
+                    callback_id,
+                    "زبان ترجمه را انتخاب کنید."
+                )
+
+                from core.translation_telegram import (
+                    render_translation_result,
+                )
+
+                render_translation_result(
+                    result=translation_state_result,
+                    chat_id=int(user_id),
+                    send_message=send_message,
+                )
+
+                logger.info(
+                    f"[{req_id}] 🌐 EDITORIAL-TRANSLATION-START | "
+                    f"review_id={review_id} | "
+                    f"user={user_id}"
+                )
+
+            except Exception as e:
+
+                logger.exception(
+                    f"[{req_id}] ❌ Editorial translation "
+                    f"start failed | "
+                    f"review_id={review_id} | "
+                    f"{e}"
+                )
+
+                answer_callback_query(
+                    callback_id,
+                    "شروع ترجمه با خطا روبرو شد."
+                )
+
+                send_message(
+                    int(user_id),
+                    "❌ امکان شروع ترجمه این محتوا وجود نداشت."
+                )
+
+            return True
+        
         if action == "summary_unavailable":
 
             answer_callback_query(
