@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import logging
-import threading
-import time
 import uuid
 
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 
@@ -16,35 +15,53 @@ logger = logging.getLogger(__name__)
 # TRANSLATION STATE
 # =========================================================
 #
-# NEW FILE
+# EXISTING FILE — FULL REPLACEMENT
 #
-# مسئول نگهداری وضعیت موقت Translation Review.
+# Persistent Translation Workflow State.
 #
-# Flow:
+# Previous implementation:
 #
-# Content
-#   ↓
-# 🌐 Translate
-#   ↓
-# TranslationState created
-#   ↓
-# Language selected
-#   ↓
-# Translation generated
-#   ↓
-# Preview stored
-#   ↓
-# Confirm / Edit / Cancel
+#     Python process memory
 #
-# نکته:
-# این Store فعلاً in-process است تا Controller بدون تغییر
-# Database ساخته و تست شود.
+# New implementation:
 #
-# در مرحله اتصال نهایی، persistence آن به storage موجود
-# پروژه متصل خواهد شد.
+#     translation_state.py
+#             ↓
+#     core.database
+#             ↓
+#     public.translation_reviews
+#             ↓
+#          Supabase
+#
+# Therefore translation review state now survives:
+#
+# - Render restart
+# - deploy/redeploy
+# - process replacement
+# - multiple webhook workers
+#
+# Public function names are intentionally preserved so:
+#
+# - translation_controller.py
+# - translation_telegram.py
+# - webhook_handler.py
+#
+# do not need to know how state is stored.
+#
+# This module DOES NOT:
+#
+# - translate text
+# - call Gemini
+# - publish content
+# - resolve destinations
+# - apply branding
 #
 # =========================================================
 
+
+# =========================================================
+# STATES
+# =========================================================
 
 STATE_WAITING_LANGUAGE = "waiting_language"
 
@@ -65,15 +82,30 @@ STATE_CANCELLED = "cancelled"
 STATE_FAILED = "failed"
 
 
-DEFAULT_STATE_TTL_SECONDS = 1800
+ACTIVE_STATES = {
+    STATE_WAITING_LANGUAGE,
+    STATE_WAITING_CUSTOM_LANGUAGE,
+    STATE_TRANSLATING,
+    STATE_PREVIEW,
+    STATE_WAITING_EDIT,
+}
 
-MIN_STATE_TTL_SECONDS = 60
 
-MAX_STATE_TTL_SECONDS = 86400
+TERMINAL_STATES = {
+    STATE_CONFIRMED,
+    STATE_CANCELLED,
+    STATE_FAILED,
+}
+
+
+ALL_STATES = (
+    ACTIVE_STATES
+    | TERMINAL_STATES
+)
 
 
 # =========================================================
-# MODEL
+# DATA MODEL
 # =========================================================
 
 @dataclass(frozen=True)
@@ -94,163 +126,459 @@ class TranslationState:
 
     translated_text: str = ""
 
-    status: str = STATE_WAITING_LANGUAGE
+    edited_text: str = ""
 
     source_kind: str = "message"
 
     source_key: str = ""
 
+    status: str = STATE_WAITING_LANGUAGE
+
+    failure_reason: str = ""
+
     metadata: Dict[str, Any] = field(
         default_factory=dict
     )
 
-    created_at: float = field(
-        default_factory=time.time
+    validation_errors: tuple = field(
+        default_factory=tuple
     )
 
-    updated_at: float = field(
-        default_factory=time.time
+    validation_warnings: tuple = field(
+        default_factory=tuple
     )
 
-    expires_at: float = 0.0
+    translation_attempts: int = 0
+
+    source_review_id: str = ""
+
+    source_message_id: Optional[int] = None
+
+    created_at: str = ""
+
+    updated_at: str = ""
+
+    expires_at: str = ""
 
 
 # =========================================================
-# STORE
+# DATABASE ACCESS
 # =========================================================
 
-_STATE_LOCK = threading.RLock()
+def _database():
+    """
+    Lazy import avoids circular imports and keeps this module
+    independent from database initialization at import time.
+    """
 
-_STATES: Dict[
-    str,
-    TranslationState
-] = {}
+    from core import database
 
-_ACTIVE_BY_USER_CHAT: Dict[
-    str,
-    str
-] = {}
+    return database
 
 
 # =========================================================
-# HELPERS
+# NORMALIZATION
 # =========================================================
 
-def _user_chat_key(
-    chat_id: int,
-    user_id: int,
+def _normalize_metadata(
+    value: Any,
+) -> Dict[str, Any]:
+
+    if not isinstance(
+        value,
+        dict,
+    ):
+        return {}
+
+    return dict(
+        value
+    )
+
+
+def _normalize_status(
+    status: str,
 ) -> str:
-    return (
-        f"{int(chat_id)}:"
-        f"{int(user_id)}"
-    )
+
+    value = str(
+        status
+        or ""
+    ).strip()
+
+    if value not in ALL_STATES:
+
+        raise ValueError(
+            f"Invalid translation state: {value}"
+        )
+
+    return value
 
 
-def _normalize_ttl(
-    ttl_seconds: Optional[int]
+def _safe_int(
+    value: Any,
+    default: int = 0,
 ) -> int:
-    if ttl_seconds is None:
-        return DEFAULT_STATE_TTL_SECONDS
 
     try:
-        ttl = int(
-            ttl_seconds
+
+        return int(
+            value
         )
 
     except (
         TypeError,
         ValueError,
     ):
-        ttl = DEFAULT_STATE_TTL_SECONDS
 
-    return max(
-        MIN_STATE_TTL_SECONDS,
-        min(
-            ttl,
-            MAX_STATE_TTL_SECONDS,
+        return int(
+            default
+        )
+
+
+def _safe_optional_int(
+    value: Any,
+) -> Optional[int]:
+
+    if value is None:
+        return None
+
+    try:
+
+        return int(
+            value
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return None
+
+
+# =========================================================
+# ROW → STATE
+# =========================================================
+
+def _state_from_row(
+    row: Optional[
+        Dict[str, Any]
+    ],
+) -> Optional[
+    TranslationState
+]:
+
+    if not row:
+        return None
+
+    metadata = (
+        _normalize_metadata(
+            row.get(
+                "metadata"
+            )
+        )
+    )
+
+    source_key = str(
+        metadata.get(
+            "source_key",
+            "",
+        )
+        or ""
+    )
+
+    target_language_code = str(
+        metadata.get(
+            "target_language_code",
+            "",
+        )
+        or ""
+    )
+
+    failure_reason = str(
+        metadata.get(
+            "failure_reason",
+            "",
+        )
+        or ""
+    )
+
+    translated_text = str(
+        row.get(
+            "translated_text",
+            "",
+        )
+        or ""
+    )
+
+    edited_text = str(
+        row.get(
+            "edited_text",
+            "",
+        )
+        or ""
+    )
+
+    # Manual edit becomes the effective translation.
+    #
+    # This keeps the existing Controller contract:
+    #
+    #     state.translated_text
+    #
+    # always represents the content that will be confirmed.
+    if edited_text:
+
+        effective_translation = (
+            edited_text
+        )
+
+    else:
+
+        effective_translation = (
+            translated_text
+        )
+
+    return TranslationState(
+        review_id=str(
+            row.get(
+                "review_id",
+                "",
+            )
+            or ""
+        ),
+
+        chat_id=_safe_int(
+            row.get(
+                "chat_id"
+            )
+        ),
+
+        user_id=_safe_int(
+            row.get(
+                "user_id"
+            )
+        ),
+
+        original_text=str(
+            row.get(
+                "original_text",
+                "",
+            )
+            or ""
+        ),
+
+        source_language=str(
+            row.get(
+                "source_language",
+                "auto",
+            )
+            or "auto"
+        ),
+
+        target_language=str(
+            row.get(
+                "target_language",
+                "",
+            )
+            or ""
+        ),
+
+        target_language_code=(
+            target_language_code
+        ),
+
+        translated_text=(
+            effective_translation
+        ),
+
+        edited_text=(
+            edited_text
+        ),
+
+        source_kind=str(
+            row.get(
+                "content_kind",
+                "message",
+            )
+            or "message"
+        ),
+
+        source_key=(
+            source_key
+        ),
+
+        status=str(
+            row.get(
+                "status",
+                STATE_WAITING_LANGUAGE,
+            )
+            or STATE_WAITING_LANGUAGE
+        ),
+
+        failure_reason=(
+            failure_reason
+        ),
+
+        metadata=metadata,
+
+        validation_errors=tuple(
+            row.get(
+                "validation_errors"
+            )
+            or ()
+        ),
+
+        validation_warnings=tuple(
+            row.get(
+                "validation_warnings"
+            )
+            or ()
+        ),
+
+        translation_attempts=max(
+            0,
+            _safe_int(
+                row.get(
+                    "translation_attempts"
+                ),
+                0,
+            ),
+        ),
+
+        source_review_id=str(
+            row.get(
+                "source_review_id",
+                "",
+            )
+            or ""
+        ),
+
+        source_message_id=(
+            _safe_optional_int(
+                row.get(
+                    "source_message_id"
+                )
+            )
+        ),
+
+        created_at=str(
+            row.get(
+                "created_at",
+                "",
+            )
+            or ""
+        ),
+
+        updated_at=str(
+            row.get(
+                "updated_at",
+                "",
+            )
+            or ""
+        ),
+
+        expires_at=str(
+            row.get(
+                "expires_at",
+                "",
+            )
+            or ""
         ),
     )
 
 
-def _is_expired(
-    state: TranslationState,
-    now: Optional[float] = None,
+# =========================================================
+# EXPIRATION CHECK
+# =========================================================
+
+def translation_state_expired(
+    state: Optional[
+        TranslationState
+    ],
 ) -> bool:
-    if now is None:
-        now = time.time()
-
-    if not state.expires_at:
-        return False
-
-    return now >= state.expires_at
-
-
-def _remove_locked(
-    review_id: str
-) -> Optional[TranslationState]:
-    state = _STATES.pop(
-        review_id,
-        None,
-    )
 
     if state is None:
-        return None
+        return True
 
-    active_key = _user_chat_key(
-        state.chat_id,
-        state.user_id,
-    )
+    raw = str(
+        state.expires_at
+        or ""
+    ).strip()
 
-    if (
-        _ACTIVE_BY_USER_CHAT.get(
-            active_key
+    if not raw:
+
+        return False
+
+    try:
+
+        normalized = raw.replace(
+            "Z",
+            "+00:00",
         )
-        == review_id
-    ):
-        _ACTIVE_BY_USER_CHAT.pop(
-            active_key,
-            None,
-        )
 
-    return state
-
-
-# =========================================================
-# CLEANUP
-# =========================================================
-
-def cleanup_expired_translation_states(
-    now: Optional[float] = None,
-) -> int:
-    if now is None:
-        now = time.time()
-
-    removed = 0
-
-    with _STATE_LOCK:
-        expired_ids = [
-            review_id
-            for review_id, state
-            in _STATES.items()
-            if _is_expired(
-                state,
-                now,
+        expires_at = (
+            datetime.fromisoformat(
+                normalized
             )
-        ]
-
-        for review_id in expired_ids:
-            if _remove_locked(
-                review_id
-            ):
-                removed += 1
-
-    if removed:
-        logger.info(
-            "🧹 Translation state cleanup | removed=%s",
-            removed,
         )
 
-    return removed
+        if (
+            expires_at.tzinfo
+            is None
+        ):
+
+            expires_at = (
+                expires_at.replace(
+                    tzinfo=timezone.utc
+                )
+            )
+
+        return (
+            expires_at
+            <= datetime.now(
+                timezone.utc
+            )
+        )
+
+    except Exception:
+
+        # Database TTL cleanup remains authoritative.
+        #
+        # A malformed timestamp should not incorrectly delete a
+        # workflow at this layer.
+        return False
+
+
+# =========================================================
+# OWNERSHIP
+# =========================================================
+
+def translation_state_belongs_to(
+    state: Optional[
+        TranslationState
+    ],
+    *,
+    chat_id: int,
+    user_id: int,
+) -> bool:
+
+    if state is None:
+        return False
+
+    return (
+        int(
+            state.chat_id
+        )
+        == int(
+            chat_id
+        )
+        and
+        int(
+            state.user_id
+        )
+        == int(
+            user_id
+        )
+    )
 
 
 # =========================================================
@@ -265,230 +593,367 @@ def create_translation_state(
     source_language: str = "auto",
     source_kind: str = "message",
     source_key: str = "",
-    metadata: Optional[Dict[str, Any]] = None,
-    ttl_seconds: Optional[int] = None,
+    metadata: Optional[
+        Dict[str, Any]
+    ] = None,
+    review_id: Optional[str] = None,
 ) -> TranslationState:
-    cleanup_expired_translation_states()
+    """
+    Create a new persistent Translation workflow.
+
+    Only one active workflow is allowed per user/chat.
+    database.py cancels an older active workflow before creating
+    the new one.
+    """
 
     text = str(
-        original_text or ""
+        original_text
+        or ""
     )
 
     if not text.strip():
+
         raise ValueError(
-            "translation original_text is empty"
+            "Translation original_text is required"
         )
 
-    ttl = _normalize_ttl(
-        ttl_seconds
+    resolved_review_id = str(
+        review_id
+        or uuid.uuid4()
+    ).strip()
+
+    if not resolved_review_id:
+
+        raise ValueError(
+            "Translation review_id is required"
+        )
+
+    normalized_metadata = (
+        _normalize_metadata(
+            metadata
+        )
     )
 
-    now = time.time()
+    source_review_id = str(
+        normalized_metadata.get(
+            "source_review_id",
+            "",
+        )
+        or ""
+    ).strip()
 
-    review_id = uuid.uuid4().hex
+    source_message_id = (
+        _safe_optional_int(
+            normalized_metadata.get(
+                "source_message_id"
+            )
+        )
+    )
 
-    state = TranslationState(
-        review_id=review_id,
-        chat_id=int(chat_id),
-        user_id=int(user_id),
-        original_text=text,
-        source_language=(
-            str(
-                source_language
+    row = (
+        _database()
+        .create_persistent_translation_review(
+            review_id=(
+                resolved_review_id
+            ),
+            chat_id=int(
+                chat_id
+            ),
+            user_id=int(
+                user_id
+            ),
+            original_text=text,
+            source_language=(
+                str(
+                    source_language
+                    or "auto"
+                ).strip()
                 or "auto"
-            ).strip()
-            or "auto"
-        ),
-        source_kind=(
-            str(
-                source_kind
+            ),
+            source_kind=(
+                str(
+                    source_kind
+                    or "message"
+                ).strip()
                 or "message"
-            ).strip()
-            or "message"
-        ),
-        source_key=str(
-            source_key or ""
-        ).strip(),
-        metadata=dict(
-            metadata or {}
-        ),
-        created_at=now,
-        updated_at=now,
-        expires_at=(
-            now + ttl
-        ),
-    )
-
-    active_key = _user_chat_key(
-        chat_id,
-        user_id,
-    )
-
-    with _STATE_LOCK:
-        previous_review_id = (
-            _ACTIVE_BY_USER_CHAT.get(
-                active_key
-            )
+            ),
+            source_key=str(
+                source_key
+                or ""
+            ),
+            metadata=(
+                normalized_metadata
+            ),
+            status=(
+                STATE_WAITING_LANGUAGE
+            ),
+            source_review_id=(
+                source_review_id
+                or None
+            ),
+            source_message_id=(
+                source_message_id
+            ),
         )
+    )
 
-        if previous_review_id:
-            _remove_locked(
-                previous_review_id
-            )
+    state = (
+        _state_from_row(
+            row
+        )
+    )
 
-        _STATES[
-            review_id
-        ] = state
+    if state is None:
 
-        _ACTIVE_BY_USER_CHAT[
-            active_key
-        ] = review_id
+        raise RuntimeError(
+            "Could not create persistent translation state"
+        )
 
     logger.info(
-        "🌐 Translation state created | "
-        "review_id=%s | chat_id=%s | user_id=%s | "
-        "source_kind=%s",
-        review_id,
-        chat_id,
-        user_id,
-        state.source_kind,
+        "💾 Translation state created | "
+        "review_id=%s | chat_id=%s | user_id=%s",
+        state.review_id,
+        state.chat_id,
+        state.user_id,
     )
 
     return state
 
 
 # =========================================================
-# GET
+# GET BY REVIEW ID
 # =========================================================
 
 def get_translation_state(
-    review_id: str
-) -> Optional[TranslationState]:
-    cleanup_expired_translation_states()
+    review_id: str,
+) -> Optional[
+    TranslationState
+]:
 
-    with _STATE_LOCK:
-        return _STATES.get(
-            str(
-                review_id or ""
-            )
+    normalized_review_id = str(
+        review_id
+        or ""
+    ).strip()
+
+    if not normalized_review_id:
+        return None
+
+    row = (
+        _database()
+        .get_persistent_translation_review(
+            normalized_review_id
         )
+    )
 
+    state = (
+        _state_from_row(
+            row
+        )
+    )
+
+    if state is None:
+        return None
+
+    if translation_state_expired(
+        state
+    ):
+
+        try:
+
+            remove_translation_state(
+                normalized_review_id
+            )
+
+        except Exception:
+
+            logger.exception(
+                "⚠️ Could not remove expired translation state | "
+                "review_id=%s",
+                normalized_review_id,
+            )
+
+        return None
+
+    return state
+
+
+# =========================================================
+# GET ACTIVE
+# =========================================================
 
 def get_active_translation_state(
     *,
     chat_id: int,
     user_id: int,
-) -> Optional[TranslationState]:
-    cleanup_expired_translation_states()
+) -> Optional[
+    TranslationState
+]:
 
-    active_key = _user_chat_key(
-        chat_id,
-        user_id,
+    row = (
+        _database()
+        .get_active_persistent_translation_review(
+            chat_id=int(
+                chat_id
+            ),
+            user_id=int(
+                user_id
+            ),
+        )
     )
 
-    with _STATE_LOCK:
-        review_id = (
-            _ACTIVE_BY_USER_CHAT.get(
-                active_key
-            )
+    state = (
+        _state_from_row(
+            row
         )
-
-        if not review_id:
-            return None
-
-        return _STATES.get(
-            review_id
-        )
-
-
-# =========================================================
-# AUTHORIZATION
-# =========================================================
-
-def translation_state_belongs_to(
-    state: TranslationState,
-    *,
-    chat_id: int,
-    user_id: int,
-) -> bool:
-    return (
-        state.chat_id
-        == int(chat_id)
-        and state.user_id
-        == int(user_id)
     )
 
+    if state is None:
+        return None
+
+    if state.status not in (
+        ACTIVE_STATES
+    ):
+        return None
+
+    if translation_state_expired(
+        state
+    ):
+        return None
+
+    return state
+
 
 # =========================================================
-# UPDATE
+# GENERIC UPDATE
 # =========================================================
 
 def update_translation_state(
     review_id: str,
-    **changes: Any,
-) -> Optional[TranslationState]:
-    cleanup_expired_translation_states()
+    *,
+    status: Optional[str] = None,
+    source_language: Optional[str] = None,
+    target_language: Optional[str] = None,
+    target_language_code: Optional[str] = None,
+    translated_text: Optional[str] = None,
+    edited_text: Optional[str] = None,
+    source_kind: Optional[str] = None,
+    source_key: Optional[str] = None,
+    metadata: Optional[
+        Dict[str, Any]
+    ] = None,
+    validation_errors: Optional[
+        list
+    ] = None,
+    validation_warnings: Optional[
+        list
+    ] = None,
+    translation_attempts: Optional[int] = None,
+    source_review_id: Optional[str] = None,
+    source_message_id: Optional[int] = None,
+) -> Optional[
+    TranslationState
+]:
 
-    review_id = str(
-        review_id or ""
-    )
+    normalized_review_id = str(
+        review_id
+        or ""
+    ).strip()
 
-    if not review_id:
+    if not normalized_review_id:
         return None
 
-    protected_fields = {
-        "review_id",
-        "chat_id",
-        "user_id",
-        "created_at",
-    }
+    if status is not None:
 
-    safe_changes = {
-        key: value
-        for key, value
-        in changes.items()
-        if key not in protected_fields
-    }
-
-    safe_changes[
-        "updated_at"
-    ] = time.time()
-
-    with _STATE_LOCK:
-        current = _STATES.get(
-            review_id
+        _normalize_status(
+            status
         )
 
-        if current is None:
-            return None
+    row = (
+        _database()
+        .update_persistent_translation_review(
+            normalized_review_id,
+            status=status,
+            source_language=(
+                source_language
+            ),
+            target_language=(
+                target_language
+            ),
+            target_language_code=(
+                target_language_code
+            ),
+            translated_text=(
+                translated_text
+            ),
+            edited_text=(
+                edited_text
+            ),
+            source_kind=(
+                source_kind
+            ),
+            source_key=(
+                source_key
+            ),
+            metadata=(
+                metadata
+            ),
+            validation_errors=(
+                validation_errors
+            ),
+            validation_warnings=(
+                validation_warnings
+            ),
+            translation_attempts=(
+                translation_attempts
+            ),
+            source_review_id=(
+                source_review_id
+            ),
+            source_message_id=(
+                source_message_id
+            ),
+        )
+    )
 
-        try:
-            updated = replace(
-                current,
-                **safe_changes,
-            )
-
-        except TypeError:
-            logger.exception(
-                "❌ Invalid TranslationState update | "
-                "review_id=%s | fields=%s",
-                review_id,
-                list(
-                    safe_changes.keys()
-                ),
-            )
-
-            return None
-
-        _STATES[
-            review_id
-        ] = updated
-
-        return updated
+    return _state_from_row(
+        row
+    )
 
 
 # =========================================================
-# LANGUAGE SELECTION
+# WAITING CUSTOM LANGUAGE
+# =========================================================
+
+def mark_waiting_custom_language(
+    review_id: str,
+) -> Optional[
+    TranslationState
+]:
+
+    state = get_translation_state(
+        review_id
+    )
+
+    if state is None:
+        return None
+
+    if state.status not in {
+        STATE_WAITING_LANGUAGE,
+        STATE_WAITING_CUSTOM_LANGUAGE,
+    }:
+
+        return None
+
+    return update_translation_state(
+        review_id,
+        status=(
+            STATE_WAITING_CUSTOM_LANGUAGE
+        ),
+    )
+
+
+# =========================================================
+# SET LANGUAGE / MARK TRANSLATING
 # =========================================================
 
 def set_translation_language(
@@ -496,35 +961,44 @@ def set_translation_language(
     *,
     target_language: str,
     target_language_code: str = "",
-) -> Optional[TranslationState]:
-    language = str(
-        target_language or ""
+) -> Optional[
+    TranslationState
+]:
+
+    state = get_translation_state(
+        review_id
+    )
+
+    if state is None:
+        return None
+
+    if state.status not in {
+        STATE_WAITING_LANGUAGE,
+        STATE_WAITING_CUSTOM_LANGUAGE,
+        STATE_TRANSLATING,
+    }:
+
+        return None
+
+    normalized_target = str(
+        target_language
+        or ""
     ).strip()
 
-    if not language:
+    if not normalized_target:
         return None
 
     return update_translation_state(
         review_id,
-        target_language=language,
-        target_language_code=str(
-            target_language_code or ""
-        ).strip(),
         status=STATE_TRANSLATING,
-    )
-
-
-# =========================================================
-# CUSTOM LANGUAGE WAIT
-# =========================================================
-
-def mark_waiting_custom_language(
-    review_id: str
-) -> Optional[TranslationState]:
-    return update_translation_state(
-        review_id,
-        status=(
-            STATE_WAITING_CUSTOM_LANGUAGE
+        target_language=(
+            normalized_target
+        ),
+        target_language_code=(
+            str(
+                target_language_code
+                or ""
+            ).strip()
         ),
     )
 
@@ -540,70 +1014,195 @@ def set_translation_preview(
     metadata: Optional[
         Dict[str, Any]
     ] = None,
-) -> Optional[TranslationState]:
-    text = str(
-        translated_text or ""
-    ).strip()
+) -> Optional[
+    TranslationState
+]:
 
-    if not text:
-        return mark_translation_failed(
-            review_id,
-            reason="empty_translation",
-        )
-
-    current = get_translation_state(
+    state = get_translation_state(
         review_id
     )
 
-    if current is None:
+    if state is None:
         return None
 
-    merged_metadata = dict(
-        current.metadata
-    )
+    if state.status not in {
+        STATE_TRANSLATING,
+        STATE_PREVIEW,
+        STATE_WAITING_EDIT,
+    }:
 
-    if metadata:
-        merged_metadata.update(
+        return None
+
+    text = str(
+        translated_text
+        or ""
+    ).strip()
+
+    if not text:
+        return None
+
+    normalized_metadata = (
+        _normalize_metadata(
             metadata
         )
+    )
+
+    attempts = normalized_metadata.get(
+        "translation_attempts",
+        normalized_metadata.get(
+            "attempts"
+        ),
+    )
+
+    validation_errors = (
+        normalized_metadata.get(
+            "translation_validation_errors",
+            normalized_metadata.get(
+                "validation_errors"
+            ),
+        )
+    )
+
+    validation_warnings = (
+        normalized_metadata.get(
+            "translation_validation_warnings",
+            normalized_metadata.get(
+                "validation_warnings"
+            ),
+        )
+    )
 
     return update_translation_state(
         review_id,
-        translated_text=text,
-        metadata=merged_metadata,
         status=STATE_PREVIEW,
+        translated_text=text,
+
+        # New machine preview replaces any old manual edit.
+        edited_text="",
+
+        metadata=(
+            normalized_metadata
+        ),
+
+        validation_errors=(
+            list(
+                validation_errors
+                or []
+            )
+            if validation_errors
+            is not None
+            else None
+        ),
+
+        validation_warnings=(
+            list(
+                validation_warnings
+                or []
+            )
+            if validation_warnings
+            is not None
+            else None
+        ),
+
+        translation_attempts=(
+            max(
+                0,
+                _safe_int(
+                    attempts,
+                    0,
+                ),
+            )
+            if attempts
+            is not None
+            else None
+        ),
     )
 
 
 # =========================================================
-# EDIT
+# WAITING EDIT
 # =========================================================
 
 def mark_waiting_translation_edit(
-    review_id: str
-) -> Optional[TranslationState]:
-    return update_translation_state(
-        review_id,
-        status=STATE_WAITING_EDIT,
+    review_id: str,
+) -> Optional[
+    TranslationState
+]:
+
+    state = get_translation_state(
+        review_id
     )
 
+    if state is None:
+        return None
+
+    if state.status != (
+        STATE_PREVIEW
+    ):
+
+        return None
+
+    if not state.translated_text.strip():
+
+        return None
+
+    return update_translation_state(
+        review_id,
+        status=(
+            STATE_WAITING_EDIT
+        ),
+    )
+
+
+# =========================================================
+# APPLY EDIT
+# =========================================================
 
 def apply_translation_edit(
     review_id: str,
     *,
     translated_text: str,
-) -> Optional[TranslationState]:
+) -> Optional[
+    TranslationState
+]:
+
+    state = get_translation_state(
+        review_id
+    )
+
+    if state is None:
+        return None
+
+    if state.status != (
+        STATE_WAITING_EDIT
+    ):
+
+        return None
+
     text = str(
-        translated_text or ""
+        translated_text
+        or ""
     ).strip()
 
     if not text:
         return None
 
+    metadata = {
+        "translation_manually_edited":
+            True,
+    }
+
     return update_translation_state(
         review_id,
-        translated_text=text,
         status=STATE_PREVIEW,
+
+        # Keep machine translation in translated_text DB column.
+        #
+        # edited_text becomes effective translated_text when the
+        # row is reconstructed as TranslationState.
+        edited_text=text,
+
+        metadata=metadata,
     )
 
 
@@ -612,8 +1211,11 @@ def apply_translation_edit(
 # =========================================================
 
 def confirm_translation_state(
-    review_id: str
-) -> Optional[TranslationState]:
+    review_id: str,
+) -> Optional[
+    TranslationState
+]:
+
     state = get_translation_state(
         review_id
     )
@@ -621,37 +1223,43 @@ def confirm_translation_state(
     if state is None:
         return None
 
-    if (
-        state.status
-        != STATE_PREVIEW
+    if state.status != (
+        STATE_PREVIEW
     ):
-        logger.warning(
-            "⚠️ Translation confirm rejected | "
-            "review_id=%s | status=%s",
-            review_id,
-            state.status,
-        )
 
         return None
 
     if not state.translated_text.strip():
+
         return None
 
-    return update_translation_state(
-        review_id,
-        status=STATE_CONFIRMED,
+    row = (
+        _database()
+        .mark_persistent_translation_review_confirmed(
+            review_id
+        )
+    )
+
+    return _state_from_row(
+        row
     )
 
 
 # =========================================================
-# FAILURE
+# FAIL
 # =========================================================
 
 def mark_translation_failed(
     review_id: str,
     *,
-    reason: str,
-) -> Optional[TranslationState]:
+    reason: str = "",
+    metadata: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Optional[
+    TranslationState
+]:
+
     state = get_translation_state(
         review_id
     )
@@ -659,20 +1267,43 @@ def mark_translation_failed(
     if state is None:
         return None
 
-    metadata = dict(
-        state.metadata
+    if state.status in {
+        STATE_CONFIRMED,
+        STATE_CANCELLED,
+    }:
+
+        return None
+
+    failure_metadata = (
+        _normalize_metadata(
+            metadata
+        )
     )
 
-    metadata[
-        "translation_error"
-    ] = str(
-        reason or "unknown"
+    if reason:
+
+        failure_metadata[
+            "failure_reason"
+        ] = str(
+            reason
+        )
+
+    row = (
+        _database()
+        .mark_persistent_translation_review_failed(
+            review_id,
+            reason=str(
+                reason
+                or ""
+            ),
+            metadata=(
+                failure_metadata
+            ),
+        )
     )
 
-    return update_translation_state(
-        review_id,
-        status=STATE_FAILED,
-        metadata=metadata,
+    return _state_from_row(
+        row
     )
 
 
@@ -681,40 +1312,40 @@ def mark_translation_failed(
 # =========================================================
 
 def cancel_translation_state(
-    review_id: str
-) -> Optional[TranslationState]:
-    state = update_translation_state(
-        review_id,
-        status=STATE_CANCELLED,
+    review_id: str,
+) -> Optional[
+    TranslationState
+]:
+
+    state = get_translation_state(
+        review_id
     )
 
     if state is None:
         return None
 
-    active_key = _user_chat_key(
-        state.chat_id,
-        state.user_id,
+    if state.status == (
+        STATE_CONFIRMED
+    ):
+
+        return None
+
+    if state.status == (
+        STATE_CANCELLED
+    ):
+
+        return state
+
+    row = (
+        _database()
+        .mark_persistent_translation_review_cancelled(
+            review_id
+        )
     )
 
-    with _STATE_LOCK:
-        if (
-            _ACTIVE_BY_USER_CHAT.get(
-                active_key
-            )
-            == review_id
-        ):
-            _ACTIVE_BY_USER_CHAT.pop(
-                active_key,
-                None,
-            )
-
-    logger.info(
-        "❌ Translation state cancelled | "
-        "review_id=%s",
-        review_id,
+    return _state_from_row(
+        row
     )
-
-    return state
 
 
 # =========================================================
@@ -722,65 +1353,195 @@ def cancel_translation_state(
 # =========================================================
 
 def remove_translation_state(
-    review_id: str
-) -> Optional[TranslationState]:
-    with _STATE_LOCK:
-        return _remove_locked(
-            str(
-                review_id or ""
-            )
+    review_id: str,
+) -> Optional[
+    TranslationState
+]:
+    """
+    Delete persistent Translation workflow.
+
+    Return the previous state for backward compatibility with
+    the existing Controller, which checks:
+
+        removed is None
+    """
+
+    state = get_translation_state(
+        review_id
+    )
+
+    if state is None:
+        return None
+
+    deleted = (
+        _database()
+        .delete_persistent_translation_review(
+            review_id
+        )
+    )
+
+    if not deleted:
+        return None
+
+    return state
+
+
+# =========================================================
+# CLEANUP
+# =========================================================
+
+def cleanup_expired_translation_states() -> int:
+
+    try:
+
+        return (
+            _database()
+            .cleanup_expired_persistent_translation_reviews()
         )
 
+    except Exception:
+
+        logger.exception(
+            "❌ Persistent translation cleanup failed"
+        )
+
+        raise
+
 
 # =========================================================
-# STATUS HELPERS
+# ACTIVE CHECK
 # =========================================================
 
-def translation_waiting_for_text_input(
-    state: Optional[TranslationState]
+def has_active_translation_state(
+    *,
+    chat_id: int,
+    user_id: int,
 ) -> bool:
-    if state is None:
-        return False
 
-    return state.status in {
-        STATE_WAITING_CUSTOM_LANGUAGE,
-        STATE_WAITING_EDIT,
-    }
+    return (
+        get_active_translation_state(
+            chat_id=chat_id,
+            user_id=user_id,
+        )
+        is not None
+    )
 
 
-def translation_ready_for_publish(
-    state: Optional[TranslationState]
+# =========================================================
+# TERMINAL CHECK
+# =========================================================
+
+def translation_state_is_terminal(
+    state: Optional[
+        TranslationState
+    ],
 ) -> bool:
+
     if state is None:
         return False
 
     return (
         state.status
-        == STATE_CONFIRMED
-        and bool(
-            state.translated_text.strip()
-        )
+        in TERMINAL_STATES
     )
 
 
 # =========================================================
-# DEBUG / TEST
+# COMPATIBILITY RESET
 # =========================================================
 
-def translation_state_count() -> int:
+def reset_translation_states() -> None:
+    """
+    Compatibility helper.
+
+    The previous in-memory implementation could clear process
+    state globally. Persistent Production state must never be
+    globally deleted by an ordinary application helper.
+
+    Therefore this function intentionally performs only expired
+    state cleanup.
+
+    This prevents tests/admin utilities from accidentally wiping
+    active Production translation reviews.
+    """
+
     cleanup_expired_translation_states()
 
-    with _STATE_LOCK:
-        return len(
-            _STATES
-        )
 
+# =========================================================
+# DEBUG DESCRIPTION
+# =========================================================
 
-def clear_translation_states() -> None:
-    """
-    فقط برای تست.
-    """
+def describe_translation_state(
+    state: Optional[
+        TranslationState
+    ],
+) -> Dict[str, Any]:
 
-    with _STATE_LOCK:
-        _STATES.clear()
-        _ACTIVE_BY_USER_CHAT.clear()
+    if state is None:
+
+        return {
+            "exists": False,
+        }
+
+    return {
+        "exists":
+            True,
+
+        "review_id":
+            state.review_id,
+
+        "chat_id":
+            state.chat_id,
+
+        "user_id":
+            state.user_id,
+
+        "status":
+            state.status,
+
+        "source_language":
+            state.source_language,
+
+        "target_language":
+            state.target_language,
+
+        "target_language_code":
+            state.target_language_code,
+
+        "source_kind":
+            state.source_kind,
+
+        "source_key":
+            state.source_key,
+
+        "has_original_text":
+            bool(
+                state.original_text
+            ),
+
+        "has_translated_text":
+            bool(
+                state.translated_text
+            ),
+
+        "manually_edited":
+            bool(
+                state.edited_text
+            ),
+
+        "translation_attempts":
+            state.translation_attempts,
+
+        "failure_reason":
+            state.failure_reason,
+
+        "created_at":
+            state.created_at,
+
+        "updated_at":
+            state.updated_at,
+
+        "expires_at":
+            state.expires_at,
+    }
