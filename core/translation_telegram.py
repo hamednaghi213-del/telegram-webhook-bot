@@ -37,6 +37,7 @@ from core.translation_controller import (
 from core.translation_publication import (
     publish_confirmed_translation,
     translation_publication_message,
+    translation_ui_message,
 )
 
 from core.translation_state import (
@@ -274,6 +275,7 @@ def render_translation_result(
     result: TranslationControllerResult,
     chat_id: int,
     send_message: SendMessage,
+    review_id: str = "",
 ) -> None:
     """
     Convert TranslationControllerResult to Telegram user
@@ -284,6 +286,14 @@ def render_translation_result(
 
     if result is None:
         return
+
+    review_id = getattr(result, "review_id", "") or review_id
+    original_send_message = send_message
+
+    def send_message(chat_id, text, **kwargs):
+        return original_send_message(
+            chat_id, translation_ui_message(text, review_id), **kwargs
+        )
 
     action = str(
         getattr(
@@ -878,9 +888,10 @@ def handle_translation_telegram_callback(
 
             send_message(
                 chat_id,
-                (
+                translation_ui_message(
                     "❌ امکان آماده‌سازی ترجمه "
-                    "برای انتشار وجود نداشت."
+                    "برای انتشار وجود نداشت.",
+                    review_id,
                 )
             )
 
@@ -890,6 +901,16 @@ def handle_translation_telegram_callback(
             callback_id,
             "در حال انتشار نسخه ترجمه‌شده..."
         )
+
+        try:
+            send_message(
+                chat_id,
+                translation_ui_message(
+                    "⏳ ترجمه تأیید شد و در حال انتشار است.", review_id
+                ),
+            )
+        except Exception:
+            logger.exception("Translation progress message failed | review_id=%s", review_id)
 
         try:
 
@@ -914,9 +935,10 @@ def handle_translation_telegram_callback(
 
             send_message(
                 chat_id,
-                (
+                translation_ui_message(
                     "❌ انتشار نسخه ترجمه‌شده "
-                    "با خطا روبرو شد."
+                    "با خطا روبرو شد.",
+                    review_id,
                 )
             )
 

@@ -4654,6 +4654,15 @@ def try_automatic_persian_translation_gate(
     ):
         return None
     
+    result = None
+    from core.translation_publication import translation_ui_message
+
+    def send_review_message(chat_id, text):
+        return send_message(
+            chat_id,
+            translation_ui_message(text, getattr(result, "review_id", "")),
+        )
+
     try:
         from core.automatic_translation_review import (
             ACTION_BLOCKED,
@@ -4733,11 +4742,12 @@ def try_automatic_persian_translation_gate(
             ):
                 render_translation_result(
                     result=result.controller_result,
+                    review_id=getattr(result, "review_id", ""),
                     chat_id=chat_id,
                     send_message=send_message,
                 )
             else:
-                send_message(
+                send_review_message(
                     chat_id,
                     (
                         "❌ زبان پیام یا ترجمه آن با اطمینان "
@@ -4761,7 +4771,7 @@ def try_automatic_persian_translation_gate(
                 "reason": result.reason,
             }
 
-        send_message(
+        send_review_message(
             chat_id,
             (
                 "❌ ترجمه خودکار این محتوا کامل نشد؛ "
@@ -4788,7 +4798,7 @@ def try_automatic_persian_translation_gate(
             exc,
         )
 
-        send_message(
+        send_review_message(
             chat_id,
             (
                 "❌ بررسی زبان و ترجمه خودکار با خطا "

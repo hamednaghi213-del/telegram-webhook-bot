@@ -951,6 +951,16 @@ def publish_confirmed_translation(
 # USER MESSAGE
 # =========================================================
 
+def translation_review_reference(review_id: str) -> str:
+    value = str(review_id or "").strip().replace("-", "")
+    return f"#{value[:8]}" if value else ""
+
+
+def translation_ui_message(text: str, review_id: str) -> str:
+    reference = translation_review_reference(review_id)
+    return f"شناسه: {reference}\n{text}" if reference else text
+
+
 def translation_publication_message(
     result: TranslationPublicationResult,
 ) -> str:
@@ -958,7 +968,7 @@ def translation_publication_message(
     if result.published:
 
         return (
-            "✅ نسخه ترجمه‌شده منتشر شد."
+            translation_ui_message("✅ نسخه ترجمه‌شده منتشر شد.", result.review_id)
         )
 
     if (
@@ -967,7 +977,7 @@ def translation_publication_message(
     ):
 
         return (
-            "❌ ترجمه هنوز تأیید نشده است."
+            translation_ui_message("❌ ترجمه هنوز تأیید نشده است.", result.review_id)
         )
 
     if (
@@ -976,11 +986,11 @@ def translation_publication_message(
     ):
 
         return (
-            "❌ متن ترجمه‌شده برای انتشار وجود ندارد."
+            translation_ui_message("❌ متن ترجمه‌شده برای انتشار وجود ندارد.", result.review_id)
         )
 
     return (
-        "❌ انتشار نسخه ترجمه‌شده با خطا روبرو شد."
+        translation_ui_message("❌ انتشار نسخه ترجمه‌شده با خطا روبرو شد.", result.review_id)
     )
 
 
