@@ -4630,6 +4630,7 @@ def try_automatic_persian_translation_gate(
     source_key: str,
     files: Optional[List[Dict[str, Any]]] = None,
     media_presentation: str = "",
+    forward_source: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
 
     source_text = str(
@@ -4674,6 +4675,7 @@ def try_automatic_persian_translation_gate(
                 source_kind=source_kind,
                 source_key=source_key,
                 metadata={
+                    "forward_source": dict(forward_source or {}),
                     "files": list(
                         files
                         or []
@@ -6527,6 +6529,7 @@ def handle_webhook() -> Tuple[
                     chat_id=chat_id,
                     text=caption,
                     source_kind="media",
+                    forward_source=forward_source,
                     source_key=(
                         incoming_source_key
                     ),
@@ -6748,6 +6751,7 @@ def handle_webhook() -> Tuple[
                     chat_id=chat_id,
                     text=publication_text,
                     source_kind="message",
+                    forward_source=forward_source,
                     source_key=(
                         incoming_source_key
                     ),
