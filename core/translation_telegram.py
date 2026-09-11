@@ -29,6 +29,7 @@ from core.translation_controller import (
     get_translation_original,
     request_custom_translation_language,
     request_translation_edit,
+    retranslate_translation,
     select_translation_language,
     show_more_translation_languages,
     show_translation_language_menu,
@@ -38,11 +39,13 @@ from core.translation_publication import (
     publish_confirmed_translation,
     translation_publication_message,
     translation_ui_message,
+    build_translation_publication_payload,
 )
 
 from core.translation_state import (
     get_active_translation_state,
     get_translation_state,
+    ACTIVE_STATES,
 )
 
 from core.translation_ui import (
@@ -55,6 +58,9 @@ from core.translation_ui import (
     ACTION_MORE,
     ACTION_OPEN,
     ACTION_ORIGINAL,
+    ACTION_RETRANSLATE,
+    ACTION_RETRANSLATE_CONFIRM,
+    build_translation_callback,
     is_translation_callback,
     parse_translation_callback,
 )
@@ -319,6 +325,17 @@ def render_translation_result(
         None,
     )
 
+    # Bind Cancel on language menus too; old generic callbacks never resolve
+    # to a different active review. Copy markup rather than mutate its owner.
+    if reply_markup and review_id:
+        reply_markup = dict(reply_markup)
+        reply_markup["inline_keyboard"] = [
+            [dict(button, callback_data=build_translation_callback(ACTION_CANCEL, review_id))
+             if button.get("callback_data") == "tr:cancel" else dict(button)
+             for button in row]
+            for row in reply_markup.get("inline_keyboard", [])
+        ]
+
     translated_text = str(
         getattr(
             result,
@@ -335,6 +352,25 @@ def render_translation_result(
     if action == RESULT_PREVIEW:
 
         parts = []
+
+        state = getattr(result, "state", None)
+        if state is None:
+            state = get_translation_state(review_id)
+        try:
+            if state is None:
+                raise ValueError("preview_state_missing")
+            translated_text = build_translation_publication_payload(state)["main_text"]
+            if not translated_text.strip():
+                raise ValueError("preview_content_empty")
+        except Exception:
+            logger.exception("Translation preview preparation failed | review_id=%s", review_id)
+            send_message(chat_id, "❌ آماده‌سازی پیش‌نمایش ممکن نشد؛ دوباره تلاش کنید.")
+            return
+
+        metadata = getattr(state, "metadata", {}) or {}
+        policy = (metadata.get("translation_pipeline_metadata") or {}).get("editorial_policy") or {}
+        if policy.get("status") == "review_required":
+            parts.append("⚠️ این ترجمه به دلیل اصطلاحات حساس تحریریه نیاز به بازبینی دارد؛ پیش از تأیید، واژه‌ها و بافت جمله را بررسی کنید.")
 
         if text:
             parts.append(
@@ -569,12 +605,28 @@ def handle_translation_telegram_callback(
     # ACTIVE REVIEW
     # =====================================================
 
-    review_id = (
-        _active_review_id(
-            chat_id=chat_id,
-            user_id=user_id,
-        )
-    )
+    review_actions = {
+        ACTION_CONFIRM, ACTION_EDIT, ACTION_ORIGINAL, ACTION_CANCEL,
+        ACTION_RETRANSLATE, ACTION_RETRANSLATE_CONFIRM,
+        "keepedit",
+    }
+    if parsed.action in review_actions:
+        review_id = parsed.value
+        exact_state = get_translation_state(review_id) if review_id else None
+        allowed = ACTIVE_STATES if parsed.action == ACTION_CANCEL else {"preview"}
+        if (not review_id or callback_data != f"tr:{parsed.action}:{review_id}"
+                or exact_state is None or exact_state.review_id != review_id or exact_state.chat_id != chat_id
+                or exact_state.user_id != user_id or exact_state.status not in allowed):
+            message = translation_ui_message(
+                "❌ این درخواست دیگر قابل انجام نیست؛ از پیش‌نمایش معتبر همان ترجمه استفاده کنید.",
+                review_id,
+            )
+            answer_callback_query(callback_id, "این درخواست بسته، قدیمی یا نامعتبر است.")
+            send_message(chat_id, message)
+            return _controller_result(success=False, action=RESULT_INVALID_STATE,
+                                      review_id=review_id, reason="stale_translation_action")
+    else:
+        review_id = _active_review_id(chat_id=chat_id, user_id=user_id)
 
     # tr:open does NOT itself create a translation state.
     #
@@ -762,6 +814,35 @@ def handle_translation_telegram_callback(
     # =====================================================
     # EDIT
     # =====================================================
+
+    if parsed.action == "keepedit":
+        answer_callback_query(callback_id, "اصلاح دستی حفظ شد.")
+        send_message(chat_id, translation_ui_message("✅ اصلاح دستی حفظ شد؛ می‌توانید از پیش‌نمایش همان ترجمه ادامه دهید.", review_id))
+        return _controller_result(success=True, action=RESULT_EDIT_INPUT, review_id=review_id)
+
+    if parsed.action in {ACTION_RETRANSLATE, ACTION_RETRANSLATE_CONFIRM}:
+        if exact_state.edited_text and parsed.action != ACTION_RETRANSLATE_CONFIRM:
+            answer_callback_query(callback_id, "جایگزینی اصلاح دستی نیاز به تأیید دارد.")
+            send_message(
+                chat_id,
+                translation_ui_message("⚠️ ترجمه مجدد از متن اصلی، اصلاح دستی شما را پس از موفقیت جایگزین می‌کند. ادامه می‌دهید؟", review_id),
+                reply_markup={"inline_keyboard": [[
+                    {"text": "🔄 تأیید ترجمه مجدد", "callback_data": build_translation_callback(ACTION_RETRANSLATE_CONFIRM, review_id)},
+                    {"text": "حفظ اصلاح دستی", "callback_data": build_translation_callback("keepedit", review_id)},
+                ]]},
+            )
+            return _controller_result(success=True, action=RESULT_EDIT_INPUT, review_id=review_id)
+        answer_callback_query(callback_id, "ترجمه مجدد از متن اصلی آغاز شد.")
+        try:
+            send_message(chat_id, translation_ui_message("⏳ ترجمه مجدد از متن اصلی در حال آماده‌سازی است.", review_id))
+        except Exception:
+            logger.exception("Retranslation progress message failed | review_id=%s", review_id)
+        result = retranslate_translation(
+            review_id=review_id, chat_id=chat_id, user_id=user_id,
+            replace_edit=parsed.action == ACTION_RETRANSLATE_CONFIRM,
+        )
+        render_translation_result(result=result, chat_id=chat_id, send_message=send_message, review_id=review_id)
+        return result
 
     if parsed.action == ACTION_EDIT:
 

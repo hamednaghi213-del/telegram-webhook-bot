@@ -997,6 +997,7 @@ def set_translation_language(
     *,
     target_language: str,
     target_language_code: str = "",
+    restart_preview: bool = False,
 ) -> Optional[
     TranslationState
 ]:
@@ -1012,7 +1013,7 @@ def set_translation_language(
         STATE_WAITING_LANGUAGE,
         STATE_WAITING_CUSTOM_LANGUAGE,
         STATE_TRANSLATING,
-    }:
+    } and not (restart_preview and state.status == STATE_PREVIEW):
 
         return None
 

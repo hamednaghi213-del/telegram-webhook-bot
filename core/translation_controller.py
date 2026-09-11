@@ -805,6 +805,7 @@ def _execute_translation(
     state: TranslationState,
     target_language: str,
     target_language_code: str = "",
+    restart_preview: bool = False,
 ) -> TranslationControllerResult:
     """
     Execute manual translation through the Shared Translation
@@ -834,6 +835,7 @@ def _execute_translation(
     language_state = (
         set_translation_language(
             state.review_id,
+            restart_preview=restart_preview,
             target_language=(
                 target_language
             ),
@@ -1204,7 +1206,7 @@ def _execute_translation(
             target_language
         ),
         reply_markup=_keyboard_markup(
-            build_translation_preview_keyboard()
+            build_translation_preview_keyboard(preview_state.review_id)
         ),
         review_id=(
             preview_state.review_id
@@ -1379,6 +1381,23 @@ def submit_custom_translation_language(
 # EDIT TRANSLATION
 # =========================================================
 
+def retranslate_translation(*, review_id: str, chat_id: int, user_id: int,
+                            replace_edit: bool = False) -> TranslationControllerResult:
+    state = get_translation_state(review_id)
+    security = _state_security_check(state, chat_id=chat_id, user_id=user_id)
+    if security:
+        return security
+    if state.status != STATE_PREVIEW or (state.edited_text and not replace_edit):
+        return TranslationControllerResult(
+            success=False, action=RESULT_INVALID_STATE, review_id=review_id,
+            reason="translation_restart_not_allowed", state=state,
+        )
+    return _execute_translation(
+        state=state, target_language=state.target_language,
+        target_language_code=state.target_language_code, restart_preview=True,
+    )
+
+
 def request_translation_edit(
     *,
     review_id: str,
@@ -1535,7 +1554,7 @@ def submit_translation_edit(
             updated.target_language
         ),
         reply_markup=_keyboard_markup(
-            build_translation_preview_keyboard()
+            build_translation_preview_keyboard(updated.review_id)
         ),
         review_id=updated.review_id,
         translated_text=(

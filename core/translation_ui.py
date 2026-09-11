@@ -43,6 +43,8 @@ ACTION_EDIT = "edit"
 ACTION_CANCEL = "cancel"
 ACTION_BACK = "back"
 ACTION_ORIGINAL = "original"
+ACTION_RETRANSLATE = "retranslate"
+ACTION_RETRANSLATE_CONFIRM = "retryok"
 
 DEFAULT_LANGUAGE_PAGE_SIZE = 8
 MAX_LANGUAGE_PAGE_SIZE = 12
@@ -737,14 +739,15 @@ def build_more_languages_keyboard(
 # PREVIEW ACTIONS
 # =========================================================
 
-def build_translation_preview_keyboard() -> TranslationKeyboard:
+def build_translation_preview_keyboard(review_id: str) -> TranslationKeyboard:
     return [
+        [TranslationButton(text="🔄 ترجمه مجدد", callback_data=build_translation_callback(ACTION_RETRANSLATE, review_id))],
         [
             TranslationButton(
                 text="✅ تأیید و انتشار",
                 callback_data=(
                     build_translation_callback(
-                        ACTION_CONFIRM
+                        ACTION_CONFIRM, review_id
                     )
                 ),
             )
@@ -754,7 +757,7 @@ def build_translation_preview_keyboard() -> TranslationKeyboard:
                 text="✏️ اصلاح ترجمه",
                 callback_data=(
                     build_translation_callback(
-                        ACTION_EDIT
+                        ACTION_EDIT, review_id
                     )
                 ),
             ),
@@ -762,7 +765,7 @@ def build_translation_preview_keyboard() -> TranslationKeyboard:
                 text="📄 متن اصلی",
                 callback_data=(
                     build_translation_callback(
-                        ACTION_ORIGINAL
+                        ACTION_ORIGINAL, review_id
                     )
                 ),
             ),
@@ -772,7 +775,7 @@ def build_translation_preview_keyboard() -> TranslationKeyboard:
                 text="❌ لغو",
                 callback_data=(
                     build_translation_callback(
-                        ACTION_CANCEL
+                        ACTION_CANCEL, review_id
                     )
                 ),
             )
