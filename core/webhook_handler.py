@@ -4396,6 +4396,224 @@ def handle_setup_callback(
     return True
 
 # =========================================================
+# STANDALONE EXTERNAL CONTENT PERSIAN TRANSLATION
+# =========================================================
+
+def translate_external_content_to_persian(
+    content: Any,
+) -> Tuple[Any, Optional[str]]:
+    """
+    Translate non-Persian standalone external content to Persian
+    BEFORE the existing External Review is created.
+
+    The External Review stays the only preview; no Translation
+    Preview is created here.
+
+    Returns:
+      (content, None)      -> already Persian, no text, or translated
+      (None, reason)       -> translation required but failed (fail closed)
+    """
+
+    fields: List[Tuple[str, str]] = [
+        (
+            "title",
+            str(
+                getattr(
+                    content,
+                    "title",
+                    "",
+                )
+                or ""
+            ).strip(),
+        ),
+        (
+            "lead",
+            str(
+                getattr(
+                    content,
+                    "lead",
+                    "",
+                )
+                or ""
+            ).strip(),
+        ),
+        (
+            "body",
+            str(
+                getattr(
+                    content,
+                    "body",
+                    "",
+                )
+                or ""
+            ).strip(),
+        ),
+    ]
+
+    non_empty = [
+        (name, text)
+        for name, text in fields
+        if text
+    ]
+
+    if not non_empty:
+        return content, None
+
+    combined_source = "\n\n".join(
+        text
+        for _, text in non_empty
+    )
+
+    from core.translation_pipeline import (
+        detect_pipeline_source_language,
+        run_translation_pipeline,
+    )
+
+    from core.translation_policy import (
+        CONTENT_KIND_EXTERNAL_REVIEW,
+        build_multilingual_policy,
+    )
+
+    source_language = (
+        detect_pipeline_source_language(
+            combined_source
+        )
+        .get(
+            "language",
+            "auto",
+        )
+        or "auto"
+    )
+
+    # Already-Persian content keeps the current resolution unchanged.
+    if source_language == "fa":
+        return content, None
+
+    policy = (
+        build_multilingual_policy(
+            destination_language="fa",
+            automatic=True,
+            fail_closed=True,
+        )
+    )
+
+    translated_fields: Dict[str, str] = {}
+
+    for name, text in non_empty:
+
+        result = (
+            run_translation_pipeline(
+                text=text,
+                policy=policy,
+                content_kind=(
+                    CONTENT_KIND_EXTERNAL_REVIEW
+                ),
+                semantic_quality=True,
+                quality_retries=1,
+            )
+        )
+
+        if (
+            not result.success
+            or result.blocked
+        ):
+
+            logger.warning(
+                (
+                    "⚠️ EXTERNAL-TRANSLATION-BLOCKED | "
+                    "field=%s | reason=%s"
+                ),
+                name,
+                result.reason,
+            )
+
+            return (
+                None,
+                (
+                    result.reason
+                    or "external_translation_failed"
+                ),
+            )
+
+        output_text = str(
+            result.output_text
+            or ""
+        ).strip()
+
+        if not output_text:
+
+            return (
+                None,
+                "external_translation_empty",
+            )
+
+        translated_fields[name] = output_text
+
+    from core.external_content_model import (
+        NormalizedExternalContent,
+    )
+
+    return (
+        NormalizedExternalContent(
+            source_type=(
+                content.source_type
+            ),
+            source_url=(
+                content.source_url
+            ),
+            canonical_url=(
+                content.canonical_url
+            ),
+            content_type=(
+                content.content_type
+            ),
+            title=(
+                translated_fields.get(
+                    "title",
+                    content.title,
+                )
+            ),
+            lead=(
+                translated_fields.get(
+                    "lead",
+                    content.lead,
+                )
+            ),
+            body=(
+                translated_fields.get(
+                    "body",
+                    content.body,
+                )
+            ),
+            author=(
+                content.author
+            ),
+            published_at=(
+                content.published_at
+            ),
+            original_language=(
+                content.original_language
+            ),
+            source_name=(
+                content.source_name
+            ),
+            media=(
+                content.media
+            ),
+            extraction_confidence=(
+                content.extraction_confidence
+            ),
+            warnings=(
+                content.warnings
+            ),
+            metadata=(
+                content.metadata
+            ),
+        ),
+        None,
+    )
+
+# =========================================================
 # AUTOMATIC PERSIAN TRANSLATION REVIEW GATE
 # =========================================================
 
@@ -5401,6 +5619,89 @@ def handle_webhook() -> Tuple[
                             "external_publishable": False,
                         }, 200
 
+                    # =====================================
+                    # AUTOMATIC PERSIAN TRANSLATION
+                    # =====================================
+                    #
+                    # Non-Persian extracted content is translated
+                    # to Persian BEFORE the existing External
+                    # Review is created. The External Review stays
+                    # the only preview. Clearly foreign content
+                    # that cannot be translated/validated fails
+                    # closed and never reaches review or
+                    # publication raw.
+                    # =====================================
+
+                    external_preview_content = (
+                        external_resolution
+                        .content
+                    )
+
+                    try:
+
+                        translated, (
+                            translation_block_reason
+                        ) = (
+                            translate_external_content_to_persian(
+                                content=(
+                                    external_preview_content
+                                ),
+                            )
+                        )
+
+                    except Exception as exc:
+
+                        logger.exception(
+                            (
+                                f"[{req_id}] ❌ External "
+                                "content translation "
+                                f"failed | {exc}"
+                            )
+                        )
+
+                        translated = None
+
+                        translation_block_reason = (
+                            "external_translation_exception"
+                        )
+
+                    if translated is None:
+
+                        send_message(
+                            chat_id,
+                            (
+                                "❌ این خبر به فارسی نبود و "
+                                "ترجمه خودکار آن کامل نشد؛ "
+                                "بنابراین بررسی ایجاد نشد "
+                                "و محتوای خام منتشر "
+                                "نمی‌شود."
+                            ),
+                        )
+
+                        logger.warning(
+                            (
+                                f"[{req_id}] ⚠️ "
+                                "EXTERNAL-TRANSLATION-BLOCKED | "
+                                "reason="
+                                f"{translation_block_reason}"
+                            )
+                        )
+
+                        return {
+                            "ok": True,
+                            "external_content": True,
+                            "external_resolved": True,
+                            "external_translated": False,
+                            "reason": (
+                                translation_block_reason
+                                or "external_translation_blocked"
+                            ),
+                        }, 200
+
+                    external_preview_content = (
+                        translated
+                    )
+
                     external_review_id = (
                         uuid4().hex
                     )
@@ -5413,8 +5714,7 @@ def handle_webhook() -> Tuple[
                         review_id=external_review_id,
                         chat_id=chat_id,
                         content=(
-                            external_resolution
-                            .content
+                            external_preview_content
                         ),
                         replace_existing=True,
                     )
@@ -5457,8 +5757,7 @@ def handle_webhook() -> Tuple[
                                 external_review_id
                             ),
                             content=(
-                                external_resolution
-                                .content
+                                external_preview_content
                             ),
                             preview=(
                                 external_preview
