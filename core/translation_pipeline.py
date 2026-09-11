@@ -782,6 +782,7 @@ def _quality_check(
     source_language: str,
     target_language: str,
     semantic_quality: bool,
+    editorial_instruction: str = "",
 ) -> Any:
 
     try:
@@ -820,6 +821,16 @@ def _quality_check(
                 "unavailable | %s",
                 exc,
             )
+
+    if quality_provider is not None and editorial_instruction:
+        base_quality_provider = quality_provider
+
+        def quality_provider(**kwargs):
+            kwargs["instruction"] = (
+                str(kwargs.get("instruction", ""))
+                + "\n\n" + editorial_instruction
+            )
+            return _call_supported(base_quality_provider, **kwargs)
 
     try:
 
@@ -1312,6 +1323,7 @@ def run_translation_pipeline(
     manual_target_language: str = "",
     semantic_quality: bool = True,
     quality_retries: int = 1,
+    editorial_policy: Any = None,
 ) -> TranslationPipelineResult:
     """
     Shared multilingual Translation Pipeline.
@@ -1327,6 +1339,8 @@ def run_translation_pipeline(
         TranslationPolicy decision
             ↓
         Translation Service
+            ↓
+        explicit editorial terminology policy
             ↓
         deterministic validation
             ↓
@@ -1968,6 +1982,35 @@ def run_translation_pipeline(
             )
 
         # =================================================
+        # EDITORIAL HOUSE STYLE (before quality, never after human edits)
+        # =================================================
+        try:
+            from core.translation_editorial_policy import (
+                PERSIAN_NEWSROOM_POLICY,
+                apply_editorial_translation_policy,
+            )
+            editorial_result = apply_editorial_translation_policy(
+                source_text=original_text,
+                translated_text=candidate,
+                target_language=target_language,
+                policy=(editorial_policy if editorial_policy is not None else PERSIAN_NEWSROOM_POLICY),
+            )
+            if editorial_result.blocked or not editorial_result.output_text.strip():
+                raise ValueError(editorial_result.reason or "editorial_policy_blocked")
+        except Exception:
+            logger.exception("EDITORIAL-TRANSLATION-POLICY failed")
+            return TranslationPipelineResult(
+                success=False, status=PIPELINE_BLOCKED, blocked=True, output_text="",
+                original_text=original_text, source_language=source_language,
+                target_language=target_language, detection=detection,
+                provider_detection=provider_detection, decision=decision,
+                translation_result=translation_result,
+                reason="editorial_policy_failed", attempts=attempts, warnings=warnings,
+            )
+
+        candidate = editorial_result.output_text
+
+        # =================================================
         # QUALITY
         # =================================================
 
@@ -1992,6 +2035,7 @@ def run_translation_pipeline(
                 semantic_quality=(
                     semantic_quality
                 ),
+                editorial_instruction=editorial_result.quality_instruction,
             )
         )
 
@@ -2155,6 +2199,10 @@ def run_translation_pipeline(
         # SUCCESS
         # =================================================
 
+        requires_review = requires_review or editorial_result.requires_review
+        if editorial_result.requires_review:
+            warnings.append("editorial_policy_review_required")
+
         final_status = (
             PIPELINE_REVIEW_REQUIRED
             if requires_review
@@ -2221,7 +2269,7 @@ def run_translation_pipeline(
             blocked=False,
 
             reason=(
-                "translation_ready"
+                editorial_result.reason or "translation_ready"
             ),
 
             attempts=attempts,
@@ -2240,6 +2288,12 @@ def run_translation_pipeline(
 
                 "semantic_quality":
                     semantic_quality,
+                "editorial_policy": {
+                    "status": editorial_result.status,
+                    "matched_rules": list(editorial_result.matched_rules),
+                    "normalized_rules": list(editorial_result.normalized_rules),
+                    "reason": editorial_result.reason,
+                },
             },
         )
 
@@ -2297,6 +2351,7 @@ def run_manual_translation_pipeline(
     content_kind: str = "text",
     semantic_quality: bool = True,
     quality_retries: int = 1,
+    editorial_policy: Any = None,
 ) -> TranslationPipelineResult:
     """
     Manual 🌐 Translation always uses explicit target
@@ -2326,6 +2381,7 @@ def run_manual_translation_pipeline(
             quality_retries=(
                 quality_retries
             ),
+            editorial_policy=editorial_policy,
         )
     )
 
