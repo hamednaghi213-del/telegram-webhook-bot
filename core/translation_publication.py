@@ -472,6 +472,21 @@ def build_translation_publication_payload(
             )
         )
 
+    forward_source = metadata.get("forward_source")
+    if isinstance(forward_source, dict) and (
+        forward_source.get("source_title")
+        or forward_source.get("source_username")
+    ):
+        from core.formatter import remove_source_signature
+
+        # Reuse only shared source cleanup: full formatting would remove
+        # body URLs and could rewrite the user's confirmed translation.
+        final_text = remove_source_signature(
+            final_text,
+            source_title=forward_source.get("source_title"),
+            source_username=forward_source.get("source_username"),
+        )
+
     return {
         "main_text":
             final_text,
