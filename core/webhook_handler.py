@@ -4489,6 +4489,11 @@ def translate_external_content_to_persian(
     if source_language == "fa":
         return content, None
 
+    if str(source_language).strip().lower() in {
+        "", "auto", "unknown", "und", "uncertain",
+    }:
+        return None, "source_language_uncertain"
+
     policy = (
         build_multilingual_policy(
             destination_language="fa",
