@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -430,6 +431,37 @@ Return ONLY the required valid JSON object.
 # GEMINI QUALITY PROVIDER
 # =========================================================
 
+def _post_quality_request(endpoint, *, api_key, payload, timeout, model):
+    for attempt in range(3):
+        try:
+            response = requests.post(
+                endpoint,
+                params={"key": api_key},
+                json=payload,
+                # Keep retries short even when the initial request times out.
+                timeout=timeout if attempt == 0 else min(timeout, 10),
+            )
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            if isinstance(exc, (requests.exceptions.SSLError, requests.exceptions.ProxyError)):
+                raise
+            if attempt == 2:
+                raise
+            category = type(exc).__name__
+        else:
+            if response.status_code not in {429, 500, 502, 503, 504} or attempt == 2:
+                return response
+            category = f"http_{response.status_code}"
+            response.close()
+
+        delay = 2 ** attempt
+        logger.warning(
+            "TRANSLATION-QUALITY-RETRY | provider=gemini | model=%s | "
+            "attempt=%s/3 | category=%s | delay=%ss",
+            model, attempt + 2, category, delay,
+        )
+        time.sleep(delay)
+
+
 def gemini_translation_quality_provider(
     *,
     text: str,
@@ -519,14 +551,12 @@ def gemini_translation_quality_provider(
 
     try:
 
-        response = requests.post(
+        response = _post_quality_request(
             endpoint,
-            params={
-                "key":
-                    api_key
-            },
-            json=payload,
+            api_key=api_key,
+            payload=payload,
             timeout=timeout,
+            model=model,
         )
 
     except requests.Timeout as exc:
