@@ -581,6 +581,16 @@ def remove_source_signature(
 
     removable_indexes = set()
 
+    def source_url_candidate(line: str) -> str:
+        value = normalize_invisible_characters(line).strip()
+        # Recognize a URL displayed as its own Markdown link, but only for
+        # the contextual footer checks below. Do not rewrite body content.
+        linked_url = re.fullmatch(
+            r"\[(https?://[^\s\[\]]+)\]\(\1\)",
+            value,
+        )
+        return linked_url.group(1) if linked_url else value
+
     standalone_source_url_pattern = re.compile(
         r"\s*(?:https?://|www\.)"
         r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
@@ -659,7 +669,7 @@ def remove_source_signature(
             final_index = non_empty_indexes[-1]
 
             if standalone_source_url_pattern.fullmatch(
-                normalize_invisible_characters(
+                source_url_candidate(
                     lines[final_index]
                 )
             ):
@@ -783,7 +793,7 @@ def remove_source_signature(
                             # same footer (e.g. asriran.com + @MyAsriran).
                             bool(
                                 adjacent_source_domain_pattern.fullmatch(
-                                    normalize_invisible_characters(
+                                    source_url_candidate(
                                         candidate
                                     )
                                 )
