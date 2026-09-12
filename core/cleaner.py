@@ -381,7 +381,7 @@ def leading_headline_decoration(text: str) -> str:
     return ""
 
 
-def remove_all_emojis(text: str) -> str:
+def remove_all_emojis(text: str, *, preserve_headline_decoration: bool = True) -> str:
     """
     Emojiهای منبع حذف می‌شوند.
 
@@ -402,7 +402,7 @@ def remove_all_emojis(text: str) -> str:
         headline_marker += "X"
     for index, line in enumerate(lines):
         if line.strip():
-            headline_prefix = leading_headline_decoration(line)
+            headline_prefix = leading_headline_decoration(line) if preserve_headline_decoration else ""
             if headline_prefix:
                 lines[index] = line.replace(headline_prefix, headline_marker, 1)
                 text = "\n".join(lines)
@@ -1209,7 +1209,9 @@ def clean_all_trailing_content(
 # =========================================================
 
 def clean_text(
-    text: str
+    text: str,
+    *,
+    preserve_headline_decoration: bool = True,
 ) -> str:
     """
     پاکسازی کامل متن خبری.
@@ -1254,7 +1256,7 @@ def clean_text(
     # =====================================================
 
     text = remove_all_emojis(
-        text
+        text, preserve_headline_decoration=preserve_headline_decoration,
     )
 
     logger.debug(

@@ -201,17 +201,28 @@ class PublicationPlan:
         }
 
 
-def _first_line_headline(text: str) -> str:
+def _first_line_headline(
+    text: str,
+    source_entities: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     lines = str(text or "").splitlines()
     for line in lines:
         value = line.strip()
         if not value:
             continue
-        decorated = bool(leading_headline_decoration(value))
-        # A decorated news title is explicit enough for headline-only input.
-        # Keep the existing multiline heuristic for unmarked text.
-        if len(lines) < 2 and not decorated:
-            return ""
+        decoration = leading_headline_decoration(value)
+        decorated = bool(decoration)
+        # An icon alone is not headline evidence. For a single content line,
+        # require existing bold formatting covering all of its title wording.
+        # Source bold may omit the icon; the final range includes it below.
+        if sum(bool(line.strip()) for line in lines) < 2:
+            wording = value[len(decoration):].strip() if decorated else value
+            if not any(
+                entity.get("type") == "bold"
+                and str(entity.get("text") or "").strip() in {value, wording}
+                for entity in (source_entities or [])
+            ):
+                return ""
         if not decorated and unicodedata.category(value[0])[0] not in {"L", "N"}:
             return ""
         return value
@@ -549,7 +560,7 @@ def clean_blockquote_text(
     try:
 
         return normalize_text(
-            clean_text(text)
+            clean_text(text, preserve_headline_decoration=False)
         )
 
     except Exception as e:
@@ -4447,7 +4458,7 @@ def analyze_content(
 
     _bold_headlines_in_plan(
         plan,
-        headline=_first_line_headline(main_text),
+        headline=_first_line_headline(main_text, other_entities),
     )
 
     telegram_caption = (

@@ -1681,9 +1681,12 @@ def test_text_message_preserves_own_branding():
         + expected_branding
     )
 
+    # Telegram renders the valid multiline headline in bold, including its icon.
+    # Destination branding and the shared Bale plain-text output stay unchanged.
+    headline = expected_formatted.splitlines()[0]
     mock_telegram.assert_called_once_with(
-        expected_output,
-        parse_mode=None
+        expected_output.replace(headline, f"<b>{headline}</b>", 1),
+        parse_mode="HTML"
     )
 
     fake_bale_module.send_to_bale_for_user.assert_called_once_with(

@@ -182,7 +182,9 @@ def test_expandable_blockquote_removes_foreign_emoji():
 
     assert "hashtag" not in entity_types
     assert "mention" not in entity_types
-    assert len(entities) == 1
+    assert len(entities) == 2
+    assert entities[0] == {"type": "bold", "offset": 0,
+                           "length": len(main_text.splitlines()[0].encode("utf-16-le")) // 2}
 
     expandable_entity = next(
         (
@@ -438,7 +440,7 @@ def test_long_text_compact_mode_avoids_unnecessary_split():
 
     assert (
         final_message.startswith(
-            "❇️ گزارش تحولات سیاسی"
+            "<b>❇️ گزارش تحولات سیاسی</b>"
         )
     )
 
@@ -449,7 +451,7 @@ def test_long_text_compact_mode_avoids_unnecessary_split():
     )
 
     assert (
-        "❇️ گزارش تحولات سیاسی\n\n"
+        "<b>❇️ گزارش تحولات سیاسی</b>\n\n"
         in final_message
     )
 
@@ -578,16 +580,13 @@ def test_single_media_compact_avoids_followup_when_compact_fits():
 
     # =====================================================
     # THIS NEWS HAS NO SOURCE BLOCKQUOTE
-    # SO ENTITY MODE MUST NOT BE CREATED
+    # ONLY THE VALID NEWS HEADLINE SHOULD HAVE A BOLD ENTITY
     # =====================================================
 
-    assert (
-        telegram.get(
-            "media_caption_entities",
-            []
-        )
-        == []
-    )
+    assert telegram["media_caption_entities"] == [{
+        "type": "bold", "offset": 0,
+        "length": len(title.encode("utf-16-le")) // 2,
+    }]
 
     # =====================================================
     # LEGACY HTML POSSIBILITY

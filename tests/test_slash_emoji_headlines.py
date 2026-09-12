@@ -37,8 +37,13 @@ def test_original_decoration_survives_formatting_and_full_utf16_bold(icon, body)
     headline = icon + " تیتر خبر"
     formatted = format_news(headline + body)
     assert formatted.splitlines()[0] == headline
-    assert _first_line_headline(formatted) == headline
-    plan = analyze_content(main_text=formatted, branding="")
+    # A one-line title requires source headline formatting, not just an icon.
+    entities = [] if body else [{
+        "type": "bold", "text": "تیتر خبر", "offset": units(icon + " "),
+        "length": units("تیتر خبر"),
+    }]
+    assert _first_line_headline(formatted, entities) == headline
+    plan = analyze_content(main_text=formatted, branding="", other_entities=entities)
     assert {"type": "bold", "offset": 0, "length": units(headline)} in plan.telegram["media_caption_entities"]
     assert f"<b>{headline}</b>" in plan.text["telegram"]["messages"][0]
 
@@ -48,7 +53,8 @@ def test_body_emoji_cleanup_and_plain_title_default_remain():
     assert format_news("تیتر خبر").startswith("❇️ تیتر خبر")
 
 
-@pytest.mark.parametrize("text", ["---", "🟢 ⚡", "***\nمتن", "پیام ساده"])
+@pytest.mark.parametrize("text", ["---", "🟢 ⚡", "***\nمتن", "پیام ساده",
+                                 "🟢 پیام ساده", "❇️ متن فارسی خبر", "\n🟢 پیام ساده\n"])
 def test_non_headlines_remain_unclassified(text):
     assert _first_line_headline(text) == ""
 

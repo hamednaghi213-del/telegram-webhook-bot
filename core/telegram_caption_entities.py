@@ -99,7 +99,7 @@ def normalize_block_text(
     try:
 
         cleaned = clean_text(
-            text
+            text, preserve_headline_decoration=False,
         )
 
         return normalize_text(

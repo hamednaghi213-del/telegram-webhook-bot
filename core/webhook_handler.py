@@ -3199,7 +3199,7 @@ def try_queue_editorial_text_review(
 
         keyboard = (
             build_editorial_keyboard(
-                failure_reason=pending.metadata.get("summary_failure_reason", ""),
+                failure_reason=(getattr(pending, "metadata", None) or {}).get("summary_failure_reason", ""),
                 review_id=(
                     pending.review_id
                 ),
@@ -3215,7 +3215,7 @@ def try_queue_editorial_text_review(
 
         preview = (
             build_editorial_preview(
-                failure_reason=pending.metadata.get("summary_failure_reason", ""),
+                failure_reason=(getattr(pending, "metadata", None) or {}).get("summary_failure_reason", ""),
                 content_type=(
                     pending.content_type
                 ),

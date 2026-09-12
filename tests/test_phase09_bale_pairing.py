@@ -124,5 +124,5 @@ def test_workspace_publication_replaces_source_icons_with_confirmed_style(monkey
 
     assert result["success"] == 1
     assert captured["text"] == (
-        "🟢 تیتر منبع\n\n🔵 بند اول\n\n🔵 بند دوم\n\n#رسانه\n@media"
+        "<b>🟢 تیتر منبع</b>\n\n🔵 بند اول\n\n🔵 بند دوم\n\n#رسانه\n@media"
     )

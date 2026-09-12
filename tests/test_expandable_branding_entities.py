@@ -87,8 +87,7 @@ def test_ltr_expandable_branding_retains_explicit_clickable_entities():
     entities = plan.telegram["media_caption_entities"]
 
     assert [entity["type"] for entity in entities] == [
-        "bold", "expandable_blockquote", "hashtag", "mention"
+        "expandable_blockquote", "hashtag", "mention"
     ]
-    assert _utf16_entity_text(caption, entities[0]) == "❇️ خبر"
-    assert _utf16_entity_text(caption, entities[2]) == hashtag
-    assert _utf16_entity_text(caption, entities[3]) == mention
+    assert _utf16_entity_text(caption, entities[1]) == hashtag
+    assert _utf16_entity_text(caption, entities[2]) == mention

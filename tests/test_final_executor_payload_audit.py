@@ -101,7 +101,9 @@ def test_final_executor_payload_preserves_expandable_branding_entities(
     assert caption == plan["media_caption"]
     assert entities == plan["media_caption_entities"]
     assert "parse_mode" not in final_item
+    # Valid multiline headlines now carry icon-inclusive bold formatting.
     assert decoded == [
+        ("bold", MAIN_TEXT.splitlines()[0]),
         ("expandable_blockquote", EXPANDABLE_TEXT),
     ]
     assert HASHTAG in caption
@@ -138,7 +140,8 @@ def test_executor_payload_comparison_without_expandable(monkeypatch):
     assert expandable["caption"].endswith(BRANDING)
     assert normal["caption"].endswith(BRANDING)
     assert expandable["caption_entities"] == expandable_plan["media_caption_entities"]
-    assert "caption_entities" not in normal
+    assert [(e["type"], _utf16_slice(normal["caption"], e))
+            for e in normal["caption_entities"]] == [("bold", MAIN_TEXT.splitlines()[0])]
     assert "parse_mode" not in expandable
     assert "parse_mode" not in normal
 
@@ -162,7 +165,9 @@ def test_expandable_english_branding_keeps_explicit_entities(monkeypatch):
         for entity in payload["caption_entities"]
     ]
 
+    # Valid multiline headlines now carry icon-inclusive bold formatting.
     assert decoded == [
+        ("bold", MAIN_TEXT.splitlines()[0]),
         ("expandable_blockquote", EXPANDABLE_TEXT),
         ("hashtag", english_hashtag),
         ("mention", MENTION),
