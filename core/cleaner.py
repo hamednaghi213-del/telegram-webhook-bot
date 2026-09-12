@@ -1,5 +1,6 @@
 import re
 import logging
+import unicodedata
 
 logger = logging.getLogger(__name__)
 
@@ -361,6 +362,25 @@ def normalize_blank_lines(
 # REMOVE ALL EMOJIS
 # =========================================================
 
+def leading_headline_decoration(text: str) -> str:
+    """Return only a symbol-leading prefix followed by actual headline text.
+
+    Unicode categories retain joined emoji, modifiers and variation selectors
+    without an icon allowlist. Commands, handles and punctuation-only lines
+    do not qualify.
+    """
+    value = str(text or "").strip()
+    if not value or unicodedata.category(value[0])[0] != "S":
+        return ""
+    for index, character in enumerate(value):
+        category = unicodedata.category(character)[0]
+        if category in {"L", "N"}:
+            return value[:index]
+        if category not in {"S", "M", "Z", "C", "P"}:
+            return ""
+    return ""
+
+
 def remove_all_emojis(text: str) -> str:
     """
     Emojiهای منبع حذف می‌شوند.
@@ -373,6 +393,20 @@ def remove_all_emojis(text: str) -> str:
 
     if not text:
         return ""
+
+    # Preserve only the first content line's leading headline decoration.
+    lines = text.splitlines()
+    headline_prefix = ""
+    headline_marker = "D24LEADINGDECORATIONTOKEN"
+    while headline_marker in text:
+        headline_marker += "X"
+    for index, line in enumerate(lines):
+        if line.strip():
+            headline_prefix = leading_headline_decoration(line)
+            if headline_prefix:
+                lines[index] = line.replace(headline_prefix, headline_marker, 1)
+                text = "\n".join(lines)
+            break
 
     title_placeholder = (
         "[[DONYA24_TITLE_MARK]]"
@@ -416,6 +450,9 @@ def remove_all_emojis(text: str) -> str:
         bullet_placeholder,
         "🔹"
     )
+
+    if headline_prefix:
+        text = text.replace(headline_marker, headline_prefix, 1)
 
     return normalize_spaces(
         text
@@ -759,18 +796,6 @@ def clean_media_footer(
         return ""
 
     text = re.sub(
-        r'/\s*[^\s/]+\s+[A-Za-z]+\.?\s*$',
-        '',
-        text
-    )
-
-    text = re.sub(
-        r'/\s*[^\s/]+\.?\s*$',
-        '',
-        text
-    )
-
-    text = re.sub(
         r'[A-Za-z]+\.[A-Za-z]*\s*$',
         '',
         text
@@ -1000,12 +1025,6 @@ def clean_all_trailing_content(
     # =====================================================
     # GENERIC FOOTER
     # =====================================================
-
-    text = re.sub(
-        r'/\s*[^\s/]+\s*\.?\s*$',
-        '',
-        text
-    )
 
     text = re.sub(
         r'[A-Za-z]+\.\s*$',

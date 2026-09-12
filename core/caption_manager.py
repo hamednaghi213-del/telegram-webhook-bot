@@ -5,13 +5,14 @@ import os
 import re
 import unicodedata
 from html import escape, unescape
+from html.parser import HTMLParser
 from typing import Dict, List, Optional, Any, Tuple
 
 from core.content_entities import (
     build_blockquote_html,
     build_utf16_positions,
 )
-from core.cleaner import clean_text
+from core.cleaner import clean_text, leading_headline_decoration
 
 from core.telegram_caption_entities import (
     build_telegram_caption_entities
@@ -202,15 +203,18 @@ class PublicationPlan:
 
 def _first_line_headline(text: str) -> str:
     lines = str(text or "").splitlines()
-    if len(lines) < 2:
-        return ""
     for line in lines:
         value = line.strip()
-        if value:
-            first_character = value[0]
-            if not unicodedata.category(first_character)[0] in {"L", "N"}:
-                return ""
-            return value
+        if not value:
+            continue
+        decorated = bool(leading_headline_decoration(value))
+        # A decorated news title is explicit enough for headline-only input.
+        # Keep the existing multiline heuristic for unmarked text.
+        if len(lines) < 2 and not decorated:
+            return ""
+        if not decorated and unicodedata.category(value[0])[0] not in {"L", "N"}:
+            return ""
+        return value
     return ""
 
 
@@ -248,12 +252,22 @@ def _ensure_telegram_headline_bold_entity(
     length = positions[start + len(headline)] - offset
     result = list(entities or [])
 
-    if _has_covering_bold_entity(
-        result,
-        offset=offset,
-        length=length,
-    ):
-        return result
+    # Union overlapping bold ranges, retaining all other entity types.
+    end = offset + length
+    changed = True
+    while changed:
+        changed = False
+        remaining = []
+        for entity in result:
+            left = int(entity.get("offset") or 0)
+            right = left + int(entity.get("length") or 0)
+            if entity.get("type") == "bold" and left < end and right > offset:
+                offset, end = min(offset, left), max(end, right)
+                changed = True
+            else:
+                remaining.append(entity)
+        result = remaining
+    length = end - offset
 
     result.append(
         {
@@ -269,6 +283,60 @@ def _ensure_telegram_headline_bold_entity(
         )
     )
     return result
+
+
+def _bold_html_headline(message: str, headline: str) -> str:
+    """Add bold inside existing markup without crossing any tag boundaries."""
+    class HeadlineParser(HTMLParser):
+        def __init__(self, span=None):
+            super().__init__(convert_charrefs=False)
+            self.span = span
+            self.position = 0
+            self.bold = 0
+            self.parts = []
+            self.visible = []
+
+        def handle_starttag(self, tag, attrs):
+            self.parts.append(self.get_starttag_text())
+            if tag in {"b", "strong"}:
+                self.bold += 1
+
+        def handle_endtag(self, tag):
+            self.parts.append("</" + tag + ">")
+            if tag in {"b", "strong"}:
+                self.bold = max(0, self.bold - 1)
+
+        def handle_startendtag(self, tag, attrs):
+            self.parts.append(self.get_starttag_text())
+
+        def handle_data(self, data):
+            self.visible.append(data)
+            start = self.position
+            self.position += len(data)
+            if self.span and not self.bold:
+                left = max(0, self.span[0] - start)
+                right = min(len(data), self.span[1] - start)
+                if left < right:
+                    self.parts.extend((escape(data[:left]), "<b>", escape(data[left:right]),
+                                       "</b>", escape(data[right:])))
+                    return
+            self.parts.append(escape(data))
+
+        def handle_entityref(self, name):
+            self.handle_data(unescape("&" + name + ";"))
+
+        def handle_charref(self, name):
+            self.handle_data(unescape("&#" + name + ";"))
+
+    probe = HeadlineParser()
+    probe.feed(message)
+    visible = "".join(probe.visible)
+    start = visible.find(headline)
+    if start < 0:
+        return message
+    rendered = HeadlineParser((start, start + len(headline)))
+    rendered.feed(message)
+    return "".join(rendered.parts)
 
 
 def _bold_headlines_in_plan(
@@ -296,6 +364,11 @@ def _bold_headlines_in_plan(
             )
         )
 
+    elif plan.telegram.get("media_caption") and plan.telegram.get("media_parse_mode") == "HTML":
+        plan.telegram["media_caption"] = _bold_html_headline(
+            plan.telegram["media_caption"], headline,
+        )
+
     messages = list(
         plan.text.get("telegram", {}).get("messages")
         or []
@@ -318,32 +391,10 @@ def _bold_headlines_in_plan(
             )
 
         if modes[index] == "HTML":
-            # The message already carries HTML markup (for example a
-            # combined caption with inline blockquotes). The headline
-            # is present in its escaped form here, and must not be
-            # escaped a second time.
-            already_bold = (
-                f"<b>{escaped_headline}</b>"
-                in message_str
-            )
-
-            if (
-                escaped_headline
-                and escaped_headline in message_str
-                and not already_bold
-            ):
-                messages[index] = message_str.replace(
-                    escaped_headline,
-                    f"<b>{escaped_headline}</b>",
-                    1,
-                )
+            updated = _bold_html_headline(message_str, headline)
+            messages[index] = updated
+            if updated != message_str or headline in unescape(re.sub(r"<[^>]*>", "", message_str)):
                 break
-
-            if headline and headline in message_str:
-                # Headline already present (bold or otherwise
-                # accounted for) in this HTML message.
-                break
-
             continue
 
         if headline not in message_str:

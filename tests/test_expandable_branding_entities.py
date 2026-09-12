@@ -38,8 +38,9 @@ def test_persian_expandable_media_branding_uses_safe_bidi_boundary():
     branding = "#دنیا_۲۴_نیوز\n@Donya24News"
 
     assert validate_caption_entities(caption, entities)
-    assert [entity["type"] for entity in entities] == ["expandable_blockquote"]
-    assert _utf16_entity_text(caption, entities[0]) == expandable
+    assert [entity["type"] for entity in entities] == ["bold", "expandable_blockquote"]
+    assert _utf16_entity_text(caption, entities[0]) == "❇️ تیتر فارسی"
+    assert _utf16_entity_text(caption, entities[1]) == expandable
     assert caption.endswith(f"{expandable}\n\n{branding}")
     assert caption.count("#دنیا_۲۴_نیوز") == 1
     assert caption.count("@Donya24News") == 1
@@ -65,7 +66,7 @@ def test_expandable_branding_matches_normal_visible_paragraph_boundary():
 def test_expandable_entity_stops_before_branding_separator():
     plan = _persian_expandable_plan()
     caption = plan.telegram["media_caption"]
-    entity = plan.telegram["media_caption_entities"][0]
+    entity = next(e for e in plan.telegram["media_caption_entities"] if e["type"] == "expandable_blockquote")
     end = entity["offset"] + entity["length"]
     encoded = caption.encode("utf-16-le")
 
@@ -86,7 +87,8 @@ def test_ltr_expandable_branding_retains_explicit_clickable_entities():
     entities = plan.telegram["media_caption_entities"]
 
     assert [entity["type"] for entity in entities] == [
-        "expandable_blockquote", "hashtag", "mention"
+        "bold", "expandable_blockquote", "hashtag", "mention"
     ]
-    assert _utf16_entity_text(caption, entities[1]) == hashtag
-    assert _utf16_entity_text(caption, entities[2]) == mention
+    assert _utf16_entity_text(caption, entities[0]) == "❇️ خبر"
+    assert _utf16_entity_text(caption, entities[2]) == hashtag
+    assert _utf16_entity_text(caption, entities[3]) == mention

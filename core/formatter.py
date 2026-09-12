@@ -3,7 +3,7 @@ import re
 import unicodedata
 from typing import Optional, List
 
-from core.cleaner import clean_text
+from core.cleaner import clean_text, leading_headline_decoration
 
 logger = logging.getLogger(__name__)
 
@@ -991,16 +991,6 @@ def normalize_title(
 
     value = title.strip()
 
-    if value.startswith(
-        TITLE_ICON
-    ):
-        value = (
-            value[
-                len(TITLE_ICON):
-            ]
-            .strip()
-        )
-
     return value
 
 
@@ -1072,7 +1062,7 @@ def format_news(
         title_index + 1:
     ]
 
-    result = f"{TITLE_ICON} {title}"
+    result = title if leading_headline_decoration(title) else f"{TITLE_ICON} {title}"
 
     if body_lines:
         current_paragraph = []
