@@ -318,25 +318,6 @@ def _state_from_row(
         or ""
     )
 
-    # Manual edit becomes the effective translation.
-    #
-    # This keeps the existing Controller contract:
-    #
-    #     state.translated_text
-    #
-    # always represents the content that will be confirmed.
-    if edited_text:
-
-        effective_translation = (
-            edited_text
-        )
-
-    else:
-
-        effective_translation = (
-            translated_text
-        )
-
     return TranslationState(
         review_id=str(
             row.get(
@@ -387,7 +368,7 @@ def _state_from_row(
         ),
 
         translated_text=(
-            effective_translation
+            translated_text
         ),
 
         edited_text=(
@@ -992,12 +973,20 @@ def mark_waiting_custom_language(
 # SET LANGUAGE / MARK TRANSLATING
 # =========================================================
 
+def translation_retry_available(state: Optional[TranslationState]) -> bool:
+    """Only an explicitly deferred provider failure can restart a failed review."""
+    return bool(state and state.status == STATE_FAILED
+                and state.metadata.get("translation_retry_available") is True
+                and state.original_text.strip() and state.target_language)
+
+
 def set_translation_language(
     review_id: str,
     *,
     target_language: str,
     target_language_code: str = "",
     restart_preview: bool = False,
+    retry_failed: bool = False,
 ) -> Optional[
     TranslationState
 ]:
@@ -1008,6 +997,15 @@ def set_translation_language(
 
     if state is None:
         return None
+
+    if retry_failed:
+        if not translation_retry_available(state):
+            return None
+        # Claim this failed review atomically; a second click cannot restart it.
+        return _state_from_row(_database().update_persistent_translation_review(
+            review_id, status=STATE_TRANSLATING, expected_status=STATE_FAILED,
+            metadata={"translation_retry_available": False},
+        ))
 
     if state.status not in {
         STATE_WAITING_LANGUAGE,
@@ -1235,8 +1233,7 @@ def apply_translation_edit(
 
         # Keep machine translation in translated_text DB column.
         #
-        # edited_text becomes effective translated_text when the
-        # row is reconstructed as TranslationState.
+        # Consumers choose edited_text explicitly; machine output stays intact.
         edited_text=text,
 
         metadata=metadata,

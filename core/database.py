@@ -3896,6 +3896,7 @@ def update_persistent_translation_review(
     review_id: str,
     *,
     status: Optional[str] = None,
+    expected_status: Optional[str] = None,
     source_language: Optional[str] = None,
     target_language: Optional[str] = None,
     target_language_code: Optional[str] = None,
@@ -4137,7 +4138,7 @@ def update_persistent_translation_review(
     if not payload:
         return existing
 
-    result = (
+    query = (
         client
         .table(
             "translation_reviews"
@@ -4149,8 +4150,10 @@ def update_persistent_translation_review(
             "review_id",
             normalized_review_id,
         )
-        .execute()
     )
+    if expected_status is not None:
+        query = query.eq("status", _validate_persistent_translation_status(expected_status))
+    result = query.execute()
 
     rows = (
         result.data
@@ -4158,6 +4161,8 @@ def update_persistent_translation_review(
     )
 
     if not rows:
+        if expected_status is not None:
+            return None
         raise RuntimeError(
             "Persistent translation review update returned no row"
         )

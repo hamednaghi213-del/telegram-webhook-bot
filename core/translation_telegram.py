@@ -30,6 +30,7 @@ from core.translation_controller import (
     request_custom_translation_language,
     request_translation_edit,
     retranslate_translation,
+    retry_translation,
     select_translation_language,
     show_more_translation_languages,
     show_translation_language_menu,
@@ -46,6 +47,7 @@ from core.translation_state import (
     get_active_translation_state,
     get_translation_state,
     ACTIVE_STATES,
+    translation_retry_available,
 )
 
 from core.translation_ui import (
@@ -382,10 +384,7 @@ def render_translation_result(
             )
 
         if translated_text:
-            if getattr(state, "edited_text", ""):
-                parts.append("──────────\n" + translated_text + "\n──────────")
-            else:
-                parts.append(translated_text)
+            parts.append("──────────\n" + translated_text + "\n──────────")
 
         preview = "\n\n".join(
             part
@@ -458,6 +457,13 @@ def render_translation_result(
         RESULT_INVALID_LANGUAGE,
         RESULT_INVALID_STATE,
     }:
+
+        if action == RESULT_FAILED and translation_retry_available(getattr(result, "state", None)):
+            text = "⚠️ سرویس ترجمه موقتاً در دسترس نیست؛ محتوا منتشر نشد. بعداً دوباره تلاش کنید."
+            reply_markup = {"inline_keyboard": [[{
+                "text": "🔄 تلاش مجدد",
+                "callback_data": build_translation_callback("retry", review_id),
+            }]]}
 
         send_message(
             chat_id,
@@ -621,11 +627,14 @@ def handle_translation_telegram_callback(
         ACTION_CONFIRM, ACTION_EDIT, ACTION_ORIGINAL, ACTION_CANCEL,
         ACTION_RETRANSLATE, ACTION_RETRANSLATE_CONFIRM,
         "keepedit",
+        "retry",
     }
     if parsed.action in review_actions:
         review_id = parsed.value
         exact_state = get_translation_state(review_id) if review_id else None
         allowed = ACTIVE_STATES if parsed.action == ACTION_CANCEL else {"preview"}
+        if parsed.action == "retry":
+            allowed = {"failed"} if translation_retry_available(exact_state) else set()
         if (not review_id or callback_data != f"tr:{parsed.action}:{review_id}"
                 or exact_state is None or exact_state.review_id != review_id or exact_state.chat_id != chat_id
                 or exact_state.user_id != user_id or exact_state.status not in allowed):
@@ -826,6 +835,13 @@ def handle_translation_telegram_callback(
     # =====================================================
     # EDIT
     # =====================================================
+
+    if parsed.action == "retry":
+        answer_callback_query(callback_id, "تلاش مجدد از متن اصلی آغاز شد.")
+        send_message(chat_id, translation_ui_message("⏳ ترجمه از متن اصلی در حال آماده‌سازی است.", review_id))
+        result = retry_translation(review_id=review_id, chat_id=chat_id, user_id=user_id)
+        render_translation_result(result=result, chat_id=chat_id, send_message=send_message, review_id=review_id)
+        return result
 
     if parsed.action == "keepedit":
         answer_callback_query(callback_id, "اصلاح دستی حفظ شد.")

@@ -167,6 +167,8 @@ def _translated_text(
 ) -> str:
 
     return str(
+        _state_value(state, "edited_text", "")
+        or
         _state_value(
             state,
             "translated_text",

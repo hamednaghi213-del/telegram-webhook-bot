@@ -1696,7 +1696,7 @@ def handle_external_review_telegram_callback(
         source = decision.content
         source_metadata = {
             key: getattr(source, key) for key in
-            ("source_url", "canonical_url", "source_name", "author", "published_at")
+            ("source_url", "canonical_url", "source_name", "title", "author", "published_at")
             if getattr(source, key, None)
         }
         source_metadata["metadata"] = _plain_value(source.metadata or {})

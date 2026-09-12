@@ -42,6 +42,7 @@ from core.translation_state import (
     set_translation_language,
     set_translation_preview,
     translation_state_belongs_to,
+    translation_retry_available,
 )
 
 from core.translation_ui import (
@@ -806,6 +807,7 @@ def _execute_translation(
     target_language: str,
     target_language_code: str = "",
     restart_preview: bool = False,
+    retry_failed: bool = False,
 ) -> TranslationControllerResult:
     """
     Execute manual translation through the Shared Translation
@@ -836,6 +838,7 @@ def _execute_translation(
         set_translation_language(
             state.review_id,
             restart_preview=restart_preview,
+            **({"retry_failed": True} if retry_failed else {}),
             target_language=(
                 target_language
             ),
@@ -1009,6 +1012,13 @@ def _execute_translation(
             mark_translation_failed(
                 language_state.review_id,
                 reason=reason,
+                metadata={
+                    **pipeline_state_metadata,
+                    "translation_retry_available": bool(
+                        (pipeline_state_metadata.get("translation_pipeline_metadata") or {})
+                        .get("provider_failure", {}).get("deferred")
+                    ),
+                },
             )
         )
 
@@ -1381,6 +1391,22 @@ def submit_custom_translation_language(
 # EDIT TRANSLATION
 # =========================================================
 
+def retry_translation(*, review_id: str, chat_id: int, user_id: int) -> TranslationControllerResult:
+    state = get_translation_state(review_id)
+    security = _state_security_check(state, chat_id=chat_id, user_id=user_id)
+    if security:
+        return security
+    if not translation_retry_available(state):
+        return TranslationControllerResult(
+            success=False, action=RESULT_INVALID_STATE, review_id=review_id,
+            reason="translation_retry_not_allowed",
+        )
+    return _execute_translation(
+        state=state, target_language=state.target_language,
+        target_language_code=state.target_language_code, retry_failed=True,
+    )
+
+
 def retranslate_translation(*, review_id: str, chat_id: int, user_id: int,
                             replace_edit: bool = False) -> TranslationControllerResult:
     state = get_translation_state(review_id)
@@ -1459,7 +1485,7 @@ def request_translation_edit(
         ),
         review_id=review_id,
         translated_text=(
-            state.translated_text
+            state.edited_text or state.translated_text
         ),
         target_language=(
             state.target_language
@@ -1558,7 +1584,7 @@ def submit_translation_edit(
         ),
         review_id=updated.review_id,
         translated_text=(
-            updated.translated_text
+            updated.edited_text or updated.translated_text
         ),
         target_language=(
             updated.target_language
@@ -1628,7 +1654,7 @@ def confirm_translation(
         action=RESULT_CONFIRMED,
         review_id=confirmed.review_id,
         translated_text=(
-            confirmed.translated_text
+            confirmed.edited_text or confirmed.translated_text
         ),
         target_language=(
             confirmed.target_language

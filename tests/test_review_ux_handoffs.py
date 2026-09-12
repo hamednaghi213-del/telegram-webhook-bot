@@ -36,6 +36,7 @@ def test_edit_storage_render_and_payload(monkeypatch):
     assert result.success and row["status"] == "preview"
     assert row["original_text"] == "Original" and row["translated_text"] == "Machine"
     assert row["edited_text"] == edited
+    assert result.state.translated_text == "Machine" and result.state.edited_text == edited
     send = Mock()
     telegram.render_translation_result(result=result, chat_id=1, send_message=send)
     text = send.call_args.args[1]
@@ -94,7 +95,13 @@ def test_external_editorial_translation_metadata_chain(monkeypatch):
         source_url="https://source.example/article", canonical_url="https://source.example/canonical",
         title="عنوان خبر", lead="لید خبر", body="متن کامل خبر برای بررسی.", source_name="Source News",
         author="Author", published_at="2026-09-12", extraction_confidence=0.95,
+        media=(ExternalMedia(type="image", source_url="https://source.example/photo.jpg",
+                             width=640, metadata={"credit": "Source"}),),
         metadata={"forward_source": forward, "source_identity": "known"})
+    import core.external_media_factory as factory
+    files = [{"type": "photo", "file_id": "cached-photo"}]
+    materializer = SimpleNamespace(build_prepared_files=Mock(return_value=files))
+    monkeypatch.setattr(factory, "build_external_media_materializer", lambda **kwargs: materializer)
     external = ExternalReviewController(state_store=ExternalReviewStateStore())
     external.create_pending(review_id="external-review", chat_id=1, content=content)
     monkeypatch.setattr(webhook, "send_message", Mock(return_value=True))
@@ -122,7 +129,10 @@ def test_external_editorial_translation_metadata_chain(monkeypatch):
         "data": f"ed:translate:{review.review_id}"}, req_id="test")
     metadata = start.call_args.kwargs["metadata"]
     assert metadata["forward_source"] == forward
-    for key in ("source_url", "canonical_url", "source_name", "author", "published_at"):
+    assert metadata["files"] == files
+    assert metadata["source_metadata"]["media"][0]["width"] == 640
+    assert metadata["source_metadata"]["media"][0]["metadata"]["credit"] == "Source"
+    for key in ("source_url", "canonical_url", "source_name", "title", "author", "published_at"):
         assert metadata["source_metadata"][key] == getattr(content, key)
     assert metadata["source_metadata"]["metadata"] == content.metadata
     assert content.source_url not in start.call_args.kwargs["original_text"]

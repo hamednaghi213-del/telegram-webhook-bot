@@ -4707,6 +4707,7 @@ def try_automatic_persian_translation_gate(
         return send_message(
             chat_id,
             translation_ui_message(text, getattr(result, "review_id", "")),
+            link_preview_options={"is_disabled": True},
         )
 
     try:
@@ -4726,7 +4727,7 @@ def try_automatic_persian_translation_gate(
             start_automatic_persian_translation_review(
                 chat_id=chat_id,
                 user_id=chat_id,
-                original_text=source_text,
+                original_text=str(text or ""),
                 source_kind=source_kind,
                 source_key=source_key,
                 metadata={

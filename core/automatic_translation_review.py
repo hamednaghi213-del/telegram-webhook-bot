@@ -442,7 +442,7 @@ def start_automatic_persian_translation_review(
     content = str(
         original_text
         or ""
-    ).strip()
+    )
 
     decision = (
         automatic_translation_required(
