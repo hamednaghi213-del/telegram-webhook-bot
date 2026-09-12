@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import requests
+from core.ai_runtime import provider_post, timed_stage
 
 
 logger = logging.getLogger(__name__)
@@ -545,6 +546,7 @@ def _strip_json_fence(
 # PROVIDER
 # =========================================================
 
+@timed_stage("language_detection_provider", provider="gemini", model=get_language_detection_model)
 def detect_language_with_gemini(
     text: str,
 ) -> ProviderLanguageDetectionResult:
@@ -619,7 +621,7 @@ def detect_language_with_gemini(
 
     try:
 
-        response = requests.post(
+        response = provider_post(
             endpoint,
             params={
                 "key":

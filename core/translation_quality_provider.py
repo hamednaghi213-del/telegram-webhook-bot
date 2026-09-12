@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import requests
+from core.ai_runtime import provider_post, timed_stage
 
 
 logger = logging.getLogger(__name__)
@@ -434,7 +435,7 @@ Return ONLY the required valid JSON object.
 def _post_quality_request(endpoint, *, api_key, payload, timeout, model):
     for attempt in range(3):
         try:
-            response = requests.post(
+            response = provider_post(
                 endpoint,
                 params={"key": api_key},
                 json=payload,
@@ -462,6 +463,7 @@ def _post_quality_request(endpoint, *, api_key, payload, timeout, model):
         time.sleep(delay)
 
 
+@timed_stage("translation_quality", provider="gemini", model=get_translation_quality_model)
 def gemini_translation_quality_provider(
     *,
     text: str,

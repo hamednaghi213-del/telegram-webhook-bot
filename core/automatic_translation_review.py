@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from core.ai_runtime import timed_stage
+from core.translation_pipeline import reuse_language_detection
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
@@ -402,6 +404,8 @@ def automatic_translation_required(
 # START AUTOMATIC REVIEW
 # =========================================================
 
+@timed_stage("automatic_translation_to_preview", provider="pipeline")
+@reuse_language_detection()
 def start_automatic_persian_translation_review(
     *,
     chat_id: int,

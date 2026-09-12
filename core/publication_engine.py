@@ -1313,6 +1313,7 @@ def _shared_content_analysis(
         return prepared
 
     plan = analyze_content(
+        output_kind="media" if prepared.files else "text",
         main_text=source_text,
         blockquote_blocks=list(
             prepared.blockquote_blocks
@@ -2120,6 +2121,7 @@ def publish_prepared_content(
             if plan is None:
                 with suppress_smart_summary():
                     plan = analyze_content(
+                        output_kind="media" if analyzed.files else "text",
                         main_text=main_text,
                         blockquote_blocks=list(
                             analyzed.blockquote_blocks

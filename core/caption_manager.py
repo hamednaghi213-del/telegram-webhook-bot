@@ -4298,8 +4298,12 @@ def analyze_content(
         List[Dict[str, Any]]
     ] = None,
     branding: str = "",
-    editorial_finalized: bool = False
+    editorial_finalized: bool = False,
+    output_kind: str = "both",
 ) -> PublicationPlan:
+
+    if output_kind not in {"both", "text", "media"}:
+        raise ValueError("invalid output_kind")
 
     main_text = normalize_text(
         main_text
@@ -4351,7 +4355,7 @@ def analyze_content(
     # summarization.  Text-only publishing (via
     # publish_prepared_text) only reads plan.text, so
     # stub media plans are sufficient here.
-    if editorial_finalized:
+    if editorial_finalized or output_kind == "text":
 
         plan.telegram = {
             "media_caption":
@@ -4401,30 +4405,31 @@ def analyze_content(
             )
         )
 
-    plan.text[
-        "telegram"
-    ] = (
-        create_telegram_text_plan(
-            main_text,
-            blockquote_blocks,
-            expandable_blocks,
-            branding,
-            editorial_finalized=(
-                editorial_finalized
+    if output_kind != "media":
+        plan.text[
+            "telegram"
+        ] = (
+            create_telegram_text_plan(
+                main_text,
+                blockquote_blocks,
+                expandable_blocks,
+                branding,
+                editorial_finalized=(
+                    editorial_finalized
+                )
             )
         )
-    )
 
-    plan.text[
-        "bale"
-    ] = (
-        create_bale_text_plan(
-            main_text,
-            blockquote_blocks,
-            expandable_blocks,
-            branding
+        plan.text[
+            "bale"
+        ] = (
+            create_bale_text_plan(
+                main_text,
+                blockquote_blocks,
+                expandable_blocks,
+                branding
+            )
         )
-    )
 
     if (
         plan.telegram.get("media_caption")

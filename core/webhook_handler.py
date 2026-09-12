@@ -1,4 +1,6 @@
 import logging
+from core.ai_runtime import timed_stage
+from core.translation_pipeline import reuse_language_detection
 import os
 import uuid
 import secrets
@@ -4441,6 +4443,8 @@ def handle_setup_callback(
 # STANDALONE EXTERNAL CONTENT PERSIAN TRANSLATION
 # =========================================================
 
+@timed_stage("external_translation", provider="pipeline")
+@reuse_language_detection()
 def translate_external_content_to_persian(
     content: Any,
 ) -> Tuple[Any, Optional[str]]:

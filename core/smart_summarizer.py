@@ -1,4 +1,5 @@
 import logging
+from core.ai_runtime import timed_stage
 import math
 import re
 
@@ -1306,6 +1307,7 @@ def calculate_retry_target(
 # SMART SUMMARIZE
 # =========================================================
 
+@timed_stage("smart_summary", provider="summary_pipeline")
 def summarize_text_safely(
     original_text: str,
     target_length: int,

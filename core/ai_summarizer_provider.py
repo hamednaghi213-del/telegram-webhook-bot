@@ -9,6 +9,7 @@ from typing import (
 )
 
 import requests
+from core.ai_runtime import provider_post, timed_stage
 
 
 logger = logging.getLogger(__name__)
@@ -280,6 +281,7 @@ def extract_gemini_text(
 # )
 # =========================================================
 
+@timed_stage("summary_generation", provider="gemini", model=get_gemini_model)
 def summarize_with_gemini(
     original_text: str,
     instruction: str,
@@ -333,7 +335,7 @@ def summarize_with_gemini(
 
     try:
 
-        response = requests.post(
+        response = provider_post(
             url,
             headers=headers,
             json=payload,

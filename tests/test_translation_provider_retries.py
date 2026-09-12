@@ -22,7 +22,7 @@ def harness(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     post = Mock()
     sleep = Mock()
-    monkeypatch.setattr(provider.requests, "post", post)
+    monkeypatch.setattr(provider, "provider_post", post)
     monkeypatch.setattr(service.time, "sleep", sleep)
     monkeypatch.setattr(pipeline, "detect_pipeline_source_language", lambda text: {
         "language": "en", "detection": None, "provider_detection": None, "detected_by": "test",

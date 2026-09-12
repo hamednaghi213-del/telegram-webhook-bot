@@ -326,7 +326,7 @@ def test_successful_request(
         )
 
     monkeypatch.setattr(
-        "core.ai_summarizer_provider.requests.post",
+        "core.ai_summarizer_provider.provider_post",
         fake_post
     )
 
@@ -387,7 +387,7 @@ def test_gemini_35_flash_lite_override_uses_existing_contract(
         return FakeResponse()
 
     monkeypatch.setattr(
-        "core.ai_summarizer_provider.requests.post",
+        "core.ai_summarizer_provider.provider_post",
         fake_post
     )
 
@@ -442,7 +442,7 @@ def test_http_error(
         )
 
     monkeypatch.setattr(
-        "core.ai_summarizer_provider.requests.post",
+        "core.ai_summarizer_provider.provider_post",
         fake_post
     )
 

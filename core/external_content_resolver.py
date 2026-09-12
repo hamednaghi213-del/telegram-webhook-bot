@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from core.ai_runtime import timed_stage
+
 from dataclasses import (
     dataclass,
     replace,
@@ -254,6 +256,7 @@ class ExternalContentResolver:
             content=content,
         )
 
+    @timed_stage("external_fetch_extraction", provider="external")
     def _resolve_web_article(
         self,
         url: str,

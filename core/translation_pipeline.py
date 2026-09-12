@@ -2,12 +2,46 @@ from __future__ import annotations
 
 import inspect
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
+
+from core.ai_runtime import timed_stage
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 
 logger = logging.getLogger(__name__)
+
+_operation_detections = ContextVar("translation_operation_detections", default=None)
+
+
+@contextmanager
+def reuse_language_detection():
+    """Reuse trusted detection only inside one synchronous source operation.
+
+    Never persisted in review metadata or reused on a later edit/retranslation.
+    Each field is keyed by its exact text, not by article or source identity.
+    """
+    token = _operation_detections.set({})
+    try:
+        yield
+    finally:
+        _operation_detections.reset(token)
+
+
+def _reuse_exact_detection(function):
+    @wraps(function)
+    def detect(text):
+        cache = _operation_detections.get()
+        if cache is not None and text in cache:
+            return dict(cache[text])
+        result = function(text)
+        if cache is not None and _normalize_language(result.get("language")) != "auto":
+            cache[text] = dict(result)
+        return result
+    return detect
 
 
 # =========================================================
@@ -418,6 +452,8 @@ def _provider_language_detection(
         return None
 
 
+@_reuse_exact_detection
+@timed_stage("language_detection", provider="deterministic/provider")
 def detect_pipeline_source_language(
     text: str,
 ) -> Dict[str, Any]:
@@ -1314,6 +1350,7 @@ def _failure_result(
 # MAIN PIPELINE
 # =========================================================
 
+@timed_stage("translation_pipeline", provider="pipeline")
 def run_translation_pipeline(
     *,
     text: str,

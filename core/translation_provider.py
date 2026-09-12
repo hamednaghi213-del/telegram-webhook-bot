@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import requests
+from core.ai_runtime import provider_post, timed_stage
 
 
 logger = logging.getLogger(__name__)
@@ -442,6 +443,7 @@ def _build_provider_prompt(
 # GEMINI PROVIDER
 # =========================================================
 
+@timed_stage("translation_generation", provider="gemini", model=get_translation_model)
 def gemini_translation_provider(
     *,
     text: str,
@@ -513,7 +515,7 @@ def gemini_translation_provider(
     )
 
     try:
-        response = requests.post(
+        response = provider_post(
             endpoint,
             params={
                 "key": api_key
