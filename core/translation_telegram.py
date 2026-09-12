@@ -49,6 +49,7 @@ from core.translation_state import (
 )
 
 from core.translation_ui import (
+    build_edited_translation_preview_text,
     ACTION_BACK,
     ACTION_CANCEL,
     ACTION_CONFIRM,
@@ -298,7 +299,8 @@ def render_translation_result(
 
     def send_message(chat_id, text, **kwargs):
         return original_send_message(
-            chat_id, translation_ui_message(text, review_id), **kwargs
+            chat_id, translation_ui_message(text, review_id),
+            **dict(kwargs, link_preview_options={"is_disabled": True})
         )
 
     action = str(
@@ -372,15 +374,18 @@ def render_translation_result(
         if policy.get("status") == "review_required":
             parts.append("⚠️ این ترجمه به دلیل اصطلاحات حساس تحریریه نیاز به بازبینی دارد؛ پیش از تأیید، واژه‌ها و بافت جمله را بررسی کنید.")
 
+        if getattr(state, "edited_text", ""):
+            text = build_edited_translation_preview_text()
         if text:
             parts.append(
                 text
             )
 
         if translated_text:
-            parts.append(
-                translated_text
-            )
+            if getattr(state, "edited_text", ""):
+                parts.append("──────────\n" + translated_text + "\n──────────")
+            else:
+                parts.append(translated_text)
 
         preview = "\n\n".join(
             part
@@ -507,6 +512,13 @@ def handle_translation_telegram_callback(
     `publish_prepared_text` is injected by webhook_handler so
     Translation never owns a separate publication engine.
     """
+
+    original_send_message = send_message
+
+    def send_message(chat_id, text, **kwargs):
+        return original_send_message(
+            chat_id, text, **dict(kwargs, link_preview_options={"is_disabled": True})
+        )
 
     callback_data = (
         _callback_data(

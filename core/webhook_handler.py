@@ -1142,7 +1142,8 @@ def send_message(
     parse_mode: Optional[str] = None,
     reply_markup: Optional[
         Dict[str, Any]
-    ] = None
+    ] = None,
+    link_preview_options: Optional[Dict[str, Any]] = None,
 ) -> bool:
 
     if not API_URL:
@@ -1159,6 +1160,9 @@ def send_message(
             "chat_id": chat_id,
             "text": text
         }
+
+        if link_preview_options is not None:
+            payload["link_preview_options"] = dict(link_preview_options)
 
         if parse_mode:
 
@@ -2636,10 +2640,23 @@ def build_editorial_source_text(
 # EDITORIAL BUTTONS
 # =========================================================
 
+def editorial_summary_failure_message(reason: str = "", *, regeneration_count: int = 0) -> str:
+    if regeneration_count >= 3 or reason == "regeneration_limit_reached":
+        return "⚠️ تلاش‌های خلاصه‌سازی به نتیجه نرسید."
+    if regeneration_count > 0 or reason.startswith("regeneration_"):
+        return "⚠️ ساخت مجدد خلاصه ناموفق بود."
+    if reason in {"provider_error", "overflow_retry_provider_error", "length_retry_provider_error",
+                  "certainty_retry_provider_error", "summarizer_unavailable", "provider_unavailable"}:
+        return "⚠️ سرویس خلاصه‌سازی موقتاً در دسترس نیست."
+    return "⚠️ خلاصه قابل‌اعتماد تولید نشد."
+
+
 def build_editorial_keyboard(
     review_id: str,
     has_summary: bool = True,
-    can_regenerate: bool = True
+    can_regenerate: bool = True,
+    failure_reason: str = "",
+    regeneration_count: int = 0,
 ) -> Dict[str, Any]:
 
     rows: List[
@@ -2664,7 +2681,7 @@ def build_editorial_keyboard(
         rows.append([
             {
                 "text":
-                    "⚠️ خلاصه آماده نیست",
+                    editorial_summary_failure_message(failure_reason, regeneration_count=regeneration_count),
                 "callback_data":
                     f"ed:summary_unavailable:{review_id}"
             }
@@ -2785,7 +2802,8 @@ def build_editorial_preview(
     regeneration_count: int = 0,
     summary_success: bool = True,
     title: str = "",
-    author: str = ""
+    author: str = "",
+    failure_reason: str = "",
 ) -> str:
 
     label = (
@@ -2839,8 +2857,8 @@ def build_editorial_preview(
     else:
 
         status = (
-            "خلاصه پیشنهادی آماده نشد. "
-            "متن اصلی محفوظ است."
+            editorial_summary_failure_message(failure_reason, regeneration_count=regeneration_count)
+            + " متن اصلی محفوظ است."
         )
 
     return (
@@ -2887,6 +2905,7 @@ def try_queue_editorial_text_review(
     media_files: Optional[List[Dict[str, Any]]] = None,
     source_key: str = "",
     media_group_id: Optional[str] = None,
+    source_metadata: Optional[Dict[str, Any]] = None,
 ) -> bool:
 
     explicit_argument = (
@@ -3103,6 +3122,14 @@ def try_queue_editorial_text_review(
                     )
                 ),
                 metadata={
+                    "source_metadata": dict(source_metadata or {}),
+                    "summary_failure_reason": (
+                        review_result.metadata.get("summary_reason")
+                        or ("summarizer_unavailable"
+                            if review_result.reason == "summary_unavailable"
+                            and not review_result.metadata.get("summary_validation")
+                            else review_result.reason)
+                    ),
                     "kind":
                         "album" if media_files else "text",
 
@@ -3170,6 +3197,7 @@ def try_queue_editorial_text_review(
 
         keyboard = (
             build_editorial_keyboard(
+                failure_reason=pending.metadata.get("summary_failure_reason", ""),
                 review_id=(
                     pending.review_id
                 ),
@@ -3185,6 +3213,7 @@ def try_queue_editorial_text_review(
 
         preview = (
             build_editorial_preview(
+                failure_reason=pending.metadata.get("summary_failure_reason", ""),
                 content_type=(
                     pending.content_type
                 ),
@@ -3727,6 +3756,8 @@ def handle_editorial_callback(
                             or f"editorial:{review_id}"
                         ),
                         metadata={
+                            "forward_source": dict(metadata.get("forward_source") or {}),
+                            "source_metadata": dict(metadata.get("source_metadata") or {}),
                             "editorial_review_id":
                                 review_id,
 
@@ -3992,6 +4023,13 @@ def handle_editorial_callback(
 
         if action == "summary":
 
+            if metadata.get("summary_success") is False:
+                answer_callback_query(callback_id, editorial_summary_failure_message(
+                    metadata.get("summary_failure_reason", ""),
+                    regeneration_count=review.regeneration_count,
+                ))
+                return True
+
             if not (
                 review.current_summary
                 or ""
@@ -4168,6 +4206,7 @@ def handle_editorial_callback(
             )
 
             updated_metadata.update({
+                "summary_failure_reason": (regeneration_result.metadata.get("generation_reason") or regeneration_result.reason),
                 "summary_success":
                     regeneration_result.summary_success,
 
@@ -4204,6 +4243,8 @@ def handle_editorial_callback(
 
             keyboard = (
                 build_editorial_keyboard(
+                    failure_reason=updated_metadata.get("summary_failure_reason", ""),
+                    regeneration_count=updated.regeneration_count,
                     review_id=review_id,
                     has_summary=(
                         regeneration_result.summary_success
@@ -4222,6 +4263,7 @@ def handle_editorial_callback(
 
             preview = (
                 build_editorial_preview(
+                    failure_reason=updated_metadata.get("summary_failure_reason", ""),
                     content_type=(
                         updated.content_type
                     ),

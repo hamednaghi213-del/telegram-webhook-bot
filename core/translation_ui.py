@@ -848,6 +848,10 @@ def build_translation_failed_text(
     return text
 
 
+def build_edited_translation_preview_text() -> str:
+    return "✏️ متن اصلاح‌شده برای انتشار"
+
+
 def build_translation_preview_text(
     target_language: str
 ) -> str:

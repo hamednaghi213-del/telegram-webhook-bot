@@ -23,6 +23,8 @@ from core.external_review_controller import (
 )
 from core.external_review_state import (
     PendingExternalReview,
+    _plain_value,
+    _media_to_dict,
 )
 
 
@@ -1691,12 +1693,32 @@ def handle_external_review_telegram_callback(
         # QUEUE INTO EXISTING SHARED EDITORIAL FLOW
         # =================================================
 
+        source = decision.content
+        source_metadata = {
+            key: getattr(source, key) for key in
+            ("source_url", "canonical_url", "source_name", "author", "published_at")
+            if getattr(source, key, None)
+        }
+        source_metadata["metadata"] = _plain_value(source.metadata or {})
+        source_metadata["media"] = [
+            _media_to_dict(item)
+            for item in review.media
+        ]
+        forward_source = _plain_value((source.metadata or {}).get("forward_source") or {})
+        source_title = (source.metadata or {}).get("source_title") or source.source_name
+        if source_title:
+            forward_source.setdefault("source_title", source_title)
+        if (source.metadata or {}).get("source_username"):
+            forward_source.setdefault("source_username", source.metadata["source_username"])
+
         try:
             queued = (
                 queue_editorial_review(
                     chat_id=int(
                         user_id
                     ),
+                    source_metadata=source_metadata,
+                    forward_source=forward_source,
                     text=editorial_text,
                     entities=[],
                     forced_content_type=(
