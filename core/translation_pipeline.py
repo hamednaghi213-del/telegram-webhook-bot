@@ -1228,6 +1228,7 @@ def _failure_result(
     warnings: Optional[List[str]] = None,
 ) -> TranslationPipelineResult:
 
+    provider_failure = (_value(translation_result, "metadata", {}) or {}).get("provider_failure")
     failure_decision = (
         _translation_failure_decision(
             policy=policy,
@@ -1262,9 +1263,7 @@ def _failure_result(
             original_text
         ),
 
-        output_text=(
-            original_text
-        ),
+        output_text="" if provider_failure else original_text,
 
         source_language=(
             source_language
@@ -1304,6 +1303,7 @@ def _failure_result(
         ),
 
         metadata={
+            **({"provider_failure": provider_failure} if provider_failure else {}),
             "failure_decision":
                 failure_decision,
         },
@@ -1874,9 +1874,14 @@ def run_translation_pipeline(
                 or "translation_generation_failed"
             )
 
+            provider_failure = (_value(translation_result, "metadata", {}) or {}).get("provider_failure")
+            if provider_failure:
+                logger.warning("TRANSLATION-PROVIDER outer_retry_suppressed=True category=%s",
+                               provider_failure.get("category"))
             if (
                 attempt_index
                 < retry_limit
+                and not provider_failure
             ):
 
                 retry_instruction = (

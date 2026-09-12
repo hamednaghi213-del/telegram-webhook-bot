@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+from core.translation_provider import TranslationProviderError
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -1347,6 +1349,7 @@ def translate_text_safely(
     )
 
     last_candidate = ""
+    provider_wait = 0.0
 
     # =====================================================
     # PROVIDER ATTEMPTS
@@ -1398,55 +1401,31 @@ def translate_text_safely(
             )
 
         except Exception as exc:
-            logger.exception(
-                "❌ Translation provider failed | "
-                "attempt=%s/%s | "
-                "source=%s | "
-                "target=%s | "
-                "error=%s",
-                attempt_index,
-                total_attempts,
-                source_language,
-                target_language,
-                exc,
+            failure = exc if isinstance(exc, TranslationProviderError) else TranslationProviderError("unknown")
+            delay = failure.retry_after_seconds
+            if delay is None:
+                delay = 2 ** (attempt_index - 1)
+            delay = max(0.25, delay)
+            can_retry = (failure.retryable and attempt_index < total_attempts
+                         and provider_wait + delay <= 3.0)
+            metadata = failure.as_metadata()
+            metadata["deferred"] = failure.retryable or failure.category in {"rate_limited", "quota_unavailable"}
+            logger.warning(
+                "TRANSLATION-PROVIDER | provider=%s model=%s status=%s category=%s "
+                "retryable=%s retry_after_seconds=%s attempt=%s stopped=%s",
+                failure.provider, failure.model, failure.http_status, failure.category,
+                failure.retryable, failure.retry_after_seconds, attempt_index, not can_retry,
             )
-
-            if (
-                attempt_index
-                < total_attempts
-            ):
-                previous_errors = (
-                    ERROR_PROVIDER,
-                )
-
+            if can_retry:
+                time.sleep(delay)
+                provider_wait += delay
                 continue
-
             return TranslationResult(
-                success=False,
-                original_text=(
-                    original_text
-                ),
-                translated_text=(
-                    original_text
-                ),
-                source_language=(
-                    source_language
-                ),
-                target_language=(
-                    target_language
-                ),
-                detected_source_language=None,
-                validation_passed=False,
-                reason=ERROR_PROVIDER,
-                attempts=attempt_index,
-                validation=(
-                    last_validation
-                ),
-                metadata={
-                    "error": str(
-                        exc
-                    )
-                }
+                success=False, original_text=original_text, translated_text="",
+                source_language=source_language, target_language=target_language,
+                detected_source_language=None, validation_passed=False,
+                reason=failure.reason, attempts=attempt_index, validation=last_validation,
+                metadata={"provider_failure": metadata},
             )
 
         provider_output = (

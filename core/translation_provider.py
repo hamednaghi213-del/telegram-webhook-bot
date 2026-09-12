@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
+import math
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -73,6 +76,94 @@ GEMINI_API_BASE = (
 # =========================================================
 # RESULT MODEL
 # =========================================================
+
+class TranslationProviderError(RuntimeError):
+    """Safe, structured provider failure; raw exceptions stay in the cause chain."""
+
+    def __init__(self, category, *, http_status=None, retryable=False,
+                 retry_after_seconds=None, provider="gemini", model=""):
+        self.category = category
+        self.http_status = http_status
+        self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
+        self.provider = provider
+        self.model = model
+        self.reason = "translation_provider_" + category
+        super().__init__(self.reason)
+
+    def as_metadata(self):
+        return {key: getattr(self, key) for key in (
+            "category", "http_status", "retryable", "retry_after_seconds",
+            "provider", "model", "reason",
+        )}
+
+
+def _seconds(value):
+    try:
+        number = float(value)
+        return number if math.isfinite(number) and number >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _http_provider_error(response, data, model):
+    error = data.get("error", {})
+    error = error if isinstance(error, dict) else {}
+    details = error.get("details", [])
+    details = details if isinstance(details, list) else []
+    delays = []
+    header = response.headers.get("Retry-After")
+    if header is not None:
+        delay = _seconds(header)
+        if delay is None:
+            try:
+                date = parsedate_to_datetime(header)
+                if date.tzinfo is not None:
+                    delay = max(0, (date - datetime.now(timezone.utc)).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                pass
+        if delay is not None:
+            delays.append(delay)
+    quota = False
+    error_reasons = set()
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        kind = str(detail.get("@type", "")).rsplit("/", 1)[-1]
+        if kind == "google.rpc.ErrorInfo":
+            error_reasons.add(str(detail.get("reason", "")))
+        if kind == "google.rpc.QuotaFailure" and detail.get("violations"):
+            quota = True
+        if kind == "google.rpc.RetryInfo":
+            raw = detail.get("retryDelay")
+            if isinstance(raw, str) and raw.endswith("s"):
+                delay = _seconds(raw[:-1])
+            elif isinstance(raw, dict):
+                seconds = _seconds(raw.get("seconds", 0))
+                nanos = _seconds(raw.get("nanos", 0))
+                delay = seconds + nanos / 1e9 if seconds is not None and nanos is not None else None
+            else:
+                delay = None
+            if delay is not None:
+                delays.append(delay)
+    delay = max(delays) if delays else None
+    status = response.status_code
+    if status == 429:
+        category = "quota_unavailable" if quota else "rate_limited"
+        retryable = not quota and delay is not None
+    elif status in {500, 502, 503, 504}:
+        category, retryable = "transient_server", True
+    elif status in {401, 403} or error_reasons & {"API_KEY_INVALID", "API_KEY_EXPIRED", "CREDENTIALS_MISSING"}:
+        category, retryable = "authentication", False
+    elif status == 404 or error_reasons & {"SERVICE_DISABLED", "MODEL_NOT_FOUND"}:
+        category, retryable = "configuration", False
+    elif 400 <= status < 500:
+        category, retryable = "invalid_request", False
+    else:
+        category, retryable = "unknown", False
+    return TranslationProviderError(category, http_status=status, retryable=retryable,
+                                    retry_after_seconds=delay, model=model)
+
 
 @dataclass(frozen=True)
 class ProviderStatus:
@@ -372,10 +463,7 @@ def gemini_translation_provider(
     api_key = get_gemini_api_key()
 
     if not api_key:
-        raise RuntimeError(
-            "Gemini provider not configured: "
-            "GEMINI_API_KEY is missing"
-        )
+        raise TranslationProviderError("configuration", model=get_translation_model())
 
     model = get_translation_model()
 
@@ -445,21 +533,12 @@ def gemini_translation_provider(
             timeout,
         )
 
-        raise RuntimeError(
-            "translation_provider_timeout"
-        ) from exc
+        raise TranslationProviderError("timeout", retryable=True, model=model) from exc
 
     except requests.RequestException as exc:
-        logger.exception(
-            "❌ Gemini translation network error | "
-            "model=%s | "
-            "target=%s",
-            model,
-            target_language,
-        )
-
-        raise RuntimeError(
-            "translation_provider_network_error"
+        raise TranslationProviderError(
+            "connection", model=model, retryable=isinstance(exc, requests.ConnectionError)
+            and not isinstance(exc, (requests.exceptions.SSLError, requests.exceptions.ProxyError)),
         ) from exc
 
     data = _safe_json(
@@ -467,40 +546,14 @@ def gemini_translation_provider(
     )
 
     if not response.ok:
-        provider_message = (
-            _extract_error_message(
-                data
-            )
+        raise _http_provider_error(response, data, model) from requests.HTTPError(
+            "Translation provider HTTP failure", response=response,
         )
 
-        logger.error(
-            "❌ Gemini translation HTTP error | "
-            "status=%s | "
-            "model=%s | "
-            "target=%s | "
-            "message=%s",
-            response.status_code,
-            model,
-            target_language,
-            provider_message,
-        )
-
-        if provider_message:
-            raise RuntimeError(
-                "translation_provider_http_error: "
-                f"{provider_message}"
-            )
-
-        raise RuntimeError(
-            "translation_provider_http_error: "
-            f"{response.status_code}"
-        )
-
-    translated_text = (
-        _extract_candidate_text(
-            data
-        )
-    )
+    try:
+        translated_text = _extract_candidate_text(data)
+    except (TypeError, ValueError, AttributeError, IndexError) as exc:
+        raise TranslationProviderError("invalid_response", model=model) from exc
 
     if not translated_text:
         logger.error(
@@ -513,9 +566,7 @@ def gemini_translation_provider(
             target_language,
         )
 
-        raise RuntimeError(
-            "translation_provider_empty_response"
-        )
+        raise TranslationProviderError("invalid_response", model=model)
 
     logger.info(
         "✅ Gemini translation response | "
