@@ -3,7 +3,13 @@ from __future__ import annotations
 import logging
 import uuid
 
-from dataclasses import dataclass, field, replace
+from dataclasses import (
+    asdict,
+    dataclass,
+    field,
+    is_dataclass,
+    replace,
+)
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -15,38 +21,22 @@ logger = logging.getLogger(__name__)
 # TRANSLATION STATE
 # =========================================================
 #
-# EXISTING FILE — FULL REPLACEMENT
-#
 # Persistent Translation Workflow State.
 #
-# Previous implementation:
+# translation_state.py
+#         ↓
+# core.database
+#         ↓
+# public.translation_reviews
+#         ↓
+#      Supabase
 #
-#     Python process memory
-#
-# New implementation:
-#
-#     translation_state.py
-#             ↓
-#     core.database
-#             ↓
-#     public.translation_reviews
-#             ↓
-#          Supabase
-#
-# Therefore translation review state now survives:
+# Translation review state survives:
 #
 # - Render restart
 # - deploy/redeploy
 # - process replacement
 # - multiple webhook workers
-#
-# Public function names are intentionally preserved so:
-#
-# - translation_controller.py
-# - translation_telegram.py
-# - webhook_handler.py
-#
-# do not need to know how state is stored.
 #
 # This module DOES NOT:
 #
@@ -177,6 +167,60 @@ def _database():
 
 
 # =========================================================
+# JSON-SAFE METADATA
+# =========================================================
+
+def _json_safe_metadata_value(
+    value: Any,
+) -> Any:
+    """
+    Convert Translation metadata recursively into values accepted
+    by PostgreSQL/Supabase JSON serialization.
+
+    TranslationDecision and other dataclasses must never reach
+    the persistence layer as raw Python objects.
+    """
+
+    if is_dataclass(
+        value
+    ):
+        value = asdict(
+            value
+        )
+
+    if isinstance(
+        value,
+        dict,
+    ):
+        return {
+            str(key):
+                _json_safe_metadata_value(
+                    item
+                )
+            for key, item
+            in value.items()
+        }
+
+    if isinstance(
+        value,
+        (
+            list,
+            tuple,
+            set,
+        ),
+    ):
+        return [
+            _json_safe_metadata_value(
+                item
+            )
+            for item
+            in value
+        ]
+
+    return value
+
+
+# =========================================================
 # NORMALIZATION
 # =========================================================
 
@@ -190,9 +234,19 @@ def _normalize_metadata(
     ):
         return {}
 
-    return dict(
-        value
+    normalized = (
+        _json_safe_metadata_value(
+            value
+        )
     )
+
+    if not isinstance(
+        normalized,
+        dict,
+    ):
+        return {}
+
+    return normalized
 
 
 def _normalize_status(
@@ -522,10 +576,6 @@ def translation_state_expired(
 
     except Exception:
 
-        # Database TTL cleanup remains authoritative.
-        #
-        # A malformed timestamp should not incorrectly delete a
-        # workflow at this layer.
         return False
 
 
@@ -579,13 +629,6 @@ def create_translation_state(
     ] = None,
     review_id: Optional[str] = None,
 ) -> TranslationState:
-    """
-    Create a new persistent Translation workflow.
-
-    Only one active workflow is allowed per user/chat.
-    database.py cancels an older active workflow before creating
-    the new one.
-    """
 
     text = str(
         original_text
@@ -769,19 +812,6 @@ def get_active_translation_state(
 ) -> Optional[
     TranslationState
 ]:
-    """
-    Return active Translation workflow for one user/chat.
-
-    Persistent storage is preferred.
-
-    Some existing tests replace core.database with a lightweight
-    fake module which predates persistent Translation state.
-    Missing read support therefore means there is no persistent
-    pending Translation workflow and must not break existing
-    Editorial / External Review / publication paths.
-
-    Translation mutations remain fail-closed.
-    """
 
     database = _database()
 
@@ -885,6 +915,14 @@ def update_translation_state(
             status
         )
 
+    normalized_metadata = (
+        _normalize_metadata(
+            metadata
+        )
+        if metadata is not None
+        else None
+    )
+
     row = (
         _database()
         .update_persistent_translation_review(
@@ -912,7 +950,7 @@ def update_translation_state(
                 source_key
             ),
             metadata=(
-                metadata
+                normalized_metadata
             ),
             validation_errors=(
                 validation_errors
@@ -970,15 +1008,30 @@ def mark_waiting_custom_language(
 
 
 # =========================================================
-# SET LANGUAGE / MARK TRANSLATING
+# RETRY
 # =========================================================
 
-def translation_retry_available(state: Optional[TranslationState]) -> bool:
-    """Only an explicitly deferred provider failure can restart a failed review."""
-    return bool(state and state.status == STATE_FAILED
-                and state.metadata.get("translation_retry_available") is True
-                and state.original_text.strip() and state.target_language)
+def translation_retry_available(
+    state: Optional[
+        TranslationState
+    ],
+) -> bool:
 
+    return bool(
+        state
+        and state.status
+        == STATE_FAILED
+        and state.metadata.get(
+            "translation_retry_available"
+        ) is True
+        and state.original_text.strip()
+        and state.target_language
+    )
+
+
+# =========================================================
+# SET LANGUAGE / MARK TRANSLATING
+# =========================================================
 
 def set_translation_language(
     review_id: str,
@@ -999,19 +1052,37 @@ def set_translation_language(
         return None
 
     if retry_failed:
-        if not translation_retry_available(state):
-            return None
-        # Claim this failed review atomically; a second click cannot restart it.
-        return _state_from_row(_database().update_persistent_translation_review(
-            review_id, status=STATE_TRANSLATING, expected_status=STATE_FAILED,
-            metadata={"translation_retry_available": False},
-        ))
 
-    if state.status not in {
-        STATE_WAITING_LANGUAGE,
-        STATE_WAITING_CUSTOM_LANGUAGE,
-        STATE_TRANSLATING,
-    } and not (restart_preview and state.status == STATE_PREVIEW):
+        if not translation_retry_available(
+            state
+        ):
+            return None
+
+        return _state_from_row(
+            _database()
+            .update_persistent_translation_review(
+                review_id,
+                status=STATE_TRANSLATING,
+                expected_status=STATE_FAILED,
+                metadata={
+                    "translation_retry_available":
+                        False,
+                },
+            )
+        )
+
+    if (
+        state.status not in {
+            STATE_WAITING_LANGUAGE,
+            STATE_WAITING_CUSTOM_LANGUAGE,
+            STATE_TRANSLATING,
+        }
+        and not (
+            restart_preview
+            and state.status
+            == STATE_PREVIEW
+        )
+    ):
 
         return None
 
@@ -1111,14 +1182,10 @@ def set_translation_preview(
         review_id,
         status=STATE_PREVIEW,
         translated_text=text,
-
-        # New machine preview replaces any old manual edit.
         edited_text="",
-
         metadata=(
             normalized_metadata
         ),
-
         validation_errors=(
             list(
                 validation_errors
@@ -1128,7 +1195,6 @@ def set_translation_preview(
             is not None
             else None
         ),
-
         validation_warnings=(
             list(
                 validation_warnings
@@ -1138,7 +1204,6 @@ def set_translation_preview(
             is not None
             else None
         ),
-
         translation_attempts=(
             max(
                 0,
@@ -1230,12 +1295,7 @@ def apply_translation_edit(
     return update_translation_state(
         review_id,
         status=STATE_PREVIEW,
-
-        # Keep machine translation in translated_text DB column.
-        #
-        # Consumers choose edited_text explicitly; machine output stays intact.
         edited_text=text,
-
         metadata=metadata,
     )
 
@@ -1391,14 +1451,6 @@ def remove_translation_state(
 ) -> Optional[
     TranslationState
 ]:
-    """
-    Delete persistent Translation workflow.
-
-    Return the previous state for backward compatibility with
-    the existing Controller, which checks:
-
-        removed is None
-    """
 
     state = get_translation_state(
         review_id
@@ -1485,19 +1537,6 @@ def translation_state_is_terminal(
 # =========================================================
 
 def reset_translation_states() -> None:
-    """
-    Compatibility helper.
-
-    The previous in-memory implementation could clear process
-    state globally. Persistent Production state must never be
-    globally deleted by an ordinary application helper.
-
-    Therefore this function intentionally performs only expired
-    state cleanup.
-
-    This prevents tests/admin utilities from accidentally wiping
-    active Production translation reviews.
-    """
 
     cleanup_expired_translation_states()
 
