@@ -51,7 +51,7 @@ HASH_PATTERN = re.compile(
 # PRESERVED EDITORIAL HASHTAGS
 #
 # These breaking-news / editorial markers must survive the
-# foreign-mention cleanup pass.  They are user-visible
+# foreign-mention cleanup pass. They are user-visible
 # headline decorations, not source attribution tags.
 # =========================================================
 
@@ -151,20 +151,6 @@ INVITE_PATTERNS = [
 # =========================================================
 # EMOJI PATTERN
 # =========================================================
-#
-# نکته مهم:
-#
-# بازه U+1F100 تا U+1F1FF اضافه شده است.
-#
-# Emojiهایی مثل:
-#
-# 🆔
-# 🆕
-# 🆒
-# 🆗
-#
-# در این محدوده قرار دارند.
-# =========================================================
 
 EMOJI_PATTERN = re.compile(
     "["
@@ -190,13 +176,6 @@ EMOJI_PATTERN = re.compile(
 
 # =========================================================
 # PROMOTIONAL FOOTER LINE
-# =========================================================
-#
-# فقط خطوطی حذف می‌شوند که تمام محتوای آن‌ها
-# یک عبارت تبلیغاتی/شبکه‌ای باشد.
-#
-# بنابراین وجود کلمه "سایت" داخل یک جمله واقعی
-# باعث حذف جمله نمی‌شود.
 # =========================================================
 
 PROMOTIONAL_ONLY_PATTERN = re.compile(
@@ -376,49 +355,63 @@ def normalize_blank_lines(
 # =========================================================
 
 def leading_headline_decoration(text: str) -> str:
-    """Return only a symbol-leading prefix followed by actual headline text.
+    """Return only a symbol-leading prefix followed by actual headline text."""
 
-    Unicode categories retain joined emoji, modifiers and variation selectors
-    without an icon allowlist. Commands, handles and punctuation-only lines
-    do not qualify.
-    """
     value = str(text or "").strip()
+
     if not value or unicodedata.category(value[0])[0] != "S":
         return ""
+
     for index, character in enumerate(value):
+
         category = unicodedata.category(character)[0]
+
         if category in {"L", "N"}:
             return value[:index]
+
         if category not in {"S", "M", "Z", "C", "P"}:
             return ""
+
     return ""
 
 
-def remove_all_emojis(text: str, *, preserve_headline_decoration: bool = True) -> str:
-    """
-    Emojiهای منبع حذف می‌شوند.
-
-    فقط دو علامت قالب دنیا ۲۴ حفظ می‌شوند:
-
-        ❇️
-        🔹
-    """
+def remove_all_emojis(
+    text: str,
+    *,
+    preserve_headline_decoration: bool = True
+) -> str:
 
     if not text:
         return ""
 
-    # Preserve only the first content line's leading headline decoration.
     lines = text.splitlines()
+
     headline_prefix = ""
     headline_marker = "D24LEADINGDECORATIONTOKEN"
+
     while headline_marker in text:
         headline_marker += "X"
+
     for index, line in enumerate(lines):
+
         if line.strip():
-            headline_prefix = leading_headline_decoration(line) if preserve_headline_decoration else ""
+
+            headline_prefix = (
+                leading_headline_decoration(line)
+                if preserve_headline_decoration
+                else ""
+            )
+
             if headline_prefix:
-                lines[index] = line.replace(headline_prefix, headline_marker, 1)
+
+                lines[index] = line.replace(
+                    headline_prefix,
+                    headline_marker,
+                    1
+                )
+
                 text = "\n".join(lines)
+
             break
 
     title_placeholder = (
@@ -465,7 +458,12 @@ def remove_all_emojis(text: str, *, preserve_headline_decoration: bool = True) -
     )
 
     if headline_prefix:
-        text = text.replace(headline_marker, headline_prefix, 1)
+
+        text = text.replace(
+            headline_marker,
+            headline_prefix,
+            1
+        )
 
     return normalize_spaces(
         text
@@ -482,10 +480,6 @@ def clean_foreign_mentions_and_hashtags(
 
     if not text:
         return ""
-
-    # =====================================================
-    # MENTION
-    # =====================================================
 
     def replace_at(match):
 
@@ -505,10 +499,6 @@ def clean_foreign_mentions_and_hashtags(
         replace_at,
         text
     )
-
-    # =====================================================
-    # HASHTAG
-    # =====================================================
 
     def replace_hash(match):
 
@@ -532,18 +522,10 @@ def clean_foreign_mentions_and_hashtags(
         text
     )
 
-    # =====================================================
-    # URL
-    # =====================================================
-
     text = URL_PATTERN.sub(
         "",
         text
     )
-
-    # =====================================================
-    # INVITE / FOLLOW
-    # =====================================================
 
     for pattern in INVITE_PATTERNS:
 
@@ -735,19 +717,6 @@ def looks_like_footer(
 
         return True
 
-    if (
-        len(lines) == 1
-        and len(value) <= 60
-        and not any(
-            ending in value
-
-            for ending
-            in SENTENCE_ENDINGS
-        )
-    ):
-
-        return True
-
     return False
 
 
@@ -839,23 +808,6 @@ def clean_media_footer(
 def is_promotional_footer_line(
     line: str
 ) -> bool:
-    """
-    فقط خطوط مستقل تبلیغاتی را تشخیص می‌دهد.
-
-    مثال‌های حذف‌شونده:
-
-        سایت
-        یوتیوب
-        واتس‌اپ
-        کست باکس
-        |
-
-    ولی جمله واقعی مثل:
-
-        سایت وزارت خارجه این خبر را منتشر کرد.
-
-    حذف نمی‌شود.
-    """
 
     if not line:
         return False
@@ -893,32 +845,12 @@ def clean_all_trailing_content(
     if not text:
         return ""
 
-    # =====================================================
-    # CONTENT AFTER |
-    # =====================================================
-    #
-    # مثال:
-    #
-    # سایت | واتس‌اپ | یوتیوب
-    #
-    # تبدیل می‌شود به:
-    #
-    # سایت
-    #
-    # سپس در مرحله Line Cleanup
-    # خود "سایت" نیز حذف می‌شود.
-    # =====================================================
-
     text = re.sub(
         r'\|.*$',
         '',
         text,
         flags=re.MULTILINE
     )
-
-    # =====================================================
-    # CHANNEL / TELEGRAM FOOTER
-    # =====================================================
 
     text = re.sub(
         (
@@ -930,10 +862,6 @@ def clean_all_trailing_content(
         text,
         flags=re.IGNORECASE
     )
-
-    # =====================================================
-    # TRAILING FOREIGN MENTION
-    # =====================================================
 
     def replace_trailing_mention(
         match
@@ -956,10 +884,6 @@ def clean_all_trailing_content(
         text
     )
 
-    # =====================================================
-    # GENERIC PROMOTIONAL WORDS
-    # =====================================================
-
     text = re.sub(
         (
             r'\b('
@@ -974,10 +898,6 @@ def clean_all_trailing_content(
         flags=re.IGNORECASE
     )
 
-    # =====================================================
-    # LINK / MORE FOOTER
-    # =====================================================
-
     text = re.sub(
         (
             r'\s*[-–—]\s*'
@@ -988,10 +908,6 @@ def clean_all_trailing_content(
         text,
         flags=re.IGNORECASE
     )
-
-    # =====================================================
-    # COMMON MEDIA NAMES
-    # =====================================================
 
     media_names = [
 
@@ -1039,19 +955,11 @@ def clean_all_trailing_content(
             flags=re.IGNORECASE
         )
 
-    # =====================================================
-    # GENERIC FOOTER
-    # =====================================================
-
     text = re.sub(
         r'[A-Za-z]+\.\s*$',
         '',
         text
     )
-
-    # =====================================================
-    # LINE-BY-LINE CLEANUP
-    # =====================================================
 
     lines = text.splitlines()
 
@@ -1063,10 +971,6 @@ def clean_all_trailing_content(
             line.strip()
         )
 
-        # -------------------------------------------------
-        # PRESERVE BLANK LINE
-        # -------------------------------------------------
-
         if not stripped:
 
             cleaned_lines.append(
@@ -1074,10 +978,6 @@ def clean_all_trailing_content(
             )
 
             continue
-
-        # -------------------------------------------------
-        # PROMOTIONAL ONLY LINE
-        # -------------------------------------------------
 
         if is_promotional_footer_line(
             stripped
@@ -1090,10 +990,6 @@ def clean_all_trailing_content(
 
             continue
 
-        # -------------------------------------------------
-        # MENTION / LINK ONLY
-        # -------------------------------------------------
-
         if re.match(
             (
                 r'^\s*[@\-–—]+\s*'
@@ -1104,10 +1000,6 @@ def clean_all_trailing_content(
         ):
 
             continue
-
-        # -------------------------------------------------
-        # MENTION + LINK
-        # -------------------------------------------------
 
         match = re.search(
             (
@@ -1135,10 +1027,6 @@ def clean_all_trailing_content(
 
                 continue
 
-        # -------------------------------------------------
-        # GENERIC FOLLOW PROMPT
-        # -------------------------------------------------
-
         follow_line = False
 
         for pattern in INVITE_PATTERNS:
@@ -1161,15 +1049,6 @@ def clean_all_trailing_content(
     text = "\n".join(
         cleaned_lines
     )
-
-    # =====================================================
-    # REMOVE TRAILING BLANK / PROMO LINES AGAIN
-    # =====================================================
-    #
-    # دفاع دوم:
-    # اگر پاکسازی قبلی یک Footer جدید ایجاد کرده باشد،
-    # از انتهای متن حذف می‌شود.
-    # =====================================================
 
     lines = (
         text.splitlines()
@@ -1200,10 +1079,6 @@ def clean_all_trailing_content(
     text = "\n".join(
         lines
     )
-
-    # =====================================================
-    # NORMALIZE
-    # =====================================================
 
     text = normalize_spaces(
         text
@@ -1267,13 +1142,9 @@ def clean_text(
         f"preview={text[:80]!r}"
     )
 
-    # =====================================================
-    # STEP 1
-    # EMOJI
-    # =====================================================
-
     text = remove_all_emojis(
-        text, preserve_headline_decoration=preserve_headline_decoration,
+        text,
+        preserve_headline_decoration=preserve_headline_decoration,
     )
 
     logger.debug(
@@ -1281,11 +1152,6 @@ def clean_text(
         f"length={len(text)} | "
         f"preview={text[:80]!r}"
     )
-
-    # =====================================================
-    # STEP 2
-    # MENTION / HASHTAG / URL / INVITE
-    # =====================================================
 
     text = (
         clean_foreign_mentions_and_hashtags(
@@ -1299,11 +1165,6 @@ def clean_text(
         f"preview={text[:80]!r}"
     )
 
-    # =====================================================
-    # STEP 3
-    # GENERAL TRAILING CLEANUP
-    # =====================================================
-
     text = (
         clean_all_trailing_content(
             text
@@ -1315,11 +1176,6 @@ def clean_text(
         f"length={len(text)} | "
         f"preview={text[:80]!r}"
     )
-
-    # =====================================================
-    # STEP 4
-    # SAFE LAST SENTENCE CLEANUP
-    # =====================================================
 
     text = (
         clean_after_last_sentence(
@@ -1333,20 +1189,11 @@ def clean_text(
         f"preview={text[:80]!r}"
     )
 
-    # =====================================================
-    # STEP 5
-    # MEDIA FOOTER
-    # =====================================================
-
     text = (
         clean_media_footer(
             text
         )
     )
-
-    # =====================================================
-    # FINAL NORMALIZATION
-    # =====================================================
 
     text = normalize_spaces(
         text
