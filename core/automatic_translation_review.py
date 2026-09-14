@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import logging
-from core.ai_runtime import timed_stage
-from core.translation_pipeline import reuse_language_detection
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from core.ai_runtime import timed_stage
+from core.translation_pipeline import reuse_language_detection
 
 from core.translation_controller import (
     RESULT_PREVIEW,
@@ -52,14 +52,9 @@ logger = logging.getLogger(__name__)
 #   is Persian.
 # - Publication NEVER happens in this module.
 # - Translation Preview remains mandatory.
-# - Unknown/unsafe language detection is fail-closed.
-#
-# This module is intentionally isolated so the current stable
-# publication engine is not modified before integration tests.
-#
-# Later, destination_language will replace the temporary
-# Persian target and this helper can become fully destination
-# aware.
+# - Genuinely unknown/unsafe language detection is fail-closed.
+# - Provider failure must NOT block content that deterministic
+#   local evidence proves is clearly non-Persian.
 #
 # =========================================================
 
@@ -171,12 +166,52 @@ def _normalize_language(
     return SOURCE_LANGUAGE_AUTO
 
 
+def _deterministic_clearly_non_persian(
+    detection: Any,
+) -> bool:
+    """
+    Return True only when the shared deterministic detector
+    positively establishes that the text is not Persian.
+
+    The exact language may still be unknown.
+
+    This is intentionally separate from ordinary language
+    identification so an unavailable provider does not force
+    obvious Latin/Cyrillic/etc. content into the blocked path.
+    """
+
+    if detection is None:
+        return False
+
+    try:
+
+        from core.language_detector import (
+            detection_is_clearly_non_persian,
+        )
+
+        return bool(
+            detection_is_clearly_non_persian(
+                detection
+            )
+        )
+
+    except Exception as exc:
+
+        logger.warning(
+            "⚠️ Deterministic non-Persian check unavailable | %s",
+            exc,
+        )
+
+        return False
+
+
 def _detection_metadata(
     detection_result: Dict[str, Any],
 ) -> Dict[str, Any]:
 
     return {
-        "automatic_translation_review": True,
+        "automatic_translation_review":
+            True,
 
         "detected_source_language": (
             detection_result.get(
@@ -195,6 +230,13 @@ def _detection_metadata(
         "automatic_target_language": (
             TARGET_LANGUAGE_CODE
         ),
+
+        "clearly_non_persian": bool(
+            detection_result.get(
+                "clearly_non_persian",
+                False,
+            )
+        ),
     }
 
 
@@ -208,13 +250,25 @@ def detect_automatic_review_language(
     """
     Use the existing shared language-detection pipeline.
 
-    The shared pipeline already performs:
+    Normal flow:
 
         deterministic detection
             ↓
         provider fallback when uncertain
 
-    No local language guessing is introduced here.
+    Provider outage fallback:
+
+        exact language still unknown
+            +
+        deterministic evidence proves non-Persian
+            ↓
+        return language=auto with clearly_non_persian=True
+
+    The Translation Service already supports source_language=auto,
+    so the translation engine may translate without inventing an
+    exact source language.
+
+    Truly ambiguous Arabic-script text remains fail-closed.
     """
 
     content = str(
@@ -225,10 +279,20 @@ def detect_automatic_review_language(
     if not content:
 
         return {
-            "language": SOURCE_LANGUAGE_AUTO,
-            "detection": None,
-            "provider_detection": None,
-            "detected_by": "unknown",
+            "language":
+                SOURCE_LANGUAGE_AUTO,
+
+            "detection":
+                None,
+
+            "provider_detection":
+                None,
+
+            "detected_by":
+                "unknown",
+
+            "clearly_non_persian":
+                False,
         }
 
     try:
@@ -247,13 +311,25 @@ def detect_automatic_review_language(
         )
 
         return {
-            "language": SOURCE_LANGUAGE_AUTO,
-            "detection": None,
-            "provider_detection": None,
-            "detected_by": "error",
-            "error": str(
-                exc
-            ),
+            "language":
+                SOURCE_LANGUAGE_AUTO,
+
+            "detection":
+                None,
+
+            "provider_detection":
+                None,
+
+            "detected_by":
+                "error",
+
+            "clearly_non_persian":
+                False,
+
+            "error":
+                str(
+                    exc
+                ),
         }
 
     if not isinstance(
@@ -262,10 +338,20 @@ def detect_automatic_review_language(
     ):
 
         return {
-            "language": SOURCE_LANGUAGE_AUTO,
-            "detection": None,
-            "provider_detection": None,
-            "detected_by": "unknown",
+            "language":
+                SOURCE_LANGUAGE_AUTO,
+
+            "detection":
+                None,
+
+            "provider_detection":
+                None,
+
+            "detected_by":
+                "unknown",
+
+            "clearly_non_persian":
+                False,
         }
 
     normalized = (
@@ -284,6 +370,43 @@ def detect_automatic_review_language(
         "language"
     ] = normalized
 
+    deterministic_detection = (
+        result.get(
+            "detection"
+        )
+    )
+
+    clearly_non_persian = (
+        _deterministic_clearly_non_persian(
+            deterministic_detection
+        )
+    )
+
+    output[
+        "clearly_non_persian"
+    ] = clearly_non_persian
+
+    # If provider detection did not resolve the exact language,
+    # retain "auto" rather than guessing a code. The important
+    # distinction is that we may still know safely that the text
+    # is not Persian.
+    if (
+        normalized
+        == SOURCE_LANGUAGE_AUTO
+        and clearly_non_persian
+    ):
+
+        output[
+            "detected_by"
+        ] = (
+            "deterministic_non_persian"
+        )
+
+        logger.info(
+            "🌐 Exact source language unresolved, "
+            "but content is deterministically non-Persian"
+        )
+
     return output
 
 
@@ -295,8 +418,7 @@ def automatic_translation_required(
     text: str,
 ) -> AutomaticTranslationReviewResult:
     """
-    Decide whether the incoming content requires Persian
-    translation.
+    Decide whether incoming content requires Persian translation.
 
     Persian content:
         passthrough
@@ -304,13 +426,11 @@ def automatic_translation_required(
     Known non-Persian content:
         translation required
 
-    Unknown language:
-        blocked
+    Exact language unknown but safely proven non-Persian:
+        translation required with source_language=auto
 
-    Unknown is intentionally fail-closed because publishing
-    foreign-language content directly into a Persian
-    destination would recreate the Production bug this module
-    is intended to prevent.
+    Truly ambiguous language:
+        blocked
     """
 
     content = str(
@@ -340,11 +460,22 @@ def automatic_translation_required(
         )
     )
 
+    clearly_non_persian = bool(
+        detection.get(
+            "clearly_non_persian",
+            False,
+        )
+    )
+
     metadata = (
         _detection_metadata(
             detection
         )
     )
+
+    # =====================================================
+    # PERSIAN → PASSTHROUGH
+    # =====================================================
 
     if source_language == "fa":
 
@@ -355,14 +486,82 @@ def automatic_translation_required(
 
         return AutomaticTranslationReviewResult(
             success=True,
+
             action=ACTION_PASSTHROUGH,
+
             source_language="fa",
+
             target_language=TARGET_LANGUAGE_CODE,
+
             requires_translation=False,
+
             requires_preview=False,
-            reason="source_already_matches_destination_language",
+
+            reason=(
+                "source_already_matches_destination_language"
+            ),
+
             metadata=metadata,
         )
+
+    # =====================================================
+    # EXACT LANGUAGE UNKNOWN BUT DEFINITELY NON-PERSIAN
+    # =====================================================
+    #
+    # Example:
+    #
+    # Gemini language-detection provider → 503
+    #
+    # Local detector:
+    #
+    #     script=latin
+    #     exact language uncertain
+    #     clearly_non_persian=True
+    #
+    # The Translation Service accepts source_language="auto".
+    #
+    # Therefore do NOT block this content.
+    # =====================================================
+
+    if (
+        source_language
+        == SOURCE_LANGUAGE_AUTO
+        and clearly_non_persian
+    ):
+
+        logger.info(
+            "🌐 Automatic Persian translation required | "
+            "source_language=auto | "
+            "reason=clearly_non_persian"
+        )
+
+        return AutomaticTranslationReviewResult(
+            success=True,
+
+            action=ACTION_PREVIEW,
+
+            source_language=(
+                SOURCE_LANGUAGE_AUTO
+            ),
+
+            target_language=(
+                TARGET_LANGUAGE_CODE
+            ),
+
+            requires_translation=True,
+
+            requires_preview=True,
+
+            reason=(
+                "clearly_non_persian_source_language_unresolved"
+            ),
+
+            metadata=metadata,
+        )
+
+    # =====================================================
+    # GENUINELY AMBIGUOUS → FAIL CLOSED
+    # =====================================================
 
     if source_language == SOURCE_LANGUAGE_AUTO:
 
@@ -373,14 +572,29 @@ def automatic_translation_required(
 
         return AutomaticTranslationReviewResult(
             success=False,
+
             action=ACTION_BLOCKED,
-            source_language=SOURCE_LANGUAGE_AUTO,
-            target_language=TARGET_LANGUAGE_CODE,
+
+            source_language=(
+                SOURCE_LANGUAGE_AUTO
+            ),
+
+            target_language=(
+                TARGET_LANGUAGE_CODE
+            ),
+
             requires_translation=False,
+
             requires_preview=False,
+
             reason="source_language_uncertain",
+
             metadata=metadata,
         )
+
+    # =====================================================
+    # KNOWN NON-PERSIAN LANGUAGE
+    # =====================================================
 
     logger.info(
         "🌐 Automatic Persian translation required | "
@@ -390,12 +604,19 @@ def automatic_translation_required(
 
     return AutomaticTranslationReviewResult(
         success=True,
+
         action=ACTION_PREVIEW,
+
         source_language=source_language,
+
         target_language=TARGET_LANGUAGE_CODE,
+
         requires_translation=True,
+
         requires_preview=True,
+
         reason="destination_language_mismatch",
+
         metadata=metadata,
     )
 
@@ -404,7 +625,10 @@ def automatic_translation_required(
 # START AUTOMATIC REVIEW
 # =========================================================
 
-@timed_stage("automatic_translation_to_preview", provider="pipeline")
+@timed_stage(
+    "automatic_translation_to_preview",
+    provider="pipeline",
+)
 @reuse_language_detection()
 def start_automatic_persian_translation_review(
     *,
@@ -419,7 +643,7 @@ def start_automatic_persian_translation_review(
 ) -> AutomaticTranslationReviewResult:
     """
     Automatically create a Persian Translation Preview when
-    the incoming content is non-Persian.
+    incoming content is non-Persian.
 
     This function does NOT publish anything.
 
@@ -431,8 +655,14 @@ def start_automatic_persian_translation_review(
         Non-Persian:
             ACTION_PREVIEW
 
-        Detection/translation failure:
-            ACTION_BLOCKED / ACTION_FAILED
+        Clearly non-Persian but exact language unresolved:
+            ACTION_PREVIEW with source_language="auto"
+
+        Genuinely ambiguous detection:
+            ACTION_BLOCKED
+
+        Translation failure:
+            ACTION_FAILED
 
     The resulting Translation state uses the existing
     persistent Translation Review system, so Confirm/Edit/
@@ -454,7 +684,10 @@ def start_automatic_persian_translation_review(
 
         return decision
 
-    state_metadata: Dict[str, Any] = {}
+    state_metadata: Dict[
+        str,
+        Any,
+    ] = {}
 
     if isinstance(
         metadata,
@@ -477,25 +710,26 @@ def start_automatic_persian_translation_review(
         "automatic_translation_target"
     ] = TARGET_LANGUAGE_CODE
 
-    # -----------------------------------------------------
-    # Create persistent Translation Review state.
-    #
-    # start_translation() normally returns the language menu.
-    # We intentionally do NOT render that menu here.
-    #
-    # The target language is immediately selected below.
-    # -----------------------------------------------------
+    # =====================================================
+    # CREATE PERSISTENT TRANSLATION REVIEW STATE
+    # =====================================================
 
     started = (
         start_translation(
             chat_id=chat_id,
+
             user_id=user_id,
+
             original_text=content,
+
             source_language=(
                 decision.source_language
             ),
+
             source_kind=source_kind,
+
             source_key=source_key,
+
             metadata=state_metadata,
         )
     )
@@ -515,38 +749,62 @@ def start_automatic_persian_translation_review(
 
         return AutomaticTranslationReviewResult(
             success=False,
+
             action=ACTION_FAILED,
+
             source_language=(
                 decision.source_language
             ),
-            target_language=TARGET_LANGUAGE_CODE,
+
+            target_language=(
+                TARGET_LANGUAGE_CODE
+            ),
+
             requires_translation=True,
+
             requires_preview=True,
+
             controller_result=started,
+
             reason=(
                 started.reason
-                or "automatic_translation_state_creation_failed"
+                or (
+                    "automatic_translation_"
+                    "state_creation_failed"
+                )
             ),
+
             metadata=state_metadata,
         )
 
-    # -----------------------------------------------------
-    # Automatically choose Persian.
+    # =====================================================
+    # AUTOMATICALLY SELECT PERSIAN DESTINATION
+    # =====================================================
     #
-    # This invokes the existing Shared Translation Pipeline,
-    # including translation validation and quality checking.
+    # This invokes the existing Shared Translation Pipeline:
     #
-    # No language-selection interaction is shown to the user.
-    # -----------------------------------------------------
+    # - Translation Policy
+    # - Translation Provider
+    # - validation
+    # - semantic quality
+    # - bounded retry
+    #
+    # No separate translation engine is introduced here.
+    # =====================================================
 
     translated = (
         select_translation_language(
             review_id=(
                 started.review_id
             ),
+
             chat_id=chat_id,
+
             user_id=user_id,
-            language_code=TARGET_LANGUAGE_CODE,
+
+            language_code=(
+                TARGET_LANGUAGE_CODE
+            ),
         )
     )
 
@@ -567,21 +825,36 @@ def start_automatic_persian_translation_review(
 
         return AutomaticTranslationReviewResult(
             success=False,
+
             action=ACTION_FAILED,
+
             source_language=(
                 decision.source_language
             ),
-            target_language=TARGET_LANGUAGE_CODE,
+
+            target_language=(
+                TARGET_LANGUAGE_CODE
+            ),
+
             requires_translation=True,
+
             requires_preview=True,
+
             review_id=(
                 started.review_id
             ),
-            controller_result=translated,
+
+            controller_result=(
+                translated
+            ),
+
             reason=(
                 translated.reason
-                or "automatic_translation_failed"
+                or (
+                    "automatic_translation_failed"
+                )
             ),
+
             metadata=state_metadata,
         )
 
@@ -594,20 +867,36 @@ def start_automatic_persian_translation_review(
 
     return AutomaticTranslationReviewResult(
         success=True,
+
         action=ACTION_PREVIEW,
+
         source_language=(
             decision.source_language
         ),
-        target_language=TARGET_LANGUAGE_CODE,
+
+        target_language=(
+            TARGET_LANGUAGE_CODE
+        ),
+
         requires_translation=True,
+
         requires_preview=True,
+
         review_id=(
             translated.review_id
         ),
+
         translated_text=(
             translated.translated_text
         ),
-        controller_result=translated,
-        reason="automatic_translation_preview_ready",
+
+        controller_result=(
+            translated
+        ),
+
+        reason=(
+            "automatic_translation_preview_ready"
+        ),
+
         metadata=state_metadata,
     )
