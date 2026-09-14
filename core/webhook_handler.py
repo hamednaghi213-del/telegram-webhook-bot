@@ -4677,6 +4677,8 @@ def try_automatic_persian_translation_gate(
     files: Optional[List[Dict[str, Any]]] = None,
     media_presentation: str = "",
     forward_source: Optional[Dict[str, Any]] = None,
+    blockquote_blocks: Optional[List[Dict[str, Any]]] = None,
+    expandable_blocks: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
 
     source_text = str(
@@ -4741,6 +4743,14 @@ def try_automatic_persian_translation_gate(
                     ),
                     "editorial_finalized": False,
                     "require_single_message": False,
+                    "blockquote_blocks": list(
+                        blockquote_blocks
+                        or []
+                    ),
+                    "expandable_blocks": list(
+                        expandable_blocks
+                        or []
+                    ),
                 },
             )
         )
@@ -6373,6 +6383,87 @@ def handle_webhook() -> Tuple[
                     f"source_username="
                     f"{forward_source.get('source_username') or '-'}"
                 )
+
+                # -----------------------------------------
+                # TRANSLATION GATE
+                #
+                # Rich messages with non-Persian main text
+                # must pass through the translation gate so
+                # blockquote blocks are translated along with
+                # the main text instead of being published in
+                # the source language.
+                #
+                # The same persian_specific_chars fast-path
+                # used inside try_automatic_persian_translation_gate
+                # is applied here to avoid re-entering the gate
+                # for already-Persian content.
+                # -----------------------------------------
+
+                _rich_persian_chars = set(
+                    "پچژگکیۀة"
+                )
+
+                _rich_text_for_check = (
+                    cleaned_main_text.strip()
+                )
+
+                _rich_needs_translation = (
+                    bool(_rich_text_for_check)
+                    and not any(
+                        ch in _rich_persian_chars
+                        for ch in _rich_text_for_check
+                    )
+                )
+
+                if _rich_needs_translation:
+
+                    rich_translation_gate = (
+                        try_automatic_persian_translation_gate(
+                            chat_id=chat_id,
+                            text=cleaned_main_text,
+                            source_kind="message",
+                            forward_source=forward_source,
+                            source_key=(
+                                incoming_source_key
+                            ),
+                            files=(
+                                rich_files
+                                or None
+                            ),
+                            media_presentation=(
+                                "slideshow"
+                                if rich_content.has_slideshow
+                                else (
+                                    "collage"
+                                    if rich_content.has_collage
+                                    else ""
+                                )
+                            ),
+                            blockquote_blocks=(
+                                final_blockquotes
+                                or None
+                            ),
+                            expandable_blocks=(
+                                final_expandable
+                                or None
+                            ),
+                        )
+                    )
+
+                    if rich_translation_gate is not None:
+
+                        logger.info(
+                            f"[{req_id}] "
+                            f"🌐 RICH-TRANSLATION-GATE | "
+                            f"user={chat_id} | "
+                            f"blockquotes={len(final_blockquotes)} | "
+                            f"expandable={len(final_expandable)}"
+                        )
+
+                        return (
+                            rich_translation_gate,
+                            200,
+                        )
 
                 # -----------------------------------------
                 # NORMAL RICH MESSAGE PUBLICATION

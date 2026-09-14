@@ -48,6 +48,19 @@ HASH_PATTERN = re.compile(
 
 
 # =========================================================
+# PRESERVED EDITORIAL HASHTAGS
+#
+# These breaking-news / editorial markers must survive the
+# foreign-mention cleanup pass.  They are user-visible
+# headline decorations, not source attribution tags.
+# =========================================================
+
+PRESERVED_EDITORIAL_HASHTAGS: frozenset = frozenset({
+    "#فوری",
+})
+
+
+# =========================================================
 # INVITE / FOLLOW PATTERNS
 # =========================================================
 
@@ -500,6 +513,10 @@ def clean_foreign_mentions_and_hashtags(
     def replace_hash(match):
 
         full = match.group(0)
+
+        if full in PRESERVED_EDITORIAL_HASHTAGS:
+
+            return full
 
         if (
             HASHTAG

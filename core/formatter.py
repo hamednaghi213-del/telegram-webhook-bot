@@ -564,7 +564,8 @@ def strip_trailing_source_icons(
 def remove_source_signature(
     text: str,
     source_title: Optional[str] = None,
-    source_username: Optional[str] = None
+    source_username: Optional[str] = None,
+    is_forwarded: bool = False,
 ) -> str:
     if not text:
         return ""
@@ -655,7 +656,13 @@ def remove_source_signature(
     # can be applied later; classify a standalone URL on the final line as the
     # same source footer. Requiring forwarded-source metadata, a preceding
     # content line, and final position preserves legitimate body links.
-    if source_title or source_username:
+    #
+    # is_forwarded=True decouples the positional URL check from named-source
+    # identity: we know the content is forwarded/sourced even when the channel
+    # has no public title or username (private/hidden channel).  All other
+    # identity-matching blocks (is_source_line, promotional footer,
+    # adjacent-label) remain gated on source_title/source_username as before.
+    if source_title or source_username or is_forwarded:
         non_empty_indexes = [
             index
             for index in range(

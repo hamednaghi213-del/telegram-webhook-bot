@@ -475,19 +475,23 @@ def build_translation_publication_payload(
         )
 
     forward_source = metadata.get("forward_source")
-    if isinstance(forward_source, dict) and (
-        forward_source.get("source_title")
-        or forward_source.get("source_username")
-    ):
-        from core.formatter import remove_source_signature
+    if isinstance(forward_source, dict):
+        _source_title = forward_source.get("source_title") or ""
+        _source_username = forward_source.get("source_username") or ""
+        _is_forwarded = bool(forward_source.get("is_forwarded"))
+        if _source_title or _source_username or _is_forwarded:
+            from core.formatter import remove_source_signature
 
-        # Reuse only shared source cleanup: full formatting would remove
-        # body URLs and could rewrite the user's confirmed translation.
-        final_text = remove_source_signature(
-            final_text,
-            source_title=forward_source.get("source_title"),
-            source_username=forward_source.get("source_username"),
-        )
+            # Reuse only shared source cleanup: full formatting would remove
+            # body URLs and could rewrite the user's confirmed translation.
+            # is_forwarded enables positional trailing-URL removal even when
+            # the source channel has no public title or username.
+            final_text = remove_source_signature(
+                final_text,
+                source_title=_source_title or None,
+                source_username=_source_username or None,
+                is_forwarded=_is_forwarded,
+            )
 
     return {
         "main_text":

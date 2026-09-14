@@ -1159,6 +1159,211 @@ def _execute_translation(
     # MANUAL FLOW ALWAYS REQUIRES PREVIEW
     # =====================================================
 
+    # -------------------------------------------------
+    # BLOCKQUOTE / EXPANDABLE BLOCK TRANSLATION
+    #
+    # Translate each detached block separately using the
+    # same pipeline and policy as the main text.
+    # Fail closed: if a block translation fails, store an
+    # empty text so the downstream omits it rather than
+    # publishing a foreign-language block.
+    # Only type and translated text are stored — the
+    # downstream (build_plain_caption_with_entities)
+    # recalculates UTF-16 offsets from the assembled
+    # caption string; original offsets must not be reused.
+    # -------------------------------------------------
+
+    _raw_blockquote_blocks = list(
+        (
+            language_state.metadata
+            or {}
+        ).get(
+            "blockquote_blocks",
+            [],
+        )
+        or []
+    )
+
+    _raw_expandable_blocks = list(
+        (
+            language_state.metadata
+            or {}
+        ).get(
+            "expandable_blocks",
+            [],
+        )
+        or []
+    )
+
+    def _translate_single_block(
+        block_text: str,
+    ) -> str:
+        """Translate one block text; return empty string on failure."""
+
+        if not block_text.strip():
+            return ""
+
+        try:
+
+            block_result = (
+                run_manual_translation_pipeline(
+                    text=block_text,
+                    policy=policy,
+                    target_language=(
+                        target_language
+                    ),
+                    content_kind=(
+                        language_state.source_kind
+                        or "text"
+                    ),
+                    semantic_quality=True,
+                    quality_retries=1,
+                )
+            )
+
+            block_success = bool(
+                getattr(
+                    block_result,
+                    "success",
+                    False,
+                )
+            )
+
+            block_status = str(
+                getattr(
+                    block_result,
+                    "status",
+                    "",
+                )
+                or ""
+            ).strip()
+
+            block_translated = (
+                _pipeline_output_text(
+                    block_result
+                )
+            )
+
+            if (
+                block_success
+                and block_status
+                not in {
+                    PIPELINE_BLOCKED,
+                    PIPELINE_FAILED,
+                }
+                and block_translated
+            ):
+                return block_translated
+
+        except Exception as _block_exc:
+
+            logger.warning(
+                "⚠️ Block translation failed | "
+                "review_id=%s | target=%s | %s",
+                language_state.review_id,
+                target_language,
+                _block_exc,
+            )
+
+        # Fail closed: empty string causes downstream to omit this block.
+        return ""
+
+    _translated_blockquote_blocks: list = []
+
+    for _block in _raw_blockquote_blocks:
+
+        _block_text = str(
+            _block.get("text", "")
+            or ""
+        ).strip()
+
+        _block_translated_text = (
+            _translate_single_block(
+                _block_text
+            )
+        )
+
+        if _block_translated_text:
+
+            _translated_blockquote_blocks.append({
+                "type": _block.get(
+                    "type",
+                    "blockquote",
+                ),
+                "text": _block_translated_text,
+            })
+
+        else:
+
+            logger.info(
+                "⏭️ Blockquote block omitted "
+                "(translation empty/failed) | "
+                "review_id=%s",
+                language_state.review_id,
+            )
+
+    _translated_expandable_blocks: list = []
+
+    for _block in _raw_expandable_blocks:
+
+        _block_text = str(
+            _block.get("text", "")
+            or ""
+        ).strip()
+
+        _block_translated_text = (
+            _translate_single_block(
+                _block_text
+            )
+        )
+
+        if _block_translated_text:
+
+            _translated_expandable_blocks.append({
+                "type": _block.get(
+                    "type",
+                    "expandable_blockquote",
+                ),
+                "text": _block_translated_text,
+            })
+
+        else:
+
+            logger.info(
+                "⏭️ Expandable block omitted "
+                "(translation empty/failed) | "
+                "review_id=%s",
+                language_state.review_id,
+            )
+
+    # Merge translated block lists into pipeline_state_metadata so they
+    # are persisted alongside the translated_text in set_translation_preview.
+    if _raw_blockquote_blocks or _raw_expandable_blocks:
+
+        pipeline_state_metadata = dict(
+            pipeline_state_metadata
+        )
+
+        pipeline_state_metadata[
+            "translated_blockquote_blocks"
+        ] = _translated_blockquote_blocks
+
+        pipeline_state_metadata[
+            "translated_expandable_blocks"
+        ] = _translated_expandable_blocks
+
+        logger.info(
+            "🧩 Block translation complete | "
+            "review_id=%s | "
+            "blockquotes_in=%d | blockquotes_out=%d | "
+            "expandable_in=%d | expandable_out=%d",
+            language_state.review_id,
+            len(_raw_blockquote_blocks),
+            len(_translated_blockquote_blocks),
+            len(_raw_expandable_blocks),
+            len(_translated_expandable_blocks),
+        )
+
     preview_state = (
         set_translation_preview(
             language_state.review_id,
