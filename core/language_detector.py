@@ -16,8 +16,6 @@ logger = logging.getLogger(__name__)
 # SHARED MULTILINGUAL LANGUAGE DETECTOR
 # =========================================================
 #
-# EXISTING FILE — FULL REPLACEMENT
-#
 # This module is intentionally:
 #
 # - deterministic
@@ -45,9 +43,16 @@ logger = logging.getLogger(__name__)
 #
 #     language_detection_provider.py
 #
-# This prevents false confidence and supports arbitrary source
-# languages more safely.
+# In addition, an uncertain result may carry:
 #
+#     metadata["clearly_non_persian"] = True
+#
+# when deterministic evidence is sufficient to prove that the
+# text is not Persian even though the exact source language
+# cannot safely be identified.
+#
+# This allows the automatic Persian-translation gate to survive
+# provider outages without guessing a language.
 # =========================================================
 
 
@@ -198,12 +203,6 @@ SCRIPT_RANGES: Dict[str, Tuple[Tuple[int, int], ...]] = {
 # =========================================================
 # SHARED SCRIPT POLICY
 # =========================================================
-#
-# These scripts are used by multiple natural languages.
-#
-# A script-only result for these scripts MUST NOT be treated
-# as reliable language identification.
-# =========================================================
 
 SHARED_LANGUAGE_SCRIPTS: Set[str] = {
     "arabic",
@@ -245,12 +244,29 @@ PERSIAN_WORDS: Set[str] = {
     "گفت",
     "کشور",
     "ایران",
+    "دولت",
+    "رئیس",
+    "وزیر",
+    "مردم",
+    "سال",
+    "روز",
+    "خبر",
+    "گزارش",
+    "اعلام",
+    "درباره",
+    "پس",
+    "پیش",
+    "هم",
+    "او",
+    "آنها",
+    "آن‌ها",
 }
 
 ARABIC_WORDS: Set[str] = {
     "في",
     "من",
     "إلى",
+    "الى",
     "على",
     "عن",
     "هذا",
@@ -270,6 +286,26 @@ ARABIC_WORDS: Set[str] = {
     "إن",
     "هو",
     "هي",
+    "ما",
+    "لم",
+    "لن",
+    "قد",
+    "حتى",
+    "أو",
+    "او",
+    "أمام",
+    "خلال",
+    "حول",
+    "اليوم",
+    "الرئيس",
+    "الدولة",
+    "الحكومة",
+    "الولايات",
+    "إيران",
+    "ايران",
+    "ترامب",
+    "جزيرة",
+    "سيناريو",
 }
 
 URDU_WORDS: Set[str] = {
@@ -318,6 +354,49 @@ ENGLISH_WORDS: Set[str] = {
     "has",
     "have",
     "said",
+    "says",
+    "say",
+    "after",
+    "before",
+    "about",
+    "into",
+    "over",
+    "under",
+    "amid",
+    "against",
+    "between",
+    "during",
+    "without",
+    "through",
+    "their",
+    "they",
+    "them",
+    "his",
+    "her",
+    "he",
+    "she",
+    "it",
+    "its",
+    "who",
+    "what",
+    "when",
+    "where",
+    "why",
+    "how",
+    "new",
+    "president",
+    "government",
+    "official",
+    "officials",
+    "report",
+    "reports",
+    "request",
+    "records",
+    "families",
+    "consider",
+    "releasing",
+    "release",
+    "trump",
 }
 
 FRENCH_WORDS: Set[str] = {
@@ -947,7 +1026,18 @@ def _unknown_result(
     metadata: Optional[
         Dict[str, Any]
     ] = None,
+    clearly_non_persian: bool = False,
 ) -> LanguageDetectionResult:
+
+    data = dict(
+        metadata
+        or {}
+    )
+
+    if clearly_non_persian:
+        data[
+            "clearly_non_persian"
+        ] = True
 
     return _make_result(
         language=LANGUAGE_AUTO,
@@ -957,7 +1047,7 @@ def _unknown_result(
         is_mixed=is_mixed,
         alternatives=alternatives,
         reason=reason,
-        metadata=metadata,
+        metadata=data,
     )
 
 
@@ -1100,7 +1190,31 @@ def _detect_arabic_script_language(
             metadata=metadata,
         )
 
-    # Arabic needs lexical evidence, not merely Arabic script.
+    # Strong Arabic-character evidence.
+    #
+    # Arabic script itself is shared, but repeated Arabic-specific
+    # letters combined with a score lead over Persian is enough to
+    # identify ordinary Arabic text without requiring three common
+    # function words.
+    if (
+        winner == "ar"
+        and ar_chars >= 3
+        and winner_score
+        >= second_score + 2
+    ):
+
+        return _make_result(
+            language="ar",
+            confidence=0.93,
+            script="arabic",
+            reliable=True,
+            is_mixed=is_mixed,
+            alternatives=("fa", "ur"),
+            reason="strong_arabic_character_evidence",
+            metadata=metadata,
+        )
+
+    # Arabic lexical evidence.
     if (
         winner == "ar"
         and ar_words >= 3
@@ -1116,6 +1230,28 @@ def _detect_arabic_script_language(
             is_mixed=is_mixed,
             alternatives=("fa", "ur"),
             reason="strong_arabic_lexical_evidence",
+            metadata=metadata,
+        )
+
+    # A combination of Arabic lexical + character evidence can
+    # identify short headlines that do not contain three function
+    # words.
+    if (
+        winner == "ar"
+        and ar_words >= 1
+        and ar_chars >= 2
+        and winner_score
+        >= second_score + 2
+    ):
+
+        return _make_result(
+            language="ar",
+            confidence=0.90,
+            script="arabic",
+            reliable=True,
+            is_mixed=is_mixed,
+            alternatives=("fa", "ur"),
+            reason="combined_arabic_evidence",
             metadata=metadata,
         )
 
@@ -1158,10 +1294,34 @@ def _detect_arabic_script_language(
             metadata=metadata,
         )
 
-    # Shared script remains ambiguous.
+    # We may still know safely that this is not Persian even
+    # though exact Arabic/Urdu identification remains uncertain.
+    clearly_non_persian = bool(
+        (
+            ar_chars >= 2
+            and ar_chars > fa_chars
+        )
+        or (
+            ur_chars >= 2
+            and ur_chars > fa_chars
+        )
+        or (
+            ar_words >= 2
+            and ar_words > fa_words
+        )
+        or (
+            ur_words >= 2
+            and ur_words > fa_words
+        )
+    )
+
     return _unknown_result(
         script="arabic",
-        confidence=0.55,
+        confidence=(
+            0.68
+            if clearly_non_persian
+            else 0.55
+        ),
         is_mixed=is_mixed,
         alternatives=(
             "fa",
@@ -1169,9 +1329,14 @@ def _detect_arabic_script_language(
             "ur",
         ),
         reason=(
-            "arabic_script_language_ambiguous"
+            "arabic_script_non_persian_but_language_ambiguous"
+            if clearly_non_persian
+            else "arabic_script_language_ambiguous"
         ),
         metadata=metadata,
+        clearly_non_persian=(
+            clearly_non_persian
+        ),
     )
 
 
@@ -1272,11 +1437,11 @@ def _detect_cyrillic_language(
             metadata=metadata,
         )
 
-    # Bulgarian, Serbian, Macedonian, Belarusian, Kazakh,
-    # Kyrgyz, Tajik, Mongolian and others also use Cyrillic.
+    # Any meaningful Cyrillic-only text is safely non-Persian,
+    # even when the exact Cyrillic language is unknown.
     return _unknown_result(
         script="cyrillic",
-        confidence=0.50,
+        confidence=0.70,
         is_mixed=is_mixed,
         alternatives=(
             "ru",
@@ -1291,9 +1456,10 @@ def _detect_cyrillic_language(
             "mn",
         ),
         reason=(
-            "cyrillic_language_ambiguous"
+            "cyrillic_non_persian_language_ambiguous"
         ),
         metadata=metadata,
+        clearly_non_persian=True,
     )
 
 
@@ -1354,7 +1520,6 @@ def _detect_latin_language(
             markers,
         )
 
-    # Strong orthographic evidence.
     scores["tr"] += (
         _character_marker_score(
             text,
@@ -1425,9 +1590,6 @@ def _detect_latin_language(
             ),
     }
 
-    # We intentionally require more than a single common marker.
-    #
-    # This prevents Latin text from silently becoming English.
     if (
         winner_score >= 4
         and winner_score
@@ -1459,8 +1621,6 @@ def _detect_latin_language(
             metadata=metadata,
         )
 
-    # A longer text with several coherent markers can be accepted
-    # with slightly lower margin.
     if (
         len(
             words
@@ -1472,7 +1632,7 @@ def _detect_latin_language(
 
         return _make_result(
             language=winner,
-            confidence=0.84,
+            confidence=0.89,
             script="latin",
             reliable=True,
             is_mixed=is_mixed,
@@ -1485,10 +1645,45 @@ def _detect_latin_language(
             metadata=metadata,
         )
 
-    # Latin is shared by hundreds of languages.
+    # Short English headlines often contain only two or three
+    # highly useful markers. Accept them when English clearly
+    # dominates the other Latin candidates.
+    if (
+        winner == "en"
+        and len(words) >= 5
+        and winner_score >= 2
+        and winner_score
+        >= second_score + 2
+    ):
+
+        return _make_result(
+            language="en",
+            confidence=0.90,
+            script="latin",
+            reliable=True,
+            is_mixed=is_mixed,
+            alternatives=tuple(
+                language
+                for language, _
+                in ordered[1:4]
+            ),
+            reason="short_english_headline_evidence",
+            metadata=metadata,
+        )
+
+    # Latin text is never Persian. We intentionally do not invent
+    # an exact Latin-script language when lexical evidence is weak.
+    clearly_non_persian = (
+        len(words) >= 2
+    )
+
     return _unknown_result(
         script="latin",
-        confidence=0.45,
+        confidence=(
+            0.70
+            if clearly_non_persian
+            else 0.45
+        ),
         is_mixed=is_mixed,
         alternatives=tuple(
             language
@@ -1499,8 +1694,15 @@ def _detect_latin_language(
                 0,
             ) > 0
         ),
-        reason="latin_language_ambiguous",
+        reason=(
+            "latin_non_persian_language_ambiguous"
+            if clearly_non_persian
+            else "latin_language_ambiguous"
+        ),
         metadata=metadata,
+        clearly_non_persian=(
+            clearly_non_persian
+        ),
     )
 
 
@@ -1540,7 +1742,6 @@ def _detect_cjk_language(
             profile,
     }
 
-    # Hangul is highly informative for Korean.
     if hangul >= 2:
 
         return _make_result(
@@ -1554,7 +1755,6 @@ def _detect_cjk_language(
             metadata=metadata,
         )
 
-    # Kana strongly identifies Japanese.
     if (
         hiragana >= 2
         or katakana >= 2
@@ -1575,20 +1775,19 @@ def _detect_cjk_language(
             metadata=metadata,
         )
 
-    # Han-only text may be Chinese, Japanese, Classical Chinese,
-    # or another context. Do not force Chinese solely from Han.
     if han > 0:
 
         return _unknown_result(
             script="han",
-            confidence=0.60,
+            confidence=0.70,
             is_mixed=is_mixed,
             alternatives=(
                 "zh",
                 "ja",
             ),
-            reason="han_only_language_ambiguous",
+            reason="han_non_persian_language_ambiguous",
             metadata=metadata,
+            clearly_non_persian=True,
         )
 
     return _unknown_result(
@@ -1609,21 +1808,10 @@ def _detect_devanagari_language(
     is_mixed: bool,
     profile: Dict[str, int],
 ) -> LanguageDetectionResult:
-    """
-    Deliberately NEVER maps Devanagari directly to Hindi.
-
-    Devanagari is used by several languages including Hindi,
-    Marathi, Nepali, Sanskrit and others.
-
-    The deterministic layer does not contain enough robust
-    linguistic evidence to distinguish all of them safely.
-
-    Provider fallback is therefore REQUIRED.
-    """
 
     return _unknown_result(
         script="devanagari",
-        confidence=0.55,
+        confidence=0.70,
         is_mixed=is_mixed,
         alternatives=(
             "hi",
@@ -1632,7 +1820,7 @@ def _detect_devanagari_language(
             "sa",
         ),
         reason=(
-            "devanagari_shared_script_requires_provider"
+            "devanagari_non_persian_language_requires_provider"
         ),
         metadata={
             "script_profile":
@@ -1641,15 +1829,12 @@ def _detect_devanagari_language(
             "provider_fallback_recommended":
                 True,
         },
+        clearly_non_persian=True,
     )
 
 
 # =========================================================
 # DIRECT SCRIPT LANGUAGES
-# =========================================================
-#
-# These mappings are substantially safer because the script is
-# strongly associated with the language in ordinary modern text.
 # =========================================================
 
 DIRECT_SCRIPT_LANGUAGES: Dict[
@@ -1720,10 +1905,6 @@ def detect_language(
             metadata=metadata,
         )
 
-    # Highly mixed text should be conservative.
-    #
-    # We still allow Japanese/Korean where mixed Han + Kana/Hangul
-    # is normal for the language itself.
     if (
         is_mixed
         and script not in {
@@ -1735,12 +1916,31 @@ def detect_language(
         and script_ratio < 0.70
     ):
 
+        # Mixed content that is dominated by a non-Arabic script
+        # can still be safely classified as non-Persian even when
+        # the exact source language is ambiguous.
+        clearly_non_persian = (
+            script != "arabic"
+            and script_ratio >= 0.50
+        )
+
         return _unknown_result(
             script=script,
-            confidence=0.40,
+            confidence=(
+                0.65
+                if clearly_non_persian
+                else 0.40
+            ),
             is_mixed=True,
-            reason="mixed_script_language_ambiguous",
+            reason=(
+                "mixed_script_clearly_non_persian"
+                if clearly_non_persian
+                else "mixed_script_language_ambiguous"
+            ),
             metadata=metadata,
+            clearly_non_persian=(
+                clearly_non_persian
+            ),
         )
 
     if script == "arabic":
@@ -1809,12 +2009,17 @@ def detect_language(
             metadata=metadata,
         )
 
+    # Any supported non-Arabic script at this point is not
+    # Persian, even when exact language mapping is unavailable.
     return _unknown_result(
         script=script,
-        confidence=0.35,
+        confidence=0.65,
         is_mixed=is_mixed,
-        reason="unsupported_or_ambiguous_script",
+        reason="unsupported_non_persian_script",
         metadata=metadata,
+        clearly_non_persian=(
+            script != "arabic"
+        ),
     )
 
 
@@ -1827,13 +2032,6 @@ def get_translation_source_language(
         LanguageDetectionResult
     ],
 ) -> str:
-    """
-    Return a source language only when deterministic detection is
-    safe enough for the Translation Pipeline.
-
-    Any uncertain result becomes "auto", which instructs the
-    pipeline to use provider language detection.
-    """
 
     if result is None:
         return LANGUAGE_AUTO
@@ -1884,10 +2082,6 @@ def get_translation_source_language(
     }:
         return LANGUAGE_AUTO
 
-    # Stronger threshold for shared scripts.
-    #
-    # Even when a heuristic says "reliable", a shared script
-    # requires high confidence before provider fallback is skipped.
     if (
         script
         in SHARED_LANGUAGE_SCRIPTS
@@ -1899,6 +2093,64 @@ def get_translation_source_language(
         return LANGUAGE_AUTO
 
     return language
+
+
+# =========================================================
+# CLEAR NON-PERSIAN SIGNAL
+# =========================================================
+
+def detection_is_clearly_non_persian(
+    result: Optional[
+        LanguageDetectionResult
+    ],
+) -> bool:
+    """
+    Return True only when deterministic evidence proves that
+    the content is not Persian.
+
+    This does NOT imply that the exact source language is known.
+
+    It is specifically designed for provider-outage fallback:
+    the caller may safely route such content into Persian
+    translation with source_language="auto".
+    """
+
+    if result is None:
+        return False
+
+    source_language = (
+        get_translation_source_language(
+            result
+        )
+    )
+
+    if (
+        source_language
+        and source_language
+        != LANGUAGE_AUTO
+    ):
+        return (
+            source_language
+            != "fa"
+        )
+
+    metadata = getattr(
+        result,
+        "metadata",
+        {},
+    )
+
+    if isinstance(
+        metadata,
+        dict,
+    ):
+        return bool(
+            metadata.get(
+                "clearly_non_persian"
+            )
+        )
+
+    return False
 
 
 # =========================================================
@@ -1949,15 +2201,12 @@ def detection_requires_provider(
         )
     )
 
-    # Mixed text deserves provider verification unless deterministic
-    # evidence is extremely strong.
     if (
         is_mixed
         and confidence < 0.94
     ):
         return True
 
-    # Shared scripts need higher confidence.
     if (
         script
         in SHARED_LANGUAGE_SCRIPTS
@@ -1979,13 +2228,6 @@ def detect_content_language(
     title: str = "",
     body: str = "",
 ) -> LanguageDetectionResult:
-    """
-    Detect language from generic content fields without making any
-    assumptions about the content type.
-
-    Longer semantic body text is preferred, but all available
-    fields are combined.
-    """
 
     parts: List[str] = []
 
@@ -2071,6 +2313,9 @@ def language_detection_diagnostics(
 
             "provider_required":
                 True,
+
+            "clearly_non_persian":
+                False,
         }
 
     return {
@@ -2102,6 +2347,11 @@ def language_detection_diagnostics(
 
         "provider_required":
             detection_requires_provider(
+                result
+            ),
+
+        "clearly_non_persian":
+            detection_is_clearly_non_persian(
                 result
             ),
 
