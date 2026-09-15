@@ -4520,25 +4520,47 @@ def translate_external_content_to_persian(
         build_multilingual_policy,
     )
 
-    source_language = (
+    detection = (
         detect_pipeline_source_language(
             combined_source
         )
-        .get(
+        or {}
+    )
+
+    source_language = str(
+        detection.get(
             "language",
             "auto",
         )
         or "auto"
-    )
+    ).strip().lower()
 
     # Already-Persian content keeps the current resolution unchanged.
     if source_language == "fa":
         return content, None
 
-    if str(source_language).strip().lower() in {
+    # Universal language policy:
+    # an exact source-language label is not required. If the shared
+    # provider cannot name the language, deterministic evidence only
+    # needs to prove that the text is clearly non-Persian.
+    if source_language in {
         "", "auto", "unknown", "und", "uncertain",
     }:
-        return None, "source_language_uncertain"
+        from core.language_detector import (
+            detect_language,
+            detection_is_clearly_non_persian,
+        )
+
+        deterministic_detection = detect_language(
+            combined_source
+        )
+
+        if not detection_is_clearly_non_persian(
+            deterministic_detection
+        ):
+            return None, "source_language_uncertain"
+
+        source_language = "auto"
 
     policy = (
         build_multilingual_policy(
@@ -4689,19 +4711,11 @@ def try_automatic_persian_translation_gate(
     if not source_text:
         return None
 
-    # Clear Persian text must keep the existing publication path.
-    # This deterministic fast-path also prevents unnecessary AI/provider
-    # calls for ordinary Persian content.
-    persian_specific_chars = set(
-        "پچژگکیۀة"
-    )
+    # Do not guess Persian from a small character set.
+    # Arabic-script languages share characters with Persian. The shared
+    # automatic translation gate is the only authority for deciding
+    # Persian passthrough vs non-Persian translation.
 
-    if any(
-        char in persian_specific_chars
-        for char in source_text
-    ):
-        return None
-    
     result = None
     from core.translation_publication import translation_ui_message
 
@@ -6387,35 +6401,17 @@ def handle_webhook() -> Tuple[
                 # -----------------------------------------
                 # TRANSLATION GATE
                 #
-                # Rich messages with non-Persian main text
-                # must pass through the translation gate so
-                # blockquote blocks are translated along with
-                # the main text instead of being published in
-                # the source language.
-                #
-                # The same persian_specific_chars fast-path
-                # used inside try_automatic_persian_translation_gate
-                # is applied here to avoid re-entering the gate
-                # for already-Persian content.
+                # Every non-empty Rich Message uses the same shared
+                # language decision. Persian passes through unchanged;
+                # every clearly non-Persian language is routed to the
+                # existing Persian translation review.
                 # -----------------------------------------
-
-                _rich_persian_chars = set(
-                    "پچژگکیۀة"
-                )
 
                 _rich_text_for_check = (
                     cleaned_main_text.strip()
                 )
 
-                _rich_needs_translation = (
-                    bool(_rich_text_for_check)
-                    and not any(
-                        ch in _rich_persian_chars
-                        for ch in _rich_text_for_check
-                    )
-                )
-
-                if _rich_needs_translation:
+                if _rich_text_for_check:
 
                     rich_translation_gate = (
                         try_automatic_persian_translation_gate(
@@ -6983,3 +6979,4 @@ def handle_webhook() -> Tuple[
                     e
                 )
         }, 500
+
