@@ -689,22 +689,25 @@ def _default_translation_provider() -> Any:
     try:
 
         from core.translation_provider import (
-            get_default_translation_provider,
+            configure_default_translation_providers,
         )
 
-        return (
-            get_default_translation_provider()
+        from core.translation_provider_chain import (
+            translation_provider_chain,
         )
+
+        configure_default_translation_providers()
+
+        return translation_provider_chain
 
     except Exception as exc:
 
         logger.warning(
-            "⚠️ TRANSLATION-PROVIDER unavailable | %s",
+            "⚠️ TRANSLATION-PROVIDER-CHAIN unavailable | %s",
             exc,
         )
 
         return None
-
 
 # =========================================================
 # TRANSLATION
@@ -2583,3 +2586,4 @@ def describe_translation_pipeline_result(
                 or {}
             ),
     }
+
