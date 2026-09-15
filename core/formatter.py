@@ -684,37 +684,48 @@ def remove_source_signature(
                     final_index
                 )
 
-        # A confirmed source footer may end with a decorated bare domain/URL,
-        # for example: "🔷 isna.ir/xdX5kg". Telegram/source channels often
-        # omit the scheme, so the standalone-source URL rule above does not
-        # catch it. Restrict this rule to the trailing four non-empty lines,
-        # require forwarded/source context, and require leading footer
-        # decoration. This keeps ordinary body URLs untouched.
-        for index in non_empty_indexes[-4:]:
-            raw_candidate = normalize_invisible_characters(
-                lines[index]
-            ).strip()
+    # A source footer can be a decorated bare domain even when this
+    # formatting path does not receive forwarded-source metadata.
+    # Example: "🔷 isna.ir/xdX5kg".
+    #
+    # Restrict the rule to the trailing four non-empty lines and require
+    # both a known footer decoration and a full bare-domain/URL match.
+    # Ordinary body URLs remain untouched, and destination branding is
+    # appended later by add_branding().
+    non_empty_tail_indexes = [
+        index
+        for index in range(
+            start_index,
+            len(lines)
+        )
+        if lines[index].strip()
+    ]
 
-            has_footer_decoration = any(
-                raw_candidate.startswith(decoration)
-                for decoration in (KNOWN_BULLETS + SOURCE_ICONS)
+    for index in non_empty_tail_indexes[-4:]:
+        raw_candidate = normalize_invisible_characters(
+            lines[index]
+        ).strip()
+
+        has_footer_decoration = any(
+            raw_candidate.startswith(decoration)
+            for decoration in (KNOWN_BULLETS + SOURCE_ICONS)
+        )
+
+        undecorated_candidate = strip_leading_decoration(
+            raw_candidate
+        ).strip()
+
+        if (
+            has_footer_decoration
+            and adjacent_source_domain_pattern.fullmatch(
+                source_url_candidate(
+                    undecorated_candidate
+                )
             )
-
-            undecorated_candidate = strip_leading_decoration(
-                raw_candidate
-            ).strip()
-
-            if (
-                has_footer_decoration
-                and adjacent_source_domain_pattern.fullmatch(
-                    source_url_candidate(
-                        undecorated_candidate
-                    )
-                )
-            ):
-                removable_indexes.add(
-                    index
-                )
+        ):
+            removable_indexes.add(
+                index
+            )
 
     if removable_indexes:
         changed = True
@@ -1215,4 +1226,3 @@ def process_news(
         )
 
     return formatted
-
