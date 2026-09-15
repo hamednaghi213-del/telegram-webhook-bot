@@ -25,16 +25,20 @@ logger = logging.getLogger(__name__)
 # =========================================================
 
 GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
+DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
+DEEPSEEK_MODEL_ENV = "DEEPSEEK_MODEL"
 TRANSLATION_MODEL_ENV = "TRANSLATION_MODEL"
 GEMINI_MODEL_ENV = "GEMINI_MODEL"
 TRANSLATION_TIMEOUT_ENV = "TRANSLATION_TIMEOUT_SECONDS"
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_DEEPSEEK_MODEL = "deepseek-flash"
 DEFAULT_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 180
 MIN_TIMEOUT_SECONDS = 10
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+DEEPSEEK_API_BASE = "https://api.deepseek.com"
 
 
 # =========================================================
@@ -203,6 +207,14 @@ def _clean_env(name: str, default: str = "") -> str:
 
 def get_gemini_api_key() -> str:
     return _clean_env(GEMINI_API_KEY_ENV)
+
+
+def get_deepseek_api_key() -> str:
+    return _clean_env(DEEPSEEK_API_KEY_ENV)
+
+
+def get_deepseek_model() -> str:
+    return _clean_env(DEEPSEEK_MODEL_ENV, DEFAULT_DEEPSEEK_MODEL)
 
 
 def get_translation_model() -> str:
@@ -402,7 +414,7 @@ def gemini_translation_provider(
     }
 
     logger.info(
-        "ð Gemini translation request | "
+        "🌐 Gemini translation request | "
         "model=%s | source=%s | target=%s | input_length=%s",
         model,
         source_language,
@@ -420,7 +432,7 @@ def gemini_translation_provider(
 
     except requests.Timeout as exc:
         logger.warning(
-            "â ï¸ Gemini translation timeout | "
+            "⚠️ Gemini translation timeout | "
             "model=%s | target=%s | timeout=%s",
             model,
             target_language,
@@ -481,7 +493,7 @@ def gemini_translation_provider(
 
     if not translated_text:
         logger.error(
-            "â Gemini translation returned no text | "
+            "❌ Gemini translation returned no text | "
             "model=%s | source=%s | target=%s",
             model,
             source_language,
@@ -495,7 +507,7 @@ def gemini_translation_provider(
         )
 
     logger.info(
-        "â Gemini translation response | "
+        "✅ Gemini translation response | "
         "model=%s | source=%s | target=%s | output_length=%s",
         model,
         source_language,
@@ -503,6 +515,132 @@ def gemini_translation_provider(
         len(translated_text),
     )
 
+    return translated_text
+
+
+# =========================================================
+# DEEPSEEK PROVIDER
+# =========================================================
+
+def _deepseek_http_provider_error(response, data, model):
+    status = response.status_code
+    delay = _seconds(response.headers.get("Retry-After"))
+
+    if status == 429:
+        category, retryable = "rate_limited", False
+    elif status in {500, 502, 503, 504}:
+        category, retryable = "transient_server", True
+    elif status in {401, 403}:
+        category, retryable = "authentication", False
+    elif status == 402:
+        category, retryable = "quota_unavailable", False
+    elif status == 404:
+        category, retryable = "configuration", False
+    elif 400 <= status < 500:
+        category, retryable = "invalid_request", False
+    else:
+        category, retryable = "unknown", False
+
+    return TranslationProviderError(
+        category,
+        http_status=status,
+        retryable=retryable,
+        retry_after_seconds=delay,
+        provider="deepseek",
+        model=model,
+    )
+
+
+def _extract_deepseek_text(payload: Dict[str, Any]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    return str(content or "").strip()
+
+
+@timed_stage(
+    "translation_generation",
+    provider="deepseek",
+    model=get_deepseek_model,
+)
+def deepseek_translation_provider(
+    *,
+    text: str,
+    instruction: str,
+    source_language: str = "auto",
+    target_language: str,
+) -> str:
+    api_key = get_deepseek_api_key()
+    model = get_deepseek_model()
+
+    if not api_key:
+        raise TranslationProviderError(
+            "configuration", provider="deepseek", model=model
+        )
+
+    prompt = _build_provider_prompt(
+        text=text,
+        instruction=instruction,
+        source_language=source_language,
+        target_language=target_language,
+    )
+
+    endpoint = f"{DEEPSEEK_API_BASE}/chat/completions"
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "thinking": {"type": "disabled"},
+        "temperature": 0.1,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    logger.info(
+        "🌐 DeepSeek translation request | model=%s | source=%s | target=%s | input_length=%s",
+        model, source_language, target_language, len(text or ""),
+    )
+
+    try:
+        response = provider_post(
+            endpoint, headers=headers, json=payload, timeout=get_translation_timeout()
+        )
+    except requests.Timeout as exc:
+        raise TranslationProviderError(
+            "timeout", retryable=True, provider="deepseek", model=model
+        ) from exc
+    except requests.RequestException as exc:
+        retryable = isinstance(exc, requests.ConnectionError) and not isinstance(
+            exc, (requests.exceptions.SSLError, requests.exceptions.ProxyError)
+        )
+        raise TranslationProviderError(
+            "connection", retryable=retryable, provider="deepseek", model=model
+        ) from exc
+
+    data = _safe_json(response)
+    if not response.ok:
+        raise _deepseek_http_provider_error(response, data, model) from requests.HTTPError(
+            "DeepSeek translation provider HTTP failure", response=response
+        )
+
+    translated_text = _extract_deepseek_text(data)
+    if not translated_text:
+        raise TranslationProviderError(
+            "invalid_response", provider="deepseek", model=model
+        )
+
+    logger.info(
+        "✅ DeepSeek translation response | model=%s | source=%s | target=%s | output_length=%s",
+        model, source_language, target_language, len(translated_text),
+    )
     return translated_text
 
 
@@ -523,6 +661,15 @@ def configure_default_translation_providers() -> None:
             name="gemini",
             provider=gemini_translation_provider,
             priority=10,
+            enabled=True,
+            replace=True,
+        )
+
+    if get_deepseek_api_key():
+        register_translation_provider(
+            name="deepseek",
+            provider=deepseek_translation_provider,
+            priority=20,
             enabled=True,
             replace=True,
         )
@@ -585,3 +732,4 @@ def describe_translation_provider() -> Dict[str, Any]:
         "provider_chain": provider_names,
         "registry": registry,
     }
+
