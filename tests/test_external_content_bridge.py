@@ -280,7 +280,25 @@ def test_text_only_external_content_becomes_prepared_content():
         result.prepared_content.main_text
         == (
             "Main Headline\n\n"
-            "به گزارش Example News، Main Lead\n\n"
+            "Main Lead"
+        )
+    )
+
+    assert len(
+        result.prepared_content.expandable_blocks
+    ) == 1
+
+    assert (
+        result.prepared_content
+        .expandable_blocks[0]["type"]
+        == "expandable_blockquote"
+    )
+
+    assert (
+        result.prepared_content
+        .expandable_blocks[0]["text"]
+        == (
+            "به گزارش Example News، "
             "Paragraph one.\n"
             "Paragraph two."
         )
@@ -295,7 +313,13 @@ def test_neutral_text_matches_external_reviewed_text():
 
     assert (
         result.prepared_content.neutral_text
-        == result.prepared_content.main_text
+        == (
+            "Main Headline\n\n"
+            "Main Lead\n\n"
+            "به گزارش Example News، "
+            "Paragraph one.\n"
+            "Paragraph two."
+        )
     )
 
 
@@ -338,14 +362,22 @@ def test_empty_lines_are_cleaned_without_rewriting_content():
         review,
     )
 
-    text = (
+    assert (
         result.prepared_content.main_text
+        == "Headline\n\nLead text"
     )
 
-    assert "Headline" in text
-    assert "Lead text" in text
-    assert "Paragraph one" in text
-    assert "Paragraph two" in text
+    assert len(
+        result.prepared_content.expandable_blocks
+    ) == 1
+
+    continuation = (
+        result.prepared_content
+        .expandable_blocks[0]["text"]
+    )
+
+    assert "Paragraph one" in continuation
+    assert "Paragraph two" in continuation
 
 
 def test_bridge_rejects_empty_text_and_empty_media():
@@ -601,7 +633,6 @@ def test_prepared_files_allow_manual_media_without_review_media():
         == "file-1"
     )
 
-
 # =========================================================
 # PRESENTATION
 # =========================================================
@@ -752,12 +783,21 @@ def test_extracted_cover_and_gallery_default_to_slideshow():
         _content(media=media),
         _review(media=media),
         prepared_files=(
-            {"type": "photo", "file_id": "file-1"},
-            {"type": "photo", "file_id": "file-2"},
+            {
+                "type": "photo",
+                "file_id": "file-1",
+            },
+            {
+                "type": "photo",
+                "file_id": "file-2",
+            },
         ),
     )
 
-    assert result.prepared_content.media_presentation == "slideshow"
+    assert (
+        result.prepared_content.media_presentation
+        == "slideshow"
+    )
 
 
 def test_single_plain_photo_does_not_force_slideshow():
@@ -820,8 +860,14 @@ def test_album_mode_forces_shared_media_group_path_for_two_or_more_images():
         _content(media=media),
         _review(media=media),
         prepared_files=(
-            {"type": "photo", "file_id": "file-1"},
-            {"type": "photo", "file_id": "file-2"},
+            {
+                "type": "photo",
+                "file_id": "file-1",
+            },
+            {
+                "type": "photo",
+                "file_id": "file-2",
+            },
         ),
         media_presentation_mode="album",
     )
@@ -860,8 +906,14 @@ def test_album_mode_overrides_explicit_slideshow_metadata():
         _content(media=media),
         _review(media=media),
         prepared_files=(
-            {"type": "photo", "file_id": "file-1"},
-            {"type": "photo", "file_id": "file-2"},
+            {
+                "type": "photo",
+                "file_id": "file-1",
+            },
+            {
+                "type": "photo",
+                "file_id": "file-2",
+            },
         ),
         media_presentation_mode="album",
     )
@@ -888,7 +940,10 @@ def test_album_mode_with_single_image_uses_existing_single_path():
         _content(media=media),
         _review(media=media),
         prepared_files=(
-            {"type": "photo", "file_id": "file-1"},
+            {
+                "type": "photo",
+                "file_id": "file-1",
+            },
         ),
         media_presentation_mode="album",
     )
@@ -941,8 +996,14 @@ def test_normal_mode_preserves_default_slideshow_behavior():
         _content(media=media),
         _review(media=media),
         prepared_files=(
-            {"type": "photo", "file_id": "file-1"},
-            {"type": "photo", "file_id": "file-2"},
+            {
+                "type": "photo",
+                "file_id": "file-1",
+            },
+            {
+                "type": "photo",
+                "file_id": "file-2",
+            },
         ),
         media_presentation_mode="normal",
     )
@@ -951,18 +1012,26 @@ def test_normal_mode_preserves_default_slideshow_behavior():
         _content(media=media),
         _review(media=media),
         prepared_files=(
-            {"type": "photo", "file_id": "file-1"},
-            {"type": "photo", "file_id": "file-2"},
+            {
+                "type": "photo",
+                "file_id": "file-1",
+            },
+            {
+                "type": "photo",
+                "file_id": "file-2",
+            },
         ),
     )
 
     assert (
-        result_explicit_normal.prepared_content.media_presentation
+        result_explicit_normal
+        .prepared_content.media_presentation
         == "slideshow"
     )
 
     assert (
-        result_default.prepared_content.media_presentation
+        result_default
+        .prepared_content.media_presentation
         == "slideshow"
     )
 
@@ -1091,6 +1160,7 @@ def test_non_visual_multi_media_does_not_force_slideshow():
         == ""
     )
 
+
 # =========================================================
 # SHARED ENGINE SIGNALS
 # =========================================================
@@ -1190,7 +1260,13 @@ def test_external_source_name_is_attributed_in_standard_visible_text():
 
     assert (
         "به گزارش Example News،"
-        in result.prepared_content.main_text
+        in result.prepared_content
+        .expandable_blocks[0]["text"]
+    )
+
+    assert (
+        "به گزارش Example News،"
+        not in result.prepared_content.main_text
     )
 
 
@@ -1207,7 +1283,6 @@ def test_external_source_name_is_not_added_when_editorial_rewrite_applied():
         "Example News"
         not in result.prepared_content.main_text
     )
-
 
 # =========================================================
 # CUSTOM SOURCE KEY
