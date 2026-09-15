@@ -1764,20 +1764,10 @@ def publish_prepared_content(
         )
     )
 
-    analyzed_publishable_text = "\n\n".join(
-        item
-        for item in (
-            analyzed.neutral_text
-            or analyzed.main_text,
-            *(
-                str(block.get("text") or "")
-                for block in (
-                    *analyzed.blockquote_blocks,
-                    *analyzed.expandable_blocks,
-                )
-            ),
-        )
-        if item
+    analyzed_primary_text = (
+        analyzed.neutral_text
+        or analyzed.main_text
+        or ""
     )
 
     analyzed_threshold = (
@@ -1786,7 +1776,11 @@ def publish_prepared_content(
         else 4096
     )
 
-    if len(analyzed_publishable_text) > analyzed_threshold:
+    # Feature Lock:
+    # Only the primary article/news body is required to remain a single
+    # semantically summarized message. Structured blockquote/expandable
+    # content keeps its established independent follow-up/splitting contract.
+    if len(analyzed_primary_text) > analyzed_threshold:
         error_code = (
             "editorial_summary_unavailable"
             if prepared.require_single_message
