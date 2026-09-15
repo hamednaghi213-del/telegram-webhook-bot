@@ -24,6 +24,10 @@ from core.translation_service import (
     TranslationResult,
 )
 
+from core.translation_provider_chain import (
+    clear_provider_cooldown,
+)
+
 from core.translation_state import (
     STATE_PREVIEW,
     STATE_WAITING_CUSTOM_LANGUAGE,
@@ -1606,6 +1610,12 @@ def retry_translation(*, review_id: str, chat_id: int, user_id: int) -> Translat
             success=False, action=RESULT_INVALID_STATE, review_id=review_id,
             reason="translation_retry_not_allowed",
         )
+
+    # A user-approved retry is a fresh execution attempt. Do not let the
+    # cooldown recorded by the previous failed attempt block the provider
+    # before TranslationService can apply its bounded retry budget.
+    clear_provider_cooldown()
+
     return _execute_translation(
         state=state, target_language=state.target_language,
         target_language_code=state.target_language_code, retry_failed=True,
@@ -2077,3 +2087,4 @@ def complete_translation_workflow(
     )
 
     return True
+
