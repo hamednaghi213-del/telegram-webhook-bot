@@ -4711,10 +4711,38 @@ def try_automatic_persian_translation_gate(
     if not source_text:
         return None
 
-    # Do not guess Persian from a small character set.
-    # Arabic-script languages share characters with Persian. The shared
-    # automatic translation gate is the only authority for deciding
-    # Persian passthrough vs non-Persian translation.
+    # Use the shared deterministic detector only for a reliable Persian
+    # passthrough. Never use a hand-written character shortcut: Arabic,
+    # Urdu and other Arabic-script languages share characters with Persian.
+    #
+    # Non-Persian text of ANY language continues into the universal
+    # translation gate. If the detector cannot name the exact language,
+    # the gate can still translate it when it is clearly non-Persian.
+    from core.language_detector import detect_language
+
+    deterministic_source_detection = detect_language(
+        source_text
+    )
+
+    if (
+        str(
+            getattr(
+                deterministic_source_detection,
+                "language",
+                "",
+            )
+            or ""
+        ).strip().lower()
+        == "fa"
+        and bool(
+            getattr(
+                deterministic_source_detection,
+                "reliable",
+                False,
+            )
+        )
+    ):
+        return None
 
     result = None
     from core.translation_publication import translation_ui_message
