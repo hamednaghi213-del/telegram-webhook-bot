@@ -1,5 +1,6 @@
 import sys
 import types
+import pytest
 
 from unittest.mock import (
     patch,
@@ -56,6 +57,20 @@ sys.modules[
 # =========================================================
 
 from core import webhook_handler
+
+
+# =========================================================
+# ISOLATE MEDIA/WEBHOOK INTEGRATION FROM TRANSLATION
+# =========================================================
+
+@pytest.fixture(autouse=True)
+def bypass_automatic_translation_gate(monkeypatch):
+
+    monkeypatch.setattr(
+        webhook_handler,
+        "try_automatic_persian_translation_gate",
+        lambda *args, **kwargs: None,
+    )
 
 
 # =========================================================
@@ -1693,3 +1708,4 @@ def test_text_message_preserves_own_branding():
         1001,
         expected_output
     )
+
