@@ -1,5 +1,6 @@
 import sys
 import types
+import pytest
 
 from unittest.mock import (
     patch,
@@ -64,6 +65,20 @@ sys.modules[
 # =========================================================
 
 from core import webhook_handler
+
+
+# =========================================================
+# ISOLATE WEBHOOK ROUTING INTEGRATION FROM TRANSLATION
+# =========================================================
+
+@pytest.fixture(autouse=True)
+def bypass_automatic_translation_gate(monkeypatch):
+
+    monkeypatch.setattr(
+        webhook_handler,
+        "try_automatic_persian_translation_gate",
+        lambda *args, **kwargs: None,
+    )
 
 # =========================================================
 # FAKE FLASK REQUEST
@@ -2366,3 +2381,4 @@ def test_publish_prepared_text_split_blockquote_keeps_parse_modes_per_piece():
         "#دنیا_۲۴_نیوز"
         in last_call.args[0]
     )
+
