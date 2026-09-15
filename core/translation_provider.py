@@ -25,20 +25,21 @@ logger = logging.getLogger(__name__)
 # =========================================================
 
 GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
-DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
-DEEPSEEK_MODEL_ENV = "DEEPSEEK_MODEL"
+CLOUDFLARE_AI_API_TOKEN_ENV = "CLOUDFLARE_AI_API_TOKEN"
+CLOUDFLARE_ACCOUNT_ID_ENV = "CLOUDFLARE_ACCOUNT_ID"
+CLOUDFLARE_AI_MODEL_ENV = "CLOUDFLARE_AI_MODEL"
 TRANSLATION_MODEL_ENV = "TRANSLATION_MODEL"
 GEMINI_MODEL_ENV = "GEMINI_MODEL"
 TRANSLATION_TIMEOUT_ENV = "TRANSLATION_TIMEOUT_SECONDS"
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
-DEFAULT_DEEPSEEK_MODEL = "deepseek-flash"
+DEFAULT_CLOUDFLARE_AI_MODEL = "@cf/zai-org/glm-4.7-flash"
 DEFAULT_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 180
 MIN_TIMEOUT_SECONDS = 10
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
-DEEPSEEK_API_BASE = "https://api.deepseek.com"
+CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4"
 
 
 # =========================================================
@@ -209,13 +210,16 @@ def get_gemini_api_key() -> str:
     return _clean_env(GEMINI_API_KEY_ENV)
 
 
-def get_deepseek_api_key() -> str:
-    return _clean_env(DEEPSEEK_API_KEY_ENV)
+def get_cloudflare_ai_api_token() -> str:
+    return _clean_env(CLOUDFLARE_AI_API_TOKEN_ENV)
 
 
-def get_deepseek_model() -> str:
-    return _clean_env(DEEPSEEK_MODEL_ENV, DEFAULT_DEEPSEEK_MODEL)
+def get_cloudflare_account_id() -> str:
+    return _clean_env(CLOUDFLARE_ACCOUNT_ID_ENV)
 
+
+def get_cloudflare_ai_model() -> str:
+    return _clean_env(CLOUDFLARE_AI_MODEL_ENV, DEFAULT_CLOUDFLARE_AI_MODEL)
 
 def get_translation_model() -> str:
     translation_model = _clean_env(TRANSLATION_MODEL_ENV)
@@ -519,10 +523,10 @@ def gemini_translation_provider(
 
 
 # =========================================================
-# DEEPSEEK PROVIDER
+# CLOUDFLARE WORKERS AI PROVIDER
 # =========================================================
 
-def _deepseek_http_provider_error(response, data, model):
+def _cloudflare_http_provider_error(response, data, model):
     status = response.status_code
     delay = _seconds(response.headers.get("Retry-After"))
 
@@ -532,7 +536,7 @@ def _deepseek_http_provider_error(response, data, model):
         category, retryable = "transient_server", True
     elif status in {401, 403}:
         category, retryable = "authentication", False
-    elif status == 402:
+    elif status in {402, 3040}:
         category, retryable = "quota_unavailable", False
     elif status == 404:
         category, retryable = "configuration", False
@@ -541,48 +545,65 @@ def _deepseek_http_provider_error(response, data, model):
     else:
         category, retryable = "unknown", False
 
+    errors = data.get("errors") if isinstance(data, dict) else None
+    if isinstance(errors, list):
+        for item in errors:
+            if not isinstance(item, dict):
+                continue
+            code = item.get("code")
+            if code in {3040, 5035}:
+                category, retryable = "quota_unavailable", False
+                break
+
     return TranslationProviderError(
         category,
         http_status=status,
         retryable=retryable,
         retry_after_seconds=delay,
-        provider="deepseek",
+        provider="cloudflare",
         model=model,
     )
 
 
-def _extract_deepseek_text(payload: Dict[str, Any]) -> str:
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices:
+def _extract_cloudflare_text(payload: Dict[str, Any]) -> str:
+    result = payload.get("result")
+    if not isinstance(result, dict):
         return ""
-    first = choices[0]
-    if not isinstance(first, dict):
-        return ""
-    message = first.get("message")
-    if not isinstance(message, dict):
-        return ""
-    content = message.get("content")
-    return str(content or "").strip()
+
+    response = result.get("response")
+    if response is not None:
+        return str(response).strip()
+
+    choices = result.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message")
+            if isinstance(message, dict):
+                return str(message.get("content") or "").strip()
+
+    return ""
 
 
 @timed_stage(
     "translation_generation",
-    provider="deepseek",
-    model=get_deepseek_model,
+    provider="cloudflare",
+    model=get_cloudflare_ai_model,
 )
-def deepseek_translation_provider(
+def cloudflare_translation_provider(
     *,
     text: str,
     instruction: str,
     source_language: str = "auto",
     target_language: str,
 ) -> str:
-    api_key = get_deepseek_api_key()
-    model = get_deepseek_model()
+    api_token = get_cloudflare_ai_api_token()
+    account_id = get_cloudflare_account_id()
+    model = get_cloudflare_ai_model()
 
-    if not api_key:
+    if not api_token or not account_id:
         raise TranslationProviderError(
-            "configuration", provider="deepseek", model=model
+            "configuration", provider="cloudflare", model=model
         )
 
     prompt = _build_provider_prompt(
@@ -592,53 +613,58 @@ def deepseek_translation_provider(
         target_language=target_language,
     )
 
-    endpoint = f"{DEEPSEEK_API_BASE}/chat/completions"
+    endpoint = f"{CLOUDFLARE_API_BASE}/accounts/{account_id}/ai/run/{model}"
     payload: Dict[str, Any] = {
-        "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "thinking": {"type": "disabled"},
         "temperature": 0.1,
+        "max_tokens": 4096,
     }
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {api_token}",
         "Content-Type": "application/json",
     }
 
     logger.info(
-        "🌐 DeepSeek translation request | model=%s | source=%s | target=%s | input_length=%s",
+        "🌐 Cloudflare translation request | model=%s | source=%s | target=%s | input_length=%s",
         model, source_language, target_language, len(text or ""),
     )
 
     try:
         response = provider_post(
-            endpoint, headers=headers, json=payload, timeout=get_translation_timeout()
+            endpoint,
+            headers=headers,
+            json=payload,
+            timeout=get_translation_timeout(),
         )
     except requests.Timeout as exc:
         raise TranslationProviderError(
-            "timeout", retryable=True, provider="deepseek", model=model
+            "timeout", retryable=True, provider="cloudflare", model=model
         ) from exc
     except requests.RequestException as exc:
         retryable = isinstance(exc, requests.ConnectionError) and not isinstance(
             exc, (requests.exceptions.SSLError, requests.exceptions.ProxyError)
         )
         raise TranslationProviderError(
-            "connection", retryable=retryable, provider="deepseek", model=model
+            "connection", retryable=retryable, provider="cloudflare", model=model
         ) from exc
 
     data = _safe_json(response)
-    if not response.ok:
-        raise _deepseek_http_provider_error(response, data, model) from requests.HTTPError(
-            "DeepSeek translation provider HTTP failure", response=response
+    if not response.ok or data.get("success") is False:
+        raise _cloudflare_http_provider_error(
+            response, data, model
+        ) from requests.HTTPError(
+            "Cloudflare Workers AI translation provider HTTP failure",
+            response=response,
         )
 
-    translated_text = _extract_deepseek_text(data)
+    translated_text = _extract_cloudflare_text(data)
     if not translated_text:
         raise TranslationProviderError(
-            "invalid_response", provider="deepseek", model=model
+            "invalid_response", provider="cloudflare", model=model
         )
 
     logger.info(
-        "✅ DeepSeek translation response | model=%s | source=%s | target=%s | output_length=%s",
+        "✅ Cloudflare translation response | model=%s | source=%s | target=%s | output_length=%s",
         model, source_language, target_language, len(translated_text),
     )
     return translated_text
@@ -665,10 +691,10 @@ def configure_default_translation_providers() -> None:
             replace=True,
         )
 
-    if get_deepseek_api_key():
+    if get_cloudflare_ai_api_token() and get_cloudflare_account_id():
         register_translation_provider(
-            name="deepseek",
-            provider=deepseek_translation_provider,
+            name="cloudflare",
+            provider=cloudflare_translation_provider,
             priority=20,
             enabled=True,
             replace=True,
