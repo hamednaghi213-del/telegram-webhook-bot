@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from core.ai_runtime import timed_stage
 
 from dataclasses import (
@@ -256,7 +258,10 @@ class ExternalContentResolver:
             content=content,
         )
 
-    @timed_stage("external_fetch_extraction", provider="external")
+    @timed_stage(
+        "external_fetch_extraction",
+        provider="external",
+    )
     def _resolve_web_article(
         self,
         url: str,
@@ -365,8 +370,108 @@ class ExternalContentResolver:
 
 
 # =========================================================
-# INPUT HELPER
+# INPUT HELPERS
 # =========================================================
+
+
+_EXTERNAL_URL_RE = re.compile(
+    r"https?://[^\s<>\[\]{}\"']+",
+    re.IGNORECASE,
+)
+
+_TRAILING_URL_PUNCTUATION = (
+    ".,!?;:"
+    "،؛؟"
+    ")]}"
+    "»"
+)
+
+
+def _clean_extracted_url(
+    value: Any,
+) -> str:
+    """
+    Normalize punctuation around a URL extracted from ordinary message text.
+
+    Only punctuation attached to the end of the URL is removed. The URL
+    itself is still validated and canonicalized by the existing shared
+    external URL canonicalizer.
+    """
+
+    candidate = str(
+        value
+        or ""
+    ).strip()
+
+    if not candidate:
+        return ""
+
+    candidate = candidate.rstrip(
+        _TRAILING_URL_PUNCTUATION
+    )
+
+    if not candidate:
+        return ""
+
+    try:
+        return (
+            canonicalize_external_url(
+                candidate
+            )
+        )
+
+    except Exception:
+        return ""
+
+
+def extract_external_urls(
+    text: Any,
+) -> tuple[str, ...]:
+    """
+    Extract canonical HTTP(S) URLs from arbitrary message text.
+
+    This helper performs discovery only. It does not decide whether a message
+    should enter external-content ingestion. Callers retain responsibility
+    for that routing decision.
+
+    URLs are de-duplicated while preserving their original message order.
+    """
+
+    value = str(
+        text
+        or ""
+    )
+
+    if not value.strip():
+        return ()
+
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    for match in _EXTERNAL_URL_RE.finditer(
+        value
+    ):
+        canonical = _clean_extracted_url(
+            match.group(0)
+        )
+
+        if not canonical:
+            continue
+
+        if canonical in seen:
+            continue
+
+        seen.add(
+            canonical
+        )
+
+        urls.append(
+            canonical
+        )
+
+    return tuple(
+        urls
+    )
 
 
 def extract_single_external_url(
@@ -378,6 +483,9 @@ def extract_single_external_url(
     This deliberately does not treat a URL buried inside ordinary news text
     as an ingestion command. Existing Telegram/Bale text publication must
     therefore remain unchanged.
+
+    News messages that contain text plus one URL must use
+    `extract_single_news_url()` explicitly.
     """
 
     value = str(
@@ -405,3 +513,35 @@ def extract_single_external_url(
         return ""
 
     return canonical
+
+
+def extract_single_news_url(
+    text: Any,
+) -> str:
+    """
+    Return the single external URL embedded in an ordinary news message.
+
+    Unlike `extract_single_external_url()`, this helper intentionally accepts
+    surrounding headline/body text. It is designed for explicit News Link
+    routing by Telegram/Bale input adapters.
+
+    Exactly one distinct canonical URL must be present. Messages containing
+    zero URLs or multiple different URLs are not classified as a single
+    News Link message.
+
+    The helper itself has no publication side effects and does not change
+    existing standalone-URL behavior.
+    """
+
+    urls = extract_external_urls(
+        text
+    )
+
+    if len(
+        urls
+    ) != 1:
+        return ""
+
+    return urls[
+        0
+    ]
