@@ -6696,10 +6696,59 @@ def handle_webhook() -> Tuple[
             and file_id
         ):
 
+            (
+                forced_content_type,
+                publication_caption,
+                removed_prefix_length
+            ) = detect_editorial_admin_tag(caption)
+
+            publication_caption_entities = list(caption_entities or [])
+
+            if forced_content_type:
+                publication_caption_entities = (
+                    shift_entities_after_prefix_removal(
+                        publication_caption_entities,
+                        removed_prefix_length
+                    )
+                )
+
+                queued_for_review = try_queue_editorial_text_review(
+                    chat_id=chat_id,
+                    text=publication_caption,
+                    entities=publication_caption_entities,
+                    forward_source=(
+                        forward_source
+                        if forward_source.get("is_forwarded")
+                        else None
+                    ),
+                    forced_content_type=forced_content_type,
+                    media_files=[
+                        {
+                            "type": media_type,
+                            "file_id": file_id,
+                        }
+                    ],
+                    source_key=incoming_source_key,
+                )
+
+                if queued_for_review:
+                    logger.info(
+                        f"[{req_id}] 📝 Single media held for "
+                        f"editorial approval | user={chat_id} | "
+                        f"type={forced_content_type}"
+                    )
+                    return {
+                        "ok": True,
+                        "editorial_review": True,
+                        "media": True,
+                    }, 200
+            else:
+                publication_caption = caption
+
             translation_gate = (
                 try_automatic_persian_translation_gate(
                     chat_id=chat_id,
-                    text=caption,
+                    text=publication_caption,
                     source_kind="media",
                     forward_source=forward_source,
                     source_key=(
@@ -6731,10 +6780,10 @@ def handle_webhook() -> Tuple[
                     media_type,
 
                 "caption":
-                    caption,
+                    publication_caption,
 
                 "caption_entities":
-                    caption_entities,
+                    publication_caption_entities,
                 "source_key": incoming_source_key,
             }
 
@@ -6783,12 +6832,83 @@ def handle_webhook() -> Tuple[
             and file_id
         ):
 
+            (
+                forced_content_type,
+                publication_caption,
+                removed_prefix_length
+            ) = detect_editorial_admin_tag(caption)
+
+            publication_caption_entities = list(caption_entities or [])
+
+            if forced_content_type:
+                publication_caption_entities = (
+                    shift_entities_after_prefix_removal(
+                        publication_caption_entities,
+                        removed_prefix_length
+                    )
+                )
+
+                queued_for_review = try_queue_editorial_text_review(
+                    chat_id=chat_id,
+                    text=publication_caption,
+                    entities=publication_caption_entities,
+                    forward_source=(
+                        forward_source
+                        if forward_source.get("is_forwarded")
+                        else None
+                    ),
+                    forced_content_type=forced_content_type,
+                    media_files=[
+                        {
+                            "type": media_type,
+                            "file_id": file_id,
+                        }
+                    ],
+                    source_key=incoming_source_key,
+                )
+
+                if queued_for_review:
+                    logger.info(
+                        f"[{req_id}] 📝 Document/audio held for "
+                        f"editorial approval | user={chat_id} | "
+                        f"type={forced_content_type} | media_type={media_type}"
+                    )
+                    return {
+                        "ok": True,
+                        "editorial_review": True,
+                        "media": True,
+                    }, 200
+            else:
+                publication_caption = caption
+
+            translation_gate = (
+                try_automatic_persian_translation_gate(
+                    chat_id=chat_id,
+                    text=publication_caption,
+                    source_kind="media",
+                    forward_source=forward_source,
+                    source_key=incoming_source_key,
+                    files=[
+                        {
+                            "type": media_type,
+                            "file_id": file_id,
+                        }
+                    ],
+                )
+            )
+
+            if translation_gate is not None:
+                return (
+                    translation_gate,
+                    200,
+                )
+
             kwargs = {
                 "chat_id": chat_id,
                 "file_id": file_id,
                 "media_type": media_type,
-                "caption": caption,
-                "caption_entities": caption_entities,
+                "caption": publication_caption,
+                "caption_entities": publication_caption_entities,
                 "source_key": incoming_source_key,
             }
 
@@ -7007,4 +7127,5 @@ def handle_webhook() -> Tuple[
                     e
                 )
         }, 500
+
 
