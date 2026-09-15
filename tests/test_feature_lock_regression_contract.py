@@ -1,11 +1,15 @@
 """Feature Lock / Regression Contract for the shared publication engine."""
 
 from types import SimpleNamespace
+
 import pytest
 
 from core.content_model import PreparedContent, PublicationTarget
 from core import publication_engine
-from core.language_detector import detect_language, detection_is_clearly_non_persian
+from core.language_detector import (
+    detect_language,
+    detection_is_clearly_non_persian,
+)
 
 
 def _target():
@@ -24,8 +28,15 @@ def _text_plan(messages):
         telegram={},
         bale={},
         text={
-            "telegram": {"messages": list(messages)},
-            "bale": {"messages": list(messages)},
+            "telegram": {
+                "messages": list(messages),
+                "message_parse_modes": [None] * len(messages),
+                "blockquote_messages": [],
+            },
+            "bale": {
+                "messages": list(messages),
+                "blockquote_messages": [],
+            },
         },
     )
 
@@ -110,6 +121,173 @@ def test_feature_lock_long_editorial_never_silently_splits(monkeypatch):
     assert result["errors"] == ["editorial_summary_unavailable"]
     assert target_processing == []
     assert sent == []
+
+
+def test_feature_lock_plain_long_text_summary_is_one_message(monkeypatch):
+    calls = []
+    sent = []
+
+    def fake_analyze(**kwargs):
+        calls.append(kwargs)
+        if kwargs["branding"] == "":
+            return _text_plan(["خلاصه هوشمند خبر"])
+        return _text_plan([kwargs["main_text"]])
+
+    monkeypatch.setattr("core.caption_manager.analyze_content", fake_analyze)
+    monkeypatch.setattr(
+        publication_engine,
+        "_target_content_and_branding",
+        lambda _chat, _target, prepared: (
+            prepared.neutral_text or prepared.main_text,
+            "brand",
+        ),
+    )
+    monkeypatch.setattr(
+        publication_engine,
+        "_send_text_target",
+        lambda _chat, _api, _target, plan: sent.extend(plan["messages"]) or True,
+    )
+    publication_engine.reset_local_idempotency_state()
+
+    result = publication_engine.publish_prepared_content(
+        1,
+        "api",
+        PreparedContent(
+            main_text="خبر طولانی " * 700,
+            source_key="feature-lock:normal:summary",
+        ),
+        [_target()],
+    )
+
+    assert result["ok"] is True
+    assert sent == ["خلاصه هوشمند خبر"]
+    assert len(calls) == 2
+
+
+def test_feature_lock_plain_long_text_never_silently_splits(monkeypatch):
+    sent = []
+    target_processing = []
+
+    monkeypatch.setattr(
+        "core.caption_manager.analyze_content",
+        lambda **_kwargs: _text_plan(["قسمت اول", "قسمت دوم"]),
+    )
+    monkeypatch.setattr(
+        publication_engine,
+        "_target_content_and_branding",
+        lambda *_args: target_processing.append(True) or ("base", "brand"),
+    )
+    monkeypatch.setattr(
+        publication_engine,
+        "_send_text_target",
+        lambda *_args: sent.append(True) or True,
+    )
+    publication_engine.reset_local_idempotency_state()
+
+    result = publication_engine.publish_prepared_content(
+        1,
+        "api",
+        PreparedContent(
+            main_text="خبر طولانی " * 700,
+            source_key="feature-lock:normal:no-summary",
+        ),
+        [_target()],
+    )
+
+    assert result["ok"] is False
+    assert result["errors"] == ["smart_summary_unavailable"]
+    assert target_processing == []
+    assert sent == []
+
+
+def test_feature_lock_structured_blockquote_keeps_existing_split_contract(monkeypatch):
+    sent = []
+
+    def fake_analyze(**kwargs):
+        if kwargs["branding"] == "":
+            return _text_plan(["متن اصلی"])
+        return _text_plan(["متن اصلی", "ادامه بلاک‌کوت"])
+
+    monkeypatch.setattr("core.caption_manager.analyze_content", fake_analyze)
+    monkeypatch.setattr(
+        publication_engine,
+        "_target_content_and_branding",
+        lambda _chat, _target, prepared: (
+            prepared.neutral_text or prepared.main_text,
+            "brand",
+        ),
+    )
+    monkeypatch.setattr(
+        publication_engine,
+        "_send_text_target",
+        lambda _chat, _api, _target, plan: sent.extend(plan["messages"]) or True,
+    )
+    publication_engine.reset_local_idempotency_state()
+
+    result = publication_engine.publish_prepared_content(
+        1,
+        "api",
+        PreparedContent(
+            main_text="متن اصلی",
+            neutral_text="متن اصلی " + ("الف" * 5000),
+            blockquote_blocks=(
+                {
+                    "type": "blockquote",
+                    "text": "جزئیات " * 900,
+                },
+            ),
+            source_key="feature-lock:structured:block",
+        ),
+        [_target()],
+    )
+
+    assert result["ok"] is True
+    assert sent == ["متن اصلی", "ادامه بلاک‌کوت"]
+
+
+def test_feature_lock_expandable_content_is_not_blocked_as_plain_long_text(monkeypatch):
+    sent = []
+
+    def fake_analyze(**kwargs):
+        if kwargs["branding"] == "":
+            return _text_plan(["تیتر و لید"])
+        return _text_plan(["تیتر و لید", "ادامه مقاله"])
+
+    monkeypatch.setattr("core.caption_manager.analyze_content", fake_analyze)
+    monkeypatch.setattr(
+        publication_engine,
+        "_target_content_and_branding",
+        lambda _chat, _target, prepared: (
+            prepared.neutral_text or prepared.main_text,
+            "brand",
+        ),
+    )
+    monkeypatch.setattr(
+        publication_engine,
+        "_send_text_target",
+        lambda _chat, _api, _target, plan: sent.extend(plan["messages"]) or True,
+    )
+    publication_engine.reset_local_idempotency_state()
+
+    result = publication_engine.publish_prepared_content(
+        1,
+        "api",
+        PreparedContent(
+            main_text="تیتر و لید",
+            neutral_text="تیتر و لید " + ("ب" * 5000),
+            expandable_blocks=(
+                {
+                    "type": "expandable_blockquote",
+                    "text": "متن کامل مقاله " * 600,
+                },
+            ),
+            source_key="feature-lock:structured:expandable",
+        ),
+        [_target()],
+    )
+
+    assert result["ok"] is True
+    assert sent == ["تیتر و لید", "ادامه مقاله"]
 
 
 def test_feature_lock_legacy_and_workspace_share_same_base(monkeypatch):
