@@ -79,7 +79,7 @@ class ProviderFailure:
 
 
 _cooldown_lock = threading.RLock()
-_provider_cooldown_until: Dict[str, float] = {}
+_provider_cooldown_until: Dict[str, Tuple[int, float]] = {}
 
 
 def _provider_name(entry: TranslationProviderEntry) -> str:
@@ -124,7 +124,7 @@ def _cooldown_seconds(error: TranslationProviderError) -> float:
     )
 
 
-def provider_in_cooldown(name: str) -> bool:
+def provider_in_cooldown(name: str, provider: object = None) -> bool:
     provider_name = str(name or "").strip().lower()
     if not provider_name:
         return False
@@ -132,9 +132,16 @@ def provider_in_cooldown(name: str) -> bool:
     now = time.monotonic()
 
     with _cooldown_lock:
-        until = _provider_cooldown_until.get(provider_name)
+        state = _provider_cooldown_until.get(provider_name)
 
-        if until is None:
+        if state is None:
+            return False
+
+        stored_identity, until = state
+        provider_identity = id(provider) if provider is not None else None
+
+        if provider_identity is not None and stored_identity != provider_identity:
+            _provider_cooldown_until.pop(provider_name, None)
             return False
 
         if until <= now:
@@ -144,7 +151,7 @@ def provider_in_cooldown(name: str) -> bool:
         return True
 
 
-def provider_cooldown_remaining(name: str) -> float:
+def provider_cooldown_remaining(name: str, provider: object = None) -> float:
     provider_name = str(name or "").strip().lower()
     if not provider_name:
         return 0.0
@@ -152,9 +159,16 @@ def provider_cooldown_remaining(name: str) -> float:
     now = time.monotonic()
 
     with _cooldown_lock:
-        until = _provider_cooldown_until.get(provider_name)
+        state = _provider_cooldown_until.get(provider_name)
 
-        if until is None:
+        if state is None:
+            return 0.0
+
+        stored_identity, until = state
+        provider_identity = id(provider) if provider is not None else None
+
+        if provider_identity is not None and stored_identity != provider_identity:
+            _provider_cooldown_until.pop(provider_name, None)
             return 0.0
 
         remaining = until - now
@@ -169,6 +183,7 @@ def provider_cooldown_remaining(name: str) -> float:
 def mark_provider_cooldown(
     name: str,
     error: TranslationProviderError,
+    provider: object = None,
 ) -> float:
     provider_name = str(name or "").strip().lower()
     if not provider_name:
@@ -177,9 +192,13 @@ def mark_provider_cooldown(
     delay = _cooldown_seconds(error)
     until = time.monotonic() + delay
 
+    provider_identity = id(provider) if provider is not None else 0
+
     with _cooldown_lock:
-        previous = _provider_cooldown_until.get(provider_name, 0.0)
-        _provider_cooldown_until[provider_name] = max(previous, until)
+        previous = _provider_cooldown_until.get(provider_name)
+        if previous is not None and previous[0] == provider_identity:
+            until = max(previous[1], until)
+        _provider_cooldown_until[provider_name] = (provider_identity, until)
 
     logger.warning(
         "TRANSLATION-PROVIDER-COOLDOWN | "
@@ -300,8 +319,8 @@ def translation_provider_chain(
     for entry in entries:
         name = _provider_name(entry)
 
-        if provider_in_cooldown(name):
-            remaining = provider_cooldown_remaining(name)
+        if provider_in_cooldown(name, entry.provider):
+            remaining = provider_cooldown_remaining(name, entry.provider)
 
             logger.info(
                 "TRANSLATION-PROVIDER-SKIP | "
@@ -358,7 +377,7 @@ def translation_provider_chain(
             if error.category not in FALLBACK_CATEGORIES:
                 raise
 
-            mark_provider_cooldown(name, error)
+            mark_provider_cooldown(name, error, entry.provider)
             continue
 
         output = str(output or "").strip()
@@ -374,7 +393,7 @@ def translation_provider_chain(
                 _failure_record(entry, error)
             )
 
-            mark_provider_cooldown(name, error)
+            mark_provider_cooldown(name, error, entry.provider)
             continue
 
         clear_provider_cooldown(name)
@@ -405,7 +424,8 @@ def describe_provider_cooldowns() -> Dict[str, float]:
     with _cooldown_lock:
         expired = []
 
-        for name, until in _provider_cooldown_until.items():
+        for name, state in _provider_cooldown_until.items():
+            _, until = state
             remaining = until - now
 
             if remaining <= 0:
@@ -418,3 +438,4 @@ def describe_provider_cooldowns() -> Dict[str, float]:
             _provider_cooldown_until.pop(name, None)
 
     return result
+
