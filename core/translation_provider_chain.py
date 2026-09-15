@@ -265,7 +265,7 @@ def _raise_chain_failure(
     error = TranslationProviderError(
         last.category,
         http_status=last.http_status,
-        retryable=False,
+        retryable=bool(last.retryable),
         retry_after_seconds=last.retry_after_seconds,
         provider=last.name or "registry",
         model=last.model,
@@ -375,6 +375,12 @@ def translation_provider_chain(
             )
 
             if error.category not in FALLBACK_CATEGORIES:
+                raise
+
+            # TranslationService owns the retry budget. Retryable provider
+            # failures must escape unchanged so the same provider can be
+            # retried before chain cooldown/fallback is activated.
+            if error.retryable:
                 raise
 
             mark_provider_cooldown(name, error, entry.provider)
