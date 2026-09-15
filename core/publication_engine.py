@@ -1764,29 +1764,49 @@ def publish_prepared_content(
         )
     )
 
-    if (
-        prepared.require_single_message
-        and len(
+    analyzed_publishable_text = "\n\n".join(
+        item
+        for item in (
             analyzed.neutral_text
-            or analyzed.main_text
+            or analyzed.main_text,
+            *(
+                str(block.get("text") or "")
+                for block in (
+                    *analyzed.blockquote_blocks,
+                    *analyzed.expandable_blocks,
+                )
+            ),
         )
-        > (
-            996
-            if analyzed.files
-            else 4096
+        if item
+    )
+
+    analyzed_threshold = (
+        996
+        if analyzed.files
+        else 4096
+    )
+
+    if len(analyzed_publishable_text) > analyzed_threshold:
+        error_code = (
+            "editorial_summary_unavailable"
+            if prepared.require_single_message
+            else "smart_summary_unavailable"
         )
-    ):
+
         logger.error(
-            "Editorial single-message publication blocked | "
-            "source=%s | reason=summary_unavailable",
+            "Single-message publication blocked | "
+            "source=%s | editorial=%s | "
+            "reason=%s",
             prepared.publication_identity,
+            prepared.require_single_message,
+            error_code,
         )
 
         return {
             "ok": False,
             "results": [],
             "errors": [
-                "editorial_summary_unavailable"
+                error_code
             ],
         }
 
@@ -2531,3 +2551,4 @@ def publish_prepared_content(
         "errors":
             resolution_errors,
     }
+
