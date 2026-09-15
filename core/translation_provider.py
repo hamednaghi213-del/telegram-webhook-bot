@@ -1,77 +1,40 @@
 from __future__ import annotations
 
 import logging
-import os
 import math
+import os
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import requests
-from core.ai_runtime import provider_post, timed_stage
 
+from core.ai_runtime import provider_post, timed_stage
+from core.translation_provider_registry import (
+    describe_translation_provider_registry,
+    get_translation_provider_chain,
+    get_translation_provider_names,
+    register_translation_provider,
+)
 
 logger = logging.getLogger(__name__)
-
-
-# =========================================================
-# TRANSLATION PROVIDER
-# =========================================================
-#
-# NEW FILE
-#
-# وظیفه:
-# Adapter عمومی برای Provider هوش مصنوعی ترجمه.
-#
-# در نسخه فعلی:
-# - Gemini REST API
-#
-# این فایل:
-# - هیچ پیام Telegram ارسال نمی‌کند.
-# - هیچ پیام Bale ارسال نمی‌کند.
-# - Publication Engine را تغییر نمی‌دهد.
-# - Workspace / Legacy را تغییر نمی‌دهد.
-# - فقط متن + دستور ترجمه را به Provider می‌دهد.
-#
-# translation_service.py
-#          ↓
-# translation_provider.py
-#          ↓
-# Gemini
-#
-# =========================================================
-
 
 # =========================================================
 # ENVIRONMENT
 # =========================================================
 
 GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
-
 TRANSLATION_MODEL_ENV = "TRANSLATION_MODEL"
-
 GEMINI_MODEL_ENV = "GEMINI_MODEL"
-
 TRANSLATION_TIMEOUT_ENV = "TRANSLATION_TIMEOUT_SECONDS"
 
-
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
-
 DEFAULT_TIMEOUT_SECONDS = 60
-
 MAX_TIMEOUT_SECONDS = 180
-
 MIN_TIMEOUT_SECONDS = 10
 
-
-# =========================================================
-# GEMINI ENDPOINT
-# =========================================================
-
-GEMINI_API_BASE = (
-    "https://generativelanguage.googleapis.com/v1beta"
-)
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 
 # =========================================================
@@ -81,8 +44,16 @@ GEMINI_API_BASE = (
 class TranslationProviderError(RuntimeError):
     """Safe, structured provider failure; raw exceptions stay in the cause chain."""
 
-    def __init__(self, category, *, http_status=None, retryable=False,
-                 retry_after_seconds=None, provider="gemini", model=""):
+    def __init__(
+        self,
+        category,
+        *,
+        http_status=None,
+        retryable=False,
+        retry_after_seconds=None,
+        provider="gemini",
+        model="",
+    ):
         self.category = category
         self.http_status = http_status
         self.retryable = retryable
@@ -93,11 +64,31 @@ class TranslationProviderError(RuntimeError):
         super().__init__(self.reason)
 
     def as_metadata(self):
-        return {key: getattr(self, key) for key in (
-            "category", "http_status", "retryable", "retry_after_seconds",
-            "provider", "model", "reason",
-        )}
+        return {
+            key: getattr(self, key)
+            for key in (
+                "category",
+                "http_status",
+                "retryable",
+                "retry_after_seconds",
+                "provider",
+                "model",
+                "reason",
+            )
+        }
 
+
+@dataclass(frozen=True)
+class ProviderStatus:
+    configured: bool
+    provider: str
+    model: str
+    reason: str = ""
+
+
+# =========================================================
+# ERROR HELPERS
+# =========================================================
 
 def _seconds(value):
     try:
@@ -110,119 +101,116 @@ def _seconds(value):
 def _http_provider_error(response, data, model):
     error = data.get("error", {})
     error = error if isinstance(error, dict) else {}
+
     details = error.get("details", [])
     details = details if isinstance(details, list) else []
+
     delays = []
+
     header = response.headers.get("Retry-After")
     if header is not None:
         delay = _seconds(header)
+
         if delay is None:
             try:
                 date = parsedate_to_datetime(header)
                 if date.tzinfo is not None:
-                    delay = max(0, (date - datetime.now(timezone.utc)).total_seconds())
+                    delay = max(
+                        0,
+                        (date - datetime.now(timezone.utc)).total_seconds(),
+                    )
             except (TypeError, ValueError, OverflowError):
                 pass
+
         if delay is not None:
             delays.append(delay)
+
     quota = False
     error_reasons = set()
+
     for detail in details:
         if not isinstance(detail, dict):
             continue
+
         kind = str(detail.get("@type", "")).rsplit("/", 1)[-1]
+
         if kind == "google.rpc.ErrorInfo":
             error_reasons.add(str(detail.get("reason", "")))
+
         if kind == "google.rpc.QuotaFailure" and detail.get("violations"):
             quota = True
+
         if kind == "google.rpc.RetryInfo":
             raw = detail.get("retryDelay")
+
             if isinstance(raw, str) and raw.endswith("s"):
                 delay = _seconds(raw[:-1])
             elif isinstance(raw, dict):
                 seconds = _seconds(raw.get("seconds", 0))
                 nanos = _seconds(raw.get("nanos", 0))
-                delay = seconds + nanos / 1e9 if seconds is not None and nanos is not None else None
+                delay = (
+                    seconds + nanos / 1e9
+                    if seconds is not None and nanos is not None
+                    else None
+                )
             else:
                 delay = None
+
             if delay is not None:
                 delays.append(delay)
+
     delay = max(delays) if delays else None
     status = response.status_code
+
     if status == 429:
         category = "quota_unavailable" if quota else "rate_limited"
         retryable = not quota and delay is not None
     elif status in {500, 502, 503, 504}:
         category, retryable = "transient_server", True
-    elif status in {401, 403} or error_reasons & {"API_KEY_INVALID", "API_KEY_EXPIRED", "CREDENTIALS_MISSING"}:
+    elif status in {401, 403} or error_reasons & {
+        "API_KEY_INVALID",
+        "API_KEY_EXPIRED",
+        "CREDENTIALS_MISSING",
+    }:
         category, retryable = "authentication", False
-    elif status == 404 or error_reasons & {"SERVICE_DISABLED", "MODEL_NOT_FOUND"}:
+    elif status == 404 or error_reasons & {
+        "SERVICE_DISABLED",
+        "MODEL_NOT_FOUND",
+    }:
         category, retryable = "configuration", False
     elif 400 <= status < 500:
         category, retryable = "invalid_request", False
     else:
         category, retryable = "unknown", False
-    return TranslationProviderError(category, http_status=status, retryable=retryable,
-                                    retry_after_seconds=delay, model=model)
 
-
-@dataclass(frozen=True)
-class ProviderStatus:
-    configured: bool
-
-    provider: str
-
-    model: str
-
-    reason: str = ""
+    return TranslationProviderError(
+        category,
+        http_status=status,
+        retryable=retryable,
+        retry_after_seconds=delay,
+        provider="gemini",
+        model=model,
+    )
 
 
 # =========================================================
 # CONFIG HELPERS
 # =========================================================
 
-def _clean_env(
-    name: str,
-    default: str = "",
-) -> str:
-    return str(
-        os.getenv(
-            name,
-            default,
-        )
-        or ""
-    ).strip()
+def _clean_env(name: str, default: str = "") -> str:
+    return str(os.getenv(name, default) or "").strip()
 
 
 def get_gemini_api_key() -> str:
-    return _clean_env(
-        GEMINI_API_KEY_ENV
-    )
+    return _clean_env(GEMINI_API_KEY_ENV)
 
 
 def get_translation_model() -> str:
-    """
-    اولویت:
-
-    1. TRANSLATION_MODEL
-    2. GEMINI_MODEL
-    3. gemini-2.5-flash
-
-    بنابراین اگر پروژه از قبل GEMINI_MODEL داشته باشد،
-    ترجمه همان تنظیم موجود را استفاده می‌کند.
-    """
-
-    translation_model = _clean_env(
-        TRANSLATION_MODEL_ENV
-    )
-
+    translation_model = _clean_env(TRANSLATION_MODEL_ENV)
     if translation_model:
         return translation_model
 
-    gemini_model = _clean_env(
-        GEMINI_MODEL_ENV
-    )
-
+    gemini_model = _clean_env(GEMINI_MODEL_ENV)
     if gemini_model:
         return gemini_model
 
@@ -232,28 +220,17 @@ def get_translation_model() -> str:
 def get_translation_timeout() -> int:
     raw_value = _clean_env(
         TRANSLATION_TIMEOUT_ENV,
-        str(
-            DEFAULT_TIMEOUT_SECONDS
-        ),
+        str(DEFAULT_TIMEOUT_SECONDS),
     )
 
     try:
-        timeout = int(
-            raw_value
-        )
-
-    except (
-        TypeError,
-        ValueError,
-    ):
+        timeout = int(raw_value)
+    except (TypeError, ValueError):
         timeout = DEFAULT_TIMEOUT_SECONDS
 
     return max(
         MIN_TIMEOUT_SECONDS,
-        min(
-            timeout,
-            MAX_TIMEOUT_SECONDS,
-        ),
+        min(timeout, MAX_TIMEOUT_SECONDS),
     )
 
 
@@ -263,7 +240,6 @@ def get_translation_timeout() -> int:
 
 def get_translation_provider_status() -> ProviderStatus:
     api_key = get_gemini_api_key()
-
     model = get_translation_model()
 
     if not api_key:
@@ -283,126 +259,69 @@ def get_translation_provider_status() -> ProviderStatus:
 
 
 def translation_provider_configured() -> bool:
-    return (
-        get_translation_provider_status()
-        .configured
-    )
+    return get_translation_provider_status().configured
 
 
 # =========================================================
 # RESPONSE HELPERS
 # =========================================================
 
-def _safe_json(
-    response: requests.Response
-) -> Dict[str, Any]:
+def _safe_json(response: requests.Response) -> Dict[str, Any]:
     try:
         data = response.json()
-
-        if isinstance(
-            data,
-            dict,
-        ):
+        if isinstance(data, dict):
             return data
-
     except Exception:
         pass
 
     return {}
 
 
-def _extract_error_message(
-    payload: Dict[str, Any]
-) -> str:
-    error = payload.get(
-        "error"
-    )
+def _extract_error_message(payload: Dict[str, Any]) -> str:
+    error = payload.get("error")
 
-    if isinstance(
-        error,
-        dict,
-    ):
-        message = error.get(
-            "message"
-        )
-
+    if isinstance(error, dict):
+        message = error.get("message")
         if message:
-            return str(
-                message
-            ).strip()
+            return str(message).strip()
 
     return ""
 
 
-def _extract_candidate_text(
-    payload: Dict[str, Any]
-) -> str:
-    candidates = payload.get(
-        "candidates"
-    )
+def _extract_candidate_text(payload: Dict[str, Any]) -> str:
+    candidates = payload.get("candidates")
 
-    if not isinstance(
-        candidates,
-        list,
-    ):
+    if not isinstance(candidates, list):
         return ""
 
     for candidate in candidates:
-        if not isinstance(
-            candidate,
-            dict,
-        ):
+        if not isinstance(candidate, dict):
             continue
 
-        content = candidate.get(
-            "content"
-        )
-
-        if not isinstance(
-            content,
-            dict,
-        ):
+        content = candidate.get("content")
+        if not isinstance(content, dict):
             continue
 
-        parts = content.get(
-            "parts"
-        )
-
-        if not isinstance(
-            parts,
-            list,
-        ):
+        parts = content.get("parts")
+        if not isinstance(parts, list):
             continue
 
         texts = []
 
         for part in parts:
-            if not isinstance(
-                part,
-                dict,
-            ):
+            if not isinstance(part, dict):
                 continue
 
-            value = part.get(
-                "text"
-            )
-
+            value = part.get("text")
             if value is None:
                 continue
 
-            value = str(
-                value
-            )
-
+            value = str(value)
             if value:
-                texts.append(
-                    value
-                )
+                texts.append(value)
 
         if texts:
-            return "".join(
-                texts
-            ).strip()
+            return "".join(texts).strip()
 
     return ""
 
@@ -418,13 +337,6 @@ def _build_provider_prompt(
     source_language: str,
     target_language: str,
 ) -> str:
-    """
-    TranslationService تمام محدودیت‌های معنایی را در
-    instruction تولید می‌کند.
-
-    این Adapter فقط آن را به Prompt قطعی Provider تبدیل می‌کند.
-    """
-
     return (
         "TRANSLATION TASK\n\n"
         f"Source language: {source_language}\n"
@@ -443,7 +355,11 @@ def _build_provider_prompt(
 # GEMINI PROVIDER
 # =========================================================
 
-@timed_stage("translation_generation", provider="gemini", model=get_translation_model)
+@timed_stage(
+    "translation_generation",
+    provider="gemini",
+    model=get_translation_model,
+)
 def gemini_translation_provider(
     *,
     text: str,
@@ -451,24 +367,16 @@ def gemini_translation_provider(
     source_language: str = "auto",
     target_language: str,
 ) -> str:
-    """
-    Signature اصلی مورد انتظار translation_service.py
-
-    provider(
-        text=...,
-        instruction=...,
-        source_language=...,
-        target_language=...
-    )
-    """
-
     api_key = get_gemini_api_key()
 
     if not api_key:
-        raise TranslationProviderError("configuration", model=get_translation_model())
+        raise TranslationProviderError(
+            "configuration",
+            provider="gemini",
+            model=get_translation_model(),
+        )
 
     model = get_translation_model()
-
     timeout = get_translation_timeout()
 
     prompt = _build_provider_prompt(
@@ -478,20 +386,13 @@ def gemini_translation_provider(
         target_language=target_language,
     )
 
-    endpoint = (
-        f"{GEMINI_API_BASE}/"
-        f"models/{model}:generateContent"
-    )
+    endpoint = f"{GEMINI_API_BASE}/models/{model}:generateContent"
 
     payload: Dict[str, Any] = {
         "contents": [
             {
                 "role": "user",
-                "parts": [
-                    {
-                        "text": prompt
-                    }
-                ],
+                "parts": [{"text": prompt}],
             }
         ],
         "generationConfig": {
@@ -501,90 +402,145 @@ def gemini_translation_provider(
     }
 
     logger.info(
-        "🌐 Gemini translation request | "
-        "model=%s | "
-        "source=%s | "
-        "target=%s | "
-        "input_length=%s",
+        "ð Gemini translation request | "
+        "model=%s | source=%s | target=%s | input_length=%s",
         model,
         source_language,
         target_language,
-        len(
-            text or ""
-        ),
+        len(text or ""),
     )
 
     try:
         response = provider_post(
             endpoint,
-            params={
-                "key": api_key
-            },
+            params={"key": api_key},
             json=payload,
             timeout=timeout,
         )
 
     except requests.Timeout as exc:
         logger.warning(
-            "⚠️ Gemini translation timeout | "
-            "model=%s | "
-            "target=%s | "
-            "timeout=%s",
+            "â ï¸ Gemini translation timeout | "
+            "model=%s | target=%s | timeout=%s",
             model,
             target_language,
             timeout,
         )
 
-        raise TranslationProviderError("timeout", retryable=True, model=model) from exc
-
-    except requests.RequestException as exc:
         raise TranslationProviderError(
-            "connection", model=model, retryable=isinstance(exc, requests.ConnectionError)
-            and not isinstance(exc, (requests.exceptions.SSLError, requests.exceptions.ProxyError)),
+            "timeout",
+            retryable=True,
+            provider="gemini",
+            model=model,
         ) from exc
 
-    data = _safe_json(
-        response
-    )
+    except requests.RequestException as exc:
+        retryable = (
+            isinstance(exc, requests.ConnectionError)
+            and not isinstance(
+                exc,
+                (
+                    requests.exceptions.SSLError,
+                    requests.exceptions.ProxyError,
+                ),
+            )
+        )
+
+        raise TranslationProviderError(
+            "connection",
+            retryable=retryable,
+            provider="gemini",
+            model=model,
+        ) from exc
+
+    data = _safe_json(response)
 
     if not response.ok:
-        raise _http_provider_error(response, data, model) from requests.HTTPError(
-            "Translation provider HTTP failure", response=response,
+        raise _http_provider_error(
+            response,
+            data,
+            model,
+        ) from requests.HTTPError(
+            "Translation provider HTTP failure",
+            response=response,
         )
 
     try:
         translated_text = _extract_candidate_text(data)
-    except (TypeError, ValueError, AttributeError, IndexError) as exc:
-        raise TranslationProviderError("invalid_response", model=model) from exc
+    except (
+        TypeError,
+        ValueError,
+        AttributeError,
+        IndexError,
+    ) as exc:
+        raise TranslationProviderError(
+            "invalid_response",
+            provider="gemini",
+            model=model,
+        ) from exc
 
     if not translated_text:
         logger.error(
-            "❌ Gemini translation returned no text | "
-            "model=%s | "
-            "source=%s | "
-            "target=%s",
+            "â Gemini translation returned no text | "
+            "model=%s | source=%s | target=%s",
             model,
             source_language,
             target_language,
         )
 
-        raise TranslationProviderError("invalid_response", model=model)
+        raise TranslationProviderError(
+            "invalid_response",
+            provider="gemini",
+            model=model,
+        )
 
     logger.info(
-        "✅ Gemini translation response | "
-        "model=%s | "
-        "source=%s | "
-        "target=%s | "
-        "output_length=%s",
+        "â Gemini translation response | "
+        "model=%s | source=%s | target=%s | output_length=%s",
         model,
         source_language,
         target_language,
-        len(
-            translated_text
-        ),
+        len(translated_text),
     )
 
     return translated_text
+
+
+# =========================================================
+# REGISTRY BOOTSTRAP
+# =========================================================
+
+def configure_default_translation_providers() -> None:
+    """
+    Register every currently configured provider.
+
+    This function is intentionally safe to call repeatedly.
+    replace=True also keeps monkeypatch/test injection deterministic.
+    """
+
+    if translation_provider_configured():
+        register_translation_provider(
+            name="gemini",
+            provider=gemini_translation_provider,
+            priority=10,
+            enabled=True,
+            replace=True,
+        )
+
+
+def get_translation_provider_entries():
+    configure_default_translation_providers()
+
+    from core.translation_provider_registry import (
+        get_translation_provider_entries as registry_entries,
+    )
+
+    return registry_entries()
+
+
+def get_translation_providers():
+    configure_default_translation_providers()
+    return get_translation_provider_chain()
 
 
 # =========================================================
@@ -593,16 +549,19 @@ def gemini_translation_provider(
 
 def get_default_translation_provider():
     """
-    نقطه مشترک برای TranslationService و Controller.
+    Backward-compatible entry point used by TranslationService/Controller.
 
-    بعداً اگر Provider دیگری اضافه شد، Publication Engine
-    نیازی به تغییر نخواهد داشت.
+    Today the first configured provider is Gemini.
+    The registry now owns provider selection order, so additional providers
+    can be added without changing Publication Engine or language routing.
     """
 
-    if not translation_provider_configured():
+    providers = get_translation_providers()
+
+    if not providers:
         return None
 
-    return gemini_translation_provider
+    return providers[0]
 
 
 # =========================================================
@@ -610,22 +569,19 @@ def get_default_translation_provider():
 # =========================================================
 
 def describe_translation_provider() -> Dict[str, Any]:
-    """
-    فقط اطلاعات غیرحساس.
+    status = get_translation_provider_status()
 
-    API Key هرگز برگردانده نمی‌شود.
-    """
+    configure_default_translation_providers()
 
-    status = (
-        get_translation_provider_status()
-    )
+    registry = describe_translation_provider_registry()
+    provider_names = list(get_translation_provider_names())
 
     return {
-        "configured": status.configured,
-        "provider": status.provider,
+        "configured": bool(provider_names),
+        "provider": provider_names[0] if provider_names else status.provider,
         "model": status.model,
         "reason": status.reason,
-        "timeout_seconds": (
-            get_translation_timeout()
-        ),
+        "timeout_seconds": get_translation_timeout(),
+        "provider_chain": provider_names,
+        "registry": registry,
     }
