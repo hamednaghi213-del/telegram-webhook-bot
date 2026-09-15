@@ -227,8 +227,36 @@ def test_reviewed_text_reaches_prepared_content(
         prepared.main_text
     )
 
-    assert "Article body." in (
-        prepared.main_text
+    assert (
+        "Article body."
+        not in prepared.main_text
+    )
+
+    assert len(
+        prepared.expandable_blocks
+    ) == 1
+
+    assert (
+        prepared
+        .expandable_blocks[0]["type"]
+        == "expandable_blockquote"
+    )
+
+    assert (
+        "Article body."
+        in prepared
+        .expandable_blocks[0]["text"]
+    )
+
+    assert (
+        "به گزارش Example News،"
+        in prepared
+        .expandable_blocks[0]["text"]
+    )
+
+    assert (
+        "Article body."
+        in prepared.neutral_text
     )
 
 
