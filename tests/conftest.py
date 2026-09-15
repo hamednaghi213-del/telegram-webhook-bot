@@ -9,3 +9,14 @@ def isolate_publication_state_between_tests():
     reset_local_idempotency_state()
     yield
     reset_local_idempotency_state()
+
+
+@pytest.fixture(autouse=True)
+def isolate_translation_provider_cooldowns_between_tests():
+    """Prevent process-global provider cooldown state leaking across tests."""
+    from core.translation_provider_chain import clear_provider_cooldown
+
+    clear_provider_cooldown()
+    yield
+    clear_provider_cooldown()
+
