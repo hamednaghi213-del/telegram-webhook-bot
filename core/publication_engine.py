@@ -1780,7 +1780,18 @@ def publish_prepared_content(
     # Only the primary article/news body is required to remain a single
     # semantically summarized message. Structured blockquote/expandable
     # content keeps its established independent follow-up/splitting contract.
-    if len(analyzed_primary_text) > analyzed_threshold:
+    structured_followups_present = bool(
+        analyzed.blockquote_blocks
+        or analyzed.expandable_blocks
+    )
+
+    if (
+        len(analyzed_primary_text) > analyzed_threshold
+        and (
+            prepared.require_single_message
+            or not structured_followups_present
+        )
+    ):
         error_code = (
             "editorial_summary_unavailable"
             if prepared.require_single_message
