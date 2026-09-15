@@ -279,6 +279,179 @@ def _compose_reviewed_text(
     ).strip()
 
 
+def _is_web_article(
+    content: NormalizedExternalContent,
+) -> bool:
+    """
+    Return True only for extracted web-news/article content.
+
+    Social posts, newspaper issues and future external source types keep
+    their existing flat publication behavior.
+    """
+
+    source_type = str(
+        content.source_type
+        or ""
+    ).strip().lower()
+
+    content_type = str(
+        content.content_type
+        or ""
+    ).strip().lower()
+
+    return bool(
+        source_type == "web_article"
+        or (
+            source_type in (
+                "web",
+                "article",
+            )
+            and content_type == "article"
+        )
+    )
+
+
+def _compose_web_article_prepared_text(
+    review: ExternalReviewResult,
+    source_name: Any = "",
+) -> Tuple[
+    str,
+    str,
+    Tuple[Mapping[str, Any], ...],
+]:
+    """
+    Convert a reviewed web article into Shared Engine rich content.
+
+    News-link publication semantics:
+
+      - title stays in the normal/main message
+      - lead stays in the normal/main message
+      - the complete remaining article body becomes one
+        expandable_blockquote
+      - source attribution is attached to the article continuation
+      - no raw source URL is inserted into publication text
+      - no article text is discarded
+
+    neutral_text keeps the complete semantic text so downstream shared
+    analysis still sees the whole reviewed article.
+    """
+
+    headline = _clean_block(
+        review.title
+    )
+
+    lead = _clean_block(
+        review.lead
+    )
+
+    body = _clean_block(
+        review.body
+    )
+
+    main_blocks = []
+
+    if headline:
+        main_blocks.append(
+            headline
+        )
+
+    if (
+        lead
+        and lead != headline
+    ):
+        main_blocks.append(
+            lead
+        )
+
+    main_text = "\n\n".join(
+        main_blocks
+    ).strip()
+
+    continuation_blocks = []
+
+    if (
+        body
+        and body != headline
+        and body != lead
+    ):
+        continuation_blocks.append(
+            body
+        )
+
+    continuation_text = "\n\n".join(
+        continuation_blocks
+    ).strip()
+
+    if continuation_text:
+        continuation_text = (
+            apply_web_source_attribution(
+                continuation_text,
+                source_name,
+            )
+        )
+
+    expandable_blocks: Tuple[
+        Mapping[str, Any],
+        ...,
+    ] = ()
+
+    if continuation_text:
+        expandable_blocks = (
+            {
+                "type": (
+                    "expandable_blockquote"
+                ),
+                "text": continuation_text,
+            },
+        )
+
+    # If the extractor/review produced no usable headline or lead,
+    # keep publication safe by using the continuation as main text
+    # rather than creating an empty main message.
+    if (
+        not main_text
+        and continuation_text
+    ):
+        main_text = continuation_text
+        expandable_blocks = ()
+
+    neutral_blocks = []
+
+    if headline:
+        neutral_blocks.append(
+            headline
+        )
+
+    if (
+        lead
+        and lead != headline
+    ):
+        neutral_blocks.append(
+            lead
+        )
+
+    if (
+        continuation_text
+        and continuation_text not in neutral_blocks
+    ):
+        neutral_blocks.append(
+            continuation_text
+        )
+
+    neutral_text = "\n\n".join(
+        neutral_blocks
+    ).strip()
+
+    if not neutral_text:
+        neutral_text = main_text
+
+    return (
+        main_text,
+        neutral_text,
+        expandable_blocks,
+    )
+
+
 # =========================================================
 # SOURCE IDENTITY
 # =========================================================
@@ -650,6 +823,13 @@ def build_external_prepared_content(
 
     External media must cross the materialization boundary first.
 
+    Reviewed web articles use the Shared Engine rich-content structure:
+      - headline/lead -> main_text
+      - full continuation -> expandable_blockquote
+      - extracted media -> existing materialization boundary
+
+    Other external source types retain the existing flat-text behavior.
+
     media_presentation_mode ("normal" default / "album" opt-in) is a
     backward-compatible review-only toggle. See
     `_resolve_media_presentation` for exact routing semantics.
@@ -671,17 +851,45 @@ def build_external_prepared_content(
             "review must be ExternalReviewResult"
         )
 
-    text = _compose_reviewed_text(
-        review,
+    expandable_blocks: Tuple[
+        Mapping[str, Any],
+        ...
+    ] = ()
+
+    if (
+        _is_web_article(
+            content
+        )
+        and not editorial_rewrite_applied
+        and not review.requires_smart_summary
+        and not review.requires_editorial_rewrite
+    ):
         (
-            content.source_name
-            if not editorial_rewrite_applied
-            else ""
-        ),
-    )
+            text,
+            neutral_text,
+            expandable_blocks,
+        ) = (
+            _compose_web_article_prepared_text(
+                review,
+                content.source_name,
+            )
+        )
+
+    else:
+        text = _compose_reviewed_text(
+            review,
+            (
+                content.source_name
+                if not editorial_rewrite_applied
+                else ""
+            ),
+        )
+
+        neutral_text = text
 
     if (
         not text
+        and not expandable_blocks
         and not review.media
         and not prepared_files
     ):
@@ -757,7 +965,10 @@ def build_external_prepared_content(
 
     prepared = PreparedContent(
         main_text=text,
-        neutral_text=text,
+        neutral_text=neutral_text,
+        expandable_blocks=(
+            expandable_blocks
+        ),
         files=files,
         media_presentation=(
             _resolve_media_presentation(
