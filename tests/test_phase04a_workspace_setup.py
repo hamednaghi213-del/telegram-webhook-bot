@@ -305,6 +305,26 @@ class InMemoryDb4A:
         self.publication_destinations.append(dest)
         return deepcopy(dest)
 
+    def associate_publication_destination_canonical(self, workspace_id, destination_id):
+        """Test stub for the canonical workspace-destination association."""
+        if not self.get_workspace(workspace_id):
+            raise ValueError(f"Workspace not found: {workspace_id}")
+
+        destination = next(
+            (d for d in self.publication_destinations if d["id"] == destination_id),
+            None,
+        )
+        if not destination:
+            raise ValueError(f"Publication destination not found: {destination_id}")
+        if destination.get("status") == "removed":
+            raise ValueError("Removed publication destination cannot be associated")
+
+        return {
+            "workspace_id": workspace_id,
+            "destination_id": destination_id,
+            "status": "active",
+        }
+
     # ── destination verification ───────────────────────
     def get_destination_verification(self, destination_id):
         return self.destination_verifications.get(destination_id)
@@ -373,6 +393,7 @@ def _make_fake_db_module(db: InMemoryDb4A) -> types.ModuleType:
     mod.update_workspace_branding_profile = db.update_workspace_branding_profile
     mod.list_workspace_destinations = db.list_workspace_destinations
     mod.create_publication_destination = db.create_publication_destination
+    mod.associate_publication_destination_canonical = db.associate_publication_destination_canonical
     mod.get_destination_verification = db.get_destination_verification
     mod.upsert_destination_verification = db.upsert_destination_verification
     mod.get_destination_branding = db.get_destination_branding
@@ -1725,3 +1746,4 @@ def test_setup_prompts_use_generic_examples(monkeypatch):
     assert "دنیا" not in prompts
     assert "فردای" not in prompts
     assert "بی‌نشانه" not in prompts
+
