@@ -876,7 +876,15 @@ def _source_signature_line_score(line: str) -> int:
     if URL_PATTERN.search(value):
         score += 4
 
-    if AT_PATTERN.search(value):
+    mentions = AT_PATTERN.findall(value)
+    foreign_mentions = [
+        mention for mention in mentions
+        if not (
+            CHANNEL_TAG
+            and mention.lower() == str(CHANNEL_TAG).lower()
+        )
+    ]
+    if foreign_mentions:
         score += 4
 
     if _SOURCE_SIGNATURE_PREFIX.search(value):
@@ -943,17 +951,6 @@ def remove_trailing_source_signature_block(text: str) -> str:
             continue
 
         if strong_evidence and decorated and len(stripped) <= 100:
-            block_start = cursor
-            cursor -= 1
-            continue
-
-        # Source names commonly sit directly above @handle / URL lines.
-        if (
-            strong_evidence
-            and len(stripped) <= 100
-            and not any(ch in stripped for ch in SENTENCE_ENDINGS)
-            and not HASH_PATTERN.search(stripped)
-        ):
             block_start = cursor
             cursor -= 1
             continue
@@ -1298,6 +1295,10 @@ def clean_text(
         f"preview={text[:80]!r}"
     )
 
+    text = remove_trailing_source_signature_block(
+        text
+    )
+
     text = (
         clean_foreign_mentions_and_hashtags(
             text
@@ -1308,10 +1309,6 @@ def clean_text(
         f"After mentions/invites | "
         f"length={len(text)} | "
         f"preview={text[:80]!r}"
-    )
-
-    text = remove_trailing_source_signature_block(
-        text
     )
 
     text = (
