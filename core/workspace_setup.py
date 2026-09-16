@@ -6,13 +6,15 @@ Implements the one-time guided setup wizard for a new workspace.
 Flow (owner perspective):
   /start  →  detect incomplete setup  →  /setup
   Step 1: register publication channel(s)  (/addchannel @id)
-  Step 2: configure workspace branding     (/setbranding name hashtag tag)
-  Step 3: confirm a branding sample
-  Step 4: add member (optional)            (/addmember TELEGRAM_ID role)
-  Step 5: finish                           (/finishsetup)
+  Step 2: optionally register Bale channel
+  Step 3: configure workspace branding     (/setbranding name hashtag tag)
+  Step 4: confirm a branding sample
+  Step 5: add member (optional)            (/addmember TELEGRAM_ID role)
+  Step 6: finish                           (/finishsetup)
 
 State machine (persisted in workspace_setup_state table):
   not_started  →  in_progress (step=setup_channel)
+               →  in_progress (step=setup_bale_channel)
                →  in_progress (step=setup_branding)
                →  in_progress (step=setup_branding_sample)
                →  in_progress (step=setup_member)
@@ -34,6 +36,7 @@ from core.workspace_pairing import has_required_telegram_destination
 
 from core.database import (
     add_workspace_member,
+    associate_publication_destination_canonical,
     create_publication_destination,
     get_destination_branding,
     get_destination_verification,
@@ -51,9 +54,10 @@ from core.database import (
 
 logger = logging.getLogger(__name__)
 
-# Ordered setup steps; member step is optional.
+# Ordered setup steps; Bale and member steps are optional.
 SETUP_STEPS: List[str] = [
     "setup_channel",
+    "setup_bale_channel",
     "setup_branding",
     "setup_branding_sample",
     "setup_member",
@@ -120,6 +124,7 @@ def register_channel_destination(
     Safety:
     - Duplicate external_id is detected and rejected.
     - Destination stored with status='inactive' (NOT ready for publication).
+    - Canonical workspace association is created without activating or verifying it.
     - A destination_verification record is created with verified=False.
     - Phase 4B will handle actual Telegram admin verification via the API.
     """
@@ -145,13 +150,17 @@ def register_channel_destination(
         is_default=False,
     )
     if dest:
+        associate_publication_destination_canonical(
+            workspace_id=workspace_id,
+            destination_id=dest["id"],
+        )
         upsert_destination_verification(
             dest["id"],
             verified=False,
             verification_note="pending_admin_verification",
         )
         logger.info(
-            "Channel registered (unverified) | "
+            "Channel registered (unverified, canonical association active) | "
             f"workspace={workspace_id} dest_id={dest['id']} "
             f"external_id={external_id}"
         )
@@ -182,6 +191,10 @@ def register_bale_destination(
         is_default=False,
     )
     if destination:
+        associate_publication_destination_canonical(
+            workspace_id=workspace_id,
+            destination_id=destination["id"],
+        )
         upsert_destination_verification(
             destination["id"],
             verified=False,
@@ -322,7 +335,7 @@ def can_complete_setup(
     1. Active owner membership
     2. Workspace branding with at least a media_name
     3. A confirmed branding sample
-    4. At least one registered destination
+    4. At least one registered Telegram destination
     """
     member = get_workspace_member(workspace_id, owner_user_id)
     if not member or member.get("role") != "owner" or member.get("status") != "active":
@@ -362,3 +375,4 @@ def complete_setup(
     upsert_workspace_setup_state(workspace_id, "completed", None)
     logger.info(f"Setup completed | workspace={workspace_id}")
     return True, None
+
