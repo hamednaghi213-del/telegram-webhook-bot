@@ -316,10 +316,15 @@ def is_source_line(
     )
 
     if normalized_source_username:
-        if (
-            normalized_line_lower
-            == normalized_source_username
-        ):
+        bare_source_username = normalized_source_username.lstrip("@")
+
+        # A source footer may contain the channel username without "@"
+        # (for example "mahdaviatakhbar"). Match only the complete normalized
+        # line so body text containing the same token is preserved.
+        if normalized_line_lower in {
+            normalized_source_username,
+            bare_source_username,
+        }:
             return True
 
         if (
@@ -593,7 +598,7 @@ def remove_source_signature(
         return linked_url.group(1) if linked_url else value
 
     standalone_source_url_pattern = re.compile(
-        r"\s*(?:(?:https?://|www\.)?)"
+        r"\s*(?:https?://|www\.)"
         r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
         r"(?:/[^\s]*)?\s*",
         flags=re.IGNORECASE,
@@ -715,43 +720,17 @@ def remove_source_signature(
             raw_candidate
         ).strip()
 
-        is_tail_domain = bool(
-            adjacent_source_domain_pattern.fullmatch(
+        if (
+            has_footer_decoration
+            and adjacent_source_domain_pattern.fullmatch(
                 source_url_candidate(
                     undecorated_candidate
                 )
             )
-        )
-
-        if has_footer_decoration and is_tail_domain:
+        ):
             removable_indexes.add(
                 index
             )
-            continue
-
-        if is_tail_domain and index == non_empty_tail_indexes[-1]:
-            previous_non_empty = next(
-                (
-                    candidate_index
-                    for candidate_index in reversed(non_empty_tail_indexes)
-                    if candidate_index < index
-                ),
-                None,
-            )
-            if (
-                previous_non_empty is not None
-                and (
-                    previous_non_empty in removable_indexes
-                    or is_source_line(
-                        lines[previous_non_empty],
-                        source_title=source_title,
-                        source_username=source_username,
-                    )
-                )
-            ):
-                removable_indexes.add(
-                    index
-                )
 
     if removable_indexes:
         changed = True
@@ -788,8 +767,30 @@ def remove_source_signature(
                         continue
                     looks_like_adjacent_source_label = False
 
+                    if source_username and neighbor < index:
+                        candidate_username = (
+                            strip_trailing_source_icons(
+                                strip_leading_decoration(
+                                    normalize_invisible_characters(
+                                        candidate
+                                    )
+                                )
+                            )
+                            .strip()
+                            .lower()
+                        )
+                        expected_username = normalize_username(
+                            source_username
+                        )
+                        if candidate_username in {
+                            expected_username,
+                            expected_username.lstrip("@"),
+                        }:
+                            looks_like_adjacent_source_label = True
+
                     if (
-                        source_title
+                        not looks_like_adjacent_source_label
+                        and source_title
                         and neighbor < index
                     ):
                         candidate_label = (
