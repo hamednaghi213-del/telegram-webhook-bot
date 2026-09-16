@@ -580,6 +580,22 @@ def _get_workspace_for_user(chat_id: int):
     if not workspaces:
         return user, None
 
+    # The explicitly selected workspace is the durable setup target.
+    # Resolve it before looking for any other incomplete owned workspace so
+    # consecutive setup commands (/addchannel, /finishsetup, etc.) cannot
+    # jump to a different workspace as setup state changes.
+    preference = get_active_workspace_preference(user["id"]) or {}
+    if preference.get("context_type") == "legacy":
+        return user, None
+
+    active_workspace_id = preference.get("active_workspace_id")
+    for workspace in workspaces:
+        if workspace.get("id") == active_workspace_id:
+            return user, workspace
+
+    # Compatibility fallback for accounts created before active-workspace
+    # preferences existed. Only use an incomplete owned workspace when there
+    # is no valid explicit selection.
     owned_workspaces = [
         workspace
         for workspace in workspaces
@@ -594,15 +610,6 @@ def _get_workspace_for_user(chat_id: int):
 
     if incomplete_owned:
         return user, _select_primary_workspace(incomplete_owned)
-
-    preference = get_active_workspace_preference(user["id"]) or {}
-    if preference.get("context_type") == "legacy":
-        return user, None
-
-    active_workspace_id = preference.get("active_workspace_id")
-    for workspace in workspaces:
-        if workspace.get("id") == active_workspace_id:
-            return user, workspace
 
     workspace = _select_primary_workspace(workspaces)
     return user, workspace
@@ -3032,3 +3039,4 @@ def handle_command(text: str, chat_id: int) -> bool:
             "❌ خطا در پردازش دستور"
         )
         return False
+
