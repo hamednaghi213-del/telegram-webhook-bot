@@ -86,6 +86,12 @@ GEMINI_API_BASE = (
     "https://generativelanguage.googleapis.com/v1beta"
 )
 
+CLOUDFLARE_AI_API_TOKEN_ENV = "CLOUDFLARE_AI_API_TOKEN"
+CLOUDFLARE_ACCOUNT_ID_ENV = "CLOUDFLARE_ACCOUNT_ID"
+CLOUDFLARE_QUALITY_MODEL_ENV = "CLOUDFLARE_TRANSLATION_QUALITY_MODEL"
+DEFAULT_CLOUDFLARE_QUALITY_MODEL = "@cf/zai-org/glm-4.7-flash"
+CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4/accounts"
+
 
 # =========================================================
 # STATUS MODEL
@@ -178,6 +184,19 @@ def get_translation_quality_timeout() -> int:
             timeout,
         ),
     )
+
+
+def get_cloudflare_ai_api_token() -> str:
+    return _clean_env(CLOUDFLARE_AI_API_TOKEN_ENV)
+
+def get_cloudflare_account_id() -> str:
+    return _clean_env(CLOUDFLARE_ACCOUNT_ID_ENV)
+
+def get_cloudflare_translation_quality_model() -> str:
+    return _clean_env(CLOUDFLARE_QUALITY_MODEL_ENV) or DEFAULT_CLOUDFLARE_QUALITY_MODEL
+
+def cloudflare_translation_quality_provider_configured() -> bool:
+    return bool(get_cloudflare_ai_api_token() and get_cloudflare_account_id())
 
 
 # =========================================================
@@ -647,20 +666,134 @@ def gemini_translation_quality_provider(
 
 
 # =========================================================
+# CLOUDFLARE QUALITY PROVIDER
+# =========================================================
+
+def _extract_cloudflare_text(payload: Dict[str, Any]) -> str:
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return ""
+    response = result.get("response")
+    if isinstance(response, str):
+        return response.strip()
+    choices = result.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        message = choices[0].get("message")
+        if isinstance(message, dict):
+            return str(message.get("content") or "").strip()
+    return ""
+
+
+@timed_stage("translation_quality", provider="cloudflare", model=get_cloudflare_translation_quality_model)
+def cloudflare_translation_quality_provider(
+    *,
+    text: str,
+    instruction: str,
+    source_language: str = "auto",
+    target_language: str,
+) -> str:
+    token = get_cloudflare_ai_api_token()
+    account_id = get_cloudflare_account_id()
+    model = get_cloudflare_translation_quality_model()
+    timeout = get_translation_quality_timeout()
+
+    if not token or not account_id:
+        raise RuntimeError("Cloudflare Workers AI quality provider is not configured.")
+
+    prompt = _build_quality_prompt(
+        text=text,
+        instruction=instruction,
+        source_language=source_language,
+        target_language=target_language,
+    )
+    endpoint = f"{CLOUDFLARE_API_BASE}/{account_id}/ai/run/{model}"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {"prompt": prompt, "temperature": 0.0, "max_tokens": 2048}
+
+    logger.info(
+        "🌐 TRANSLATION-QUALITY-PROVIDER | provider=cloudflare | model=%s | "
+        "source_language=%s | target_language=%s | input_length=%s",
+        model, source_language, target_language, len(text or ""),
+    )
+    try:
+        response = provider_post(endpoint, headers=headers, json=payload, timeout=timeout)
+    except requests.Timeout as exc:
+        raise RuntimeError("Cloudflare translation quality provider timed out.") from exc
+    except requests.RequestException as exc:
+        raise RuntimeError("Cloudflare translation quality provider network error.") from exc
+
+    if not response.ok:
+        message = _extract_error_message(response)
+        logger.warning(
+            "⚠️ TRANSLATION-QUALITY-PROVIDER-HTTP | provider=cloudflare | "
+            "model=%s | status=%s | error=%s",
+            model, response.status_code, message,
+        )
+        raise RuntimeError(
+            f"Cloudflare translation quality provider HTTP error: {response.status_code} | {message}"
+        )
+
+    candidate_text = _extract_cloudflare_text(_safe_json(response))
+    if not candidate_text:
+        raise RuntimeError("Cloudflare translation quality provider returned an empty response.")
+
+    logger.info(
+        "✅ TRANSLATION-QUALITY-PROVIDER-SUCCESS | provider=cloudflare | "
+        "model=%s | output_length=%s",
+        model, len(candidate_text),
+    )
+    return candidate_text
+
+
+def translation_quality_provider_chain(
+    *,
+    text: str,
+    instruction: str,
+    source_language: str = "auto",
+    target_language: str,
+) -> str:
+    failures = []
+    if translation_quality_provider_configured():
+        try:
+            return gemini_translation_quality_provider(
+                text=text, instruction=instruction,
+                source_language=source_language, target_language=target_language,
+            )
+        except Exception as exc:
+            failures.append(("gemini", exc))
+            logger.warning(
+                "⚠️ TRANSLATION-QUALITY-FALLBACK | from=gemini | to=cloudflare | error=%s",
+                type(exc).__name__,
+            )
+
+    if cloudflare_translation_quality_provider_configured():
+        try:
+            return cloudflare_translation_quality_provider(
+                text=text, instruction=instruction,
+                source_language=source_language, target_language=target_language,
+            )
+        except Exception as exc:
+            failures.append(("cloudflare", exc))
+
+    if failures:
+        provider, exc = failures[-1]
+        raise RuntimeError(
+            f"Translation quality provider chain failed | last_provider={provider} | error={exc}"
+        ) from exc
+    raise RuntimeError("Translation quality provider unavailable: no configured quality provider.")
+
+
+# =========================================================
 # DEFAULT PROVIDER
 # =========================================================
 
-def get_default_translation_quality_provider(
-) -> Optional[
-    Any
-]:
-
-    if not translation_quality_provider_configured():
+def get_default_translation_quality_provider() -> Optional[Any]:
+    if not (
+        translation_quality_provider_configured()
+        or cloudflare_translation_quality_provider_configured()
+    ):
         return None
-
-    return (
-        gemini_translation_quality_provider
-    )
+    return translation_quality_provider_chain
 
 
 # =========================================================
@@ -695,3 +828,4 @@ def describe_translation_quality_provider(
         "reason":
             status.reason,
     }
+
