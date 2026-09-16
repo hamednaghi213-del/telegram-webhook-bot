@@ -1109,6 +1109,52 @@ def move_canonical_destination_associations(
 
 
 @with_retry
+def associate_publication_destination_canonical(
+    workspace_id: int,
+    destination_id: int,
+) -> Dict[str, Any]:
+    """Associate an existing physical destination with a workspace.
+
+    This is the canonical association primitive for newly registered
+    destinations. It intentionally does not change destination status,
+    verification, branding, or media identity.
+    """
+    workspace = get_workspace(int(workspace_id))
+    if not workspace:
+        raise ValueError(f"Workspace not found: {workspace_id}")
+
+    destination = get_publication_destination(int(destination_id))
+    if not destination:
+        raise ValueError(f"Publication destination not found: {destination_id}")
+    if destination.get("status") == "removed":
+        raise ValueError("Removed publication destination cannot be associated")
+
+    # Product semantics allow one active workspace association per physical
+    # destination. Locking/moving is centralized in the existing database RPC.
+    result = supabase.rpc(
+        "move_workspace_destination_memberships",
+        {
+            "p_destination_ids": [int(destination_id)],
+            "p_target_workspace_id": int(workspace_id),
+        },
+    ).execute()
+    rows = result.data or []
+    row = next(
+        (
+            item
+            for item in rows
+            if int(item.get("workspace_id", 0)) == int(workspace_id)
+            and int(item.get("destination_id", 0)) == int(destination_id)
+            and item.get("status") == "active"
+        ),
+        None,
+    )
+    if not row:
+        raise RuntimeError("Canonical destination association was not created")
+    return row
+
+
+@with_retry
 def claim_legacy_destination_canonical(
     user_id: int,
     workspace_id: int,
@@ -4287,3 +4333,4 @@ def mark_persistent_translation_review_confirmed(
         review_id,
         status="confirmed",
     )
+
