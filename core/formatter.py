@@ -593,7 +593,7 @@ def remove_source_signature(
         return linked_url.group(1) if linked_url else value
 
     standalone_source_url_pattern = re.compile(
-        r"\s*(?:https?://|www\.)"
+        r"\s*(?:(?:https?://|www\.)?)"
         r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
         r"(?:/[^\s]*)?\s*",
         flags=re.IGNORECASE,
@@ -715,17 +715,43 @@ def remove_source_signature(
             raw_candidate
         ).strip()
 
-        if (
-            has_footer_decoration
-            and adjacent_source_domain_pattern.fullmatch(
+        is_tail_domain = bool(
+            adjacent_source_domain_pattern.fullmatch(
                 source_url_candidate(
                     undecorated_candidate
                 )
             )
-        ):
+        )
+
+        if has_footer_decoration and is_tail_domain:
             removable_indexes.add(
                 index
             )
+            continue
+
+        if is_tail_domain and index == non_empty_tail_indexes[-1]:
+            previous_non_empty = next(
+                (
+                    candidate_index
+                    for candidate_index in reversed(non_empty_tail_indexes)
+                    if candidate_index < index
+                ),
+                None,
+            )
+            if (
+                previous_non_empty is not None
+                and (
+                    previous_non_empty in removable_indexes
+                    or is_source_line(
+                        lines[previous_non_empty],
+                        source_title=source_title,
+                        source_username=source_username,
+                    )
+                )
+            ):
+                removable_indexes.add(
+                    index
+                )
 
     if removable_indexes:
         changed = True
@@ -1226,3 +1252,4 @@ def process_news(
         )
 
     return formatted
+
