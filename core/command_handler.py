@@ -580,27 +580,30 @@ def _get_workspace_for_user(chat_id: int):
     if not workspaces:
         return user, None
 
-    # The explicitly selected workspace is the durable setup target.
-    # Resolve it before looking for any other incomplete owned workspace so
-    # consecutive setup commands (/addchannel, /finishsetup, etc.) cannot
-    # jump to a different workspace as setup state changes.
     preference = get_active_workspace_preference(user["id"]) or {}
     if preference.get("context_type") == "legacy":
         return user, None
 
     active_workspace_id = preference.get("active_workspace_id")
-    for workspace in workspaces:
-        if workspace.get("id") == active_workspace_id:
-            return user, workspace
+    active_workspace = next(
+        (
+            workspace
+            for workspace in workspaces
+            if workspace.get("id") == active_workspace_id
+        ),
+        None,
+    )
 
-    # Compatibility fallback for accounts created before active-workspace
-    # preferences existed. Only use an incomplete owned workspace when there
-    # is no valid explicit selection.
     owned_workspaces = [
         workspace
         for workspace in workspaces
         if workspace.get("owner_user_id") == user["id"]
     ]
+
+    # An explicitly selected owned workspace is the durable setup target.
+    # This keeps consecutive setup commands on the same newly created media.
+    if active_workspace and active_workspace.get("owner_user_id") == user["id"]:
+        return user, active_workspace
 
     incomplete_owned = [
         workspace
@@ -608,8 +611,14 @@ def _get_workspace_for_user(chat_id: int):
         if not is_setup_completed(workspace["id"])
     ]
 
+    # Preserve the onboarding contract: an unfinished workspace owned by the
+    # user takes precedence over a workspace where the user is only a member
+    # or manager, even if that other workspace is currently selected.
     if incomplete_owned:
         return user, _select_primary_workspace(incomplete_owned)
+
+    if active_workspace:
+        return user, active_workspace
 
     workspace = _select_primary_workspace(workspaces)
     return user, workspace
