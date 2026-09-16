@@ -34,7 +34,12 @@ def initialize(channel_tag, hashtag):
 # =========================================================
 
 URL_PATTERN = re.compile(
-    r'(?:https?://|t\.me/|telegram\.me/|telegram\.dog/|www\.)[^\s]+',
+    r'(?<![\w@])(?:'
+    r'https?://[^\s]+|'
+    r'(?:t\.me|telegram\.me|telegram\.dog)/[^\s]+|'
+    r'www\.[^\s]+|'
+    r'(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?:/[^\s]*)?'
+    r')',
     re.IGNORECASE
 )
 
@@ -835,6 +840,146 @@ def is_promotional_footer_line(
 
 
 # =========================================================
+# SOURCE SIGNATURE BLOCK
+# =========================================================
+
+_SOURCE_SIGNATURE_PREFIX = re.compile(
+    r'^(?:کانال|خبرگزاری|رسانه|پایگاه(?:\s+خبری)?|سایت|وب\s*سایت|وبسایت|'
+    r'channel|news|media|website)\b',
+    re.IGNORECASE,
+)
+
+_SOURCE_SIGNATURE_ICON_PREFIX = re.compile(
+    r'^[^\w\u0600-\u06FF@#]+',
+    re.UNICODE,
+)
+
+
+def _strip_source_signature_decoration(line: str) -> str:
+    """Strip leading source/footer decoration without changing body text."""
+    value = str(line or "").strip()
+    previous = None
+    while value and value != previous:
+        previous = value
+        value = _SOURCE_SIGNATURE_ICON_PREFIX.sub("", value).strip()
+    return value
+
+
+def _source_signature_line_score(line: str) -> int:
+    """Return evidence score for a line being part of a trailing source block."""
+    value = _strip_source_signature_decoration(line)
+    if not value:
+        return 0
+
+    score = 0
+
+    if URL_PATTERN.search(value):
+        score += 4
+
+    if AT_PATTERN.search(value):
+        score += 4
+
+    if _SOURCE_SIGNATURE_PREFIX.search(value):
+        score += 3
+
+    if FOOTER_HINT_PATTERN.search(value):
+        score += 2
+
+    if any(pattern.search(value) for pattern in INVITE_PATTERNS):
+        score += 4
+
+    # A short decorated media-name line is allowed to join an already
+    # identified footer block, but is never sufficient on its own.
+    if len(value) <= 80 and value != str(line or "").strip():
+        score += 1
+
+    return score
+
+
+def remove_trailing_source_signature_block(text: str) -> str:
+    """Remove one contiguous source/signature block only from the message tail.
+
+    Body URLs, mentions and hashtags are intentionally untouched.  A footer
+    block must contain strong attribution evidence (URL, @mention, channel /
+    media marker, or follow/invite language).  Adjacent decorated source-name
+    lines are removed with that block.
+    """
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    end = len(lines) - 1
+
+    while end >= 0 and not lines[end].strip():
+        end -= 1
+
+    if end < 0:
+        return ""
+
+    block_start = end
+    strong_evidence = False
+    cursor = end
+
+    while cursor >= 0:
+        raw = lines[cursor]
+        stripped = raw.strip()
+
+        if not stripped:
+            # A single blank line may separate the body from a footer.  Do not
+            # cross it unless footer evidence has already been found below.
+            if strong_evidence:
+                block_start = cursor
+                cursor -= 1
+                continue
+            break
+
+        score = _source_signature_line_score(stripped)
+        decorated = _strip_source_signature_decoration(stripped) != stripped
+
+        if score >= 2:
+            strong_evidence = True
+            block_start = cursor
+            cursor -= 1
+            continue
+
+        if strong_evidence and decorated and len(stripped) <= 100:
+            block_start = cursor
+            cursor -= 1
+            continue
+
+        # Source names commonly sit directly above @handle / URL lines.
+        if (
+            strong_evidence
+            and len(stripped) <= 100
+            and not any(ch in stripped for ch in SENTENCE_ENDINGS)
+            and not HASH_PATTERN.search(stripped)
+        ):
+            block_start = cursor
+            cursor -= 1
+            continue
+
+        break
+
+    if not strong_evidence:
+        return text
+
+    # Do not consume blank separator lines into the retained body.
+    while block_start > 0 and not lines[block_start - 1].strip():
+        block_start -= 1
+
+    removed = "\n".join(lines[block_start:end + 1]).strip()
+    if not removed:
+        return text
+
+    logger.info(
+        "🧹 Source signature block removed | "
+        f"lines={end - block_start + 1} | preview={removed[:120]!r}"
+    )
+
+    return "\n".join(lines[:block_start]).rstrip()
+
+
+# =========================================================
 # CLEAN TRAILING CONTENT
 # =========================================================
 
@@ -1165,6 +1310,10 @@ def clean_text(
         f"preview={text[:80]!r}"
     )
 
+    text = remove_trailing_source_signature_block(
+        text
+    )
+
     text = (
         clean_all_trailing_content(
             text
@@ -1211,3 +1360,4 @@ def clean_text(
     )
 
     return text
+
