@@ -355,6 +355,20 @@ def initialize_modules():
         "✅ Webhook Handler initialized"
     )
 
+    # -----------------------------------------
+    # Bale Adapter (Bale Full Bot Parity)
+    # -----------------------------------------
+
+    from core.bale_adapter import initialize as init_bale_adapter
+
+    init_bale_adapter(
+        os.getenv("BALE_WEBHOOK_SECRET_TOKEN", "").strip()
+    )
+
+    logger.info(
+        "✅ Bale Adapter initialized"
+    )
+
     logger.info(
         "🎯 تمام ماژول‌ها با موفقیت "
         "مقداردهی شدند."
@@ -622,6 +636,31 @@ def test_gemini():
 def webhook():
 
     return handle_webhook()
+
+
+# =========================================================
+# BALE WEBHOOK (Bale Full Bot Parity)
+# =========================================================
+
+@app.route(
+    "/bale/webhook",
+    methods=["POST"]
+)
+def bale_webhook():
+    """Inbound Bale bot updates, routed into the shared application core."""
+    from core.bale_adapter import (
+        handle_bale_update,
+        validate_bale_webhook_token,
+    )
+
+    if not validate_bale_webhook_token(request):
+        return jsonify({"ok": False, "error": "unauthorized"}), 403
+
+    data = request.get_json(silent=True) or {}
+
+    response, status_code = handle_bale_update(data)
+
+    return jsonify(response), status_code
 
 
 # =========================================================

@@ -772,6 +772,129 @@ def get_or_create_user_by_telegram_id(
     )
 
 
+# =========================================================
+# BALE USER IDENTITY (Bale parity slice 1)
+# =========================================================
+
+def get_user_by_bale_id(
+    bale_user_id: int,
+) -> Optional[Dict[str, Any]]:
+    """Resolve a user by their explicit Bale identity.
+
+    Bale numeric user IDs are a separate identity space from
+    Telegram; they are never matched against telegram_user_id.
+    """
+    try:
+        validated = int(bale_user_id)
+    except (TypeError, ValueError):
+        return None
+
+    if isinstance(bale_user_id, bool) or validated <= 0:
+        return None
+
+    result = (
+        supabase
+        .table("users")
+        .select("*")
+        .eq("bale_user_id", validated)
+        .limit(1)
+        .execute()
+    )
+    return _first_row(result)
+
+
+def get_or_create_user_by_bale_id(
+    bale_user_id: int,
+    status: str = "active",
+    *,
+    telegram_user_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Get or create the user for a Bale-origin identity.
+
+    Never infers equivalence with a Telegram ID. When
+    telegram_user_id is supplied (an explicit linkage decided
+    by the application), the linked Telegram account is used;
+    otherwise a new account with only bale_user_id set is
+    created (bale-first account).
+    """
+    try:
+        validated = int(bale_user_id)
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            "Invalid Bale user id"
+        )
+
+    if (
+        isinstance(bale_user_id, bool)
+        or validated <= 0
+    ):
+        raise RuntimeError(
+            "Invalid Bale user id"
+        )
+
+    validated_status = _validate_enum(
+        status,
+        USER_STATUSES,
+        "user status",
+    )
+
+    existing = get_user_by_bale_id(validated)
+    if existing:
+        return existing
+
+    if telegram_user_id is not None:
+        # Explicit application-level linkage: reuse the linked
+        # Telegram account and attach the Bale identity to it.
+        linked = get_user_by_telegram_id(telegram_user_id)
+        if linked is None:
+            raise RuntimeError(
+                "Linked Telegram account not found"
+            )
+
+        update_result = (
+            supabase
+            .table("users")
+            .update({
+                "bale_user_id": validated,
+                "updated_at": time.time(),
+            })
+            .eq("id", int(linked["id"]))
+            .execute()
+        )
+
+        linked_user = _first_row(update_result)
+        if linked_user:
+            return linked_user
+
+        raise RuntimeError(
+            "Failed to link Bale identity to user"
+        )
+
+    now = time.time()
+    user_data = {
+        "bale_user_id": validated,
+        "telegram_user_id": None,
+        "status": validated_status,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    insert_result = (
+        supabase
+        .table("users")
+        .insert(user_data)
+        .execute()
+    )
+
+    created_user = _first_row(insert_result)
+    if created_user:
+        return created_user
+
+    raise RuntimeError(
+        "Failed to create user record"
+    )
+
+
 def create_workspace(
     name: str,
     owner_user_id: int,

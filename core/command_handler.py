@@ -108,6 +108,82 @@ except (ImportError, AttributeError):
 logger = logging.getLogger(__name__)
 
 # =========================================================
+# BALE PARITY SEAM (slice 1)
+# =========================================================
+
+# Origin of the currently-processed inbound update. "telegram"
+# is the default and preserves every historical code path; the
+# Bale adapter binds "bale" for the duration of its request.
+CURRENT_ORIGIN: str = "telegram"
+
+
+def _identity_for_chat(chat_id: int) -> Optional[Dict[str, Any]]:
+    """Resolve the shared application user for the current origin.
+
+    Telegram keeps the historical telegram_user_id resolution.
+    Bale resolves (or bale-first creates) the user by its own
+    identity -- numeric Bale IDs are never treated as Telegram IDs.
+    """
+    if CURRENT_ORIGIN == "bale":
+        from core.database import (
+            get_or_create_user_by_bale_id,
+        )
+
+        return get_or_create_user_by_bale_id(
+            int(chat_id),
+            status="active",
+        )
+
+    return get_user_by_telegram_id(chat_id)
+
+
+def _legacy_tenant(chat_id: int):
+    """Resolve a legacy tenant, Telegram origin only.
+
+    Legacy tenants are keyed by Telegram chat id; a Bale numeric id
+    must never resolve (or collide with) a Telegram tenant row.
+    """
+    if CURRENT_ORIGIN != "telegram":
+        return None
+
+    return get_tenant(chat_id)
+
+
+def _messaging_send_text(
+    chat_id: int,
+    text: str,
+    parse_mode: Optional[str] = None,
+) -> bool:
+    """Send via the origin's outbound context when it is not Telegram."""
+    if CURRENT_ORIGIN == "telegram":
+        return False
+
+    from core.messaging import current_context
+
+    return current_context().send_text(
+        chat_id,
+        text,
+        parse_mode,
+    )
+
+
+def _messaging_send_keyboard(
+    chat_id: int,
+    text: str,
+    keyboard: list,
+) -> bool:
+    if CURRENT_ORIGIN == "telegram":
+        return False
+
+    from core.messaging import current_context
+
+    return current_context().send_keyboard(
+        chat_id,
+        text,
+        keyboard,
+    )
+
+# =========================================================
 # GLOBAL CONFIG
 # =========================================================
 
@@ -273,14 +349,22 @@ def send_message(
     Returns:
         True اگر ارسال موفق باشد
     """
-    if not API_URL:
-        logger.error("❌ API_URL در Command Handler تنظیم نشده است")
-        return False
-    
     if not text:
         logger.warning("⚠️ Empty message to send")
         return False
-    
+
+    # Origin-scoped transport: non-Telegram origins resolve before
+    # any Telegram-specific configuration gate.
+    if _messaging_send_text(chat_id, text, parse_mode):
+        return True
+
+    if CURRENT_ORIGIN != "telegram":
+        return False
+
+    if not API_URL:
+        logger.error("❌ API_URL در Command Handler تنظیم نشده است")
+        return False
+
     try:
         payload: Dict[str, Any] = {
             "chat_id": chat_id,
@@ -318,6 +402,12 @@ def send_message_with_keyboard(
     keyboard: list
 ) -> bool:
     """Send a message with an inline keyboard."""
+    if _messaging_send_keyboard(chat_id, text, keyboard):
+        return True
+
+    if CURRENT_ORIGIN != "telegram":
+        return False
+
     if not API_URL:
         return False
     try:
@@ -415,7 +505,7 @@ def handle_start(chat_id: int) -> bool:
         True اگر پردازش موفق باشد
     """
     try:
-        tenant = get_tenant(chat_id)
+        tenant = _legacy_tenant(chat_id)
         if tenant:
             send_message(
                 chat_id,
@@ -424,9 +514,12 @@ def handle_start(chat_id: int) -> bool:
             )
             return True
 
-        user = get_user_by_telegram_id(chat_id)
-        if not user:
-            user = get_or_create_user_by_telegram_id(chat_id, status="active")
+        user = _identity_for_chat(chat_id)
+        if user is None:
+            user = get_or_create_user_by_telegram_id(
+                chat_id,
+                status="active",
+            )
         if not list_owned_workspaces(user["id"], include_inactive=True):
             _begin_workspace_name_input(chat_id, user, "create_workspace_name")
             return True
@@ -567,7 +660,7 @@ def _setup_resume_message(current_step_key: str) -> str:
 
 def _get_workspace_for_user(chat_id: int):
     """Return (user, workspace) for a non-legacy workspace user, or (None, None)."""
-    user = get_user_by_telegram_id(chat_id)
+    user = _identity_for_chat(chat_id)
     if not user:
         return None, None
     if not _ACTIVE_WORKSPACE_ENABLED:
@@ -635,13 +728,16 @@ def handle_workspaces(chat_id: int) -> bool:
         send_message(chat_id, "❌ این قابلیت در حال حاضر فعال نیست.")
         return True
     try:
-        legacy_tenant = get_tenant(chat_id)
-        user = get_user_by_telegram_id(chat_id)
+        legacy_tenant = _legacy_tenant(chat_id)
+        user = _identity_for_chat(chat_id)
         if not user and legacy_tenant:
             # Legacy tenants predate the users/workspaces tables.  Materialise
             # only the user identity so /workspaces can show the legacy entry
             # and offer an explicit, separate workspace creation action.
-            user = get_or_create_user_by_telegram_id(chat_id, status="active")
+            user = get_or_create_user_by_telegram_id(
+                chat_id,
+                status="active",
+            )
         if not user:
             send_message(chat_id, "❌ ابتدا /start را بفرستید.")
             return True
@@ -937,7 +1033,7 @@ def handle_switchworkspace(args: str, chat_id: int) -> bool:
             send_message(chat_id, "❌ ابتدا /start را بفرستید.")
             return True
         if value.lower() in {"legacy", "قدیمی", "دنیا24", "دنیا۲۴"}:
-            if not get_tenant(chat_id):
+            if not _legacy_tenant(chat_id):
                 send_message(chat_id, "❌ حساب رسانه قدیمی برای شما یافت نشد.")
                 return True
             set_active_legacy_context(user["id"])
@@ -2275,7 +2371,7 @@ def handle_help(chat_id: int) -> bool:
         True اگر پردازش موفق باشد
     """
     try:
-        tenant = get_tenant(chat_id)
+        tenant = _legacy_tenant(chat_id)
         if tenant:
             text = (
                 "📚 راهنمای ربات\n\n"
@@ -2502,8 +2598,8 @@ def _get_onboarding_state(chat_id: int) -> str:
 
 def _ensure_onboarding_ready(chat_id: int) -> Dict[str, Any]:
     """ایجاد/تکمیل idempotent onboarding برای کاربر جدید"""
-    user = get_user_by_telegram_id(chat_id)
-    if not user:
+    user = _identity_for_chat(chat_id)
+    if user is None:
         state_before = "not_started"
         user = get_or_create_user_by_telegram_id(
             chat_id,
@@ -2601,7 +2697,7 @@ def handle_register(chat_id: int) -> bool:
         True اگر پردازش موفق باشد
     """
     try:
-        tenant = get_tenant(chat_id)
+        tenant = _legacy_tenant(chat_id)
         
         if tenant:
             send_message(
@@ -2651,7 +2747,7 @@ def handle_settelegram(args: str, chat_id: int) -> bool:
             return True
         
         # Get tenant
-        tenant = get_tenant(chat_id)
+        tenant = _legacy_tenant(chat_id)
         if not tenant:
             send_message(
                 chat_id,
@@ -2722,7 +2818,7 @@ def handle_setbale(args: str, chat_id: int) -> bool:
             return True
         
         # Get tenant
-        tenant = get_tenant(chat_id)
+        tenant = _legacy_tenant(chat_id)
         if not tenant:
             send_message(
                 chat_id,
@@ -2789,7 +2885,7 @@ def handle_setbaletoken(args: str, chat_id: int) -> bool:
             return True
         
         # Get tenant
-        tenant = get_tenant(chat_id)
+        tenant = _legacy_tenant(chat_id)
         if not tenant:
             send_message(
                 chat_id,
@@ -2829,8 +2925,8 @@ def handle_setbaletoken(args: str, chat_id: int) -> bool:
 def handle_status(chat_id: int) -> bool:
     """Show status for the user's selected legacy or workspace media context."""
     try:
-        tenant = get_tenant(chat_id)
-        user = get_user_by_telegram_id(chat_id)
+        tenant = _legacy_tenant(chat_id)
+        user = _identity_for_chat(chat_id)
         workspaces = (
             list_user_workspaces(user["id"], include_inactive=False)
             if user and _ACTIVE_WORKSPACE_ENABLED
