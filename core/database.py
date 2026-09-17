@@ -2817,14 +2817,50 @@ def record_persistent_publication_message_index(
     *,
     delivery_id: int,
     part_key: str,
-    message_ids: Tuple[int, ...],
+    message_id: Optional[int] = None,
+    message_ids: Optional[Tuple[int, ...]] = None,
     destination_chat_id: Optional[str] = None,
     primary_message_id: Optional[int] = None,
 ) -> None:
+    """
+    Record the transport message IDs of one successful delivery
+    part in publication_delivery_message_index (B11 mapping).
+
+    Idempotent by construction: rows are upserted on the existing
+    UNIQUE (platform, destination_chat_id, message_id) constraint,
+    so retries re-record without duplicating rows and a persisted
+    successful part is never resent because of index recording.
+
+    Primary marking is explicit: only the ID passed as
+    primary_message_id is marked is_primary=true, so follow-up and
+    blockquote parts are never incorrectly flagged and albums mark
+    exactly their designated first message.
+    """
     if service_supabase is None:
         raise RuntimeError(
             "Persistent publication state is not configured"
         )
+
+    candidates = list(message_ids or ())
+
+    if (
+        message_id is not None
+        and isinstance(message_id, int)
+        and not isinstance(message_id, bool)
+    ):
+        candidates.append(int(message_id))
+
+    normalized_message_ids = tuple(
+        dict.fromkeys(
+            int(value)
+            for value in candidates
+            if isinstance(value, int)
+            and not isinstance(value, bool)
+        )
+    )
+
+    if not normalized_message_ids:
+        return
 
     delivery = get_persistent_publication_delivery_by_id(
         int(delivery_id)
@@ -2834,16 +2870,6 @@ def record_persistent_publication_message_index(
         raise RuntimeError(
             "publication delivery not found for message index"
         )
-
-    normalized_message_ids = tuple(
-        int(value)
-        for value in (message_ids or ())
-        if isinstance(value, int)
-        and not isinstance(value, bool)
-    )
-
-    if not normalized_message_ids:
-        return
 
     platform = str(
         delivery.get("platform")
@@ -2859,6 +2885,12 @@ def record_persistent_publication_message_index(
         or ""
     )
 
+    resolved_primary = (
+        int(primary_message_id)
+        if primary_message_id is not None
+        else None
+    )
+
     payload = [
         {
             "delivery_id": int(delivery_id),
@@ -2866,10 +2898,9 @@ def record_persistent_publication_message_index(
             "destination_chat_id": resolved_chat_id,
             "part_key": str(part_key),
             "message_id": int(value),
-            "is_primary": bool(
-                primary_message_id is not None
-                and int(value)
-                == int(primary_message_id)
+            "is_primary": (
+                resolved_primary is not None
+                and int(value) == resolved_primary
             ),
         }
         for value in normalized_message_ids

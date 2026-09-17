@@ -7,10 +7,14 @@ interface so a durable Supabase implementation can replace it later.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import logging
 import os
 import threading
 from typing import Dict, Optional, Set, Tuple
 from uuid import uuid4
+
+
+logger = logging.getLogger(__name__)
 
 
 SOURCE_STATUSES = {
@@ -787,6 +791,42 @@ class PersistentPublicationStateStore(
                 destination_chat_id
             ),
         )
+
+        # B11: mirror the transport message IDs of this successful
+        # part into publication_delivery_message_index so either
+        # platform can later resolve its counterparts through the
+        # existing UNIQUE (platform, destination_chat_id, message_id)
+        # lookup key.
+        #
+        # Best-effort and idempotent: a failure here must never turn
+        # a successful send into a resend, so it is logged and
+        # swallowed.
+        try:
+            database.record_persistent_publication_message_index(
+                delivery_id=(
+                    state.persistent_delivery_id
+                ),
+                part_key=part,
+                message_id=message_id,
+                message_ids=message_ids,
+                destination_chat_id=(
+                    destination_chat_id
+                ),
+                primary_message_id=(
+                    message_id
+                    if part == "primary"
+                    else None
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "B11 message-index recording failed "
+                "(publication result is unaffected) | "
+                "delivery=%s part=%s | %s",
+                state.persistent_delivery_id,
+                part,
+                exc,
+            )
 
     def part_completed(
         self,
