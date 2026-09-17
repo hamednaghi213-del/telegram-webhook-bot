@@ -1,8 +1,10 @@
 import time
 import threading
 import logging
+import os
 import requests
 import json
+from datetime import datetime
 
 from typing import (
     Dict,
@@ -136,6 +138,305 @@ MEDIA_GROUP_MIN_WAIT = 1.5
 MEDIA_GROUP_INCOMPLETE_RETRY_DELAY = 1.0
 MEDIA_GROUP_RECOVERY_WINDOW_SECONDS = 15.0
 MEDIA_GROUP_MAX_RETRIES = 5
+
+
+# =========================================================
+# PERSISTENT MEDIA GROUP STATE (B6)
+#
+# Dual-write bridge between the established in-memory group store
+# and Supabase (schema/026). The in-memory structures and the
+# generation/timer/late-member/retry semantics remain the source
+# of truth for a running worker; persistence provides restart
+# recovery and cross-worker lease safety.
+# =========================================================
+
+def _persist_group_snapshot(group_key) -> None:
+    """Best-effort mirror of one in-memory group into Supabase (B6).
+
+    Called with the group lock held (re-entrant RLock). Failures are
+    logged and never raised into the webhook/timer path: the
+    in-memory behaviour must remain regression-free.
+    """
+    try:
+        from core.database import (
+            persistent_media_group_enabled,
+            upsert_persistent_media_group,
+        )
+
+        if not persistent_media_group_enabled():
+            return
+
+        group = pending_groups.get(group_key)
+
+        if not group:
+            return
+
+        chat_id, media_group_id = group_key
+
+        payload = {
+            "chat_id": int(chat_id),
+            "media_group_id": str(media_group_id),
+            "state": str(group.get("state", "collecting")),
+            "items": list(group.get("files", []) or []),
+            "raw_caption": str(group.get("raw_caption", "") or ""),
+            "caption_entities": list(
+                group.get("caption_entities", []) or []
+            ) or None,
+            "forward_source": (
+                dict(group.get("forward_source") or {}) or None
+            ),
+            "blockquote_blocks": list(
+                group.get("blockquote_blocks", []) or []
+            ),
+            "expandable_blocks": list(
+                group.get("expandable_blocks", []) or []
+            ),
+            "other_entities": list(
+                group.get("other_entities", []) or []
+            ),
+            "generation": int(group.get("generation", 0) or 0),
+            "published_generation": (
+                int(group["published_generation"])
+                if group.get("published_generation") is not None
+                else None
+            ),
+            "timer_generation": int(
+                group.get("timer_generation", 0) or 0
+            ),
+            "leased_generation": (
+                int(group["leased_generation"])
+                if group.get("leased_generation") is not None
+                else None
+            ),
+            "delivery_generation": int(
+                group.get("delivery_generation", 1) or 1
+            ),
+            "editorial_finalized": bool(
+                group.get("editorial_finalized", False)
+            ),
+            "editorial_approved_text": (
+                str(group["editorial_approved_text"])
+                if group.get("editorial_approved_text") is not None
+                else None
+            ),
+            "editorial_retry_items": (
+                list(group.get("editorial_retry_files") or []) or None
+            ),
+            "recovery_started_at": (
+                datetime.utcfromtimestamp(
+                    float(
+                        group.get(
+                            "recovery_started_at",
+                            group.get("last_update", time.time()),
+                        )
+                    )
+                ).isoformat()
+            ),
+            "attempt_count": int(group.get("attempt_count", 0) or 0),
+            "last_error": (
+                str(group["last_error"])
+                if group.get("last_error") is not None
+                else None
+            ),
+            "last_activity_at": (
+                datetime.utcfromtimestamp(
+                    float(group.get("last_update", time.time()))
+                ).isoformat()
+            ),
+        }
+
+        upsert_persistent_media_group(payload)
+
+    except Exception:
+        logger.exception(
+            "Persistent media group write failed "
+            "(continuing in-memory) | group=%s",
+            group_key,
+        )
+
+
+def _parse_db_timestamp(value) -> Optional[float]:
+    """Parse a Supabase timestamp (ISO 8601) into a unix timestamp."""
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(
+            str(value).replace("Z", "+00:00")
+        ).timestamp()
+    except Exception:
+        return None
+
+
+def _persist_group_deleted(chat_id, media_group_id) -> None:
+    """Best-effort delete of one persistent group row (B6)."""
+    try:
+        from core.database import (
+            delete_persistent_media_group,
+            persistent_media_group_enabled,
+        )
+
+        if not persistent_media_group_enabled():
+            return
+
+        delete_persistent_media_group(
+            chat_id=int(chat_id),
+            media_group_id=str(media_group_id),
+        )
+
+    except Exception:
+        logger.exception(
+            "Persistent media group delete failed | "
+            "chat=%s | group=%s",
+            chat_id,
+            media_group_id,
+        )
+
+
+def rehydrate_media_groups() -> int:
+    """Restore unfinished media groups from Supabase after a restart (B6).
+
+    Rebuilds the in-memory group objects exactly as the accumulation
+    path would have created them and re-arms processing timers so
+    recovery proceeds through the established state machine.
+    Terminal rows (published / failed_terminal) are not restored.
+    """
+    restored = 0
+
+    try:
+        from core.database import (
+            list_unfinished_persistent_media_groups,
+            persistent_media_group_enabled,
+        )
+
+        if not persistent_media_group_enabled():
+            return 0
+
+        rows = list_unfinished_persistent_media_groups()
+
+    except Exception:
+        logger.exception("Media group rehydration read failed")
+        return 0
+
+    now = time.time()
+
+    for row in rows:
+        try:
+            chat_id = int(row.get("chat_id"))
+            media_group_id = str(row.get("media_group_id") or "")
+
+            if (
+                not media_group_id
+                or (chat_id, media_group_id) in pending_groups
+            ):
+                continue
+
+            state = str(row.get("state") or "collecting")
+            if state in ("published", "failed_terminal"):
+                continue
+
+            recovery_started_at = (
+                _parse_db_timestamp(
+                    row.get("recovery_started_at")
+                )
+                or now
+            )
+
+            group = {
+                "chat_id": chat_id,
+                "media_group_id": media_group_id,
+                "files": list(row.get("items") or []),
+                "raw_caption": str(row.get("raw_caption") or ""),
+                "caption_entities": list(
+                    row.get("caption_entities") or []
+                ),
+                "main_text": "",
+                "expandable_blocks": list(
+                    row.get("expandable_blocks") or []
+                ),
+                "blockquote_blocks": list(
+                    row.get("blockquote_blocks") or []
+                ),
+                "other_entities": list(
+                    row.get("other_entities") or []
+                ),
+                "forward_source": dict(
+                    row.get("forward_source") or {}
+                ),
+                "caption_received": bool(row.get("raw_caption")),
+                "last_update": now,
+                "is_processing": False,
+                "generation": int(row.get("generation") or 0),
+                "published_generation": (
+                    int(row["published_generation"])
+                    if row.get("published_generation") is not None
+                    else None
+                ),
+                "timer_generation": int(
+                    row.get("timer_generation") or 0
+                ),
+                "state": (
+                    "retry_pending"
+                    if state in ("leased", "publishing")
+                    else state
+                ),
+                "leased_generation": (
+                    int(row["leased_generation"])
+                    if row.get("leased_generation") is not None
+                    else None
+                ),
+                "delivery_generation": max(
+                    1, int(row.get("delivery_generation") or 1)
+                ),
+                "recovery_started_at": recovery_started_at,
+                "attempt_count": int(row.get("attempt_count") or 0),
+                "last_error": row.get("last_error"),
+                "editorial_finalized": bool(
+                    row.get("editorial_finalized")
+                ),
+                "editorial_approved_text": (
+                    str(row["editorial_approved_text"])
+                    if row.get("editorial_approved_text") is not None
+                    else None
+                ),
+                "editorial_retry_files": (
+                    list(row.get("editorial_retry_items") or [])
+                    if row.get("editorial_retry_items") is not None
+                    else None
+                ),
+            }
+
+            if (
+                group["editorial_finalized"]
+                and group["editorial_retry_files"] is None
+            ):
+                group["editorial_retry_files"] = list(group["files"])
+
+            pending_groups[(chat_id, media_group_id)] = group
+            restored += 1
+
+            schedule_processing(
+                media_group_id,
+                chat_id,
+                delay=MEDIA_GROUP_INCOMPLETE_RETRY_DELAY,
+            )
+
+            logger.info(
+                "♻️ Media group rehydrated | chat=%s | group=%s | "
+                "state=%s | delivery_generation=%s",
+                chat_id,
+                media_group_id,
+                group["state"],
+                group["delivery_generation"],
+            )
+
+        except Exception:
+            logger.exception(
+                "Media group rehydration row failed | row=%s",
+                row,
+            )
+
+    return restored
 
 
 # =========================================================
@@ -650,6 +951,8 @@ def add_to_pending_group(
                     "other_entities"
                 ] = []
 
+        _persist_group_snapshot(group_key)
+
 
 # =========================================================
 # REMOVE GROUP
@@ -659,6 +962,10 @@ def remove_pending_group(
     media_group_id: str,
     chat_id: Optional[int] = None
 ) -> None:
+    _persist_group_deleted(
+        chat_id if chat_id is not None else "*",
+        media_group_id,
+    )
 
     with group_lock:
 
@@ -815,6 +1122,10 @@ def finish_editorial_group_publication(
             str(media_group_id), chat_id,
             delay=MEDIA_GROUP_INCOMPLETE_RETRY_DELAY,
         )
+
+    _persist_group_snapshot(
+        (int(chat_id), str(media_group_id))
+    )
 
 
 # =========================================================
@@ -2558,6 +2869,47 @@ def process_media_group(
             )
 
             return False
+
+        # -------------------------------------------------------
+        # B6: cross-worker lease (no-op when the flag is off).
+        # A rejected claim means another worker owns the group, the
+        # group is durably published, or the attempt cap was hit.
+        # -------------------------------------------------------
+        try:
+            from core.database import (
+                claim_persistent_media_group,
+                persistent_media_group_enabled,
+            )
+
+            if persistent_media_group_enabled():
+                claim_row = claim_persistent_media_group(
+                    chat_id=int(chat_id),
+                    media_group_id=str(media_group_id),
+                    delivery_generation=int(
+                        group.get("delivery_generation", 1) or 1
+                    ),
+                    lease_owner=f"worker-{os.getpid()}",
+                )
+
+                if not (
+                    claim_row
+                    and claim_row.get("claimed")
+                ):
+                    logger.info(
+                        "ℹ️ Media group persistent claim rejected | "
+                        "group=%s | chat=%s",
+                        media_group_id,
+                        chat_id,
+                    )
+
+                    return False
+
+        except Exception:
+            logger.exception(
+                "Persistent media group claim failed "
+                "(continuing in-memory) | group=%s",
+                media_group_id,
+            )
 
         current_generation = int(group.get("generation", 0) or 0)
         if expected_generation is not None and expected_generation != current_generation:

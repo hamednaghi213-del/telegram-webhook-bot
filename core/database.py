@@ -3352,6 +3352,520 @@ def mark_persistent_publication_source(
     return rows[0]
 
 # =========================================================
+# PERSISTENT MEDIA GROUP STATE (B6)
+# =========================================================
+
+def persistent_media_group_enabled() -> bool:
+    """
+    B6 feature flag. When False the media group store stays fully
+    in-memory (historical behaviour).
+    """
+    return (
+        os.getenv(
+            "ENABLE_PERSISTENT_MEDIA_GROUP_STATE",
+            "",
+        ).strip().lower()
+        in ("1", "true", "yes", "on")
+    )
+
+
+@with_retry
+def upsert_persistent_media_group(
+    payload: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """
+    Upsert one persistent media group row keyed by
+    (chat_id, media_group_id). The payload is built by the caller
+    (core.media_handler) and mirrors the in-memory group object.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent media group state is not configured"
+        )
+
+    result = (
+        service_supabase
+        .table("media_group_state")
+        .upsert(
+            payload,
+            on_conflict="chat_id,media_group_id",
+        )
+        .execute()
+    )
+
+    rows = result.data or []
+
+    if not rows:
+        return None
+
+    return rows[0]
+
+
+@with_retry
+def get_persistent_media_group(
+    *,
+    chat_id: int,
+    media_group_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Read one persistent media group row."""
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent media group state is not configured"
+        )
+
+    result = (
+        service_supabase
+        .table("media_group_state")
+        .select("*")
+        .eq("chat_id", int(chat_id))
+        .eq("media_group_id", str(media_group_id))
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        return None
+
+    return result.data[0]
+
+
+@with_retry
+def list_unfinished_persistent_media_groups(
+    *,
+    limit: int = 100,
+) -> Tuple[Dict[str, Any], ...]:
+    """
+    Rows that still need work after a restart: not published and
+    not failed_terminal.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent media group state is not configured"
+        )
+
+    safe_limit = max(1, min(int(limit), 500))
+
+    result = (
+        service_supabase
+        .table("media_group_state")
+        .select("*")
+        .not_.in_(
+            "state",
+            ["published", "failed_terminal"],
+        )
+        .order("last_activity_at", desc=False)
+        .limit(safe_limit)
+        .execute()
+    )
+
+    return tuple(result.data or [])
+
+
+@with_retry
+def delete_persistent_media_group(
+    *,
+    chat_id: int,
+    media_group_id: str,
+) -> bool:
+    """Remove one persistent media group row (terminal cleanup)."""
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent media group state is not configured"
+        )
+
+    result = (
+        service_supabase
+        .table("media_group_state")
+        .delete()
+        .eq("chat_id", int(chat_id))
+        .eq("media_group_id", str(media_group_id))
+        .execute()
+    )
+
+    return bool(result.data)
+
+
+@with_retry
+def claim_persistent_media_group(
+    *,
+    chat_id: int,
+    media_group_id: str,
+    delivery_generation: Optional[int] = None,
+    lease_owner: Optional[str] = None,
+    lease_seconds: int = 120,
+) -> Optional[Dict[str, Any]]:
+    """
+    Atomically claim the media group processing lease via the
+    claim_media_group_generation RPC (026).
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent media group state is not configured"
+        )
+
+    params = {
+        "p_chat_id": int(chat_id),
+        "p_media_group_id": str(media_group_id),
+        "p_delivery_generation": (
+            max(1, int(delivery_generation))
+            if delivery_generation is not None
+            else None
+        ),
+        "p_lease_owner": (
+            str(lease_owner)
+            if lease_owner
+            else None
+        ),
+        "p_lease_seconds": max(
+            30,
+            min(int(lease_seconds), 900),
+        ),
+    }
+
+    result = (
+        service_supabase
+        .rpc(
+            "claim_media_group_generation",
+            params,
+        )
+        .execute()
+    )
+
+    rows = result.data or []
+
+    if not rows:
+        return None
+
+    return rows[0]
+
+
+# =========================================================
+# PERSISTENT EDITORIAL PENDING STATE (B7)
+# =========================================================
+
+def persistent_editorial_pending_enabled() -> bool:
+    """
+    B7 feature flag. When False editorial pending stays fully
+    in-memory (historical behaviour).
+    """
+    return (
+        os.getenv(
+            "ENABLE_PERSISTENT_EDITORIAL_STATE",
+            "",
+        ).strip().lower()
+        in ("1", "true", "yes", "on")
+    )
+
+
+@with_retry
+def upsert_persistent_editorial_review(
+    payload: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Upsert one persistent editorial pending review by review_id."""
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent editorial pending state is not configured"
+        )
+
+    result = (
+        service_supabase
+        .table("editorial_pending_reviews")
+        .upsert(
+            payload,
+            on_conflict="review_id",
+        )
+        .execute()
+    )
+
+    rows = result.data or []
+
+    if not rows:
+        return None
+
+    return rows[0]
+
+
+@with_retry
+def update_persistent_editorial_review(
+    *,
+    review_id: str,
+    fields: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Update mutable fields of one persistent editorial review."""
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent editorial pending state is not configured"
+        )
+
+    result = (
+        service_supabase
+        .table("editorial_pending_reviews")
+        .update(dict(fields))
+        .eq("review_id", str(review_id))
+        .execute()
+    )
+
+    rows = result.data or []
+
+    if not rows:
+        return None
+
+    return rows[0]
+
+
+@with_retry
+def get_persistent_editorial_review(
+    *,
+    review_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Read one persistent editorial review by review_id."""
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent editorial pending state is not configured"
+        )
+
+    result = (
+        service_supabase
+        .table("editorial_pending_reviews")
+        .select("*")
+        .eq("review_id", str(review_id))
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        return None
+
+    return result.data[0]
+
+
+@with_retry
+def list_persistent_editorial_reviews_for_user(
+    *,
+    user_id: int,
+) -> Tuple[Dict[str, Any], ...]:
+    """All persistent reviews for one user."""
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent editorial pending state is not configured"
+        )
+
+    result = (
+        service_supabase
+        .table("editorial_pending_reviews")
+        .select("*")
+        .eq("user_id", int(user_id))
+        .order("created_at", desc=False)
+        .execute()
+    )
+
+    return tuple(result.data or [])
+
+
+@with_retry
+def list_unfinished_persistent_editorial_reviews(
+    *,
+    limit: int = 200,
+) -> Tuple[Dict[str, Any], ...]:
+    """Rows that still need work after a restart (status=pending)."""
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent editorial pending state is not configured"
+        )
+
+    safe_limit = max(1, min(int(limit), 1000))
+
+    result = (
+        service_supabase
+        .table("editorial_pending_reviews")
+        .select("*")
+        .eq("status", "pending")
+        .order("created_at", desc=False)
+        .limit(safe_limit)
+        .execute()
+    )
+
+    return tuple(result.data or [])
+
+
+@with_retry
+def delete_persistent_editorial_review(
+    *,
+    review_id: str,
+) -> bool:
+    """Remove one persistent editorial review row."""
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent editorial pending state is not configured"
+        )
+
+    result = (
+        service_supabase
+        .table("editorial_pending_reviews")
+        .delete()
+        .eq("review_id", str(review_id))
+        .execute()
+    )
+
+    return bool(result.data)
+
+
+@with_retry
+def claim_persistent_editorial_review_action(
+    *,
+    review_id: str,
+    expected_status: str = "pending",
+    claim_owner: Optional[str] = None,
+    claim_seconds: int = 120,
+) -> Optional[Dict[str, Any]]:
+    """
+    Atomically claim one editorial review action via the
+    claim_editorial_review_action RPC (027).
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent editorial pending state is not configured"
+        )
+
+    params = {
+        "p_review_id": str(review_id),
+        "p_expected_status": str(expected_status),
+        "p_claim_owner": (
+            str(claim_owner)
+            if claim_owner
+            else None
+        ),
+        "p_claim_seconds": max(
+            30,
+            min(int(claim_seconds), 900),
+        ),
+    }
+
+    result = (
+        service_supabase
+        .rpc(
+            "claim_editorial_review_action",
+            params,
+        )
+        .execute()
+    )
+
+    rows = result.data or []
+
+    if not rows:
+        return None
+
+    return rows[0]
+
+
+# =========================================================
+# PERSISTENT DUPLICATE OVERRIDE STATE (B8)
+# =========================================================
+
+def persistent_duplicate_override_enabled() -> bool:
+    """
+    B8 feature flag. When False duplicate override tokens stay
+    in-memory (historical behaviour).
+    """
+    return (
+        os.getenv(
+            "ENABLE_PERSISTENT_DUPLICATE_OVERRIDES",
+            "",
+        ).strip().lower()
+        in ("1", "true", "yes", "on")
+    )
+
+
+@with_retry
+def create_persistent_duplicate_override(
+    *,
+    token: str,
+    chat_id: int,
+    descriptor: Dict[str, Any],
+    ttl_seconds: int,
+) -> bool:
+    """Persist one single-use duplicate override descriptor."""
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent duplicate override state is not configured"
+        )
+
+    from datetime import datetime, timezone, timedelta
+
+    expires_at = (
+        datetime.now(timezone.utc)
+        + timedelta(seconds=max(1, int(ttl_seconds)))
+    ).isoformat()
+
+    payload = {
+        "token": str(token),
+        "chat_id": int(chat_id),
+        "descriptor": dict(descriptor or {}),
+        "expires_at": expires_at,
+    }
+
+    result = (
+        service_supabase
+        .table("duplicate_override_tokens")
+        .upsert(
+            payload,
+            on_conflict="token",
+        )
+        .execute()
+    )
+
+    return bool(result.data)
+
+
+@with_retry
+def consume_persistent_duplicate_override(
+    *,
+    token: str,
+    chat_id: int,
+) -> Optional[Dict[str, Any]]:
+    """
+    Atomically consume one override via the
+    consume_duplicate_override RPC (028). Returns the descriptor of
+    the winning consumer, or None when the token is absent, expired,
+    owned by another chat, or already consumed.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Persistent duplicate override state is not configured"
+        )
+
+    params = {
+        "p_token": str(token),
+        "p_chat_id": int(chat_id),
+    }
+
+    result = (
+        service_supabase
+        .rpc(
+            "consume_duplicate_override",
+            params,
+        )
+        .execute()
+    )
+
+    rows = result.data or []
+
+    if not rows:
+        return None
+
+    row = rows[0] or {}
+
+    if not row.get("consumed"):
+        return None
+
+    descriptor = row.get("descriptor")
+
+    if not isinstance(descriptor, dict):
+        return None
+
+    return descriptor
+
+# =========================================================
 # PERSISTENT TRANSLATION REVIEW STATE
 # =========================================================
 #

@@ -7,6 +7,7 @@ algorithm.
 
 import logging
 import os
+import uuid
 import inspect
 from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
@@ -30,6 +31,13 @@ from core.target_resolver import (
 logger = logging.getLogger(__name__)
 
 _state_store: PublicationStateStore = DEFAULT_PUBLICATION_STATE_STORE
+
+# Boot-unique lease owner identity for the persistent publication
+# state store (B5). Distinct per process, so Supabase lease rows can
+# attribute (and reclaim) claims per worker.
+_LEASE_OWNER: str = (
+    f"worker-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+)
 
 
 def _get_runtime_state_store() -> PublicationStateStore:
@@ -59,7 +67,9 @@ def _get_runtime_state_store() -> PublicationStateStore:
             ).strip().lower() == "true"
             and database.service_supabase is not None
         ):
-            _state_store = PersistentPublicationStateStore()
+            _state_store = PersistentPublicationStateStore(
+                lease_owner=_LEASE_OWNER,
+            )
 
     except Exception:
         pass
@@ -1058,6 +1068,94 @@ def _outcome_ok(
     return bool(
         outcome
     )
+
+
+def _targets_from_descriptor_identities(
+    descriptor_targets: Any,
+) -> Tuple[PublicationTarget, ...]:
+    """Re-resolve B8 duplicate-override targets from persisted identities.
+
+    Rebuilds PublicationTarget objects from the minimal identity tuple
+    recorded in a duplicate override descriptor and re-applies the
+    same physical-destination deduplication the live resolver uses.
+    """
+    rebuilt: List[PublicationTarget] = []
+
+    for item in (
+        descriptor_targets or ()
+    ):
+        if not isinstance(item, dict):
+            continue
+
+        platform = str(item.get("platform") or "").strip()
+
+        if not platform:
+            continue
+
+        external_id = str(item.get("external_id") or "")
+        workspace_id = item.get("workspace_id")
+        destination_id = item.get("destination_id")
+
+        if (
+            item.get("kind") == "legacy"
+            or workspace_id is None
+        ):
+            key = (
+                f"legacy:{platform}:{external_id}"
+            )
+
+            kind = "legacy"
+
+            destination: Dict[str, Any] = {}
+
+        else:
+            key = (
+                f"workspace:{int(workspace_id)}:"
+                f"destination:{destination_id}"
+            )
+
+            kind = "workspace"
+
+            destination = {
+                "id": destination_id,
+                "workspace_id": workspace_id,
+                "platform": platform,
+                "external_id": external_id,
+            }
+
+        rebuilt.append(
+            PublicationTarget(
+                key=key,
+                kind=kind,
+                platform=platform,
+                external_id=external_id,
+                workspace_id=(
+                    int(workspace_id)
+                    if workspace_id is not None
+                    else None
+                ),
+                destination_id=(
+                    int(destination_id)
+                    if destination_id is not None
+                    else None
+                ),
+                destination=destination,
+            )
+        )
+
+    # Re-apply physical-destination deduplication, mirroring the
+    # resolver contract.
+    deduplicated: Dict[str, PublicationTarget] = {}
+
+    for target in rebuilt:
+        identity = canonical_target_identity(target)
+
+        deduplicated.setdefault(
+            identity,
+            target,
+        )
+
+    return tuple(deduplicated.values())
 
 
 def _unique_media_identity_ids(

@@ -2,6 +2,7 @@ import logging
 import threading
 import time
 import uuid
+from datetime import datetime
 
 from dataclasses import dataclass
 from typing import (
@@ -13,6 +14,161 @@ from typing import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _persistence_enabled() -> bool:
+    """B7 flag check, isolated for test patching."""
+    try:
+        from core.database import (
+            persistent_editorial_pending_enabled,
+        )
+
+        return persistent_editorial_pending_enabled()
+    except Exception:
+        return False
+
+
+def _persist_review(review) -> None:
+    """Best-effort mirror of one review into Supabase (B7).
+
+    Called with the store lock held (re-entrant RLock). Failures are
+    logged and never raised into the editorial flow; the in-memory
+    behaviour remains regression-free.
+    """
+    if not _persistence_enabled():
+        return
+
+    if not isinstance(review, PendingEditorialReview):
+        return
+
+    try:
+        from core.database import (
+            upsert_persistent_editorial_review,
+        )
+
+        payload = {
+            "review_id": str(review.review_id),
+            "user_id": int(review.user_id),
+            "content_type": str(review.content_type),
+            "original_text": str(review.original_text or ""),
+            "current_summary": str(review.current_summary or ""),
+            "regeneration_count": int(
+                review.regeneration_count or 0
+            ),
+            "status": str(review.status),
+            "metadata": dict(review.metadata or {}),
+            "expires_at": (
+                datetime.utcfromtimestamp(
+                    float(review.updated_at)
+                    + DEFAULT_PENDING_TTL_SECONDS
+                ).isoformat()
+            ),
+        }
+
+        upsert_persistent_editorial_review(payload)
+
+    except Exception:
+        logger.exception(
+            "Persistent editorial review write failed "
+            "(continuing in-memory) | review_id=%s",
+            review.review_id,
+        )
+
+
+def _persist_review_deleted(review_id: str) -> None:
+    """Best-effort delete of one persistent review row (B7)."""
+    if not _persistence_enabled():
+        return
+
+    try:
+        from core.database import (
+            delete_persistent_editorial_review,
+        )
+
+        delete_persistent_editorial_review(
+            review_id=str(review_id),
+        )
+    except Exception:
+        logger.exception(
+            "Persistent editorial review delete failed | "
+            "review_id=%s",
+            review_id,
+        )
+
+
+def rehydrate_editorial_reviews() -> int:
+    """Restore pending editorial reviews from Supabase after restart (B7).
+
+    Rebuilds the in-memory review objects exactly as creation would
+    have produced them; per-user waiting flags are preserved via
+    metadata so admin-instruction state survives the restart.
+    """
+    restored = 0
+
+    try:
+        from core.database import (
+            list_unfinished_persistent_editorial_reviews,
+        )
+
+        if not _persistence_enabled():
+            return 0
+
+        rows = list_unfinished_persistent_editorial_reviews()
+
+    except Exception:
+        logger.exception("Editorial review rehydration read failed")
+        return 0
+
+    now = _now()
+
+    for row in rows:
+        try:
+            review_id = str(row.get("review_id") or "").strip()
+
+            if (
+                not review_id
+                or review_id in _pending_reviews
+            ):
+                continue
+
+            review = PendingEditorialReview(
+                review_id=review_id,
+                user_id=int(row.get("user_id") or 0),
+                content_type=str(row.get("content_type") or ""),
+                original_text=str(row.get("original_text") or ""),
+                current_summary=str(row.get("current_summary") or ""),
+                regeneration_count=int(
+                    row.get("regeneration_count") or 0
+                ),
+                created_at=(
+                    float(row.get("created_at") or 0) or now
+                ),
+                updated_at=now,
+                status=str(
+                    row.get("status") or STATUS_PENDING
+                ),
+                metadata=dict(row.get("metadata") or {}),
+            )
+
+            _ensure_metadata(review)
+
+            _pending_reviews[review_id] = review
+            restored += 1
+
+            logger.info(
+                "♻️ Editorial review rehydrated | "
+                "review_id=%s | user=%s",
+                review_id,
+                review.user_id,
+            )
+
+        except Exception:
+            logger.exception(
+                "Editorial review rehydration row failed | row=%s",
+                row,
+            )
+
+    return restored
 
 
 # =========================================================
@@ -229,6 +385,8 @@ def create_pending_review(
             review_id
         ] = review
 
+        _persist_review(review)
+
     logger.info(
         f"📝 Pending editorial review created | "
         f"review_id={review_id} | "
@@ -319,6 +477,8 @@ def get_pending_review(
             metadata[
                 ADMIN_INSTRUCTION_WAITING_KEY
             ] = False
+
+            _persist_review(review)
 
             logger.info(
                 f"⌛ Pending review expired | "
@@ -462,6 +622,8 @@ def update_pending_summary(
             _now()
         )
 
+        _persist_review(review)
+
     logger.info(
         f"🔄 Pending review summary updated | "
         f"review_id={review_id} | "
@@ -591,6 +753,8 @@ def set_admin_instruction_waiting(
                     now
                 )
 
+                _persist_review(other_review)
+
                 logger.info(
                     f"🧹 Previous admin instruction "
                     f"waiting cleared | "
@@ -620,6 +784,8 @@ def set_admin_instruction_waiting(
         review.updated_at = (
             now
         )
+
+        _persist_review(review)
 
     logger.info(
         f"✏️ Pending review waiting for "
@@ -679,6 +845,8 @@ def clear_admin_instruction_waiting(
         review.updated_at = (
             _now()
         )
+
+        _persist_review(review)
 
     logger.info(
         f"✅ Admin instruction waiting cleared | "
@@ -849,6 +1017,8 @@ def record_admin_instruction_applied(
             now
         )
 
+        _persist_review(review)
+
     logger.info(
         f"✅ Admin instruction recorded | "
         f"review_id={review_id} | "
@@ -1013,6 +1183,8 @@ def _mark_status(
             _now()
         )
 
+        _persist_review(review)
+
     logger.info(
         f"✅ Pending review status changed | "
         f"review_id={review_id} | "
@@ -1062,6 +1234,8 @@ def delete_pending_review(
         del _pending_reviews[
             review_id
         ]
+
+        _persist_review_deleted(review_id)
 
     logger.info(
         f"🗑️ Pending review deleted | "

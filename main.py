@@ -226,6 +226,58 @@ def initialize_modules():
     )
 
     # -----------------------------------------
+    # Persistence Recovery (B5-B8)
+    #
+    # Restore unfinished in-memory-backed state
+    # (media groups, editorial pending reviews)
+    # from Supabase after restart/deploy.
+    # Each hook is flag-gated and no-ops when
+    # its persistence flag is disabled.
+    # -----------------------------------------
+
+    try:
+
+        from core.media_handler import (
+            rehydrate_media_groups
+        )
+
+        restored_groups = (
+            rehydrate_media_groups()
+        )
+
+        logger.info(
+            "♻️ Media groups rehydrated | "
+            f"count={restored_groups}"
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Media group rehydration failed | {e}"
+        )
+
+    try:
+
+        from core.editorial_pending import (
+            rehydrate_editorial_reviews
+        )
+
+        restored_reviews = (
+            rehydrate_editorial_reviews()
+        )
+
+        logger.info(
+            "♻️ Editorial reviews rehydrated | "
+            f"count={restored_reviews}"
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"❌ Editorial review rehydration failed | {e}"
+        )
+
+    # -----------------------------------------
     # Cleaner
     # -----------------------------------------
 

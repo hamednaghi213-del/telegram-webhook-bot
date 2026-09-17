@@ -7,8 +7,10 @@ interface so a durable Supabase implementation can replace it later.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import os
 import threading
 from typing import Dict, Optional, Set, Tuple
+from uuid import uuid4
 
 
 SOURCE_STATUSES = {
@@ -488,10 +490,12 @@ class PersistentPublicationStateStore(
     ) -> None:
         super().__init__()
 
+        # Boot-unique per-process identity so Supabase lease rows can
+        # attribute (and reclaim) claims per worker.
         self.lease_owner = (
-            str(lease_owner)
-            if lease_owner
-            else None
+            f"worker-{os.getpid()}-{uuid4().hex[:8]}"
+            if lease_owner is None
+            else str(lease_owner)
         )
 
         self.lease_seconds = max(

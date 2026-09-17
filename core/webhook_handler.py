@@ -3940,6 +3940,44 @@ def handle_editorial_callback(
 
         if action == "original":
 
+            # ------------------------------------------------
+            # B7: cross-worker action claim (no-op when the
+            # persistent editorial flag is off). A rejected claim
+            # means another worker is executing this action.
+            # ------------------------------------------------
+            try:
+                from core.database import (
+                    claim_persistent_editorial_review_action,
+                    persistent_editorial_pending_enabled,
+                )
+
+                if persistent_editorial_pending_enabled():
+                    claim_row = (
+                        claim_persistent_editorial_review_action(
+                            review_id=review_id,
+                            expected_status=review.status,
+                            claim_owner=f"worker-{os.getpid()}",
+                        )
+                    )
+
+                    if not (
+                        claim_row
+                        and claim_row.get("claimed")
+                    ):
+                        answer_callback_query(
+                            callback_id,
+                            "این عملیات در حال اجرا است.",
+                        )
+
+                        return True
+
+            except Exception:
+                logger.exception(
+                    "Editorial action claim failed "
+                    "(continuing) | review_id=%s",
+                    review_id,
+                )
+
             media_group_id = metadata.get("media_group_id")
             editorial_lease = None
             publication_files = metadata.get("files", [])
@@ -4024,6 +4062,43 @@ def handle_editorial_callback(
             return True
 
         if action == "summary":
+
+            # ------------------------------------------------
+            # B7: cross-worker action claim (same contract as the
+            # "original" action above).
+            # ------------------------------------------------
+            try:
+                from core.database import (
+                    claim_persistent_editorial_review_action,
+                    persistent_editorial_pending_enabled,
+                )
+
+                if persistent_editorial_pending_enabled():
+                    claim_row = (
+                        claim_persistent_editorial_review_action(
+                            review_id=review_id,
+                            expected_status=review.status,
+                            claim_owner=f"worker-{os.getpid()}",
+                        )
+                    )
+
+                    if not (
+                        claim_row
+                        and claim_row.get("claimed")
+                    ):
+                        answer_callback_query(
+                            callback_id,
+                            "این عملیات در حال اجرا است.",
+                        )
+
+                        return True
+
+            except Exception:
+                logger.exception(
+                    "Editorial action claim failed "
+                    "(continuing) | review_id=%s",
+                    review_id,
+                )
 
             if metadata.get("summary_success") is False:
                 answer_callback_query(callback_id, editorial_summary_failure_message(
