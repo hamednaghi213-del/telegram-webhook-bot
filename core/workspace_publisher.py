@@ -1142,7 +1142,6 @@ def _try_workspace_publication(
     """
     try:
         from core.database import (
-            get_user_by_telegram_id,
             list_user_workspace_memberships,
             list_verified_active_destinations,
             get_workspace_setup_state,
@@ -1153,7 +1152,7 @@ def _try_workspace_publication(
             list_selected_workspace_ids,
         )
 
-        user = get_user_by_telegram_id(chat_id)
+        user = _identity_for_chat(chat_id)
 
         if not user:
             return False
@@ -1357,6 +1356,102 @@ def _try_workspace_publication(
         return False
 
 
+def _identity_for_chat(chat_id: int):
+    """Resolve the shared application user for the current origin.
+
+    Telegram keeps the historical telegram_user_id resolution; the
+    Bale adapter binds the Bale origin so the user resolves through
+    bale_user_id (Slice 1 identity rules). Resolved dynamically from
+    the core.database module object to avoid importing the command
+    layer from callback paths.
+    """
+    from core.messaging import current_context
+
+    database_module = __import__(
+        "core.database",
+        fromlist=["get_user_by_telegram_id"],
+    )
+
+    if current_context().name == "bale":
+        getter = getattr(
+            database_module,
+            "get_user_by_bale_id",
+            None,
+        )
+
+        return getter(chat_id) if getter else None
+
+    return database_module.get_user_by_telegram_id(
+        chat_id
+    )
+
+
+def handle_workspace_callback(
+    callback_query: Dict,
+    req_id: str = "",
+    api_url: Optional[str] = None,
+) -> bool:
+    """Origin-aware dispatch into the shared workspace callback logic.
+
+    Business logic is NOT duplicated: this normalizes the callback and
+    delegates to ``_handle_workspace_callback``. The ``api_url`` argument
+    remains for Telegram-call compatibility; under the Bale origin all
+    platform-specific transport (callback acknowledgement, keyboard
+    message edits, replies) is routed through the origin-scoped messaging
+    context instead of the Telegram Bot API.
+    """
+    from core.messaging import current_context
+
+    origin_bale = (
+        current_context().name == "bale"
+    )
+
+    if origin_bale:
+        _handle_workspace_callback(
+            callback_query,
+            req_id,
+            None,
+        )
+        return True
+
+    _handle_workspace_callback(
+        callback_query,
+        req_id,
+        api_url
+    if api_url is not None
+    else current_api_url(),
+    )
+    return True
+
+
+def current_api_url() -> str:
+    """Telegram Bot API base URL for direct API helpers."""
+    from core.webhook_handler import API_URL
+
+    return API_URL or ""
+
+
+def _legacy_tenant(chat_id: int):
+    """Origin-aware legacy-tenant lookup (Telegram origin only)."""
+    from core.messaging import current_context
+
+    if current_context().name == "bale":
+        return None
+
+    database_module = __import__(
+        "core.database",
+        fromlist=["get_tenant"],
+    )
+
+    getter = getattr(
+        database_module,
+        "get_tenant",
+        lambda _chat_id: None,
+    )
+
+    return getter(chat_id)
+
+
 def _handle_workspace_callback(
     callback_query: Dict,
     req_id: str,
@@ -1364,7 +1459,6 @@ def _handle_workspace_callback(
 ) -> None:
     """Handle wp: callback queries for destination selection."""
     from core.database import (
-        get_user_by_telegram_id,
         get_destination_branding,
         get_workspace_branding,
         set_active_legacy_context,
@@ -1378,14 +1472,7 @@ def _handle_workspace_callback(
         get_workspace_setup_state,
     )
 
-    get_tenant = getattr(
-        __import__(
-            "core.database",
-            fromlist=["get_tenant"],
-        ),
-        "get_tenant",
-        lambda _chat_id: None,
-    )
+    get_tenant = _legacy_tenant
     callback_data = (
         callback_query.get("data", "")
         or ""
@@ -1413,7 +1500,7 @@ def _handle_workspace_callback(
 
     if callback_data == "ws:legacy":
         try:
-            user = get_user_by_telegram_id(
+            user = _identity_for_chat(
                 chat_id
             )
 
@@ -1578,7 +1665,7 @@ def _handle_workspace_callback(
             from core.database import get_workspace_member, list_workspace_destinations
             from core.workspace_destinations import can_manage_destinations
             workspace_id = int(parts[2])
-            user = get_user_by_telegram_id(chat_id)
+            user = _identity_for_chat(chat_id)
             member = get_workspace_member(workspace_id, (user or {}).get("id"))
             workspace = next(
                 (
@@ -1604,7 +1691,7 @@ def _handle_workspace_callback(
         from core.workspace_destinations import can_manage_destinations
         try:
             destination_id = int(parts[3])
-            user = get_user_by_telegram_id(chat_id)
+            user = _identity_for_chat(chat_id)
             destination = database_module.get_publication_destination(destination_id)
             workspace_id = int((destination or {})["workspace_id"])
             workspace = database_module.get_workspace(workspace_id)
@@ -1631,7 +1718,7 @@ def _handle_workspace_callback(
         try:
             action = parts[2]
             target_workspace_id = int(parts[3])
-            user = get_user_by_telegram_id(chat_id)
+            user = _identity_for_chat(chat_id)
             if not user:
                 raise ValueError("کاربر یافت نشد.")
             _target, candidates = list_move_candidates(
@@ -1712,7 +1799,7 @@ def _handle_workspace_callback(
             from core.database import get_workspace_member
             from core.workspace_destinations import can_manage_destinations
             workspace_id = int(parts[2])
-            user = get_user_by_telegram_id(chat_id)
+            user = _identity_for_chat(chat_id)
             member = get_workspace_member(workspace_id, (user or {}).get("id"))
             allowed, reason = can_manage_destinations((member or {}).get("role"))
             if not user or not member or member.get("status") != "active" or not allowed:
@@ -1744,7 +1831,7 @@ def _handle_workspace_callback(
             workspace_id = int(parts[2])
 
             user = (
-                get_user_by_telegram_id(
+                _identity_for_chat(
                     chat_id
                 )
             )
@@ -1794,7 +1881,7 @@ def _handle_workspace_callback(
             workspace_id = int(parts[2])
 
             user = (
-                get_user_by_telegram_id(
+                _identity_for_chat(
                     chat_id
                 )
             )
@@ -2146,12 +2233,34 @@ def _handle_workspace_callback(
         )
 
 
+def _origin_is_bale() -> bool:
+    """True when the inbound request is being processed for Bale."""
+    from core.messaging import current_context
+
+    return current_context().name == "bale"
+
+
 def _ws_send_message(
     api_url: str,
     chat_id: int,
     text: str,
 ) -> None:
     try:
+        if _origin_is_bale():
+            from core.messaging import (
+                current_context,
+            )
+
+            if not current_context().send_text(
+                chat_id,
+                text,
+            ):
+                logger.warning(
+                    "Bale reply failed | chat=%s",
+                    chat_id,
+                )
+            return
+
         requests.post(
             f"{api_url}/sendMessage",
             json={
@@ -2174,6 +2283,22 @@ def _ws_send_message_with_keyboard(
     keyboard: list,
 ) -> None:
     try:
+        if _origin_is_bale():
+            from core.messaging import (
+                current_context,
+            )
+
+            if not current_context().send_keyboard(
+                chat_id,
+                text,
+                keyboard,
+            ):
+                logger.warning(
+                    "Bale keyboard reply failed | chat=%s",
+                    chat_id,
+                )
+            return
+
         payload = {
             "chat_id": chat_id,
             "text": text,
@@ -2201,6 +2326,22 @@ def _ws_answer_callback(
     text: str,
 ) -> None:
     try:
+        if _origin_is_bale():
+            from core.messaging import (
+                current_context,
+            )
+
+            if not current_context().acknowledge_callback(
+                callback_id,
+                text,
+            ):
+                logger.warning(
+                    "Bale callback acknowledgement "
+                    "failed | id=%s",
+                    callback_id,
+                )
+            return
+
         requests.post(
             f"{api_url}/answerCallbackQuery",
             json={
@@ -2222,6 +2363,39 @@ def _ws_edit_message_keyboard(
     keyboard: list,
 ) -> None:
     try:
+        if _origin_is_bale():
+            msg = (
+                callback_query.get(
+                    "message",
+                    {},
+                )
+                or {}
+            )
+
+            chat_id = (
+                msg.get("chat", {})
+                or {}
+            ).get("id")
+
+            if chat_id is None:
+                return
+
+            from core.messaging import (
+                current_context,
+            )
+
+            if not current_context().send_keyboard(
+                chat_id,
+                "📋 فهرست رسانه‌ها به‌روزرسانی شد.",
+                keyboard,
+            ):
+                logger.warning(
+                    "Bale keyboard refresh failed "
+                    "| chat=%s",
+                    chat_id,
+                )
+            return
+
         msg = (
             callback_query.get(
                 "message",
@@ -2267,6 +2441,26 @@ def _ws_edit_message_text(
 ) -> None:
     """Refresh one management page after a server-authorized state change."""
     try:
+        if _origin_is_bale():
+            msg = callback_query.get("message", {}) or {}
+            chat_id = (msg.get("chat") or {}).get("id")
+
+            if chat_id is None:
+                return
+
+            from core.messaging import current_context
+
+            if not current_context().send_keyboard(
+                chat_id,
+                text,
+                keyboard,
+            ):
+                logger.warning(
+                    "Bale panel refresh failed | chat=%s",
+                    chat_id,
+                )
+            return
+
         msg = callback_query.get("message", {}) or {}
         chat_id = (msg.get("chat", {}) or {}).get("id")
         message_id = msg.get("message_id")

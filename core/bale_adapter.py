@@ -86,6 +86,111 @@ def validate_bale_webhook_token(request) -> bool:
     return True
 
 
+def _extract_callback_query(
+    data: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Normalize a Bale callback query into the shared Telegram shape.
+
+    The shared workspace/setup logic reads ``id``, ``from.id``,
+    ``data`` and ``message.chat.id``/``message.message_id``; Bale
+    payloads use the same field names, so normalization is a pass-
+    through with defensive typing (no business logic here).
+    """
+    callback = data.get("callback_query")
+
+    if not isinstance(callback, dict):
+        return None
+
+    normalized = {
+        "id": str(callback.get("id", "") or ""),
+        "data": str(callback.get("data", "") or ""),
+        "from": (
+            callback.get("from")
+            if isinstance(callback.get("from"), dict)
+            else {}
+        ),
+    }
+
+    if isinstance(callback.get("message"), dict):
+        normalized["message"] = callback["message"]
+
+    return normalized
+
+
+def _handle_bale_callback(
+    callback_query: Dict[str, Any],
+) -> Tuple[Dict[str, Any], int]:
+    """Route a Bale callback into the SHARED callback logic.
+
+    ``ws:``/``wp:`` payloads go to the existing workspace callback
+    handler; ``setup:`` payloads go to the existing setup callback
+    handler. Business logic is not duplicated here.
+    """
+    from core.messaging import bind_context
+    from core.messaging import reset_default_context
+
+    callback_data = str(
+        callback_query.get("data", "") or ""
+    )
+
+    previous_origin = command_handler.CURRENT_ORIGIN
+
+    try:
+        command_handler.CURRENT_ORIGIN = "bale"
+
+        bind_context(BaleMessagingContext())
+
+        if callback_data.startswith("setup:"):
+            from core.webhook_handler import (
+                handle_setup_callback,
+            )
+
+            handle_setup_callback(
+                callback_query,
+                "bale-callback",
+            )
+
+            return {"ok": True, "handled": True}, 200
+
+        if callback_data.startswith(("ws:", "wp:")):
+            from core.workspace_publisher import (
+                handle_workspace_callback,
+            )
+
+            handle_workspace_callback(
+                callback_query,
+                "bale-callback",
+                None,
+            )
+
+            return {"ok": True, "handled": True}, 200
+
+        # Unknown payload families are acknowledged so the client
+        # does not hang, but no shared logic is invoked.
+        from core.messaging import current_context
+
+        current_context().acknowledge_callback(
+            callback_query.get("id", ""),
+            "",
+        )
+
+        return {
+            "ok": True,
+            "handled": False,
+            "reason": "unsupported_callback",
+        }, 200
+    except Exception as exc:
+        logger.exception(
+            "❌ Bale callback handling failed | %s",
+            exc,
+        )
+        return {"ok": True, "handled": False}, 200
+    finally:
+        command_handler.CURRENT_ORIGIN = previous_origin
+
+        reset_default_context()
+
+
 def _extract_message(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     message = data.get("message")
 
@@ -147,6 +252,13 @@ def handle_bale_update(
     in slice 1 (media, callbacks and editorial flows follow in
     later slices).
     """
+    callback_query = _extract_callback_query(data)
+
+    if callback_query is not None:
+        return _handle_bale_callback(
+            callback_query,
+        )
+
     message = _extract_message(data)
 
     if message is None:
@@ -161,11 +273,10 @@ def handle_bale_update(
     text = _extract_command_text(message)
 
     if not _is_bot_command(message, text):
-        return {
-            "ok": True,
-            "handled": False,
-            "reason": "non_command",
-        }, 200
+        return _handle_bale_stateful_input(
+            message,
+            chat_id,
+        )
 
     previous_origin = command_handler.CURRENT_ORIGIN
 
@@ -196,6 +307,66 @@ def handle_bale_update(
         command_handler.CURRENT_ORIGIN = previous_origin
 
         from core.messaging import reset_default_context
+
+        reset_default_context()
+
+
+def _handle_bale_stateful_input(
+    message: Dict[str, Any],
+    chat_id: Any,
+) -> Tuple[Dict[str, Any], int]:
+    """Feed non-command Bale text into the SHARED stateful-input path.
+
+    Pending workspace/setup actions (workspace name, destination
+    input, branding values, ...) are consumed by the same
+    ``handle_workspace_stateful_input`` the Telegram webhook uses;
+    state is keyed by the internal users.id, never by the Bale
+    numeric id.
+    """
+    from core.messaging import bind_context
+    from core.messaging import reset_default_context
+
+    text = str(message.get("text") or "").strip()
+
+    if not text:
+        return {
+            "ok": True,
+            "handled": False,
+            "reason": "non_command",
+        }, 200
+
+    previous_origin = command_handler.CURRENT_ORIGIN
+
+    try:
+        command_handler.CURRENT_ORIGIN = "bale"
+
+        bind_context(BaleMessagingContext())
+
+        consumed = (
+            command_handler.handle_workspace_stateful_input(
+                text,
+                int(chat_id),
+            )
+        )
+
+        return {
+            "ok": True,
+            "handled": bool(consumed),
+            "reason": (
+                "stateful_input"
+                if consumed
+                else "non_command"
+            ),
+        }, 200
+    except Exception as exc:
+        logger.exception(
+            "❌ Bale stateful input failed | chat=%s | %s",
+            chat_id,
+            exc,
+        )
+        return {"ok": True, "handled": False}, 200
+    finally:
+        command_handler.CURRENT_ORIGIN = previous_origin
 
         reset_default_context()
 

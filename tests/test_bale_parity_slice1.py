@@ -433,8 +433,17 @@ def test_bale_webhook_accepts_correct_secret():
     )
 
 
-def test_bale_update_non_command_is_ignored():
+def test_bale_update_non_command_is_ignored(monkeypatch):
     _BALE_ADAPTER.initialize("secret")
+
+    # Slice 2: non-command text enters the shared stateful-input
+    # path; with no pending action it is not consumed.
+    monkeypatch.setattr(
+        _COMMAND_HANDLER,
+        "handle_workspace_stateful_input",
+        lambda text, chat_id: False,
+        raising=False,
+    )
 
     response, status = (
         _BALE_ADAPTER.handle_bale_update(

@@ -14,13 +14,18 @@ import threading
 
 import requests
 
-from core import bale_forwarder
+# The Bale forwarder is used only for its API base constant. It is
+# imported defensively so this transport module stays importable in
+# test environments (and degraded runtimes) where core.database is
+# stubbed or partially unavailable.
+try:
+    from core import bale_forwarder
 
+    BALE_API_BASE = bale_forwarder.BALE_API_BASE
+except Exception:  # pragma: no cover - degraded environments only
+    bale_forwarder = None
 
-logger = logging.getLogger(__name__)
-
-
-BALE_API_BASE = bale_forwarder.BALE_API_BASE
+    BALE_API_BASE = "https://tapi.bale.ai/bot"
 
 
 class MessagingContext:
@@ -42,6 +47,14 @@ class MessagingContext:
         text,
         keyboard,
     ) -> bool:
+        raise NotImplementedError
+
+    def acknowledge_callback(
+        self,
+        callback_id,
+        text="",
+    ) -> bool:
+        """Acknowledge a callback query on this platform."""
         raise NotImplementedError
 
 
@@ -82,6 +95,24 @@ class TelegramMessagingContext(MessagingContext):
             keyboard,
         )
 
+    def acknowledge_callback(
+        self,
+        callback_id,
+        text="",
+    ) -> bool:
+        from core import command_handler
+
+        try:
+            return command_handler.answer_callback_query_telegram(
+                callback_id,
+                text,
+            )
+        except Exception:
+            logger.exception(
+                "Telegram callback acknowledgement failed"
+            )
+            return False
+
 
 class BaleMessagingContext(MessagingContext):
     """Bale outbound transport built on the Bale Bot API."""
@@ -111,6 +142,16 @@ class BaleMessagingContext(MessagingContext):
             chat_id,
             text,
             keyboard,
+        )
+
+    def acknowledge_callback(
+        self,
+        callback_id,
+        text="",
+    ) -> bool:
+        return acknowledge_bale_callback(
+            callback_id,
+            text,
         )
 
 
@@ -150,6 +191,45 @@ def send_bale_text(
     except Exception:
         logger.exception(
             "Bale sendMessage failed"
+        )
+        return False
+
+
+def acknowledge_bale_callback(
+    callback_id,
+    text="",
+) -> bool:
+    token = _bale_token()
+
+    if not token:
+        logger.error(
+            "BALE_BOT_TOKEN not configured; "
+            "cannot acknowledge Bale callback"
+        )
+        return False
+
+    if not callback_id:
+        return False
+
+    try:
+        response = requests.post(
+            f"{BALE_API_BASE}{token}/answerCallbackQuery",
+            json={
+                "callback_query_id": callback_id,
+                "text": text or "",
+            },
+            timeout=10,
+        )
+
+        return (
+            response.status_code == 200
+            and (
+                response.json() or {}
+            ).get("ok", True) is not False
+        )
+    except Exception:
+        logger.exception(
+            "Bale answerCallbackQuery failed"
         )
         return False
 

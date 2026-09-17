@@ -137,6 +137,62 @@ def _identity_for_chat(chat_id: int) -> Optional[Dict[str, Any]]:
     return get_user_by_telegram_id(chat_id)
 
 
+def get_or_create_identity_for_chat(chat_id: int) -> Dict[str, Any]:
+    """Origin-aware get-or-create of the shared application user."""
+    user = _identity_for_chat(chat_id)
+
+    if user is not None:
+        return user
+
+    if CURRENT_ORIGIN != "telegram":
+        from core.database import (
+            get_or_create_user_by_bale_id,
+        )
+
+        return get_or_create_user_by_bale_id(
+            int(chat_id),
+            status="active",
+        )
+
+    return get_or_create_user_by_telegram_id(
+        chat_id,
+        status="active",
+    )
+
+
+def answer_callback_query_telegram(
+    callback_query_id: str,
+    text: str = "",
+) -> bool:
+    """Historical Telegram callback acknowledgement, callable by the
+    shared messaging context (Telegram adapter layer)."""
+    if not API_URL:
+        return False
+
+    if not callback_query_id:
+        return False
+
+    try:
+        payload: Dict[str, Any] = {
+            "callback_query_id": callback_query_id,
+        }
+
+        if text:
+            payload["text"] = text
+
+        response = requests.post(
+            f"{API_URL}/answerCallbackQuery",
+            json=payload,
+            timeout=10,
+        )
+        return response.status_code == 200
+    except Exception as e:
+        logger.warning(
+            f"answer_callback_query_telegram failed: {e}"
+        )
+        return False
+
+
 def _legacy_tenant(chat_id: int):
     """Resolve a legacy tenant, Telegram origin only.
 
@@ -514,12 +570,7 @@ def handle_start(chat_id: int) -> bool:
             )
             return True
 
-        user = _identity_for_chat(chat_id)
-        if user is None:
-            user = get_or_create_user_by_telegram_id(
-                chat_id,
-                status="active",
-            )
+        user = get_or_create_identity_for_chat(chat_id)
         if not list_owned_workspaces(user["id"], include_inactive=True):
             _begin_workspace_name_input(chat_id, user, "create_workspace_name")
             return True
@@ -734,10 +785,7 @@ def handle_workspaces(chat_id: int) -> bool:
             # Legacy tenants predate the users/workspaces tables.  Materialise
             # only the user identity so /workspaces can show the legacy entry
             # and offer an explicit, separate workspace creation action.
-            user = get_or_create_user_by_telegram_id(
-                chat_id,
-                status="active",
-            )
+            user = get_or_create_identity_for_chat(chat_id)
         if not user:
             send_message(chat_id, "❌ ابتدا /start را بفرستید.")
             return True
@@ -847,12 +895,7 @@ def handle_create_workspace(chat_id: int) -> bool:
         return True
 
     try:
-        user = get_user_by_telegram_id(chat_id)
-        if not user:
-            user = get_or_create_user_by_telegram_id(
-                chat_id,
-                status="active",
-            )
+        user = get_or_create_identity_for_chat(chat_id)
 
         database_module = importlib.import_module("core.database")
 
@@ -915,7 +958,7 @@ def _begin_workspace_name_input(
 
 
 def begin_workspace_rename(chat_id: int, workspace_id: int) -> bool:
-    user = get_user_by_telegram_id(chat_id)
+    user = _identity_for_chat(chat_id)
     workspace = importlib.import_module("core.database").get_workspace(workspace_id)
     member = get_workspace_member(workspace_id, (user or {}).get("id")) if user else None
     if not user or not workspace or not member or member.get("status") != "active":
@@ -930,7 +973,7 @@ def begin_workspace_rename(chat_id: int, workspace_id: int) -> bool:
 
 
 def handle_cancel_workspace_action(chat_id: int) -> bool:
-    user = get_user_by_telegram_id(chat_id)
+    user = _identity_for_chat(chat_id)
     if user:
         database_module = importlib.import_module("core.database")
         clear_pending = getattr(database_module, "clear_user_pending_workspace_action", None)
@@ -945,7 +988,7 @@ def handle_workspace_stateful_input(text: str, chat_id: int) -> bool:
     value = str(text or "").strip()
     if not value or value.startswith("/"):
         return False
-    user = get_user_by_telegram_id(chat_id)
+    user = _identity_for_chat(chat_id)
     if not user:
         return False
     database_module = importlib.import_module("core.database")
@@ -1028,7 +1071,7 @@ def handle_switchworkspace(args: str, chat_id: int) -> bool:
     if not value:
         return handle_workspaces(chat_id)
     try:
-        user = get_user_by_telegram_id(chat_id)
+        user = _identity_for_chat(chat_id)
         if not user:
             send_message(chat_id, "❌ ابتدا /start را بفرستید.")
             return True
@@ -2568,7 +2611,7 @@ def _get_onboarding_state(chat_id: int) -> str:
     - in_progress
     - completed
     """
-    user = get_user_by_telegram_id(chat_id)
+    user = _identity_for_chat(chat_id)
     if not user:
         return "not_started"
 
@@ -2601,10 +2644,7 @@ def _ensure_onboarding_ready(chat_id: int) -> Dict[str, Any]:
     user = _identity_for_chat(chat_id)
     if user is None:
         state_before = "not_started"
-        user = get_or_create_user_by_telegram_id(
-            chat_id,
-            status="active"
-        )
+        user = get_or_create_identity_for_chat(chat_id)
     else:
         state_before = "in_progress"
 
@@ -2708,7 +2748,7 @@ def handle_register(chat_id: int) -> bool:
             return True
         
         # Cutover: new registrations use the canonical Workspace model.
-        get_or_create_user_by_telegram_id(chat_id, status="active")
+        get_or_create_identity_for_chat(chat_id)
         send_message(chat_id, "✅ ثبت‌نام انجام شد؛ نام گروه رسانه‌ای را وارد کنید.")
         return handle_create_workspace(chat_id)
         

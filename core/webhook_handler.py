@@ -4411,6 +4411,36 @@ def handle_editorial_callback(
 # SETUP CALLBACK HANDLER
 # =========================================================
 
+def _origin_answer_callback(callback_query_id: str, text: str = "") -> bool:
+    """Callback acknowledgement over the current origin's transport."""
+    from core.messaging import current_context
+
+    context = current_context()
+
+    if context.name != "bale":
+        return answer_callback_query(
+            callback_query_id,
+            text,
+        )
+
+    return context.acknowledge_callback(
+        callback_query_id,
+        text,
+    )
+
+
+def _origin_send_message(chat_id: int, text: str) -> bool:
+    """Reply over the current origin's transport."""
+    from core.messaging import current_context
+
+    context = current_context()
+
+    if context.name != "bale":
+        return send_message(chat_id, text)
+
+    return context.send_text(chat_id, text)
+
+
 def handle_setup_callback(
     callback_query: Dict[str, Any],
     req_id: str,
@@ -4434,15 +4464,15 @@ def handle_setup_callback(
         "setup:continue_branding",
     }
     if callback_data not in valid_actions:
-        answer_callback_query(callback_id, "دستور راه‌اندازی نامعتبر است.")
+        _origin_answer_callback(callback_id, "دستور راه‌اندازی نامعتبر است.")
         return True
 
     if user_id is None:
-        answer_callback_query(callback_id, "کاربر قابل تشخیص نیست.")
+        _origin_answer_callback(callback_id, "کاربر قابل تشخیص نیست.")
         return True
 
     if callback_data in {"setup:create_workspace", "setup:add_media"}:
-        answer_callback_query(callback_id, "در حال آماده‌سازی رسانه جدید...")
+        _origin_answer_callback(callback_id, "در حال آماده‌سازی رسانه جدید...")
         from core.command_handler import handle_create_workspace
 
         handle_create_workspace(int(user_id))
@@ -4457,10 +4487,10 @@ def handle_setup_callback(
 
         user, workspace = _get_workspace_for_user(int(user_id))
         if not user or not workspace:
-            answer_callback_query(callback_id, "گروه رسانه‌ای یافت نشد.")
+            _origin_answer_callback(callback_id, "گروه رسانه‌ای یافت نشد.")
             return True
         if callback_data == "setup:continue_branding":
-            answer_callback_query(callback_id, "ادامه راه‌اندازی")
+            _origin_answer_callback(callback_id, "ادامه راه‌اندازی")
             handle_nextsetupstep(int(user_id))
             return True
         step = (
@@ -4469,14 +4499,14 @@ def handle_setup_callback(
             else "setup_channel"
         )
         advance_to_step(workspace["id"], step)
-        answer_callback_query(callback_id, "مقدار را ارسال کنید.")
+        _origin_answer_callback(callback_id, "مقدار را ارسال کنید.")
         from core.command_handler import _setup_resume_message
-        send_message(int(user_id), _setup_resume_message(step))
+        _origin_send_message(int(user_id), _setup_resume_message(step))
         return True
 
     if callback_data == "setup:done":
-        answer_callback_query(callback_id, "راه‌اندازی کامل شد.")
-        send_message(
+        _origin_answer_callback(callback_id, "راه‌اندازی کامل شد.")
+        _origin_send_message(
             int(user_id),
             "✅ راه‌اندازی کامل شد.\n\n"
             "اکنون می‌توانید پیام خود را برای انتشار به ربات بفرستید.\n"
@@ -4485,8 +4515,8 @@ def handle_setup_callback(
         return True
 
     if callback_data == "setup:later":
-        answer_callback_query(callback_id, "می‌توانید بعداً اضافه کنید.")
-        send_message(
+        _origin_answer_callback(callback_id, "می‌توانید بعداً اضافه کنید.")
+        _origin_send_message(
             int(user_id),
             "🕒 مشکلی نیست.\n\n"
             "هر زمان خواستید رسانه دیگری اضافه کنید:\n"
@@ -4497,7 +4527,7 @@ def handle_setup_callback(
         return True
 
     # Stop Telegram's button loading state before running database-backed setup.
-    answer_callback_query(callback_id, "در حال شروع راه‌اندازی...")
+    _origin_answer_callback(callback_id, "در حال شروع راه‌اندازی...")
 
     try:
         from core.command_handler import handle_setup
@@ -4507,7 +4537,7 @@ def handle_setup_callback(
         logger.exception(
             f"[{req_id}] ❌ Setup callback error | {exc}"
         )
-        send_message(
+        _origin_send_message(
             int(user_id),
             "❌ خطا در راه‌اندازی. لطفاً دستور /setup را ارسال کنید.",
         )
