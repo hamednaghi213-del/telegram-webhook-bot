@@ -33,6 +33,9 @@ def resolve_publication_targets(chat_id: int) -> Tuple[List[PublicationTarget], 
     database = importlib.import_module("core.database")
     get_tenant = getattr(database, "get_tenant")
     get_user_by_telegram_id = getattr(database, "get_user_by_telegram_id", lambda _id: None)
+    get_user_by_bale_id = getattr(
+        database, "get_user_by_bale_id", lambda _id: None
+    )
     get_active_workspace_preference = getattr(
         database, "get_active_workspace_preference", lambda _id: {}
     )
@@ -55,8 +58,32 @@ def resolve_publication_targets(chat_id: int) -> Tuple[List[PublicationTarget], 
 
     targets: List[PublicationTarget] = []
     errors: List[str] = []
-    tenant = get_tenant(chat_id)
-    user = get_user_by_telegram_id(chat_id)
+
+    # Content Mirror: resolve the application user through the origin's
+    # own identity space. Under the Bale origin a Bale numeric id must
+    # never be fed to the Telegram-keyed lookup (and vice versa);
+    # Telegram keeps the historical resolution exactly as before.
+    origin_is_bale = False
+
+    try:
+
+        from core.messaging import current_context as _cc
+
+        origin_is_bale = (_cc().name == "bale")
+
+    except Exception:
+
+        origin_is_bale = False
+
+    if origin_is_bale:
+        user = get_user_by_bale_id(chat_id)
+    else:
+        user = get_user_by_telegram_id(chat_id)
+
+    # Legacy tenants are keyed by Telegram chat id. Under the Bale
+    # origin a Bale numeric id must never resolve (or collide with) a
+    # Telegram tenant row, so the legacy lookup is Telegram-only.
+    tenant = None if origin_is_bale else get_tenant(chat_id)
     preference: Dict = {}
     selected_ids = set()
     if user:

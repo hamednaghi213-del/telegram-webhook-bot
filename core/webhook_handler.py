@@ -6805,7 +6805,10 @@ def process_incoming_message(
                         caption=caption,
                         caption_entities=(
                             caption_entities
-                        )
+                        ),
+                        origin=(
+                            "bale" if _origin_prefix == "bale" else "tg"
+                        ),
                     )
                 )
 

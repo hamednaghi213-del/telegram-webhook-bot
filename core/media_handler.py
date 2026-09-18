@@ -345,6 +345,7 @@ def rehydrate_media_groups() -> int:
             group = {
                 "chat_id": chat_id,
                 "media_group_id": media_group_id,
+                "origin": "tg",
                 "files": list(row.get("items") or []),
                 "raw_caption": str(row.get("raw_caption") or ""),
                 "caption_entities": list(
@@ -663,9 +664,9 @@ def add_to_pending_group(
         List[Dict[str, Any]]
     ] = None,
     forward_source: Optional[
-        Dict[str, Any]
-    ] = None,
+        Dict[str, Any]] = None,
     message_id: Optional[int] = None,
+    origin: str = "",
 ) -> None:
 
     group_key = (
@@ -685,6 +686,14 @@ def add_to_pending_group(
 
                 "media_group_id":
                     media_group_id,
+
+                # Content Mirror: inbound platform of the album
+                # owner ("tg"/"bale"). Required so the timer
+                # thread can re-resolve the same application user
+                # and publication targets the inbound request
+                # would have resolved.
+                "origin":
+                    origin or "tg",
 
                 "files":
                     [],
@@ -1037,7 +1046,10 @@ def lease_editorial_group_for_publication(
             files = list(fallback_files or [])
             return {
                 "files": files, "generation": None, "delivery_generation": 1,
-                "source_key": f"tg:{chat_id}:album:{media_group_id}:generation:1",
+                "source_key": (
+                    f"{album_source_key_prefix('', chat_id)}:{chat_id}:"
+                    f"album:{media_group_id}:generation:1"
+                ),
                 "managed": False,
             }
         retry_files = group.get("editorial_retry_files")
@@ -1052,7 +1064,10 @@ def lease_editorial_group_for_publication(
         return {
             "files": files, "generation": generation,
             "delivery_generation": delivery_generation,
-            "source_key": f"tg:{chat_id}:album:{media_group_id}:generation:{delivery_generation}",
+            "source_key": (
+                f"{album_source_key_prefix(group.get('origin', 'tg'), chat_id)}:{chat_id}:"
+                f"album:{media_group_id}:generation:{delivery_generation}"
+            ),
             "managed": True,
         }
 
@@ -2826,6 +2841,55 @@ def execute_bale_plan(
 # PROCESS MEDIA GROUP
 # =========================================================
 
+def album_source_key_prefix(origin: str, chat_id: int) -> str:
+    """Origin-prefixed album id space (Content Mirror).
+
+    Keeps the historical ``tg:`` keys for Telegram origin exactly as
+    established, while a Bale-origin album gets its own ``bale:``
+    namespace so identical numeric ids can never collide in the
+    duplicate/idempotency layer.
+    """
+    return "bale" if str(origin or "").strip().lower() == "bale" else "tg"
+
+
+def _bind_album_origin_context(origin: str, chat_id: int) -> int:
+    """Re-bind the inbound platform context for the timer thread.
+
+    ``process_media_group`` runs on a ``threading.Timer`` thread where
+    the request-scoped messaging context is no longer bound. Rebinding
+    the album owner's origin lets the shared pipeline re-resolve the
+    same application user/publication targets and route user replies
+    back over the platform the album arrived on. Returns the chat id
+    to use for publication target resolution (the Bale conversation id
+    when the owner is a Bale identity).
+    """
+    if str(origin or "").strip().lower() != "bale":
+        return chat_id
+
+    try:
+        from core.database import get_user_by_bale_id
+        from core.messaging import BaleMessagingContext, bind_context
+
+        _user = get_user_by_bale_id(chat_id) or {}
+
+        bind_context(BaleMessagingContext())
+
+        conversation_id = int(
+            _user.get("bale_user_id") or chat_id
+        )
+
+        return conversation_id
+
+    except Exception:
+
+        logger.exception(
+            "Album origin context bind failed | chat=%s",
+            chat_id,
+        )
+
+        return chat_id
+
+
 def process_media_group(
     media_group_id: str,
     chat_id: int,
@@ -2869,6 +2933,15 @@ def process_media_group(
             )
 
             return False
+
+        # -------------------------------------------------------
+        # Content Mirror: a Bale-origin album must re-resolve the
+        # same application user/targets its inbound request would
+        # have resolved and keep replies on the Bale conversation.
+        # Telegram keeps the historical behavior (no rebind).
+        # -------------------------------------------------------
+        album_origin = str(group.get("origin", "tg") or "tg")
+        chat_id = _bind_album_origin_context(album_origin, chat_id)
 
         # -------------------------------------------------------
         # B6: cross-worker lease (no-op when the flag is off).
@@ -3121,7 +3194,10 @@ def process_media_group(
                 forward_source=forward_source or None,
                 forced_content_type=forced_content_type,
                 media_files=files,
-                source_key=f"tg:{chat_id}:album:{media_group_id}:generation:{delivery_generation}",
+                source_key=(
+                    f"{album_source_key_prefix(album_origin, chat_id)}:{chat_id}:"
+                    f"album:{media_group_id}:generation:{delivery_generation}"
+                ),
                 media_group_id=media_group_id,
             )
             if queued:
@@ -3143,7 +3219,10 @@ def process_media_group(
                 other_entities=other_entities,
                 files=files,
                 editorial_finalized=editorial_finalized,
-                source_key=f"tg:{chat_id}:album:{media_group_id}:generation:{delivery_generation}",
+                source_key=(
+                    f"{album_source_key_prefix(album_origin, chat_id)}:{chat_id}:"
+                    f"album:{media_group_id}:generation:{delivery_generation}"
+                ),
             ),
         )
 
@@ -3688,7 +3767,8 @@ def handle_media_group_message(
     caption: str = "",
     caption_entities: Optional[
         List[Dict[str, Any]]
-    ] = None
+    ] = None,
+    origin: str = "",
 ) -> bool:
 
     media_group_id = message.get(
@@ -3789,6 +3869,7 @@ def handle_media_group_message(
                 forward_source
             ),
             message_id=message.get("message_id"),
+            origin=origin,
         )
 
     else:
@@ -3801,6 +3882,7 @@ def handle_media_group_message(
             caption,
             caption_entities,
             message_id=message.get("message_id"),
+            origin=origin,
         )
 
     schedule_processing(
