@@ -1134,7 +1134,158 @@ def try_handle_waiting_external_review_text_edit(
     }, 200
 
 
-# =========================================================
+def handle_duplicate_override_callback(
+    callback_query: Dict[str, Any],
+    req_id: str,
+) -> None:
+    """Shared duplicate-override publish action (``dup:publish:``).
+
+    Extracted from the Telegram webhook dispatcher so the Bale
+    adapter can reuse the same single-use consume-and-publish
+    flow without duplicating business logic.
+    """
+    callback_data = str(
+        callback_query.get(
+            "data",
+            "",
+        )
+        or ""
+    )
+
+    if callback_data.startswith(
+        "dup:publish:"
+    ):
+        callback_id = str(
+            callback_query.get(
+                "id",
+                ""
+            )
+            or ""
+        )
+
+        user_id = (
+            callback_query.get(
+                "from",
+                {}
+            )
+            .get(
+                "id"
+            )
+        )
+
+        token = (
+            callback_data.split(
+                ":",
+                2
+            )[2]
+            if callback_data.count(":") >= 2
+            else ""
+        )
+
+        if (
+            user_id is None
+            or not token
+        ):
+            answer_callback_query(
+                callback_id,
+                "درخواست نامعتبر است."
+            )
+
+            return {
+                "ok": True,
+                "callback_handled": True,
+            }, 200
+
+        try:
+            from core.duplicate_pending import (
+                consume_pending_duplicate,
+            )
+
+            from core.publication_engine import (
+                publish_prepared_content,
+            )
+
+            pending = (
+                consume_pending_duplicate(
+                    token=token,
+                    chat_id=int(
+                        user_id
+                    ),
+                )
+            )
+
+            if pending is None:
+                answer_callback_query(
+                    callback_id,
+                    (
+                        "این درخواست منقضی شده "
+                        "یا قبلاً استفاده شده است."
+                    ),
+                )
+
+                return {
+                    "ok": True,
+                    "callback_handled": True,
+                }, 200
+
+            answer_callback_query(
+                callback_id,
+                "در حال انتشار..."
+            )
+
+            result = (
+                publish_prepared_content(
+                    chat_id=int(
+                        user_id
+                    ),
+                    api_url=API_URL,
+                    prepared=(
+                        pending.prepared
+                    ),
+                    targets=list(
+                        pending.targets
+                    ),
+                    allow_duplicate=True,
+                )
+            )
+
+            _send_media_publication_acknowledgement(
+                int(
+                    user_id
+                ),
+                result,
+                (
+                    "✅ رسانه با تأیید شما "
+                    "منتشر شد."
+                ),
+            )
+
+        except Exception as e:
+            logger.exception(
+                f"[{req_id}] ❌ Duplicate override "
+                f"callback failed | {e}"
+            )
+
+            answer_callback_query(
+                callback_id,
+                "انتشار با خطا روبرو شد."
+            )
+
+            send_message(
+                int(
+                    user_id
+                ),
+                (
+                    "❌ انتشار دوباره رسانه "
+                    "انجام نشد."
+                ),
+            )
+
+        return {
+            "ok": True,
+            "callback_handled": True,
+        }, 200
+
 # SEND MESSAGE TO USER
 # =========================================================
 
@@ -1147,6 +1298,37 @@ def send_message(
     ] = None,
     link_preview_options: Optional[Dict[str, Any]] = None,
 ) -> bool:
+
+    # Origin-scoped transport: Bale-origin shared flows reply over
+    # the Bale Bot API; Telegram keeps the historical sender.
+    try:
+
+        from core.messaging import current_context
+
+        context = current_context()
+
+    except Exception:
+
+        context = None
+
+    if (
+        context is not None
+        and context.name == "bale"
+    ):
+        if reply_markup:
+            return context.send_keyboard(
+                chat_id,
+                text,
+                (reply_markup or {}).get(
+                    "inline_keyboard",
+                    [],
+                ),
+            )
+
+        return context.send_text(
+            chat_id,
+            text,
+        )
 
     if not API_URL:
 
@@ -1214,6 +1396,26 @@ def answer_callback_query(
     callback_query_id: str,
     text: str = ""
 ) -> bool:
+
+    # Origin-scoped acknowledgement for shared flows.
+    try:
+
+        from core.messaging import current_context
+
+        context = current_context()
+
+    except Exception:
+
+        context = None
+
+    if (
+        context is not None
+        and context.name == "bale"
+    ):
+        return context.acknowledge_callback(
+            callback_query_id,
+            text,
+        )
 
     if not API_URL:
         return False
@@ -2750,7 +2952,7 @@ def build_editorial_keyboard(
                 f"ed:translate:{review_id}"
         }
     ])
-    
+
     rows.append([
         {
             "text":
@@ -3107,7 +3309,13 @@ def try_queue_editorial_text_review(
 
         pending = (
             create_pending_review(
-                user_id=chat_id,
+                # Canonical pending-state owner: internal users.id
+                # under Bale origin (identity-safety rules).
+                user_id=(
+                    _canonical_pending_user_id(
+                        chat_id
+                    )
+                ),
                 content_type=(
                     review_result.content_type
                 ),
@@ -3280,6 +3488,85 @@ def try_queue_editorial_text_review(
 # PROCESS ADMIN INSTRUCTION MESSAGE
 # =========================================================
 
+def _canonical_pending_user_id(chat_id: int) -> int:
+    """Map an origin chat id to the canonical pending-state owner.
+
+    Telegram keeps the historical chat-id keying. For Bale origin the
+    pending state must live under the internal users.id (identity
+    safety rules) so an explicitly linked account shares one pending
+    state across platforms and a Bale-only user stays isolated.
+    """
+    try:
+
+        from core.messaging import current_context as _cc
+
+        if _cc().name != "bale":
+            return chat_id
+
+    except Exception:
+
+        return chat_id
+
+    _db_module = __import__(
+        "core.database",
+        fromlist=["get_user_by_bale_id"],
+    )
+
+    _bale_user = (
+        _db_module.get_user_by_bale_id(
+            chat_id
+        )
+    )
+
+    if _bale_user:
+        return int(_bale_user["id"])
+
+    return chat_id
+
+
+def _origin_conversation_id(canonical_user_id: int) -> int:
+    """Resolve the conversation id to reply on, from a canonical
+    pending-state owner id.
+
+    Telegram keeps the historical chat-id keying. Under the Bale
+    origin the pending state is keyed by the internal users.id, so
+    replies must be re-addressed to the Bale conversation and
+    media-group operations must use the Bale conversation id.
+    """
+    try:
+
+        from core.messaging import current_context as _cc
+
+        if _cc().name != "bale":
+            return canonical_user_id
+
+    except Exception:
+
+        return canonical_user_id
+
+    _db_module = __import__(
+        "core.database",
+        fromlist=["get_user_by_id"],
+    )
+
+    try:
+
+        _user = _db_module.get_user_by_id(
+            canonical_user_id
+        )
+
+    except Exception:
+
+        return canonical_user_id
+
+    _bale_id = (_user or {}).get("bale_user_id")
+
+    if _bale_id:
+        return int(_bale_id)
+
+    return canonical_user_id
+
+
 def process_admin_instruction_message(
     chat_id: int,
     instruction_text: str,
@@ -3313,7 +3600,11 @@ def process_admin_instruction_message(
 
         review = (
             get_waiting_admin_instruction_review(
-                user_id=chat_id
+                user_id=(
+                    _canonical_pending_user_id(
+                        chat_id
+                    )
+                )
             )
         )
 
@@ -3384,7 +3675,9 @@ def process_admin_instruction_message(
         if not result.summary_success:
 
             send_message(
-                chat_id,
+                _origin_conversation_id(
+                    chat_id
+                ),
                 (
                     "⚠️ دستور ادمین نتوانست یک نسخه معتبر "
                     "از نظر سیستم ضدتحریف تولید کند.\n\n"
@@ -3406,7 +3699,9 @@ def process_admin_instruction_message(
         if not new_summary:
 
             send_message(
-                chat_id,
+                _origin_conversation_id(
+                    chat_id
+                ),
                 (
                     "⚠️ نسخه جدید معتبر تولید نشد.\n\n"
                     "نسخه قبلی خلاصه محفوظ مانده است."
@@ -3444,7 +3739,11 @@ def process_admin_instruction_message(
                 review_id=(
                     review.review_id
                 ),
-                user_id=chat_id,
+                user_id=(
+                    _canonical_pending_user_id(
+                        chat_id
+                    )
+                ),
                 new_summary=(
                     new_summary
                 ),
@@ -3460,7 +3759,9 @@ def process_admin_instruction_message(
         if updated is None:
 
             send_message(
-                chat_id,
+                _origin_conversation_id(
+                    chat_id
+                ),
                 (
                     "❌ نسخه جدید ساخته شد اما ذخیره "
                     "وضعیت آن با مشکل روبرو شد.\n\n"
@@ -3475,7 +3776,11 @@ def process_admin_instruction_message(
                 review_id=(
                     updated.review_id
                 ),
-                user_id=chat_id,
+                user_id=(
+                    _canonical_pending_user_id(
+                        chat_id
+                    )
+                ),
                 instruction=(
                     instruction_text
                 )
@@ -3545,7 +3850,9 @@ def process_admin_instruction_message(
         )
 
         send_message(
-            chat_id=chat_id,
+            chat_id=_origin_conversation_id(
+                chat_id
+            ),
             text=(
                 "✅ دستور ادمین اعمال شد.\n\n"
                 + preview
@@ -3617,6 +3924,13 @@ def handle_editorial_callback(
             "id"
         )
     )
+
+    # Canonical pending-state owner: under the Bale origin the
+    # internal users.id keys the review, never the Bale numeric id.
+    if user_id is not None:
+        user_id = _canonical_pending_user_id(
+            user_id
+        )
 
     if user_id is None:
 
@@ -3822,7 +4136,11 @@ def handle_editorial_callback(
 
                 render_translation_result(
                     result=translation_state_result,
-                    chat_id=int(user_id),
+                    chat_id=int(
+                        _origin_conversation_id(
+                            user_id
+                        )
+                    ),
                     send_message=send_message,
                 )
 
@@ -3847,12 +4165,16 @@ def handle_editorial_callback(
                 )
 
                 send_message(
-                    int(user_id),
+                    int(
+                        _origin_conversation_id(
+                            user_id
+                        )
+                    ),
                     "❌ امکان شروع ترجمه این محتوا وجود نداشت."
                 )
 
             return True
-        
+
         if action == "summary_unavailable":
 
             answer_callback_query(
@@ -3904,7 +4226,9 @@ def handle_editorial_callback(
             )
 
             send_message(
-                user_id,
+                _origin_conversation_id(
+                    user_id
+                ),
                 (
                     "✏️ حالت اصلاح با دستور ادمین فعال شد.\n\n"
                     "در پیام بعدی دقیقاً بنویس چه تغییری "
@@ -3924,7 +4248,12 @@ def handle_editorial_callback(
             media_group_id = metadata.get("media_group_id")
             if media_group_id:
                 from core.media_handler import remove_pending_group
-                remove_pending_group(str(media_group_id), user_id)
+                remove_pending_group(
+                    str(media_group_id),
+                    _origin_conversation_id(
+                        user_id
+                    ),
+                )
 
             answer_callback_query(
                 callback_id,
@@ -3932,7 +4261,9 @@ def handle_editorial_callback(
             )
 
             send_message(
-                user_id,
+                _origin_conversation_id(
+                    user_id
+                ),
                 "❌ انتشار این محتوا لغو شد."
             )
 
@@ -3985,7 +4316,9 @@ def handle_editorial_callback(
             if media_group_id:
                 from core.media_handler import lease_editorial_group_for_publication
                 editorial_lease = lease_editorial_group_for_publication(
-                    str(media_group_id), user_id, publication_files
+                    str(media_group_id),
+                    _origin_conversation_id(user_id),
+                    publication_files,
                 )
                 publication_files = editorial_lease["files"]
                 publication_source_key = editorial_lease["source_key"]
@@ -4028,7 +4361,10 @@ def handle_editorial_callback(
             if editorial_lease is not None:
                 from core.media_handler import finish_editorial_group_publication
                 finish_editorial_group_publication(
-                    str(media_group_id), user_id, editorial_lease, bool(success),
+                    str(media_group_id),
+                    _origin_conversation_id(user_id),
+                    editorial_lease,
+                    bool(success),
                     approved_text=(
                         metadata.get("main_text", review.original_text)
                         or review.original_text
@@ -4048,7 +4384,9 @@ def handle_editorial_callback(
                 )
 
                 send_message(
-                    user_id,
+                    _origin_conversation_id(
+                        user_id
+                    ),
                     "✅ متن اصلی در کانال منتشر شد."
                 )
 
@@ -4136,7 +4474,9 @@ def handle_editorial_callback(
             if media_group_id:
                 from core.media_handler import lease_editorial_group_for_publication
                 editorial_lease = lease_editorial_group_for_publication(
-                    str(media_group_id), user_id, publication_files
+                    str(media_group_id),
+                    _origin_conversation_id(user_id),
+                    publication_files,
                 )
                 publication_files = editorial_lease["files"]
                 publication_source_key = editorial_lease["source_key"]
@@ -4160,7 +4500,10 @@ def handle_editorial_callback(
             if editorial_lease is not None:
                 from core.media_handler import finish_editorial_group_publication
                 finish_editorial_group_publication(
-                    str(media_group_id), user_id, editorial_lease, bool(success),
+                    str(media_group_id),
+                    _origin_conversation_id(user_id),
+                    editorial_lease,
+                    bool(success),
                     approved_text=final_summary,
                 )
 
@@ -4177,7 +4520,9 @@ def handle_editorial_callback(
                 )
 
                 send_message(
-                    user_id,
+                    _origin_conversation_id(
+                        user_id
+                    ),
                     "✅ نسخه خلاصه در کانال منتشر شد."
                 )
 
@@ -4378,7 +4723,9 @@ def handle_editorial_callback(
             )
 
             send_message(
-                chat_id=user_id,
+                chat_id=_origin_conversation_id(
+                    user_id
+                ),
                 text=preview,
                 reply_markup=keyboard
             )
@@ -5023,443 +5370,61 @@ def try_automatic_persian_translation_gate(
 # WEBHOOK HANDLER
 # =========================================================
 
-def handle_webhook() -> Tuple[
-    Dict[str, Any],
-    int
-]:
+def process_incoming_message(
+    msg: Dict[str, Any],
+    req_id: str,
+    update_id: Optional[int] = None,
+) -> Tuple[Dict[str, Any], int]:
+    """Shared inbound-content pipeline (Telegram + Bale).
 
-    req_id = (
-        str(
-            uuid.uuid4()
-        )[:8]
+    Runs the exact historical Telegram message path: editorial
+    pending guard, workspace stateful input, branding samples,
+    external URL review, media groups, single media, documents
+    and normal text. User-facing sends route through the
+    origin-scoped messaging context so Bale-origin content
+    replies over Bale while the shared business logic stays
+    single-sourced.
+    """
+    chat_id = (
+        msg.get(
+            "chat",
+            {},
+        )
+        .get(
+            "id"
+        )
     )
 
-    logger.info(
-        f"[{req_id}] 📥 Telegram Webhook received"
-    )
+    if chat_id is None:
+
+        return {
+            "ok": True
+        }, 200
 
     try:
+        # Origin-prefixed source key keeps platform id spaces apart so
+        # a Bale numeric id can never collide with a Telegram id in the
+        # duplicate/idempotency layer.
+        _origin_prefix = "tg"
 
-        # =================================================
-        # SECURITY
-        # =================================================
+        try:
 
-        if not validate_webhook_token():
+            from core.messaging import current_context as _cc
 
-            return {
-                "ok": False
-            }, 403
+            if _cc().name == "bale":
+                _origin_prefix = "bale"
 
-        # =================================================
-        # JSON
-        # =================================================
+        except Exception:
 
-        data = request.get_json(
-            silent=True
-        )
-
-        if not data:
-
-            return {
-                "ok": True
-            }, 200
-
-        # =================================================
-        # CALLBACK
-        # =================================================
-
-        callback_query = data.get(
-            "callback_query"
-        )
-
-        if isinstance(
-            callback_query,
-            dict
-        ):
-
-            # New-user setup callback. Keep this before workspace/editorial
-            # routing so setup:start is always acknowledged and handled.
-            if str(
-                callback_query.get("data", "") or ""
-            ).startswith("setup:"):
-
-                handled = handle_setup_callback(
-                    callback_query,
-                    req_id,
-                )
-
-                return {
-                    "ok": True,
-                    "callback_handled": bool(handled),
-                }, 200
-
-            callback_data = str(
-                callback_query.get(
-                    "data",
-                    ""
-                )
-                or ""
-            )
-
-            if callback_data.startswith(
-                "dup:publish:"
-            ):
-                callback_id = str(
-                    callback_query.get(
-                        "id",
-                        ""
-                    )
-                    or ""
-                )
-
-                user_id = (
-                    callback_query.get(
-                        "from",
-                        {}
-                    )
-                    .get(
-                        "id"
-                    )
-                )
-
-                token = (
-                    callback_data.split(
-                        ":",
-                        2
-                    )[2]
-                    if callback_data.count(":") >= 2
-                    else ""
-                )
-
-                if (
-                    user_id is None
-                    or not token
-                ):
-                    answer_callback_query(
-                        callback_id,
-                        "درخواست نامعتبر است."
-                    )
-
-                    return {
-                        "ok": True,
-                        "callback_handled": True,
-                    }, 200
-
-                try:
-                    from core.duplicate_pending import (
-                        consume_pending_duplicate,
-                    )
-
-                    from core.publication_engine import (
-                        publish_prepared_content,
-                    )
-
-                    pending = (
-                        consume_pending_duplicate(
-                            token=token,
-                            chat_id=int(
-                                user_id
-                            ),
-                        )
-                    )
-
-                    if pending is None:
-                        answer_callback_query(
-                            callback_id,
-                            (
-                                "این درخواست منقضی شده "
-                                "یا قبلاً استفاده شده است."
-                            ),
-                        )
-
-                        return {
-                            "ok": True,
-                            "callback_handled": True,
-                        }, 200
-
-                    answer_callback_query(
-                        callback_id,
-                        "در حال انتشار..."
-                    )
-
-                    result = (
-                        publish_prepared_content(
-                            chat_id=int(
-                                user_id
-                            ),
-                            api_url=API_URL,
-                            prepared=(
-                                pending.prepared
-                            ),
-                            targets=list(
-                                pending.targets
-                            ),
-                            allow_duplicate=True,
-                        )
-                    )
-
-                    _send_media_publication_acknowledgement(
-                        int(
-                            user_id
-                        ),
-                        result,
-                        (
-                            "✅ رسانه با تأیید شما "
-                            "منتشر شد."
-                        ),
-                    )
-
-                except Exception as e:
-                    logger.exception(
-                        f"[{req_id}] ❌ Duplicate override "
-                        f"callback failed | {e}"
-                    )
-
-                    answer_callback_query(
-                        callback_id,
-                        "انتشار با خطا روبرو شد."
-                    )
-
-                    send_message(
-                        int(
-                            user_id
-                        ),
-                        (
-                            "❌ انتشار دوباره رسانه "
-                            "انجام نشد."
-                        ),
-                    )
-
-                return {
-                    "ok": True,
-                    "callback_handled": True,
-                }, 200
-
-            # =================================================
-            # EXTERNAL CONTENT REVIEW CALLBACK
-            # =================================================
-
-            if callback_data.startswith(
-                "extrev:"
-            ):
-
-                try:
-
-                    from core.external_review_execution import (
-                        execute_external_review_decision
-                    )
-
-                    from core.external_review_telegram import (
-                        handle_external_review_telegram_callback
-                    )
-
-                    handled = (
-                        handle_external_review_telegram_callback(
-                            callback_query=callback_query,
-                            answer_callback_query=(
-                                answer_callback_query
-                            ),
-                            send_message=(
-                                send_message
-                            ),
-                            telegram_api=(
-                                telegram_api
-                            ),
-                            api_url=(
-                                API_URL
-                                or ""
-                            ),
-                            execute_decision=(
-                                execute_external_review_decision
-                            ),
-                            queue_editorial_review=(
-                                try_queue_editorial_text_review
-                            ),
-                            req_id=req_id,
-                        )
-                    )
-
-                except Exception as e:
-
-                    logger.exception(
-                        f"[{req_id}] ❌ External review "
-                        f"callback routing failed | {e}"
-                    )
-
-                    handled = True
-
-                    callback_id = str(
-                        callback_query.get(
-                            "id",
-                            ""
-                        )
-                        or ""
-                    )
-
-                    answer_callback_query(
-                        callback_id,
-                        (
-                            "خطا در پردازش "
-                            "پیش‌نمایش مطلب."
-                        )
-                    )
-
-                return {
-                    "ok": True,
-                    "callback_handled": bool(
-                        handled
-                    ),
-                }, 200
-            
-            # Workspace publication callbacks (Phase 4B)
-            if str(
-                callback_query.get(
-                    "data",
-                    ""
-                )
-                or ""
-            ).startswith(("wp:", "ws:")):
-
-                try:
-
-                    from core.workspace_publisher import (
-                        _handle_workspace_callback
-                    )
-
-                    _handle_workspace_callback(
-                        callback_query,
-                        req_id,
-                        API_URL
-                    )
-
-                except Exception as _wp_cb_err:
-
-                    logger.exception(
-                        f"[{req_id}] ❌ Workspace callback error | "
-                        f"{_wp_cb_err}"
-                    )
-
-                return {
-                    "ok": True,
-                    "callback_handled": True
-                }, 200
-
-            # =================================================
-            # TRANSLATION CALLBACK
-            # =================================================
-
-            if callback_data.startswith(
-                "tr:"
-            ):
-                try:
-                    from core.translation_telegram import (
-                        handle_translation_telegram_callback,
-                    )
-
-                    translation_result = (
-                        handle_translation_telegram_callback(
-                            callback_query=callback_query,
-                            answer_callback_query=(
-                                answer_callback_query
-                            ),
-                            send_message=send_message,
-                            publish_prepared_text=publish_prepared_text,
-                            req_id=req_id,
-                        )
-                    )
-
-                    # Translation callbacks are fully consumed here.
-                    # Publication is intentionally NOT duplicated here.
-                    # A confirmed translation will be handed to the
-                    # Shared Publication Engine in the publication
-                    # integration step.
-
-                except Exception as e:
-                    logger.exception(
-                        f"[{req_id}] ❌ Translation callback "
-                        f"routing failed | {e}"
-                    )
-
-                    callback_id = str(
-                        callback_query.get(
-                            "id",
-                            ""
-                        )
-                        or ""
-                    )
-
-                    answer_callback_query(
-                        callback_id,
-                        "خطا در پردازش ترجمه."
-                    )
-
-                return {
-                    "ok": True,
-                    "callback_handled": True,
-                    "translation": True,
-                }, 200
-            
-            handled = (
-                handle_editorial_callback(
-                    callback_query,
-                    req_id
-                )
-            )
-
-            return {
-                "ok": True,
-                "callback_handled":
-                    bool(
-                        handled
-                    )
-            }, 200
-
-        # =================================================
-        # MESSAGE
-        # =================================================
-
-        edited_channel_post = data.get("edited_channel_post")
-        if isinstance(edited_channel_post, dict):
-            try:
-                from core.workspace_publisher import (
-                    sync_edited_channel_post_to_bale,
-                )
-                synced = sync_edited_channel_post_to_bale(edited_channel_post)
-                return {"ok": True, "edit_synced": bool(synced)}, 200
-            except Exception as e:
-                logger.exception(f"[{req_id}] ❌ Telegram/Bale edit sync failed | {e}")
-                return {"ok": True, "edit_synced": False}, 200
-
-        msg = data.get(
-            "message"
-        )
-
-        if not msg:
-
-            return {
-                "ok": True
-            }, 200
-
-        chat_id = (
-            msg.get(
-                "chat",
-                {}
-            )
-            .get(
-                "id"
-            )
-        )
-
-        if chat_id is None:
-
-            return {
-                "ok": True
-            }, 200
+            pass
 
         incoming_source_key = (
-            f"tg:update:{data.get('update_id')}"
-            if data.get("update_id") is not None
-            else f"tg:{chat_id}:message:{msg.get('message_id')}"
+            f"{_origin_prefix}:update:{update_id}"
+            if update_id is not None
+            else (
+                f"{_origin_prefix}:{chat_id}:"
+                f"message:{msg.get('message_id')}"
+            )
         )
 
         # =================================================
@@ -5613,12 +5578,41 @@ def handle_webhook() -> Tuple[
                     "translation_input": True,
                     "error": str(e),
                 }, 200
-        
+
         # Pending Editorial has priority over every bare setup/name input.
         if command_text.strip():
             try:
                 from core.editorial_pending import get_waiting_admin_instruction_review
-                waiting_review = get_waiting_admin_instruction_review(user_id=chat_id)
+
+                _origin_user_id = chat_id
+
+                try:
+
+                    from core.messaging import current_context as _cc
+
+                    if _cc().name == "bale":
+
+                        _db_module = __import__(
+                            "core.database",
+                            fromlist=["get_user_by_bale_id"],
+                        )
+
+                        _bale_user = (
+                            _db_module.get_user_by_bale_id(
+                                chat_id
+                            )
+                        )
+
+                        if _bale_user:
+                            _origin_user_id = (
+                                _bale_user["id"]
+                            )
+
+                except Exception:
+
+                    _origin_user_id = chat_id
+
+                waiting_review = get_waiting_admin_instruction_review(user_id=_origin_user_id)
             except Exception as e:
                 logger.exception(f"[{req_id}] ❌ Early editorial guard failed | {e}")
                 waiting_review = None
@@ -5691,12 +5685,33 @@ def handle_webhook() -> Tuple[
 
         try:
 
+            # Legacy tenants are keyed by Telegram chat id. Under the
+            # Bale origin a Bale numeric id must never touch this
+            # Telegram-keyed table (identity isolation).
+            _origin_is_bale = False
+
+            try:
+
+                from core.messaging import (
+                    current_context as _cc,
+                )
+
+                _origin_is_bale = (
+                    _cc().name == "bale"
+                )
+
+            except Exception:
+
+                _origin_is_bale = False
+
             from core.database import (
                 get_tenant
             )
 
             tenant = (
-                get_tenant(
+                None
+                if _origin_is_bale
+                else get_tenant(
                     chat_id
                 )
             )
@@ -6139,18 +6154,53 @@ def handle_webhook() -> Tuple[
                     "external_content": True,
                     "external_error": True,
                 }, 200
-        
+
         workspace_context_active = False
         workspace_targets_selected = False
         legacy_target_selected = bool(tenant and tenant.get("telegram_channel"))
         try:
                 from core.database import (
                     get_active_workspace_preference,
+                    get_user_by_bale_id,
                     get_user_by_telegram_id,
                     list_selected_workspace_ids,
                 )
 
-                workspace_user = get_user_by_telegram_id(chat_id)
+                # Identity safety: resolve the workspace user through
+                # the origin's own id space. Under Bale origin a Bale
+                # numeric id must never be fed to the Telegram-keyed
+                # lookup (and vice versa).
+                _origin_is_bale = False
+
+                try:
+
+                    from core.messaging import (
+                        current_context as _cc,
+                    )
+
+                    _origin_is_bale = (
+                        _cc().name == "bale"
+                    )
+
+                except Exception:
+
+                    _origin_is_bale = False
+
+                if _origin_is_bale:
+
+                    workspace_user = (
+                        get_user_by_bale_id(
+                            chat_id
+                        )
+                    )
+
+                else:
+
+                    workspace_user = (
+                        get_user_by_telegram_id(
+                            chat_id
+                        )
+                    )
                 workspace_preference = (
                     get_active_workspace_preference(workspace_user["id"]) or {}
                     if workspace_user
@@ -6217,7 +6267,11 @@ def handle_webhook() -> Tuple[
 
                 waiting_review = (
                     get_waiting_admin_instruction_review(
-                        user_id=chat_id
+                        user_id=(
+                            _canonical_pending_user_id(
+                                chat_id
+                            )
+                        )
                     )
                 )
 
@@ -6678,7 +6732,7 @@ def handle_webhook() -> Tuple[
                 "rich_message": True,
                 "error": str(e)
             }, 200
-        
+
         # =================================================
         # MEDIA INFO
         # =================================================
@@ -6873,7 +6927,7 @@ def handle_webhook() -> Tuple[
                     translation_gate,
                     200,
                 )
-            
+
             kwargs = {
                 "chat_id":
                     chat_id,
@@ -7160,7 +7214,7 @@ def handle_webhook() -> Tuple[
                     translation_gate,
                     200,
                 )
-            
+
             # =============================================
             # NORMAL NEWS PUBLICATION
             # =============================================
@@ -7216,6 +7270,344 @@ def handle_webhook() -> Tuple[
             "ok":
                 True
         }, 200
+    except Exception as e:
+
+        logger.exception(
+            f"[{req_id}] Webhook fatal error | "
+            f"{e}"
+        )
+
+        return {
+            "ok":
+                False,
+            "error":
+                str(
+                    e
+                )
+        }, 500
+
+
+def handle_webhook() -> Tuple[
+    Dict[str, Any],
+    int
+]:
+
+    req_id = (
+        str(
+            uuid.uuid4()
+        )[:8]
+    )
+
+    logger.info(
+        f"[{req_id}] 📥 Telegram Webhook received"
+    )
+
+    try:
+
+        # =================================================
+        # SECURITY
+        # =================================================
+
+        if not validate_webhook_token():
+
+            return {
+                "ok": False
+            }, 403
+
+        # =================================================
+        # JSON
+        # =================================================
+
+        data = request.get_json(
+            silent=True
+        )
+
+        if not data:
+
+            return {
+                "ok": True
+            }, 200
+
+        # =================================================
+        # CALLBACK
+        # =================================================
+
+        callback_query = data.get(
+            "callback_query"
+        )
+
+        if isinstance(
+            callback_query,
+            dict
+        ):
+
+            # New-user setup callback. Keep this before workspace/editorial
+            # routing so setup:start is always acknowledged and handled.
+            if str(
+                callback_query.get("data", "") or ""
+            ).startswith("setup:"):
+
+                handled = handle_setup_callback(
+                    callback_query,
+                    req_id,
+                )
+
+                return {
+                    "ok": True,
+                    "callback_handled": bool(handled),
+                }, 200
+
+            callback_data = str(
+                callback_query.get(
+                    "data",
+                    ""
+                )
+                or ""
+            )
+
+            handle_duplicate_override_callback(
+                callback_query,
+                req_id,
+            )
+
+            # =================================================
+            # EXTERNAL CONTENT REVIEW CALLBACK
+            # =================================================
+
+            if callback_data.startswith(
+                "extrev:"
+            ):
+
+                try:
+
+                    from core.external_review_execution import (
+                        execute_external_review_decision
+                    )
+
+                    from core.external_review_telegram import (
+                        handle_external_review_telegram_callback
+                    )
+
+                    handled = (
+                        handle_external_review_telegram_callback(
+                            callback_query=callback_query,
+                            answer_callback_query=(
+                                answer_callback_query
+                            ),
+                            send_message=(
+                                send_message
+                            ),
+                            telegram_api=(
+                                telegram_api
+                            ),
+                            api_url=(
+                                API_URL
+                                or ""
+                            ),
+                            execute_decision=(
+                                execute_external_review_decision
+                            ),
+                            queue_editorial_review=(
+                                try_queue_editorial_text_review
+                            ),
+                            req_id=req_id,
+                        )
+                    )
+
+                except Exception as e:
+
+                    logger.exception(
+                        f"[{req_id}] ❌ External review "
+                        f"callback routing failed | {e}"
+                    )
+
+                    handled = True
+
+                    callback_id = str(
+                        callback_query.get(
+                            "id",
+                            ""
+                        )
+                        or ""
+                    )
+
+                    answer_callback_query(
+                        callback_id,
+                        (
+                            "خطا در پردازش "
+                            "پیش‌نمایش مطلب."
+                        )
+                    )
+
+                return {
+                    "ok": True,
+                    "callback_handled": bool(
+                        handled
+                    ),
+                }, 200
+
+            # Workspace publication callbacks (Phase 4B)
+            if str(
+                callback_query.get(
+                    "data",
+                    ""
+                )
+                or ""
+            ).startswith(("wp:", "ws:")):
+
+                try:
+
+                    from core.workspace_publisher import (
+                        _handle_workspace_callback
+                    )
+
+                    _handle_workspace_callback(
+                        callback_query,
+                        req_id,
+                        API_URL
+                    )
+
+                except Exception as _wp_cb_err:
+
+                    logger.exception(
+                        f"[{req_id}] ❌ Workspace callback error | "
+                        f"{_wp_cb_err}"
+                    )
+
+                return {
+                    "ok": True,
+                    "callback_handled": True
+                }, 200
+
+            # =================================================
+            # TRANSLATION CALLBACK
+            # =================================================
+
+            if callback_data.startswith(
+                "tr:"
+            ):
+                try:
+                    from core.translation_telegram import (
+                        handle_translation_telegram_callback,
+                    )
+
+                    translation_result = (
+                        handle_translation_telegram_callback(
+                            callback_query=callback_query,
+                            answer_callback_query=(
+                                answer_callback_query
+                            ),
+                            send_message=send_message,
+                            publish_prepared_text=publish_prepared_text,
+                            req_id=req_id,
+                        )
+                    )
+
+                    # Translation callbacks are fully consumed here.
+                    # Publication is intentionally NOT duplicated here.
+                    # A confirmed translation will be handed to the
+                    # Shared Publication Engine in the publication
+                    # integration step.
+
+                except Exception as e:
+                    logger.exception(
+                        f"[{req_id}] ❌ Translation callback "
+                        f"routing failed | {e}"
+                    )
+
+                    callback_id = str(
+                        callback_query.get(
+                            "id",
+                            ""
+                        )
+                        or ""
+                    )
+
+                    answer_callback_query(
+                        callback_id,
+                        "خطا در پردازش ترجمه."
+                    )
+
+                return {
+                    "ok": True,
+                    "callback_handled": True,
+                    "translation": True,
+                }, 200
+
+            handled = (
+                handle_editorial_callback(
+                    callback_query,
+                    req_id
+                )
+            )
+
+            return {
+                "ok": True,
+                "callback_handled":
+                    bool(
+                        handled
+                    )
+            }, 200
+
+        # =================================================
+        # MESSAGE
+        # =================================================
+
+        edited_channel_post = data.get("edited_channel_post")
+        if isinstance(edited_channel_post, dict):
+            try:
+                from core.workspace_publisher import (
+                    sync_edited_channel_post_to_bale,
+                )
+                synced = sync_edited_channel_post_to_bale(edited_channel_post)
+                return {"ok": True, "edit_synced": bool(synced)}, 200
+            except Exception as e:
+                logger.exception(f"[{req_id}] ❌ Telegram/Bale edit sync failed | {e}")
+                return {"ok": True, "edit_synced": False}, 200
+
+        msg = data.get(
+            "message"
+        )
+
+        if not msg:
+
+            return {
+                "ok": True
+            }, 200
+
+        chat_id = (
+            msg.get(
+                "chat",
+                {}
+            )
+            .get(
+                "id"
+            )
+        )
+
+        if chat_id is None:
+
+            return {
+                "ok": True
+            }, 200
+
+        msg = data.get(
+            "message"
+        )
+
+        if not msg:
+
+            return {
+                "ok": True
+            }, 200
+
+        return process_incoming_message(
+            msg,
+            req_id,
+            update_id=data.get(
+                "update_id"
+            ),
+        )
 
     except Exception as e:
 

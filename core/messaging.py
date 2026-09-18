@@ -14,6 +14,8 @@ import threading
 
 import requests
 
+logger = logging.getLogger(__name__)
+
 # The Bale forwarder is used only for its API base constant. It is
 # imported defensively so this transport module stays importable in
 # test environments (and degraded runtimes) where core.database is

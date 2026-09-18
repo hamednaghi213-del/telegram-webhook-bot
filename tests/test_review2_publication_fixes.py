@@ -210,8 +210,11 @@ def test_username_deduplication_works_without_verification_chat_id():
 
 
 def test_workspace_context_database_failure_does_not_raise_name_error():
+    # The workspace-context block lives in the shared content
+    # pipeline (``process_incoming_message``) since the Bale parity
+    # final pass extracted it out of the Flask entry function.
     from core import webhook_handler
-    source = inspect.getsource(webhook_handler.handle_webhook)
+    source = inspect.getsource(webhook_handler.process_incoming_message)
     error_block = source[source.index("Active media context lookup failed"):]
     error_block = error_block[:error_block.index("# Workspace publication no longer happens here")]
     assert "metadata.get" not in error_block
@@ -219,8 +222,9 @@ def test_workspace_context_database_failure_does_not_raise_name_error():
 
 
 def test_workspace_context_database_failure_preserves_correct_media_group():
+    # Same extraction note as the sibling test above.
     from core import webhook_handler
-    source = inspect.getsource(webhook_handler.handle_webhook)
+    source = inspect.getsource(webhook_handler.process_incoming_message)
     error_block = source[source.index("Active media context lookup failed"):]
     error_block = error_block[:error_block.index("# Workspace publication no longer happens here")]
     assert "remove_pending_group" not in error_block

@@ -134,20 +134,40 @@ def _patch_db(monkeypatch, name, value):
 
 
 def _patch_ch(monkeypatch, name, value):
-    """Patch command_handler attributes on the real module and on
-    any live (possibly fake) sys.modules object."""
-    monkeypatch.setattr(
-        _COMMAND_HANDLER,
-        name,
-        value,
-        raising=False,
-    )
+    """Patch command_handler attributes on every live module
+    object: the captured one, whatever 'core.command_handler' is
+    in sys.modules, and the instance bound inside the live Bale
+    adapter (earlier-collected test files can leave a second
+    generation of the module bound in the adapter)."""
+    targets = [_COMMAND_HANDLER]
 
     live = sys.modules.get("core.command_handler")
 
-    if live is not None and live is not _COMMAND_HANDLER:
+    if live is not None:
+        targets.append(live)
+
+    adapter = sys.modules.get("core.bale_adapter")
+
+    bound = getattr(
+        adapter,
+        "command_handler",
+        None,
+    )
+
+    if bound is not None:
+        targets.append(bound)
+
+    seen = []
+
+    for target in targets:
+
+        if any(target is s for s in seen):
+            continue
+
+        seen.append(target)
+
         monkeypatch.setattr(
-            live,
+            target,
             name,
             value,
             raising=False,
@@ -820,7 +840,13 @@ def test_bale_stateful_input_enters_shared_path(
     )
 
     assert response["handled"] is True
-    assert response["reason"] == "stateful_input"
+
+    # The shared pipeline reports the stateful-input consumption with
+    # its historical marker.
+    assert (
+        response["reason"]
+        == "workspace_setup_input"
+    )
     assert calls["input"] == (
         "رسانه تازه من",
         555000,

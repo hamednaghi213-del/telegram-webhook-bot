@@ -165,6 +165,33 @@ def _handle_bale_callback(
 
             return {"ok": True, "handled": True}, 200
 
+        if callback_data.startswith("dup:"):
+            from core.webhook_handler import (
+                handle_duplicate_override_callback,
+            )
+
+            handle_duplicate_override_callback(
+                callback_query,
+                "bale-callback",
+            )
+
+            return {"ok": True, "handled": True}, 200
+
+        if callback_data.startswith("ed:"):
+            from core.webhook_handler import (
+                handle_editorial_callback,
+            )
+
+            handled = handle_editorial_callback(
+                callback_query,
+                "bale-callback",
+            )
+
+            return {
+                "ok": True,
+                "handled": bool(handled),
+            }, 200
+
         # Unknown payload families are acknowledged so the client
         # does not hang, but no shared logic is invoked.
         from core.messaging import current_context
@@ -273,7 +300,7 @@ def handle_bale_update(
     text = _extract_command_text(message)
 
     if not _is_bot_command(message, text):
-        return _handle_bale_stateful_input(
+        return _handle_bale_content(
             message,
             chat_id,
         )
@@ -311,29 +338,22 @@ def handle_bale_update(
         reset_default_context()
 
 
-def _handle_bale_stateful_input(
+def _handle_bale_content(
     message: Dict[str, Any],
     chat_id: Any,
 ) -> Tuple[Dict[str, Any], int]:
-    """Feed non-command Bale text into the SHARED stateful-input path.
+    """Feed non-command Bale content into the SHARED pipeline.
 
-    Pending workspace/setup actions (workspace name, destination
-    input, branding values, ...) are consumed by the same
-    ``handle_workspace_stateful_input`` the Telegram webhook uses;
-    state is keyed by the internal users.id, never by the Bale
-    numeric id.
+    Text, photos, videos, documents, voice/audio and captions all
+    enter ``process_incoming_message`` — the exact pipeline the
+    Telegram webhook uses — after normalizing the Bale update into
+    the Telegram-shaped message the pipeline already understands.
+    Media-group aggregation, Editorial detection, Pending Guard,
+    #یادداشت / #تحلیل, Smart Summary and publication all stay
+    single-sourced in the shared core.
     """
     from core.messaging import bind_context
     from core.messaging import reset_default_context
-
-    text = str(message.get("text") or "").strip()
-
-    if not text:
-        return {
-            "ok": True,
-            "handled": False,
-            "reason": "non_command",
-        }, 200
 
     previous_origin = command_handler.CURRENT_ORIGIN
 
@@ -342,25 +362,44 @@ def _handle_bale_stateful_input(
 
         bind_context(BaleMessagingContext())
 
-        consumed = (
-            command_handler.handle_workspace_stateful_input(
-                text,
-                int(chat_id),
+        from core.webhook_handler import (
+            process_incoming_message,
+        )
+
+        response, status = process_incoming_message(
+            message,
+            "bale-content",
+        )
+
+        handled = bool(
+            response.get(
+                "ok",
+                False,
             )
         )
 
+        reason = "content"
+
+        for marker in (
+            "editorial_review",
+            "admin_instruction",
+            "workspace_setup_input",
+            "media",
+            "translation_input",
+            "external_publishable",
+        ):
+            if response.get(marker):
+                reason = marker
+                break
+
         return {
             "ok": True,
-            "handled": bool(consumed),
-            "reason": (
-                "stateful_input"
-                if consumed
-                else "non_command"
-            ),
+            "handled": handled,
+            "reason": reason,
         }, 200
     except Exception as exc:
         logger.exception(
-            "❌ Bale stateful input failed | chat=%s | %s",
+            "❌ Bale content handling failed | chat=%s | %s",
             chat_id,
             exc,
         )

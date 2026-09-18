@@ -40,14 +40,29 @@ if _fake_supabase is None or not getattr(
 # Some suite files install fake "core.*" ModuleTypes at collection
 # time and never restore them. Purge every poisoned entry this file
 # (and its transitive imports) needs, then import the REAL modules.
-for _name in (
-    "core.database",
-    "core.command_handler",
-    "core.messaging",
-    "core.bale_adapter",
-    "core.bale_forwarder",
-    "core.branding_manager",
+#
+# Sentinel-based: an entry is only purged when it is a fake (missing
+# the sentinel attribute). Unconditionally popping would re-import a
+# second generation of an already-real module and split module-object
+# identity across earlier-collected test files (e.g. a Bale adapter
+# holding generation-1 command_handler while later tests patch
+# generation-2).
+for _name, _sentinel in (
+    ("core.database", "get_user_by_bale_id"),
+    ("core.command_handler", "get_or_create_identity_for_chat"),
+    ("core.messaging", "BaleMessagingContext"),
+    ("core.bale_adapter", "handle_bale_update"),
+    ("core.bale_forwarder", "BALE_API_BASE"),
+    ("core.branding_manager", "DEFAULT_HASHTAG"),
 ):
+    _existing = sys.modules.get(_name)
+
+    if _existing is not None and hasattr(
+        _existing,
+        _sentinel,
+    ):
+        continue
+
     sys.modules.pop(_name, None)
 
 import core.database  # noqa: E402
@@ -436,8 +451,15 @@ def test_bale_webhook_accepts_correct_secret():
 def test_bale_update_non_command_is_ignored(monkeypatch):
     _BALE_ADAPTER.initialize("secret")
 
-    # Slice 2: non-command text enters the shared stateful-input
-    # path; with no pending action it is not consumed.
+    # Slice 2: non-command text enters the shared content
+    # pipeline. Stub the tenant lookup the pipeline performs so
+    # the test runs without a real Supabase backend.
+    _patch_db_everywhere(
+        monkeypatch,
+        "get_tenant",
+        lambda chat_id: None,
+    )
+
     monkeypatch.setattr(
         _COMMAND_HANDLER,
         "handle_workspace_stateful_input",
@@ -456,11 +478,14 @@ def test_bale_update_non_command_is_ignored(monkeypatch):
         )
     )
 
+    # Final parity pass: non-command text is now PROCESSED by the
+    # shared content pipeline (reason "content" when no specific
+    # marker matched), not silently ignored.
     assert status == 200
-    assert response["handled"] is False
+    assert response["handled"] is True
     assert (
         response.get("reason")
-        == "non_command"
+        == "content"
     )
 
     # Origin restored after processing.
