@@ -613,15 +613,15 @@ def test_bale_photo_video_document_voice_normalize_pass_through(
     assert len(seen) == 4
     assert seen[0]["photo"][-1][
         "file_id"
-    ] == "ph-hi"
+    ] == "bale-file://ph-hi"
     assert seen[0]["caption"] == "کپشن تصویر"
-    assert seen[1]["video"]["file_id"] == "vid-1"
+    assert seen[1]["video"]["file_id"] == "bale-file://vid-1"
     assert (
         seen[2]["document"]["file_id"]
-        == "doc-1"
+        == "bale-file://doc-1"
     )
     assert (
-        seen[3]["voice"]["file_id"] == "voice-1"
+        seen[3]["voice"]["file_id"] == "bale-file://voice-1"
     )
 
 

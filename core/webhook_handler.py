@@ -781,6 +781,12 @@ def get_media_from_message(
         "caption": ""
     }
 
+    if "animation" in msg:
+        result["type"] = "animation"
+        result["file_id"] = (msg.get("animation") or {}).get("file_id")
+        result["caption"] = msg.get("caption", "") or ""
+        return result
+
     if "video" in msg:
 
         result[
@@ -6989,7 +6995,8 @@ def process_incoming_message(
             in (
                 "document",
                 "voice",
-                "audio"
+                "audio",
+                "animation"
             )
             and file_id
         ):

@@ -713,7 +713,17 @@ def _send_media_target(
             .lower()
         )
 
-        if normalized_presentation in (
+        from core.bale_media import is_bale_media_ref
+
+        # Telegram Rich Message accepts reusable Telegram file IDs here.
+        # Choose the normal media plan before attempting a Rich send when
+        # Bale files need multipart upload; this avoids a failed Rich send
+        # followed by an ambiguous retry that could duplicate delivery.
+        requires_bale_upload = any(
+            is_bale_media_ref(item.get("file_id")) for item in files
+        )
+
+        if not requires_bale_upload and normalized_presentation in (
             "slideshow",
             "collage",
         ):
@@ -819,6 +829,7 @@ def _send_media_target(
         send_media_group_to_bale,
         send_photo_to_bale,
         send_text_to_bale,
+        send_typed_media_to_bale,
         send_video_to_bale,
     )
 
@@ -860,16 +871,21 @@ def _send_media_target(
                 send_video_to_bale,
             "document":
                 send_document_to_bale,
-            "voice":
-                send_document_to_bale,
-            "audio":
-                send_document_to_bale,
         }.get(
             item.get("type")
         )
 
         ok = (
-            sender(
+            send_typed_media_to_bale(
+                target.external_id,
+                token,
+                caption,
+                item.get("file_id"),
+                item.get("type"),
+                return_result=True,
+            )
+            if item.get("type") in ("audio", "voice", "animation")
+            else sender(
                 target.external_id,
                 token,
                 caption,

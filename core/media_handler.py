@@ -1153,7 +1153,16 @@ def telegram_post(
     endpoint: str,
     payload: Dict[str, Any],
     api_url: Optional[str] = None,
+    upload_files: Optional[Dict[str, Any]] = None,
 ) -> Optional[requests.Response]:
+
+    # Final transport boundary: an unresolved Bale reference must never
+    # be submitted to any Telegram method, including Rich Message APIs.
+    from core.bale_media import BALE_MEDIA_PREFIX
+
+    if BALE_MEDIA_PREFIX in json.dumps(payload, ensure_ascii=False, default=str):
+        logger.error("Unresolved Bale media reference blocked at Telegram API boundary")
+        return None
 
     effective_api_url = (api_url or API_URL or "").rstrip("/")
 
@@ -1354,9 +1363,17 @@ def telegram_post(
             f"{TELEGRAM_READ_TIMEOUT}s"
         )
 
+        request_kwargs = (
+            {"data": {
+                key: json.dumps(value, ensure_ascii=False)
+                if isinstance(value, (dict, list)) else value
+                for key, value in payload.items()
+            }, "files": upload_files}
+            if upload_files else {"json": payload}
+        )
         response = requests.post(
             url,
-            json=payload,
+            **request_kwargs,
             timeout=(
                 TELEGRAM_CONNECT_TIMEOUT,
                 TELEGRAM_READ_TIMEOUT
@@ -1897,12 +1914,23 @@ def send_single_media_to_channel(
 
         return False
 
+    from core.bale_media import is_bale_media_ref, download_bale_media
+
+    upload_files = None
+    if is_bale_media_ref(file_id):
+        content, filename = download_bale_media(file_id)
+        if content is None:
+            logger.error("Bale media could not be resolved for Telegram upload")
+            return {"ok": False, "error": "Bale media resolution failed"} if return_result else False
+        upload_files = {media_type: (filename, content)}
+
     endpoint_map = {
         "photo": "sendPhoto",
         "video": "sendVideo",
         "document": "sendDocument",
         "voice": "sendVoice",
-        "audio": "sendAudio"
+        "audio": "sendAudio",
+        "animation": "sendAnimation",
     }
 
     endpoint = endpoint_map.get(
@@ -1920,7 +1948,7 @@ def send_single_media_to_channel(
 
     payload: Dict[str, Any] = {
         "chat_id": effective_channel_id,
-        media_type: file_id
+        media_type: f"attach://{media_type}" if upload_files else file_id
     }
 
     if caption:
@@ -1942,9 +1970,9 @@ def send_single_media_to_channel(
             ] = parse_mode
 
     response = (
-        telegram_post(endpoint, payload, api_url=effective_api_url)
+        telegram_post(endpoint, payload, api_url=effective_api_url, **({"upload_files": upload_files} if upload_files else {}))
         if api_url is not None
-        else telegram_post(endpoint, payload)
+        else telegram_post(endpoint, payload, **({"upload_files": upload_files} if upload_files else {}))
     )
 
     if telegram_response_ok(
@@ -2090,7 +2118,10 @@ def send_media_group_to_channel(
 
         return False
 
+    from core.bale_media import is_bale_media_ref, download_bale_media
+
     media_group = []
+    upload_files = {}
 
     for index, file in enumerate(
         files
@@ -2125,6 +2156,15 @@ def send_media_group_to_channel(
             )
 
             return False
+
+        if is_bale_media_ref(file_id):
+            content, filename = download_bale_media(file_id)
+            if content is None:
+                logger.error("Bale album member could not be resolved")
+                return False
+            attachment = f"media{index}"
+            upload_files[attachment] = (filename, content)
+            file_id = f"attach://{attachment}"
 
         media_item: Dict[str, Any] = {
             "type":
@@ -2168,9 +2208,9 @@ def send_media_group_to_channel(
     }
 
     response = (
-        telegram_post("sendMediaGroup", payload, api_url=effective_api_url)
+        telegram_post("sendMediaGroup", payload, api_url=effective_api_url, **({"upload_files": upload_files} if upload_files else {}))
         if api_url is not None
-        else telegram_post("sendMediaGroup", payload)
+        else telegram_post("sendMediaGroup", payload, **({"upload_files": upload_files} if upload_files else {}))
     )
 
     if telegram_response_ok(
@@ -2330,6 +2370,15 @@ def send_album_to_bale(
         )
 
         return False
+
+    if len(files) == 1:
+        from core.bale_forwarder import send_to_bale_for_user
+
+        item = files[0]
+        return send_to_bale_for_user(
+            user_id, caption, item.get("file_id"), item.get("type"),
+            return_result=return_result,
+        )
 
     try:
 

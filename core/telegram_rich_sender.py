@@ -156,6 +156,12 @@ def build_input_media(
         .lower()
     )
 
+    from core.bale_media import is_bale_media_ref
+
+    if is_bale_media_ref(file_id):
+        logger.error("Bale media cannot be sent as a Telegram Rich file ID")
+        return None
+
     normalized_file_id = (
         str(
             file_id

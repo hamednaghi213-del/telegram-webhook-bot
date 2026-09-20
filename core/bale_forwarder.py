@@ -16,6 +16,66 @@ logger = logging.getLogger(__name__)
 BALE_API_BASE = "https://tapi.bale.ai/bot"
 
 
+def _native_bale_file_id(file_id, token):
+    """Only the receiving Bale bot may reuse its own inbound file ID."""
+    from core.bale_media import bale_file_id
+
+    inbound_token = os.getenv("BALE_BOT_TOKEN")
+    return bale_file_id(file_id) if inbound_token and token == inbound_token else None
+
+
+def _download_media_for_bale(file_id):
+    from core.bale_media import is_bale_media_ref, download_bale_media
+
+    return (
+        download_bale_media(file_id)
+        if is_bale_media_ref(file_id)
+        else download_file_from_telegram(file_id)
+    )
+
+
+def _send_native_bale_media(channel, token, caption, file_id, method, field, return_result):
+    try:
+        response = requests.post(
+            f"{BALE_API_BASE}{token}/{method}",
+            data={"chat_id": channel, field: file_id, "caption": caption or ""},
+            timeout=120,
+        )
+        return _send_result(response, return_result)
+    except requests.RequestException:
+        return _failed_result(return_result)
+
+
+def send_typed_media_to_bale(channel, token, caption, file_id, media_type, return_result=False):
+    """Deliver audio, voice or animation without changing its media kind."""
+    methods = {
+        "audio": "sendAudio",
+        "voice": "sendVoice",
+        "animation": "sendAnimation",
+    }
+    method = methods.get(media_type)
+    if not method:
+        return _failed_result(return_result)
+    native_id = _native_bale_file_id(file_id, token)
+    if native_id:
+        return _send_native_bale_media(
+            channel, token, caption, native_id, method, media_type, return_result,
+        )
+    content, filename = _download_media_for_bale(file_id)
+    if content is None:
+        return _failed_result(return_result)
+    try:
+        response = requests.post(
+            f"{BALE_API_BASE}{token}/{method}",
+            data={"chat_id": channel, "caption": caption or ""},
+            files={media_type: (filename, content)},
+            timeout=300,
+        )
+        return _send_result(response, return_result)
+    except requests.RequestException:
+        return _failed_result(return_result)
+
+
 def _send_result(response, return_result=False):
     try:
         data = response.json() or {}
@@ -203,6 +263,12 @@ def send_to_bale_for_user(
             return_result=return_result,
         )
 
+    if media_type in ("audio", "voice", "animation"):
+        return send_typed_media_to_bale(
+            bale_channel, bale_token, text or "", file_id,
+            media_type, return_result=return_result,
+        )
+
     # -----------------------------------------------------
     # فایل
     # -----------------------------------------------------
@@ -290,6 +356,12 @@ def download_file_from_telegram(
     دریافت file_path از Telegram
     و سپس دانلود فایل
     """
+
+    from core.bale_media import is_bale_media_ref
+
+    if is_bale_media_ref(file_id):
+        logger.error("Bale media reference rejected by Telegram getFile resolver")
+        return None, None
 
     bot_token = os.getenv(
         "TELEGRAM_BOT_TOKEN"
@@ -458,8 +530,12 @@ def send_photo_to_bale(
     و آپلود آن به بله
     """
 
+    native_id = _native_bale_file_id(file_id, token)
+    if native_id:
+        return _send_native_bale_media(channel, token, caption, native_id, "sendPhoto", "photo", return_result)
+
     file_content, filename = (
-        download_file_from_telegram(
+        _download_media_for_bale(
             file_id
         )
     )
@@ -545,8 +621,12 @@ def send_video_to_bale(
     و آپلود آن به بله
     """
 
+    native_id = _native_bale_file_id(file_id, token)
+    if native_id:
+        return _send_native_bale_media(channel, token, caption, native_id, "sendVideo", "video", return_result)
+
     file_content, filename = (
-        download_file_from_telegram(
+        _download_media_for_bale(
             file_id
         )
     )
@@ -631,8 +711,12 @@ def send_document_to_bale(
     ارسال فایل به بله
     """
 
+    native_id = _native_bale_file_id(file_id, token)
+    if native_id:
+        return _send_native_bale_media(channel, token, caption, native_id, "sendDocument", "document", return_result)
+
     file_content, filename = (
-        download_file_from_telegram(
+        _download_media_for_bale(
             file_id
         )
     )
@@ -834,11 +918,15 @@ def send_media_group_to_bale(
         # دانلود از تلگرام
         # ---------------------------------------------
 
-        file_content, filename = (
-            download_file_from_telegram(
-                file_id
-            )
-        )
+        native_id = _native_bale_file_id(file_id, bale_token)
+        if native_id:
+            media_object = {"type": media_type, "media": native_id}
+            if not media_items and caption:
+                media_object["caption"] = caption
+            media_items.append(media_object)
+            continue
+
+        file_content, filename = _download_media_for_bale(file_id)
 
         if file_content is None:
 
@@ -917,7 +1005,15 @@ def send_media_group_to_bale(
     # اگر فقط یک رسانه است
     # -----------------------------------------------------
 
-    if len(media_items) == 1:
+    if len(media_items) == 1 and not media_items[0]["media"].startswith("attach://"):
+        item = media_items[0]
+        return _send_native_bale_media(
+            bale_channel, bale_token, caption,
+            item["media"], "sendPhoto" if item["type"] == "photo" else "sendVideo",
+            item["type"], return_result,
+        )
+
+    if len(media_items) == 1 and media_items[0]["media"].startswith("attach://"):
 
         media = media_items[0]
 
@@ -990,7 +1086,7 @@ def send_media_group_to_bale(
         response = requests.post(
             url,
             data=data,
-            files=upload_files,
+            files=upload_files or None,
             timeout=300
         )
 

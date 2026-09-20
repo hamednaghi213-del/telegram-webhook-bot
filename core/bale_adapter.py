@@ -792,9 +792,27 @@ def _handle_bale_content(
 
 
 
+        from core.bale_media import bale_media_ref
+
+        normalized_message = dict(message)
+        for media_type in ("video", "document", "audio", "voice", "animation"):
+            media = normalized_message.get(media_type)
+            if isinstance(media, dict) and media.get("file_id"):
+                normalized_message[media_type] = {
+                    **media,
+                    "file_id": bale_media_ref(media["file_id"]),
+                }
+        photos = normalized_message.get("photo")
+        if isinstance(photos, list):
+            normalized_message["photo"] = [
+                {**photo, "file_id": bale_media_ref(photo["file_id"])}
+                if isinstance(photo, dict) and photo.get("file_id") else photo
+                for photo in photos
+            ]
+
         response, status = process_incoming_message(
 
-            message,
+            normalized_message,
 
             "bale-content",
 
