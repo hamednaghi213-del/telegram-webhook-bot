@@ -35,6 +35,7 @@ class InMemoryDb4A:
         self.workspace_setup_states: Dict[int, Dict] = {}
         self.workspace_brandings: Dict[int, Dict] = {}
         self.publication_destinations: List[Dict] = []
+        self.workspace_destinations: List[Dict] = []
         self.destination_verifications: Dict[int, Dict] = {}
         self.destination_brandings: Dict[int, Dict] = {}
         self.user_workspace_preferences: Dict[int, Dict] = {}
@@ -305,6 +306,35 @@ class InMemoryDb4A:
         self.publication_destinations.append(dest)
         return deepcopy(dest)
 
+    def register_setup_destination_canonical(self, workspace_id, platform, external_id, name):
+        normalized = str(external_id).strip().lstrip("@").lower()
+        destination = next((row for row in self.publication_destinations
+                            if row["platform"] == platform
+                            and row.get("normalized_external_id") == normalized
+                            and row.get("status") != "removed"), None)
+        if destination is None:
+            destination = self.create_publication_destination(
+                workspace_id, platform, "channel", name, external_id,
+                status="inactive", is_default=False,
+            )
+            stored = next(row for row in self.publication_destinations
+                          if row["id"] == destination["id"])
+            stored["normalized_external_id"] = normalized
+            destination = deepcopy(stored)
+        associations = [row for row in self.workspace_destinations
+                        if row["destination_id"] == destination["id"]
+                        and row["status"] == "active"]
+        if any(row["workspace_id"] != workspace_id for row in associations):
+            return destination, "owned_elsewhere"
+        if associations:
+            return destination, "same_workspace"
+        self.workspace_destinations.append({
+            "workspace_id": workspace_id,
+            "destination_id": destination["id"],
+            "status": "active",
+        })
+        return destination, "associated"
+
     def associate_publication_destination_canonical(self, workspace_id, destination_id):
         """Test stub for the canonical workspace-destination association."""
         if not self.get_workspace(workspace_id):
@@ -393,6 +423,7 @@ def _make_fake_db_module(db: InMemoryDb4A) -> types.ModuleType:
     mod.update_workspace_branding_profile = db.update_workspace_branding_profile
     mod.list_workspace_destinations = db.list_workspace_destinations
     mod.create_publication_destination = db.create_publication_destination
+    mod.register_setup_destination_canonical = db.register_setup_destination_canonical
     mod.associate_publication_destination_canonical = db.associate_publication_destination_canonical
     mod.get_destination_verification = db.get_destination_verification
     mod.upsert_destination_verification = db.upsert_destination_verification
@@ -1746,4 +1777,113 @@ def test_setup_prompts_use_generic_examples(monkeypatch):
     assert "دنیا" not in prompts
     assert "فردای" not in prompts
     assert "بی‌نشانه" not in prompts
+
+
+def test_add_channel_uses_one_canonical_identity_per_platform(monkeypatch):
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(9401)
+    workspace = db.create_workspace("رسانه", user["id"])
+
+    telegram, duplicate = ws_mod.register_channel_destination(
+        workspace["id"], "@MyChannel", "Telegram channel"
+    )
+    bale, bale_duplicate = ws_mod.register_bale_destination(
+        workspace["id"], "@MyChannel", "Bale channel"
+    )
+    repeated, repeated_duplicate = ws_mod.register_channel_destination(
+        workspace["id"], "@mychannel", "Same channel"
+    )
+
+    assert not duplicate and not bale_duplicate
+    assert telegram["normalized_external_id"] == "mychannel"
+    assert bale["normalized_external_id"] == "mychannel"
+    assert telegram["id"] != bale["id"]
+    assert repeated_duplicate and repeated["id"] == telegram["id"]
+    assert len(db.publication_destinations) == 2
+    assert len(db.workspace_destinations) == 2
+
+
+def test_add_channel_associates_unowned_canonical_without_changing_media(monkeypatch):
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(9402)
+    workspace = db.create_workspace("رسانه", user["id"])
+    existing = db.create_publication_destination(
+        workspace["id"], "telegram", "channel", "Existing", "@Existing",
+        status="inactive",
+    )
+    stored = db.publication_destinations[-1]
+    stored["normalized_external_id"] = "existing"
+    stored["media_identity_id"] = 75
+    db.upsert_destination_verification(existing["id"], True, "previously verified")
+
+    destination, duplicate = ws_mod.register_channel_destination(
+        workspace["id"], "@EXISTING", "Different label"
+    )
+    assert not duplicate
+    assert destination["id"] == existing["id"]
+    assert stored["media_identity_id"] == 75
+    assert db.destination_verifications[existing["id"]]["verified"] is True
+    assert db.workspace_destinations == [{
+        "workspace_id": workspace["id"],
+        "destination_id": existing["id"],
+        "status": "active",
+    }]
+    assert len(db.publication_destinations) == 1
+
+
+def test_add_channel_rejects_other_workspace_without_reassignment(monkeypatch):
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    user = db.get_or_create_user_by_telegram_id(9403)
+    first = db.create_workspace("اول", user["id"])
+    second = db.create_workspace("دوم", user["id"])
+    original, _ = ws_mod.register_channel_destination(first["id"], "@Taken", "Taken")
+
+    try:
+        ws_mod.register_channel_destination(second["id"], "@taken", "Taken")
+    except ws_mod.DestinationOwnedElsewhereError as exc:
+        assert "دیگری" in str(exc)
+    else:
+        assert False, "cross-workspace claim must be rejected"
+    assert len(db.publication_destinations) == 1
+    assert db.workspace_destinations[0]["workspace_id"] == first["id"]
+    assert db.workspace_destinations[0]["destination_id"] == original["id"]
+
+
+def test_failed_setup_channel_inputs_are_consumed(monkeypatch):
+    ws_mod, ch_mod, db, sent = _load_modules(monkeypatch)
+    workspace = _start_with_workspace(ch_mod, db, 9404, "رسانه")
+    db.upsert_workspace_setup_state(workspace["id"], "in_progress", "setup_channel")
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("unique constraint")
+
+    monkeypatch.setattr(ws_mod, "register_setup_destination_canonical", fail)
+    assert ch_mod.handle_workspace_stateful_input("@broken", 9404) is True
+    assert any("خطا در افزودن کانال" in text for _, text in sent)
+    assert db.publication_destinations == []
+
+    db.upsert_workspace_setup_state(workspace["id"], "in_progress", "setup_bale_channel")
+    assert ch_mod.handle_workspace_stateful_input("@broken_bale", 9404) is True
+    assert any("خطا در افزودن بله" in text for _, text in sent)
+
+
+def test_owned_destination_failure_is_clear_and_consumed(monkeypatch):
+    ws_mod, ch_mod, db, sent = _load_modules(monkeypatch)
+    first_user = db.get_or_create_user_by_telegram_id(9405)
+    second_user = db.get_or_create_user_by_telegram_id(9406)
+    first = db.create_workspace("اول", first_user["id"])
+    second = db.create_workspace("دوم", second_user["id"])
+    ws_mod.register_channel_destination(first["id"], "@taken", "Taken")
+    ws_mod.register_bale_destination(first["id"], "@taken_bale", "Taken Bale")
+    db.upsert_workspace_setup_state(second["id"], "in_progress", "setup_channel")
+
+    assert ch_mod.handle_workspace_stateful_input("@TAKEN", 9406) is True
+    assert "دیگری" in sent[-1][1]
+    assert "خطا در افزودن کانال" not in sent[-1][1]
+
+    db.upsert_workspace_setup_state(second["id"], "in_progress", "setup_bale_channel")
+    assert ch_mod.handle_workspace_stateful_input("@TAKEN_BALE", 9406) is True
+    assert "دیگری" in sent[-1][1]
+    assert "خطا در افزودن بله" not in sent[-1][1]
+    assert len(db.workspace_destinations) == 2
 

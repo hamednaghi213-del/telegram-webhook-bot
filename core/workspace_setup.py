@@ -36,8 +36,7 @@ from core.workspace_pairing import has_required_telegram_destination
 
 from core.database import (
     add_workspace_member,
-    associate_publication_destination_canonical,
-    create_publication_destination,
+    register_setup_destination_canonical,
     get_destination_branding,
     get_destination_verification,
     get_or_create_user_by_telegram_id,
@@ -53,6 +52,10 @@ from core.database import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class DestinationOwnedElsewhereError(ValueError):
+    """A canonical destination already belongs to another workspace."""
 
 # Ordered setup steps; Bale and member steps are optional.
 SETUP_STEPS: List[str] = [
@@ -121,48 +124,29 @@ def register_channel_destination(
 
     Returns (destination_row, is_duplicate).
 
-    Safety:
-    - Duplicate external_id is detected and rejected.
-    - Destination stored with status='inactive' (NOT ready for publication).
-    - Canonical workspace association is created without activating or verifying it.
-    - A destination_verification record is created with verified=False.
-    - Phase 4B will handle actual Telegram admin verification via the API.
+    A physical channel is identified globally by platform and normalized ID.
+    It is never moved away from another active workspace by this flow.
     """
-    existing = list_workspace_destinations(workspace_id, include_removed=False)
-    for dest in existing:
-        if (
-            dest.get("platform") == "telegram"
-            and dest.get("external_id") == str(external_id).strip()
-        ):
-            logger.info(
-                "Duplicate channel registration blocked | "
-                f"workspace={workspace_id} external_id={external_id}"
-            )
-            return dest, True
-
-    dest = create_publication_destination(
+    dest, outcome = register_setup_destination_canonical(
         workspace_id=workspace_id,
         platform="telegram",
-        destination_type="channel",
-        name=(name or external_id).strip(),
         external_id=str(external_id).strip(),
-        status="inactive",   # NOT active until verified (Phase 4B)
-        is_default=False,
+        name=(name or external_id).strip(),
     )
-    if dest:
-        associate_publication_destination_canonical(
-            workspace_id=workspace_id,
-            destination_id=dest["id"],
+    if outcome == "owned_elsewhere":
+        raise DestinationOwnedElsewhereError(
+            "این کانال قبلاً به گروه رسانه‌ای دیگری متصل شده است."
         )
+    if outcome == "identity_conflict":
+        raise DestinationOwnedElsewhereError(
+            "چند کانال قدیمی با این شناسه وجود دارد؛ اتصال نیاز به بررسی دارد."
+        )
+    if outcome == "same_workspace":
+        return dest, True
+    if dest and not get_destination_verification(dest["id"]):
         upsert_destination_verification(
-            dest["id"],
-            verified=False,
+            dest["id"], verified=False,
             verification_note="pending_admin_verification",
-        )
-        logger.info(
-            "Channel registered (unverified, canonical association active) | "
-            f"workspace={workspace_id} dest_id={dest['id']} "
-            f"external_id={external_id}"
         )
     return dest, False
 
@@ -174,30 +158,25 @@ def register_bale_destination(
 ) -> Tuple[Optional[Dict[str, Any]], bool]:
     """Register an optional Bale destination using the central Bale bot."""
     external_id = str(external_id).strip()
-    existing = list_workspace_destinations(workspace_id, include_removed=False)
-    for destination in existing:
-        if (
-            destination.get("platform") == "bale"
-            and destination.get("external_id") == external_id
-        ):
-            return destination, True
-    destination = create_publication_destination(
+    destination, outcome = register_setup_destination_canonical(
         workspace_id=workspace_id,
         platform="bale",
-        destination_type="channel",
-        name=(name or external_id).strip(),
         external_id=external_id,
-        status="inactive",
-        is_default=False,
+        name=(name or external_id).strip(),
     )
-    if destination:
-        associate_publication_destination_canonical(
-            workspace_id=workspace_id,
-            destination_id=destination["id"],
+    if outcome == "owned_elsewhere":
+        raise DestinationOwnedElsewhereError(
+            "این کانال بله قبلاً به گروه رسانه‌ای دیگری متصل شده است."
         )
+    if outcome == "identity_conflict":
+        raise DestinationOwnedElsewhereError(
+            "چند کانال بله قدیمی با این شناسه وجود دارد؛ اتصال نیاز به بررسی دارد."
+        )
+    if outcome == "same_workspace":
+        return destination, True
+    if destination and not get_destination_verification(destination["id"]):
         upsert_destination_verification(
-            destination["id"],
-            verified=False,
+            destination["id"], verified=False,
             verification_note="pending_bale_admin_verification",
         )
     return destination, False

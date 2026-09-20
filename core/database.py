@@ -1539,6 +1539,126 @@ def _validate_external_id(external_id: str) -> str:
     return normalized_external_id
 
 
+def register_setup_destination_canonical(
+    workspace_id: int,
+    platform: str,
+    external_id: str,
+    name: str,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Register or associate a setup channel by its global identity.
+
+    The active-association unique index prevents concurrent claims from
+    assigning one physical destination to two workspaces. This path never
+    calls the move RPC, which would remove another workspace's association.
+    """
+    workspace_id = int(workspace_id)
+    if not get_workspace(workspace_id):
+        raise ValueError(f"Workspace not found: {workspace_id}")
+    platform = _validate_enum(
+        platform, PUBLICATION_DESTINATION_PLATFORMS,
+        "publication destination platform",
+    )
+    external_id = _validate_external_id(external_id)
+    normalized = external_id.lstrip("@").lower()
+    if not normalized:
+        raise ValueError("Publication destination external_id is required")
+    name = _validate_destination_name(name)
+
+    def find_canonical():
+        result = (
+            supabase.table("publication_destinations").select("*")
+            .eq("platform", platform)
+            .eq("normalized_external_id", normalized)
+            .neq("status", "removed").limit(1).execute()
+        )
+        return _first_row(result)
+
+    destination = find_canonical()
+    if destination is None:
+        # Migration 016 left older rows' normalized IDs nullable. Reuse a
+        # unique legacy row instead of making a second physical destination.
+        legacy_rows = (
+            supabase.table("publication_destinations").select("*")
+            .eq("platform", platform)
+            .is_("normalized_external_id", "null")
+            .neq("status", "removed").execute().data or []
+        )
+        matches = [
+            row for row in legacy_rows
+            if str(row.get("external_id") or "").strip().lstrip("@").lower()
+            == normalized
+        ]
+        if len(matches) > 1:
+            return None, "identity_conflict"
+        if matches:
+            destination = matches[0]
+            try:
+                result = (
+                    supabase.table("publication_destinations")
+                    .update({"normalized_external_id": normalized})
+                    .eq("id", int(destination["id"])).execute()
+                )
+                destination = _first_row(result) or destination
+            except Exception:
+                destination = find_canonical()
+                if destination is None:
+                    raise
+    if destination is None:
+        now = time.time()
+        try:
+            result = supabase.table("publication_destinations").insert({
+                "workspace_id": workspace_id,
+                "platform": platform,
+                "destination_type": "channel",
+                "name": name,
+                "external_id": external_id,
+                "normalized_external_id": normalized,
+                "status": "inactive",
+                "is_default": False,
+                "created_at": now,
+                "updated_at": now,
+            }).execute()
+            destination = _first_row(result)
+        except Exception:
+            # A concurrent insert may have won the canonical unique index.
+            destination = find_canonical()
+            if destination is None:
+                raise
+        if destination is None:
+            raise RuntimeError("Canonical destination insert returned no row")
+
+    def active_associations():
+        return (
+            supabase.table("workspace_destinations")
+            .select("workspace_id,destination_id,status")
+            .eq("destination_id", int(destination["id"]))
+            .eq("status", "active").execute().data or []
+        )
+
+    associations = active_associations()
+    if associations:
+        if any(int(row["workspace_id"]) != workspace_id for row in associations):
+            return destination, "owned_elsewhere"
+        return destination, "same_workspace"
+
+    now = time.time()
+    try:
+        supabase.table("workspace_destinations").upsert({
+            "workspace_id": workspace_id,
+            "destination_id": int(destination["id"]),
+            "status": "active",
+            "updated_at": now,
+        }, on_conflict="workspace_id,destination_id").execute()
+    except Exception:
+        associations = active_associations()
+        if any(int(row["workspace_id"]) != workspace_id for row in associations):
+            return destination, "owned_elsewhere"
+        if any(int(row["workspace_id"]) == workspace_id for row in associations):
+            return destination, "same_workspace"
+        raise
+    return destination, "associated"
+
+
 @with_retry
 def create_publication_destination(
     workspace_id: int,

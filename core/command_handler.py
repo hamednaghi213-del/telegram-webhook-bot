@@ -31,6 +31,7 @@ from core.database import (
 try:
     from core.database import get_workspace_setup_state
     from core.workspace_setup import (
+        DestinationOwnedElsewhereError,
         get_or_init_setup_state,
         start_setup,
         advance_to_step,
@@ -84,7 +85,10 @@ except (ImportError, AttributeError):
 
 # Phase 9 optional Bale destination using the platform-owned bot token.
 try:
-    from core.workspace_setup import register_bale_destination
+    from core.workspace_setup import (
+        DestinationOwnedElsewhereError,
+        register_bale_destination,
+    )
     from core.bale_verifier import verify_bale_channel_admin
     from core.database import upsert_destination_verification
     _BALE_WORKSPACE_ENABLED: bool = True
@@ -1266,10 +1270,13 @@ def handle_addchannel(args: str, chat_id: int) -> bool:
             send_message(chat_id, "❌ خطا در ثبت کانال. دوباره تلاش کنید.")
 
         return True
+    except DestinationOwnedElsewhereError as exc:
+        send_message(chat_id, f"❌ {exc}")
+        return True
     except Exception:
         logger.exception("❌ Error in handle_addchannel")
         send_message(chat_id, "❌ خطا در افزودن کانال")
-        return False
+        return True
 
 
 # =========================================================
@@ -1590,10 +1597,13 @@ def handle_addbale(args: str, chat_id: int) -> bool:
             _setup_destination_actions_keyboard(workspace["id"]),
         )
         return True
+    except DestinationOwnedElsewhereError as exc:
+        send_message(chat_id, f"❌ {exc}")
+        return True
     except Exception:
         logger.exception("Error adding Bale destination")
         send_message(chat_id, "❌ خطا در افزودن بله؛ تلگرام فعال باقی می‌ماند.")
-        return False
+        return True
 
 
 def handle_verifybale(args: str, chat_id: int) -> bool:
