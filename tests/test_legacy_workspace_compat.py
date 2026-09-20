@@ -80,6 +80,19 @@ def test_legacy_telegram_and_bale_are_independent_move_candidates():
     assert [(row["platform"], row["move_key"]) for row in rows] == [("telegram", "l1t"), ("bale", "l1b")]
 
 
+def test_bale_only_user_skips_telegram_legacy_tenant_lookup():
+    db = LegacyDb()
+    db.user["telegram_user_id"] = None
+    db.user["bale_user_id"] = 555000
+    db.get_tenant = lambda _id: pytest.fail(
+        "Bale-only user must not query a Telegram legacy tenant"
+    )
+
+    assert list_legacy_move_candidates(db, 3, 6) == []
+    with pytest.raises(ValueError, match="رسانه قابل انتقالی یافت نشد"):
+        claim_legacy_destinations(db, 3, 6, ["l1t"])
+
+
 def test_placeholder_legacy_channel_is_not_a_destination():
     tenant = {"id": 2, "telegram_channel": "@channel", "bale_channel": ""}
     assert legacy_destination_specs(tenant) == []

@@ -150,9 +150,13 @@ class FakeSupabaseClient:
         row = deepcopy(payload)
 
         if table_name == "users":
+            telegram_id = row.get("telegram_user_id")
+            bale_id = row.get("bale_user_id")
             for existing in self.tables[table_name]:
-                if existing["telegram_user_id"] == row["telegram_user_id"]:
+                if telegram_id is not None and existing.get("telegram_user_id") == telegram_id:
                     raise ValueError("duplicate telegram user")
+                if bale_id is not None and existing.get("bale_user_id") == bale_id:
+                    raise ValueError("duplicate Bale user")
 
         if table_name == "workspaces":
             owner_user_id = row.get("owner_user_id")
@@ -259,6 +263,31 @@ def test_get_or_create_user_by_telegram_id_is_idempotent(database_module):
     assert created_user["status"] == "active"
     assert fetched_user == created_user
     assert len(fake_client.tables["users"]) == 1
+
+
+def test_telegram_and_bale_identities_share_users_without_collision(database_module):
+    database, fake_client = database_module
+
+    telegram = database.get_or_create_user_by_telegram_id(1001)
+    bale = database.get_or_create_user_by_bale_id(1001)
+
+    assert telegram["id"] != bale["id"]
+    assert telegram["telegram_user_id"] == 1001
+    assert telegram.get("bale_user_id") is None
+    assert bale["bale_user_id"] == 1001
+    assert bale["telegram_user_id"] is None
+    assert database.get_user_by_telegram_id(1001)["id"] == telegram["id"]
+    assert database.get_user_by_bale_id(1001)["id"] == bale["id"]
+    assert database.get_or_create_user_by_telegram_id(1001)["id"] == telegram["id"]
+    assert database.get_or_create_user_by_bale_id(1001)["id"] == bale["id"]
+    assert len(fake_client.tables["users"]) == 2
+
+    linked = database.get_or_create_user_by_bale_id(
+        2002, telegram_user_id=1001
+    )
+    assert linked["id"] == telegram["id"]
+    assert database.get_user_by_bale_id(2002)["id"] == telegram["id"]
+    assert len(fake_client.tables["users"]) == 2
 
 
 def test_create_workspace_owner_and_memberships(database_module):

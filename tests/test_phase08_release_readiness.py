@@ -33,8 +33,26 @@ def test_repository_migrations_are_contiguous():
     assert [item.name[:3] for item in migrations] == [
         "001", "002", "003", "004", "005", "006", "007", "008", "009",
         "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021", "022", "023", "024", "025",
-        "026", "027", "028", "029",
+        "026", "027", "028", "029", "030",
     ]
+
+
+def test_bale_only_identity_migration_preserves_telegram_uniqueness():
+    schema = Path(__file__).resolve().parents[1] / "schema"
+    foundation = (schema / "001_phase1_workspace_foundation.sql").read_text(
+        encoding="utf-8"
+    ).lower()
+    migration = (schema / "030_nullable_telegram_user_identity.sql").read_text(
+        encoding="utf-8"
+    ).lower()
+
+    assert "telegram_user_id bigint not null unique" in foundation
+    assert "alter table public.users" in migration
+    assert "alter column telegram_user_id drop not null" in migration
+    assert "drop constraint" not in migration
+    assert "drop index" not in migration
+    assert "update public.users" not in migration
+    assert "delete from" not in migration
 
 
 def test_workspace_pending_action_migration_is_additive_and_constrained():

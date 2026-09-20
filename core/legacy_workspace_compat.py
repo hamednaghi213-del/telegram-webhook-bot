@@ -51,7 +51,8 @@ def list_legacy_move_candidates(database, user_id: int, target_workspace_id: int
     if not get_user or not get_tenant:
         return []
     user = get_user(user_id)
-    tenant = get_tenant(user["telegram_user_id"]) if user else None
+    telegram_id = user.get("telegram_user_id") if user else None
+    tenant = get_tenant(telegram_id) if telegram_id is not None else None
     if not tenant:
         return []
     manageable = {
@@ -84,7 +85,8 @@ def claim_legacy_destinations(
 ) -> List[Dict]:
     """Fail-safe claim: canonical first, Legacy suppression last."""
     user = database.get_user_by_id(user_id)
-    tenant = database.get_tenant(user["telegram_user_id"]) if user else None
+    telegram_id = user.get("telegram_user_id") if user else None
+    tenant = database.get_tenant(telegram_id) if telegram_id is not None else None
     if not tenant:
         raise ValueError("رسانه قابل انتقالی یافت نشد.")
     manageable = {
