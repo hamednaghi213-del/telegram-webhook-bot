@@ -3,6 +3,9 @@ import importlib
 import os
 import requests
 import re
+import hashlib
+import secrets
+from contextvars import ContextVar
 from typing import Optional, Dict, Any, Tuple
 
 from core.workspace_destinations import can_manage_destinations
@@ -115,6 +118,50 @@ logger = logging.getLogger(__name__)
 # is the default and preserves every historical code path; the
 # Bale adapter binds "bale" for the duration of its request.
 CURRENT_ORIGIN: str = "telegram"
+CURRENT_BALE_PRIVATE_USER_ID: ContextVar[Optional[int]] = ContextVar(
+    "bale_private_user_id", default=None
+)
+
+
+def handle_linkbale(args: str, chat_id: int) -> bool:
+    """Link two authenticated private chats with a one-time code."""
+    from core import database as identity_database
+
+    if CURRENT_ORIGIN == "telegram":
+        if chat_id <= 0 or args.strip():
+            send_message(chat_id, "Use /linkbale in your private Telegram chat.")
+            return True
+        user = get_user_by_telegram_id(chat_id)
+        if user is None:
+            send_message(chat_id, "Please use /start in Telegram first.")
+            return True
+        if user.get("bale_user_id") is not None:
+            send_message(chat_id, "This account is already linked to Bale.")
+            return True
+        code = secrets.token_urlsafe(18)
+        identity_database.create_bale_identity_link_code(
+            int(user["id"]), hashlib.sha256(code.encode()).hexdigest()
+        )
+        send_message(chat_id, f"Send /linkbale {code} in your private Bale chat within 10 minutes. Do not share this code.")
+        return True
+
+    if CURRENT_BALE_PRIVATE_USER_ID.get() != chat_id:
+        send_message(chat_id, "Use /linkbale CODE in your private Bale chat.")
+        return True
+    code = args.strip()
+    if not code or len(code) > 128:
+        send_message(chat_id, "Send /linkbale CODE from your Telegram chat.")
+        return True
+    outcome = identity_database.consume_bale_identity_link_code(
+        hashlib.sha256(code.encode()).hexdigest(), chat_id
+    )
+    if outcome == "linked":
+        send_message(chat_id, "Accounts linked. Your Telegram workspaces are now available here. Use /status.")
+    elif outcome == "conflict":
+        send_message(chat_id, "This Bale account is already linked to another user, or has its own data. Contact support.")
+    else:
+        send_message(chat_id, "Invalid or expired link code. Request a new code in Telegram.")
+    return True
 
 
 def _identity_for_chat(chat_id: int) -> Optional[Dict[str, Any]]:
@@ -571,6 +618,9 @@ def handle_start(chat_id: int) -> bool:
             return True
 
         user = get_or_create_identity_for_chat(chat_id)
+        if CURRENT_ORIGIN == "bale" and user.get("telegram_user_id") is None and not list_owned_workspaces(user["id"], include_inactive=True):
+            send_message(chat_id, "If you already use the Telegram bot, send /linkbale there, then enter /linkbale CODE here. For a new account, use /register.")
+            return True
         if not list_owned_workspaces(user["id"], include_inactive=True):
             _begin_workspace_name_input(chat_id, user, "create_workspace_name")
             return True
@@ -3048,6 +3098,9 @@ def handle_status(chat_id: int) -> bool:
             return True
 
         if not tenant:
+            if CURRENT_ORIGIN == "bale":
+                send_message(chat_id, "No workspace is linked yet. If you use the Telegram bot, send /linkbale there and enter /linkbale CODE here. For a new account, use /register.")
+                return True
             send_message(
                 chat_id,
                 "❌ شما هنوز ثبت‌نام نکرده‌اید.\n\n"
@@ -3125,6 +3178,7 @@ def handle_command(text: str, chat_id: int) -> bool:
             "start": lambda: handle_start(chat_id),
             "help": lambda: handle_help(chat_id),
             "register": lambda: handle_register(chat_id),
+            "linkbale": lambda: handle_linkbale(args, chat_id),
             "settelegram": lambda: handle_settelegram(args, chat_id),
             "setbale": lambda: handle_setbale(args, chat_id),
             "setbaletoken": lambda: handle_setbaletoken(args, chat_id),

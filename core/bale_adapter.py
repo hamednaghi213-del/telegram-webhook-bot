@@ -565,12 +565,20 @@ def handle_bale_update(
 
 
     previous_origin = command_handler.CURRENT_ORIGIN
+    private_user_context = None
 
 
 
     try:
 
         command_handler.CURRENT_ORIGIN = "bale"
+        sender = message.get("from") or {}
+        private_user_context = command_handler.CURRENT_BALE_PRIVATE_USER_ID.set(
+            int(chat_id)
+            if chat.get("type") == "private"
+            and str(sender.get("id")) == str(chat_id)
+            else None
+        )
 
 
 
@@ -617,6 +625,8 @@ def handle_bale_update(
     finally:
 
         command_handler.CURRENT_ORIGIN = previous_origin
+        if private_user_context is not None:
+            command_handler.CURRENT_BALE_PRIVATE_USER_ID.reset(private_user_context)
 
 
 

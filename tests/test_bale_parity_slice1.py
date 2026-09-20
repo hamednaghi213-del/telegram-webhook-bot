@@ -8,6 +8,7 @@ handle_command, and Telegram-path regression.
 """
 
 import os
+import hashlib
 import sys
 from types import SimpleNamespace
 
@@ -718,3 +719,102 @@ def test_migration_029_is_additive_and_indexed():
     # Additive: no drops or destructive statements.
     assert "drop " not in lowered
     assert "alter type" not in lowered
+def test_explicit_bale_link_preserves_shared_account_and_workspace(monkeypatch):
+    """The Telegram-authenticated code joins Bale to the original user ID."""
+    db = core.database
+    handler = _COMMAND_HANDLER
+    telegram = {"id": 1, "telegram_user_id": 111, "bale_user_id": None}
+    bale_only = {"id": 2, "telegram_user_id": None, "bale_user_id": 222}
+    users = [telegram, bale_only]
+    workspace = {"id": 9, "owner_user_id": 1, "name": "Existing"}
+    channel = {"id": 10, "workspace_id": 9}
+    code_state = {}
+    replies = []
+
+    monkeypatch.setattr(handler, "send_message", lambda chat, msg: replies.append((chat, msg)))
+    monkeypatch.setattr(handler, "get_user_by_telegram_id", lambda uid: telegram if uid == 111 else None)
+    create_code = lambda uid, digest: code_state.update(user_id=uid, digest=digest, expires=600)
+    _patch_db_everywhere(monkeypatch, "create_bale_identity_link_code", create_code)
+    monkeypatch.setattr(db, "create_bale_identity_link_code", create_code, raising=False)
+
+    def consume(digest, bale_id):
+        if digest != code_state.get("digest") or code_state.get("expires", 0) <= 0:
+            return "invalid"
+        if any(u["bale_user_id"] == bale_id and u["telegram_user_id"] is not None and u is not telegram for u in users):
+            return "conflict"
+        code_state.clear()
+        if telegram["bale_user_id"] == bale_id:
+            return "linked"
+        users.remove(bale_only)
+        telegram["bale_user_id"] = bale_id
+        return "linked"
+
+    _patch_db_everywhere(monkeypatch, "consume_bale_identity_link_code", consume)
+    monkeypatch.setattr(db, "consume_bale_identity_link_code", consume, raising=False)
+    _patch_db_everywhere(monkeypatch, "get_or_create_user_by_bale_id", lambda uid, status="active": next((u for u in users if u["bale_user_id"] == uid), None))
+    monkeypatch.setattr(handler, "CURRENT_ORIGIN", "telegram")
+    assert handler.handle_command("/linkbale", 111)
+    code = replies[-1][1].split("/linkbale ")[1].split()[0]
+    assert code_state["digest"] == hashlib.sha256(code.encode()).hexdigest()
+
+    monkeypatch.setattr(handler, "CURRENT_ORIGIN", "bale")
+    context = handler.CURRENT_BALE_PRIVATE_USER_ID.set(222)
+    try:
+        assert handler.handle_command(f"/linkbale {code}", 222)
+        assert handler._identity_for_chat(222)["id"] == 1
+        assert len(users) == 1
+        assert (workspace["owner_user_id"], channel["workspace_id"]) == (1, 9)
+        assert handler.handle_command(f"/linkbale {code}", 222)
+        assert "Invalid or expired" in replies[-1][1]
+    finally:
+        handler.CURRENT_BALE_PRIVATE_USER_ID.reset(context)
+    monkeypatch.setattr(handler, "CURRENT_ORIGIN", "telegram")
+    assert handler._identity_for_chat(111)["id"] == 1
+    assert handler.handle_command("/linkbale", 111)
+    assert "already linked" in replies[-1][1]
+    assert len(users) == 1
+    monkeypatch.setattr(handler, "_legacy_tenant", lambda _chat: None)
+    monkeypatch.setattr(handler, "_ACTIVE_WORKSPACE_ENABLED", True)
+    monkeypatch.setattr(handler, "list_user_workspaces", lambda uid, include_inactive=False: [{**workspace, "membership_role": "owner"}] if uid == 1 else [])
+    monkeypatch.setattr(handler, "get_active_workspace_preference", lambda uid: {"active_workspace_id": 9} if uid == 1 else {})
+    monkeypatch.setattr(db, "list_workspace_destinations", lambda wid, include_removed=False: [channel] if wid == 9 else [])
+    assert handler.handle_status(111)
+    telegram_status = replies[-1][1]
+    monkeypatch.setattr(handler, "CURRENT_ORIGIN", "bale")
+    assert handler.handle_status(222)
+    assert replies[-1][1] == telegram_status
+
+
+def test_bale_link_rejects_unverified_chat_and_bad_code(monkeypatch):
+    handler = _COMMAND_HANDLER
+    replies = []
+    monkeypatch.setattr(handler, "send_message", lambda chat, msg: replies.append(msg))
+    monkeypatch.setattr(handler, "CURRENT_ORIGIN", "bale")
+    _patch_db_everywhere(monkeypatch, "consume_bale_identity_link_code", lambda *_: "invalid")
+    monkeypatch.setattr(core.database, "consume_bale_identity_link_code", lambda *_: "invalid", raising=False)
+    assert handler.handle_linkbale("wrong", 222)
+    assert "private Bale chat" in replies[-1]
+    context = handler.CURRENT_BALE_PRIVATE_USER_ID.set(222)
+    try:
+        assert handler.handle_linkbale("wrong", 222)
+        assert "Invalid or expired" in replies[-1]
+        conflict = lambda *_: "conflict"
+        _patch_db_everywhere(monkeypatch, "consume_bale_identity_link_code", conflict)
+        monkeypatch.setattr(core.database, "consume_bale_identity_link_code", conflict, raising=False)
+        assert handler.handle_linkbale("valid-but-claimed", 222)
+        assert "already linked to another user" in replies[-1]
+    finally:
+        handler.CURRENT_BALE_PRIVATE_USER_ID.reset(context)
+
+
+def test_bale_link_migration_has_atomic_conflict_and_expiry_guards():
+    from pathlib import Path
+    sql = (Path(__file__).resolve().parents[1] / "schema" / "031_bale_identity_link.sql").read_text(encoding="utf-8").lower()
+    assert "for update" in sql
+    assert "expires_at <= extract(epoch from now())" in sql
+    assert "target_row.bale_user_id <> p_bale_user_id" in sql
+    assert "bale_row.telegram_user_id is not null" in sql
+    assert "if has_reference then" in sql
+    assert "delete from public.users where id = bale_row.id" in sql
+    assert "revoke all on function" in sql
+    assert "to service_role" in sql

@@ -803,6 +803,28 @@ def get_user_by_bale_id(
     return _first_row(result)
 
 
+def create_bale_identity_link_code(user_id: int, code_hash: str) -> None:
+    """Store only a digest of a short-lived code issued in Telegram."""
+    if service_supabase is None:
+        raise RuntimeError("Service role is required for identity linking")
+    service_supabase.table("bale_identity_link_codes").insert({
+        "user_id": int(user_id),
+        "code_hash": code_hash,
+        "expires_at": time.time() + 600,
+    }).execute()
+
+
+def consume_bale_identity_link_code(code_hash: str, bale_user_id: int) -> str:
+    """Atomically consume a code and attach Bale to the Telegram row."""
+    if service_supabase is None:
+        raise RuntimeError("Service role is required for identity linking")
+    result = service_supabase.rpc("consume_bale_identity_link", {
+        "p_code_hash": code_hash,
+        "p_bale_user_id": int(bale_user_id),
+    }).execute()
+    return result.data
+
+
 def get_or_create_user_by_bale_id(
     bale_user_id: int,
     status: str = "active",
