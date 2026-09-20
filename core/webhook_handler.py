@@ -6276,6 +6276,8 @@ def process_incoming_message(
             workspace_context_active = False
             workspace_membership_active = False
 
+        # Workspace publication no longer happens here
+        
         # Only a genuinely unregistered user should reach this
         # legacy registration guidance. A linked Bale/Telegram user
         # with an active workspace membership must continue through
