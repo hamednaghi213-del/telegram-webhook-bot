@@ -6163,88 +6163,128 @@ def process_incoming_message(
 
         workspace_context_active = False
         workspace_targets_selected = False
-        legacy_target_selected = bool(tenant and tenant.get("telegram_channel"))
+        workspace_membership_active = False
+        legacy_target_selected = bool(
+            tenant
+            and tenant.get("telegram_channel")
+        )
+
         try:
-                from core.database import (
-                    get_active_workspace_preference,
-                    get_user_by_bale_id,
-                    get_user_by_telegram_id,
-                    list_selected_workspace_ids,
+            from core.database import (
+                get_active_workspace_preference,
+                get_user_by_bale_id,
+                get_user_by_telegram_id,
+                list_selected_workspace_ids,
+                list_user_workspaces,
+            )
+
+            # Resolve the application user using the correct
+            # transport identity. Bale ids must never be looked
+            # up through the Telegram identity column.
+            _origin_is_bale = False
+
+            try:
+                from core.messaging import (
+                    current_context as _cc,
                 )
 
-                # Identity safety: resolve the workspace user through
-                # the origin's own id space. Under Bale origin a Bale
-                # numeric id must never be fed to the Telegram-keyed
-                # lookup (and vice versa).
+                _origin_is_bale = (
+                    _cc().name == "bale"
+                )
+
+            except Exception:
                 _origin_is_bale = False
 
-                try:
-
-                    from core.messaging import (
-                        current_context as _cc,
-                    )
-
-                    _origin_is_bale = (
-                        _cc().name == "bale"
-                    )
-
-                except Exception:
-
-                    _origin_is_bale = False
-
-                if _origin_is_bale:
-
-                    workspace_user = (
-                        get_user_by_bale_id(
-                            chat_id
-                        )
-                    )
-
-                else:
-
-                    workspace_user = (
-                        get_user_by_telegram_id(
-                            chat_id
-                        )
-                    )
-                workspace_preference = (
-                    get_active_workspace_preference(workspace_user["id"]) or {}
-                    if workspace_user
-                    else {}
-                )
-                workspace_context_active = bool(
-                    workspace_preference.get("context_type") == "workspace"
-                    and workspace_preference.get("active_workspace_id")
-                )
-                workspace_targets_selected = bool(
-                    workspace_user
-                    and list_selected_workspace_ids(workspace_user["id"])
-                )
-                legacy_target_selected = bool(
-                    tenant
-                    and tenant.get("telegram_channel")
-                    and (
-                        workspace_preference.get("legacy_selected")
-                        if "legacy_selected" in workspace_preference
-                        else workspace_preference.get("context_type") == "legacy"
+            if _origin_is_bale:
+                workspace_user = (
+                    get_user_by_bale_id(
+                        chat_id
                     )
                 )
+            else:
+                workspace_user = (
+                    get_user_by_telegram_id(
+                        chat_id
+                    )
+                )
+
+            workspace_preference = (
+                get_active_workspace_preference(
+                    workspace_user["id"]
+                )
+                or {}
+                if workspace_user
+                else {}
+            )
+
+            workspace_context_active = bool(
+                workspace_preference.get(
+                    "context_type"
+                ) == "workspace"
+                and workspace_preference.get(
+                    "active_workspace_id"
+                )
+            )
+
+            workspace_targets_selected = bool(
+                workspace_user
+                and list_selected_workspace_ids(
+                    workspace_user["id"]
+                )
+            )
+
+            # A linked Telegram/Bale user can have a valid active
+            # workspace even when no explicit workspace selection
+            # flag is present. Do not misclassify that user as
+            # unregistered.
+            workspace_membership_active = bool(
+                workspace_user
+                and list_user_workspaces(
+                    workspace_user["id"],
+                    include_inactive=False,
+                )
+            )
+
+            legacy_target_selected = bool(
+                tenant
+                and tenant.get(
+                    "telegram_channel"
+                )
+                and (
+                    workspace_preference.get(
+                        "legacy_selected"
+                    )
+                    if "legacy_selected"
+                    in workspace_preference
+                    else workspace_preference.get(
+                        "context_type"
+                    ) == "legacy"
+                )
+            )
+
         except (ImportError, AttributeError):
             workspace_context_active = False
+            workspace_targets_selected = False
+            workspace_membership_active = False
+
         except Exception as e:
             logger.exception(
                 f"[{req_id}] ❌ Active media context lookup failed | {e}"
             )
-            # No message/editorial metadata exists in this scope.  A transient
-            # context lookup failure must not delete an unrelated media group.
+
             workspace_targets_selected = False
             workspace_context_active = False
+            workspace_membership_active = False
 
-        # Workspace publication no longer happens here.  Raw updates must
-        # first pass the editorial/media-group/content pipeline.  Legacy and
-        # Workspace destinations are resolved together only after a single
-        # PreparedContent has been produced.
-        if not tenant and not (workspace_targets_selected or workspace_context_active):
+        # Only a genuinely unregistered user should reach this
+        # legacy registration guidance. A linked Bale/Telegram user
+        # with an active workspace membership must continue through
+        # the shared publication flow.
+        if not tenant and not (
+            workspace_targets_selected
+            or workspace_context_active
+            or workspace_membership_active
+        ):
             send_message(
                 chat_id,
                 "❌ ابتدا با /register ثبت‌نام و کانال را تنظیم کنید."
