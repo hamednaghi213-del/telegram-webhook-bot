@@ -120,7 +120,13 @@ def edit_bale_message(channel, token, message_id, text, is_caption=False):
             json={"chat_id": channel, "message_id": message_id, field: text or ""},
             timeout=120,
         )
-        return bool(_send_result(response))
+        if _send_result(response):
+            return True
+        try:
+            description = str((response.json() or {}).get("description") or "").lower()
+        except (TypeError, ValueError):
+            description = ""
+        return "message is not modified" in description
     except Exception as e:
         logger.exception(f"❌ Bale edit failed | method={method} | {e}")
         return False

@@ -7563,7 +7563,7 @@ def handle_webhook() -> Tuple[
         # MESSAGE
         # =================================================
 
-        edited_channel_post = data.get("edited_channel_post")
+        edited_channel_post = data.get("edited_channel_post") or data.get("edited_message")
         if isinstance(edited_channel_post, dict):
             try:
                 from core.workspace_publisher import (

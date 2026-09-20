@@ -3060,7 +3060,11 @@ def record_persistent_publication_part_success(
                     if destination_chat_id is not None
                     else None
                 ),
-                primary_message_id=normalized_message_id,
+                primary_message_id=(
+                    normalized_message_id
+                    if str(part_key) == "primary"
+                    else None
+                ),
             )
         except Exception as index_error:
             # The real transport delivery is already durably recorded.
@@ -3162,13 +3166,14 @@ def record_persistent_publication_message_index(
             "platform": platform,
             "destination_chat_id": resolved_chat_id,
             "part_key": str(part_key),
+            "part_ordinal": ordinal,
             "message_id": int(value),
             "is_primary": (
                 resolved_primary is not None
                 and int(value) == resolved_primary
             ),
         }
-        for value in normalized_message_ids
+        for ordinal, value in enumerate(normalized_message_ids)
     ]
 
     service_supabase.table(
@@ -3603,6 +3608,168 @@ def mark_persistent_publication_delivery_delete_state(
             "publication delivery delete update returned no row"
         )
     return rows[0]
+
+
+@with_retry
+def get_publication_lifecycle_mapping(
+    platform: str,
+    chat_id: Any,
+    message_id: int,
+) -> Optional[Dict[str, Any]]:
+    """Resolve one B11 message to the matching parts of sibling deliveries.
+
+    The source and destination must share a publication source and generation.
+    An edit matches the same part key and ordinal; deletion can use all indexed
+    parts of the corresponding delivery without touching other publications.
+    """
+    if service_supabase is None or platform not in ("telegram", "bale"):
+        return None
+
+    result = (
+        service_supabase.table("publication_delivery_message_index")
+        .select("*")
+        .eq("platform", platform)
+        .eq("destination_chat_id", str(chat_id))
+        .eq("message_id", int(message_id))
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    if not rows:
+        return None
+    source_index = rows[0]
+    source_delivery = get_persistent_publication_delivery_by_id(
+        int(source_index["delivery_id"])
+    )
+    if not source_delivery:
+        return None
+    deliveries = list_persistent_publication_deliveries_for_source(
+        source_id=int(source_delivery["source_id"]),
+        delivery_generation=int(source_delivery.get("delivery_generation") or 1),
+    )
+    delivery_ids = tuple(int(row["id"]) for row in deliveries)
+    indexes = list_persistent_publication_message_indexes(
+        delivery_ids=delivery_ids,
+    )
+    delivery_by_id = {int(row["id"]): row for row in deliveries}
+    source_delivery_id = int(source_index["delivery_id"])
+    counterpart_platform = "bale" if platform == "telegram" else "telegram"
+
+    def ordered(items):
+        return tuple(sorted(
+            items,
+            key=lambda item: (
+                str(item.get("part_key") or ""),
+                int(item.get("part_ordinal") or 0),
+                int(item.get("id") or 0),
+            ),
+        ))
+
+    source_rows = ordered(
+        item for item in indexes
+        if int(item["delivery_id"]) == source_delivery_id
+    )
+    counterpart_rows = ordered(
+        item for item in indexes
+        if int(item["delivery_id"]) != source_delivery_id
+        and str(item.get("platform") or "") == counterpart_platform
+        and int(item["delivery_id"]) in delivery_by_id
+    )
+    matched = tuple(
+        item for item in counterpart_rows
+        if str(item.get("part_key")) == str(source_index.get("part_key"))
+        and int(item.get("part_ordinal") or 0)
+        == int(source_index.get("part_ordinal") or 0)
+    )
+    return {
+        "source": source_index,
+        "source_delivery": source_delivery,
+        "source_rows": source_rows,
+        "counterparts": matched,
+        "counterpart_rows": counterpart_rows,
+    }
+
+
+@with_retry
+def claim_publication_lifecycle_action(
+    *,
+    index_id: int,
+    action: str,
+    fingerprint: Optional[str] = None,
+    lease_seconds: int = 120,
+) -> bool:
+    """Atomically claim one message operation using the attempt counter."""
+    from datetime import datetime, timedelta, timezone
+
+    if service_supabase is None or action not in ("edit", "delete"):
+        return False
+    result = (
+        service_supabase.table("publication_delivery_message_index")
+        .select("*").eq("id", int(index_id)).limit(1).execute()
+    )
+    rows = result.data or []
+    if not rows:
+        return False
+    row = rows[0]
+    status = str(row.get(f"{action}_status") or "pending")
+    if action == "delete" and status == "succeeded":
+        return False
+    if (
+        action == "edit"
+        and row.get("edit_fingerprint") == fingerprint
+        and status == "succeeded"
+    ):
+        return False
+    if status == "sending":
+        expiry = row.get(f"{action}_lease_expires_at")
+        try:
+            until = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            until = datetime.min.replace(tzinfo=timezone.utc)
+        if until > datetime.now(timezone.utc):
+            return False
+    old_count = int(row.get(f"{action}_attempt_count") or 0)
+    payload = {
+        f"{action}_status": "sending",
+        f"{action}_attempt_count": old_count + 1,
+        f"{action}_lease_expires_at": (
+            datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+        ).isoformat(),
+    }
+    if action == "edit":
+        payload["edit_fingerprint"] = str(fingerprint or "")
+    claimed = (
+        service_supabase.table("publication_delivery_message_index")
+        .update(payload)
+        .eq("id", int(index_id))
+        .eq(f"{action}_attempt_count", old_count)
+        .execute()
+    )
+    return bool(claimed.data)
+
+
+@with_retry
+def finish_publication_lifecycle_action(
+    *,
+    index_id: int,
+    action: str,
+    succeeded: bool,
+    fingerprint: Optional[str] = None,
+) -> bool:
+    if service_supabase is None or action not in ("edit", "delete"):
+        return False
+    query = (
+        service_supabase.table("publication_delivery_message_index")
+        .update({
+            f"{action}_status": "succeeded" if succeeded else "failed",
+            f"{action}_lease_expires_at": None,
+        })
+        .eq("id", int(index_id))
+        .eq(f"{action}_status", "sending")
+    )
+    if action == "edit":
+        query = query.eq("edit_fingerprint", str(fingerprint or ""))
+    return bool((query.execute().data or []))
 
 @with_retry
 def mark_persistent_publication_source(

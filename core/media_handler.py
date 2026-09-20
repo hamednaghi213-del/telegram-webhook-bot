@@ -2048,6 +2048,7 @@ def send_media_group_to_channel(
     ] = None,
     channel_id: Optional[str] = None,
     api_url: Optional[str] = None,
+    return_result: bool = False,
 ) -> bool:
 
     set_last_media_message_id(
@@ -2244,6 +2245,23 @@ def send_media_group_to_channel(
             f"{message_id or '-'}"
         )
 
+        if return_result:
+            try:
+                delivered = response.json().get("result") or []
+            except (TypeError, ValueError, AttributeError):
+                delivered = []
+            message_ids = tuple(
+                int(item["message_id"])
+                for item in delivered
+                if isinstance(item, dict)
+                and isinstance(item.get("message_id"), int)
+            )
+            return {
+                "ok": True,
+                "message_id": message_id,
+                "message_ids": message_ids or ((message_id,) if message_id else ()),
+                "operation": "sendMediaGroup",
+            }
         return True
 
     logger.error(
@@ -2630,6 +2648,7 @@ def execute_telegram_plan(
                         media_caption_entities
                     ),
                     **_destination_kwargs(channel_id, api_url),
+                    **({"return_result": True} if return_result else {}),
                 )
             )
 
@@ -2643,6 +2662,7 @@ def execute_telegram_plan(
                         media_parse_mode
                     ),
                     **_destination_kwargs(channel_id, api_url),
+                    **({"return_result": True} if return_result else {}),
                 )
             )
 
@@ -2653,6 +2673,7 @@ def execute_telegram_plan(
                     files,
                     media_caption,
                     **_destination_kwargs(channel_id, api_url),
+                    **({"return_result": True} if return_result else {}),
                 )
             )
 

@@ -195,6 +195,123 @@ def _delete_telegram_message(
     return False
 
 
+def _delete_indexed_publication(
+    mapping: Dict[str, Any],
+    *,
+    api_url: str,
+    max_retries: int,
+) -> bool:
+    """Delete proven message IDs, tracking each part on the B11 index."""
+    import importlib
+    database = importlib.import_module("core.database")
+    from core.bale_forwarder import delete_bale_message
+
+    rows = tuple(mapping.get("source_rows") or ()) + tuple(
+        mapping.get("counterpart_rows") or ()
+    )
+    row_status = {
+        int(item["id"]): str(item.get("delete_status") or "pending")
+        for item in rows
+    }
+    token = os.getenv("BALE_BOT_TOKEN", "").strip()
+    all_ok = True
+    for item in rows:
+        if item.get("delete_status") == "succeeded":
+            continue
+        if int(item.get("delete_attempt_count") or 0) >= max(1, max_retries):
+            all_ok = False
+            continue
+        index_id = int(item["id"])
+        if not database.claim_publication_lifecycle_action(
+            index_id=index_id, action="delete",
+        ):
+            all_ok = False
+            continue
+        if item.get("platform") == "telegram":
+            deleted = _delete_telegram_message(
+                api_url, item["destination_chat_id"], int(item["message_id"]),
+            )
+        elif token:
+            result = delete_bale_message(
+                item["destination_chat_id"], token, int(item["message_id"]),
+                return_result=True,
+            )
+            deleted = bool(result.get("ok")) or _delete_not_found_response(
+                result.get("response")
+            )
+        else:
+            deleted = False
+        database.finish_publication_lifecycle_action(
+            index_id=index_id, action="delete", succeeded=deleted,
+        )
+        row_status[index_id] = "succeeded" if deleted else "failed"
+        all_ok = all_ok and deleted
+
+    # Keep the pre-existing delivery-level delete state aligned with the
+    # per-message B11 state; publication send status is never modified.
+    from datetime import datetime, timezone
+
+    delivery_groups = {}
+    for item in rows:
+        if item.get("delivery_id") is not None:
+            delivery_groups.setdefault(int(item["delivery_id"]), []).append(item)
+    for delivery_id, members in delivery_groups.items():
+        statuses = [row_status[int(item["id"])] for item in members]
+        if all(status == "succeeded" for status in statuses):
+            aggregate = "succeeded"
+        elif any(status == "failed" for status in statuses):
+            aggregate = "failed"
+        else:
+            continue
+        database.mark_persistent_publication_delivery_delete_state(
+            delivery_id=delivery_id,
+            delete_status=aggregate,
+            delete_attempt_count=max(
+                int(item.get("delete_attempt_count") or 0)
+                + (1 if row_status[int(item["id"])] != item.get("delete_status") else 0)
+                for item in members
+            ),
+            delete_last_error=None if aggregate == "succeeded" else "message_delete_failed",
+            deleted_at=(
+                datetime.now(timezone.utc).isoformat()
+                if aggregate == "succeeded" else None
+            ),
+        )
+    return all_ok
+
+
+def delete_bale_publication_and_sync_telegram(
+    *,
+    bale_chat_id: Any,
+    bale_message_id: int,
+    api_url: Optional[str] = None,
+    max_retries: int = MAX_BALE_DELETE_RETRIES,
+) -> bool:
+    """Bot-initiated Bale deletion with mapped Telegram counterparts."""
+    from core.database import get_publication_lifecycle_mapping
+    from core.media_handler import API_URL
+
+    resolved_api_url = api_url or API_URL or ""
+    mapping = get_publication_lifecycle_mapping(
+        "bale", bale_chat_id, bale_message_id,
+    )
+    if mapping:
+        return _delete_indexed_publication(
+            mapping, api_url=resolved_api_url, max_retries=max_retries,
+        )
+    token = os.getenv("BALE_BOT_TOKEN", "").strip()
+    if not token:
+        return False
+    from core.bale_forwarder import delete_bale_message
+
+    result = delete_bale_message(
+        bale_chat_id, token, bale_message_id, return_result=True,
+    )
+    return bool(result.get("ok")) or _delete_not_found_response(
+        result.get("response")
+    )
+
+
 def delete_telegram_publication_and_sync_bale(
     *,
     api_url: str,
@@ -203,6 +320,17 @@ def delete_telegram_publication_and_sync_bale(
     max_bale_retries: int = MAX_BALE_DELETE_RETRIES,
 ) -> bool:
     from datetime import datetime, timezone
+    import importlib
+    database = importlib.import_module("core.database")
+
+    lookup = getattr(database, "get_publication_lifecycle_mapping", None)
+    if lookup is not None:
+        indexed = lookup("telegram", telegram_chat_id, telegram_message_id)
+        if indexed:
+            return _delete_indexed_publication(
+                indexed, api_url=api_url, max_retries=max_bale_retries,
+            )
+
     from core.database import (
         get_publication_sync_targets_for_telegram_message,
         mark_persistent_publication_delivery_delete_state,
@@ -328,12 +456,138 @@ def delete_telegram_publication_and_sync_bale(
     return all_ok
 
 
+def _lifecycle_edit_fingerprint(text: str, is_caption: bool) -> str:
+    import hashlib
+
+    kind = "caption" if is_caption else "text"
+    return hashlib.sha256(f"{kind}\0{text}".encode("utf-8")).hexdigest()
+
+
+def _edit_telegram_message(chat_id: Any, message_id: int, text: str, *, is_caption: bool) -> bool:
+    from core.media_handler import API_URL
+
+    if not API_URL:
+        return False
+    method = "editMessageCaption" if is_caption else "editMessageText"
+    field = "caption" if is_caption else "text"
+    try:
+        response = requests.post(
+            f"{API_URL.rstrip('/')}/{method}",
+            json={"chat_id": chat_id, "message_id": int(message_id), field: text},
+            timeout=30,
+        )
+        data = response.json() or {}
+    except Exception:
+        logger.exception("Telegram lifecycle edit request failed")
+        return False
+    return bool(
+        (response.status_code == 200 and data.get("ok", True) is not False)
+        or "message is not modified" in str(data.get("description") or "").lower()
+    )
+
+
+def _apply_indexed_publication_edit(
+    mapping: Dict[str, Any],
+    text: str,
+    *,
+    is_caption: bool,
+    counterpart_platform: str,
+) -> bool:
+    import importlib
+    database = importlib.import_module("core.database")
+
+    fingerprint = _lifecycle_edit_fingerprint(text, is_caption)
+    source = mapping["source"]
+    if (
+        source.get("edit_fingerprint") == fingerprint
+        and source.get("edit_status") in ("sending", "succeeded")
+    ):
+        return False  # Echo of an edit initiated by the other transport.
+
+    counterparts = tuple(mapping.get("counterparts") or ())
+    if not counterparts:
+        return False
+    token = os.getenv("BALE_BOT_TOKEN", "").strip()
+    if counterpart_platform == "bale" and not token:
+        return False
+
+    all_ok = True
+    for target in counterparts:
+        if (
+            target.get("edit_fingerprint") == fingerprint
+            and target.get("edit_status") == "succeeded"
+        ):
+            continue
+        index_id = int(target["id"])
+        if not database.claim_publication_lifecycle_action(
+            index_id=index_id, action="edit", fingerprint=fingerprint,
+        ):
+            all_ok = False
+            continue
+        target_caption = is_caption and str(target.get("part_key")) == "primary"
+        if counterpart_platform == "bale":
+            from core.bale_forwarder import edit_bale_message
+
+            sent = edit_bale_message(
+                target["destination_chat_id"], token,
+                int(target["message_id"]), text, is_caption=target_caption,
+            )
+        else:
+            sent = _edit_telegram_message(
+                target["destination_chat_id"], int(target["message_id"]),
+                text, is_caption=target_caption,
+            )
+        database.finish_publication_lifecycle_action(
+            index_id=index_id, action="edit", succeeded=bool(sent),
+            fingerprint=fingerprint,
+        )
+        all_ok = all_ok and bool(sent)
+    return all_ok
+
+
+def sync_edited_bale_message_to_telegram(edited_message: Dict[str, Any]) -> bool:
+    """Consume a Bale edit and update only its B11-mapped Telegram parts."""
+    from core.database import get_publication_lifecycle_mapping
+
+    chat_id = (edited_message.get("chat") or {}).get("id")
+    message_id = edited_message.get("message_id")
+    if chat_id is None or message_id is None:
+        return False
+    mapping = get_publication_lifecycle_mapping("bale", chat_id, int(message_id))
+    if not mapping:
+        return False
+    is_caption = edited_message.get("caption") is not None
+    text = edited_message.get("caption") if is_caption else edited_message.get("text")
+    if text is None:
+        return False
+    return _apply_indexed_publication_edit(
+        mapping, str(text), is_caption=is_caption,
+        counterpart_platform="telegram",
+    )
+
+
 def sync_edited_channel_post_to_bale(edited_post: Dict[str, Any]) -> bool:
     """Mirror a known Telegram destination edit to its paired Bale message."""
     chat_id = (edited_post.get("chat") or {}).get("id")
     message_id = edited_post.get("message_id")
     if chat_id is None or message_id is None:
         return False
+
+    import importlib
+    database = importlib.import_module("core.database")
+
+    lookup = getattr(database, "get_publication_lifecycle_mapping", None)
+    if lookup is not None:
+        mapping = lookup("telegram", chat_id, int(message_id))
+        if mapping:
+            is_caption = edited_post.get("caption") is not None
+            text = edited_post.get("caption") if is_caption else edited_post.get("text")
+            if text is None:
+                return False
+            return _apply_indexed_publication_edit(
+                mapping, str(text), is_caption=is_caption,
+                counterpart_platform="bale",
+            )
 
     from core.database import get_publication_message_link
     link = get_publication_message_link(chat_id, message_id)

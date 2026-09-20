@@ -280,6 +280,7 @@ def test_record_index_uses_unique_key_upsert(db_env):
             "platform": "telegram",
             "destination_chat_id": "@tg-channel",
             "part_key": "primary",
+            "part_ordinal": 0,
             "message_id": 555,
             "is_primary": True,
         }

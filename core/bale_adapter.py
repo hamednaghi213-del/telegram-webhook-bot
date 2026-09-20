@@ -406,13 +406,13 @@ def _extract_message(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     edited = data.get("edited_message")
 
-    if isinstance(edited, dict) and edited.get("text"):
+    if isinstance(edited, dict):
 
         # Return the edited message for processing, but we'll need
 
         # to signal that this is an edit event
 
-        edited["_is_edited"] = True
+        edited = {**edited, "_is_edited": True}
 
         return edited
 
@@ -552,7 +552,7 @@ def handle_bale_update(
 
 
 
-    if not _is_bot_command(message, text):
+    if message.get("_is_edited") or not _is_bot_command(message, text):
 
         return _handle_bale_content(
 
@@ -668,99 +668,15 @@ def _handle_bale_content(
 
     """
 
-    # Check if this is an edited message for lifecycle sync
-
     if message.get("_is_edited"):
+        try:
+            from core.workspace_publisher import sync_edited_bale_message_to_telegram
 
-        # Handle Bale edited_message -> Telegram edit sync
-
-        text = message.get("text", "")
-
-        if text.strip():
-
-            try:
-
-                from core.database import handle_bale_edit_sync
-
-                sync_attempted = handle_bale_edit_sync(
-
-                    chat_id,
-
-                    message.get("message_id", 0),
-
-                    text,
-
-                )
-
-                if sync_attempted:
-
-                    logger.info(
-
-                        f"🔄 Bale edit sync processed | "
-
-                        f"bale={chat_id}:{message.get('message_id')} "
-
-                        f"→ telegram"
-
-                    )
-
-                    # Perform actual Telegram message edit
-
-                    from core.database import get_publication_sync_targets_for_bale_message
-
-                    mapping = get_publication_sync_targets_for_bale_message(
-
-                        chat_id,
-
-                        message.get("message_id", 0)
-
-                    )
-
-                    if mapping and mapping.get("telegram"):
-
-                        telegram_chat_id = mapping.get("telegram")["chat_id"]
-
-                        telegram_message_id = mapping.get("telegram")["message_ids"][0]
-
-                        from core.webhook_handler import edit_message
-
-                        edit_message(
-
-                            int(telegram_chat_id),
-
-                            int(telegram_message_id),
-
-                            text
-
-                        )
-
-                else:
-
-                    logger.info(
-
-                        f"⏭️ Bale edit sync skipped (no mapping or target deleted) | "
-
-                        f"bale={chat_id}:{message.get('message_id')}"
-
-                    )
-
-                # Always consume the edit event, never fall through
-
-                return {"ok": True, "handled": True, "reason": "bale_edit_sync"}, 200
-
-            except Exception as e:
-
-                logger.exception(
-
-                    f"❌ Bale edit sync failed | "
-
-                    f"bale={chat_id}:{message.get('message_id')} | {e}"
-
-                )
-
-                # Always consume the edit event, never fall through
-
-                return {"ok": True, "handled": True, "reason": "bale_edit_sync_error"}, 200
+            synced = sync_edited_bale_message_to_telegram(message)
+            return {"ok": True, "handled": True, "edit_synced": bool(synced)}, 200
+        except Exception:
+            logger.exception("Bale lifecycle edit failed | chat=%s", chat_id)
+            return {"ok": True, "handled": True, "edit_synced": False}, 200
 
 
 
