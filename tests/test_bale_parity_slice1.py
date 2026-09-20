@@ -2,7 +2,8 @@
 
 Covers: separate Bale identity space (no numeric equivalence),
 origin-scoped outbound transport, Bale webhook secret validation
-(fail-closed), adapter command routing through the SHARED
+(optional header, strict when supplied), adapter command routing
+through the SHARED
 handle_command, and Telegram-path regression.
 """
 
@@ -407,17 +408,35 @@ def test_telegram_path_unchanged_when_origin_default(
 # =========================================================
 
 
-def test_bale_webhook_requires_secret():
-    """Fail closed: no secret configured -> endpoint disabled."""
-    _BALE_ADAPTER.initialize("")
+def test_bale_webhook_rejects_uninitialized_adapter(monkeypatch):
+    _BALE_ADAPTER.initialize("right-secret")
+    monkeypatch.setattr(
+        _BALE_ADAPTER, "BALE_WEBHOOK_INITIALIZED", False
+    )
 
     class _Req:
         headers = {}
 
-    assert (
-        _BALE_ADAPTER.validate_bale_webhook_token(_Req())
-        is False
-    )
+    assert _BALE_ADAPTER.validate_bale_webhook_token(_Req()) is False
+
+
+@pytest.mark.parametrize("configured_secret", ["", "right-secret"])
+def test_bale_webhook_accepts_missing_header(configured_secret):
+    _BALE_ADAPTER.initialize(configured_secret)
+
+    class _Req:
+        headers = {}
+
+    assert _BALE_ADAPTER.validate_bale_webhook_token(_Req()) is True
+
+
+def test_bale_webhook_rejects_supplied_secret_without_local_secret():
+    _BALE_ADAPTER.initialize("")
+
+    class _Req:
+        headers = {"X-Bale-Bot-Secret-Token": "supplied-secret"}
+
+    assert _BALE_ADAPTER.validate_bale_webhook_token(_Req()) is False
 
 
 def test_bale_webhook_rejects_wrong_secret():
