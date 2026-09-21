@@ -560,6 +560,39 @@ def test_bale_text_enters_shared_content_pipeline(
         == "telegram"
     )
 
+def test_bale_channel_message_does_not_reenter_shared_content_pipeline(
+    monkeypatch,
+):
+    """A message emitted in a Bale channel is a destination-side event,
+    not new user input. It must be acknowledged without entering the
+    shared inbound publication pipeline.
+    """
+
+    def _unexpected_pipeline(*_args, **_kwargs):
+        pytest.fail(
+            "Bale channel message re-entered process_incoming_message"
+        )
+
+    _patch_wh(
+        monkeypatch,
+        "process_incoming_message",
+        _unexpected_pipeline,
+    )
+
+    response, status = _BALE_ADAPTER.handle_bale_update(
+        _bale_message(
+            9001,
+            chat={
+                "id": -1009001,
+                "type": "channel",
+            },
+            text="پیام منتشرشده در کانال بله",
+        )
+    )
+
+    assert status == 200
+    assert response["ok"] is True
+    assert response["handled"] is False
 
 def test_bale_photo_video_document_voice_normalize_pass_through(
     monkeypatch,

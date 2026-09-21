@@ -545,6 +545,22 @@ def handle_bale_update(
     if chat_id is None:
 
         return {"ok": True, "handled": False}, 200
+    # Destination-channel messages are output-side events, not new
+    # user input. Do not feed them back into the shared publication
+    # pipeline, otherwise a published Bale message can be treated as
+    # an unregistered inbound sender and trigger /register guidance.
+    #
+    # Edited channel messages are intentionally left through because
+    # they are handled by the lifecycle edit-sync path.
+    if (
+        str(chat.get("type") or "").strip().lower() == "channel"
+        and not message.get("_is_edited")
+    ):
+        return {
+            "ok": True,
+            "handled": False,
+            "reason": "channel_event",
+        }, 200
 
 
 
