@@ -117,6 +117,7 @@ def database(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "get_workspace", lambda wid: {"id": wid})
+    monkeypatch.setattr(module, "service_supabase", client)
     return module, client
 
 

@@ -1642,8 +1642,14 @@ def register_setup_destination_canonical(
         return destination, "same_workspace"
 
     now = time.time()
+
+    if service_supabase is None:
+        raise RuntimeError(
+            "Service role is required to associate workspace destinations"
+        )
+
     try:
-        supabase.table("workspace_destinations").upsert({
+        service_supabase.table("workspace_destinations").upsert({
             "workspace_id": workspace_id,
             "destination_id": int(destination["id"]),
             "status": "active",
