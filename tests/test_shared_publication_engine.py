@@ -253,3 +253,263 @@ def test_long_editorial_is_not_split_when_summary_is_unavailable(monkeypatch):
     assert result["errors"] == ["editorial_summary_unavailable"]
     assert target_processing == []
     assert sent == []
+
+def test_destination_translation_policy_supports_arbitrary_language():
+    from core.content_model import PublicationTarget
+    from core.publication_engine import (
+        _destination_translation_policy,
+    )
+
+    target = PublicationTarget(
+        key="workspace:6:destination:99",
+        kind="workspace",
+        platform="telegram",
+        external_id="@german_channel",
+        workspace_id=6,
+        destination_id=99,
+        destination={
+            "target_language_code": "de",
+            "translation_enabled": True,
+        },
+    )
+
+    policy = _destination_translation_policy(
+        target
+    )
+
+    assert policy is not None
+    assert policy.destination_language == "de"
+    assert policy.translation_mode == "auto"
+    assert policy.enabled is True
+    assert policy.fail_closed is True
+
+def test_destination_translation_policy_disabled_returns_none():
+    from core.content_model import PublicationTarget
+    from core.publication_engine import (
+        _destination_translation_policy,
+    )
+
+    target = PublicationTarget(
+        key="workspace:6:destination:100",
+        kind="workspace",
+        platform="bale",
+        external_id="@persian_channel",
+        workspace_id=6,
+        destination_id=100,
+        destination={
+            "target_language_code": "fa",
+            "translation_enabled": False,
+        },
+    )
+
+    policy = _destination_translation_policy(
+        target
+    )
+
+    assert policy is None
+
+def test_destination_translation_reuses_cache_for_same_language(
+    monkeypatch,
+):
+    from core.content_model import (
+        PreparedContent,
+        PublicationTarget,
+    )
+    from core.publication_engine import (
+        _translated_prepared_for_target,
+    )
+
+    calls = []
+
+    def fake_translate_prepared_content(
+        prepared,
+        policy,
+        content_kind,
+    ):
+        calls.append(
+            policy.destination_language
+        )
+
+        class Result:
+            success = True
+            blocked = False
+            reason = ""
+            payload = {
+                "main_text": "translated-de",
+                "neutral_text": "translated-de",
+                "blockquote_blocks": (),
+                "expandable_blocks": (),
+                "other_entities": (),
+                "files": prepared.files,
+                "media_presentation": (
+                    prepared.media_presentation
+                ),
+                "editorial_finalized": (
+                    prepared.editorial_finalized
+                ),
+                "require_single_message": (
+                    prepared.require_single_message
+                ),
+                "source_key": prepared.source_key,
+            }
+
+        return Result()
+
+    monkeypatch.setattr(
+        "core.translation_prepared_content."
+        "translate_prepared_content",
+        fake_translate_prepared_content,
+    )
+
+    prepared = PreparedContent(
+        main_text="original",
+        neutral_text="original",
+        source_key="source-1",
+    )
+
+    target_telegram = PublicationTarget(
+        key="workspace:6:destination:101",
+        kind="workspace",
+        platform="telegram",
+        external_id="@german_telegram",
+        workspace_id=6,
+        destination_id=101,
+        destination={
+            "target_language_code": "de",
+            "translation_enabled": True,
+        },
+    )
+
+    target_bale = PublicationTarget(
+        key="workspace:6:destination:102",
+        kind="workspace",
+        platform="bale",
+        external_id="@german_bale",
+        workspace_id=6,
+        destination_id=102,
+        destination={
+            "target_language_code": "de",
+            "translation_enabled": True,
+        },
+    )
+
+    cache = {}
+
+    first = _translated_prepared_for_target(
+        target_telegram,
+        prepared,
+        cache,
+    )
+
+    second = _translated_prepared_for_target(
+        target_bale,
+        prepared,
+        cache,
+    )
+
+    assert calls == ["de"]
+    assert first.main_text == "translated-de"
+    assert second.main_text == "translated-de"
+    assert first is second
+
+def test_destination_translation_runs_separately_for_different_languages(
+    monkeypatch,
+):
+    from core.content_model import (
+        PreparedContent,
+        PublicationTarget,
+    )
+    from core.publication_engine import (
+        _translated_prepared_for_target,
+    )
+
+    calls = []
+
+    def fake_translate_prepared_content(
+        prepared,
+        policy,
+        content_kind,
+    ):
+        language = policy.destination_language
+        calls.append(language)
+
+        class Result:
+            success = True
+            blocked = False
+            reason = ""
+            payload = {
+                "main_text": f"translated-{language}",
+                "neutral_text": f"translated-{language}",
+                "blockquote_blocks": (),
+                "expandable_blocks": (),
+                "other_entities": (),
+                "files": prepared.files,
+                "media_presentation": (
+                    prepared.media_presentation
+                ),
+                "editorial_finalized": (
+                    prepared.editorial_finalized
+                ),
+                "require_single_message": (
+                    prepared.require_single_message
+                ),
+                "source_key": prepared.source_key,
+            }
+
+        return Result()
+
+    monkeypatch.setattr(
+        "core.translation_prepared_content."
+        "translate_prepared_content",
+        fake_translate_prepared_content,
+    )
+
+    prepared = PreparedContent(
+        main_text="original",
+        neutral_text="original",
+        source_key="source-2",
+    )
+
+    target_de = PublicationTarget(
+        key="workspace:6:destination:103",
+        kind="workspace",
+        platform="telegram",
+        external_id="@german_channel",
+        workspace_id=6,
+        destination_id=103,
+        destination={
+            "target_language_code": "de",
+            "translation_enabled": True,
+        },
+    )
+
+    target_ru = PublicationTarget(
+        key="workspace:6:destination:104",
+        kind="workspace",
+        platform="telegram",
+        external_id="@russian_channel",
+        workspace_id=6,
+        destination_id=104,
+        destination={
+            "target_language_code": "ru",
+            "translation_enabled": True,
+        },
+    )
+
+    cache = {}
+
+    translated_de = _translated_prepared_for_target(
+        target_de,
+        prepared,
+        cache,
+    )
+
+    translated_ru = _translated_prepared_for_target(
+        target_ru,
+        prepared,
+        cache,
+    )
+
+    assert calls == ["de", "ru"]
+    assert translated_de.main_text == "translated-de"
+    assert translated_ru.main_text == "translated-ru"
