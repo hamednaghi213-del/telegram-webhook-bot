@@ -292,6 +292,142 @@ def _target_content_and_branding(
         branding,
     )
 
+def _destination_translation_policy(
+    target: PublicationTarget,
+):
+    """
+    Build the shared translation policy from destination-level settings.
+
+    Language is destination-specific and language-agnostic:
+    fa, en, de, ru, ar, tr, zh, ja, or any other language
+    identifier supported by the shared translation pipeline.
+
+    Legacy targets and destinations with translation disabled
+    keep the original PreparedContent unchanged.
+    """
+    if target.kind == "legacy":
+        return None
+
+    destination = dict(
+        target.destination or {}
+    )
+
+    translation_enabled = bool(
+        destination.get(
+            "translation_enabled",
+            False,
+        )
+    )
+
+    target_language = str(
+        destination.get(
+            "target_language_code",
+            "",
+        )
+        or ""
+    ).strip()
+
+    if (
+        not translation_enabled
+        or not target_language
+    ):
+        return None
+
+    from core.translation_policy import (
+        TRANSLATION_MODE_AUTO,
+        TranslationPolicy,
+        normalize_language,
+    )
+
+    target_language = normalize_language(
+        target_language
+    )
+
+    if not target_language:
+        return None
+
+    return TranslationPolicy(
+        destination_language=target_language,
+        translation_mode=TRANSLATION_MODE_AUTO,
+        fail_closed=True,
+        enabled=True,
+        metadata={
+            "workspace_id": target.workspace_id,
+            "destination_id": target.destination_id,
+            "platform": target.platform,
+        },
+    )
+
+def _translated_prepared_for_target(
+    target: PublicationTarget,
+    prepared: PreparedContent,
+    translation_cache: Dict[
+        str,
+        PreparedContent,
+    ],
+) -> PreparedContent:
+    """
+    Return destination-language PreparedContent.
+
+    Translation is performed once per target language and
+    reused across destinations such as Telegram and Bale.
+    """
+    policy = _destination_translation_policy(
+        target
+    )
+
+    if policy is None:
+        return prepared
+
+    target_language = str(
+        policy.destination_language
+        or ""
+    ).strip()
+
+    if not target_language:
+        return prepared
+
+    cached = translation_cache.get(
+        target_language
+    )
+
+    if cached is not None:
+        return cached
+
+    from core.translation_prepared_content import (
+        translate_prepared_content,
+    )
+
+    translated = translate_prepared_content(
+        prepared=prepared,
+        policy=policy,
+        content_kind=(
+            "media"
+            if prepared.files
+            else "text"
+        ),
+    )
+
+    if (
+        not translated.success
+        or translated.blocked
+    ):
+        raise RuntimeError(
+            "destination_translation_failed:"
+            f"{target_language}:"
+            f"{translated.reason}"
+        )
+
+    translated_prepared = replace(
+        prepared,
+        **translated.payload,
+    )
+
+    translation_cache[
+        target_language
+    ] = translated_prepared
+
+    return translated_prepared
 
 def _normalize_executor_result(
     outcome: Any,
@@ -1961,6 +2097,11 @@ def publish_prepared_content(
         Tuple[str, str],
     ] = {}
 
+    translation_cache: Dict[
+    str,
+    PreparedContent,
+    ] = {}
+
     legacy_telegram_failed = False
 
     for target in targets:
@@ -2192,6 +2333,14 @@ def publish_prepared_content(
                 suppress_smart_summary,
             )
 
+            target_prepared = (
+                _translated_prepared_for_target(
+                    target,
+                    analyzed,
+                    translation_cache,
+                )
+            )
+
             content_key = (
                 target.kind,
                 target.workspace_id,
@@ -2214,7 +2363,7 @@ def publish_prepared_content(
                     _target_content_and_branding(
                         chat_id,
                         target,
-                        analyzed,
+                        target_prepared,
                     )
                 )
 
@@ -2230,23 +2379,23 @@ def publish_prepared_content(
             plan_key = (
                 main_text,
                 branding,
-                analyzed.editorial_finalized,
+                target_prepared.editorial_finalized,
                 repr(
                     tuple(
                         dict(item)
-                        for item in analyzed.blockquote_blocks
+                        for item in target_prepared.blockquote_blocks
                     )
                 ),
                 repr(
                     tuple(
                         dict(item)
-                        for item in analyzed.expandable_blocks
+                        for item in target_prepared.expandable_blocks
                     )
                 ),
                 repr(
                     tuple(
                         dict(item)
-                        for item in analyzed.other_entities
+                        for item in target_prepared.other_entities
                     )
                 ),
             )
@@ -2260,20 +2409,20 @@ def publish_prepared_content(
             if plan is None:
                 with suppress_smart_summary():
                     plan = analyze_content(
-                        output_kind="media" if analyzed.files else "text",
+                        output_kind="media" if target_prepared.files else "text",
                         main_text=main_text,
                         blockquote_blocks=list(
-                            analyzed.blockquote_blocks
+                            target_prepared.blockquote_blocks
                         ),
                         expandable_blocks=list(
-                            analyzed.expandable_blocks
+                            target_prepared.expandable_blocks
                         ),
                         other_entities=list(
-                            analyzed.other_entities
+                            target_prepared.other_entities
                         ),
                         branding=branding,
                         editorial_finalized=(
-                            analyzed.editorial_finalized
+                            target_prepared.editorial_finalized
                         ),
                     )
 
@@ -2284,13 +2433,13 @@ def publish_prepared_content(
             platform_plan = (
                 plan.telegram
                 if (
-                    analyzed.files
+                    target_prepared.files
                     and target.platform
                     == "telegram"
                 )
                 else (
                     plan.bale
-                    if analyzed.files
+                    if target_prepared.files
                     else plan.text[
                         target.platform
                     ]
@@ -2305,7 +2454,7 @@ def publish_prepared_content(
                 part_kind,
                 index,
             ) in _delivery_parts(
-                analyzed,
+                target_prepared,
                 platform_plan,
             ):
                 if store.part_completed(
@@ -2320,7 +2469,7 @@ def publish_prepared_content(
                         chat_id,
                         api_url,
                         target,
-                        analyzed,
+                        target_prepared,
                         platform_plan,
                         part_kind,
                         index,
