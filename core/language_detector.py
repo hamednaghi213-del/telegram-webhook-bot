@@ -1062,12 +1062,26 @@ def _detect_arabic_script_language(
     profile: Dict[str, int],
 ) -> LanguageDetectionResult:
 
+    # Normalize common Arabic glyph variants only for Persian
+    # lexical-marker matching. Keep the original text unchanged
+    # for Arabic/Urdu character evidence.
+    persian_marker_text = (
+        text
+        .replace("ي", "ی")
+        .replace("ى", "ی")
+        .replace("ك", "ک")
+    )
+
     words = tokenize_words(
         text
     )
 
+    persian_words = tokenize_words(
+        persian_marker_text
+    )
+
     fa_words = _word_marker_score(
-        words,
+        persian_words,
         PERSIAN_WORDS,
     )
 
