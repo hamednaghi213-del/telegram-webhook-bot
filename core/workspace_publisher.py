@@ -92,10 +92,16 @@ def build_workspace_management_panel(workspace: Dict, destinations: List[Dict]):
         platform = "تلگرام" if destination.get("platform") == "telegram" else "بله"
         label = f"{'✅' if active else '⬜'} {destination.get('external_id')} — {platform}"
         lines.append(label)
-        keyboard.append([{
-            "text": label[:60],
-            "callback_data": f"ws:dest:toggle:{int(destination['id'])}",
-        }])
+        keyboard.append([
+    {
+        "text": label[:48],
+        "callback_data": f"ws:dest:toggle:{int(destination['id'])}",
+    },
+    {
+        "text": "🌐 زبان و ترجمه",
+        "callback_data": f"ws:dest:language:{int(destination['id'])}",
+    },
+])
     if not destinations:
         lines.append("هنوز کانالی در این گروه نیست.")
     lines.extend([
@@ -1965,6 +1971,339 @@ def _handle_workspace_callback(
             _ws_edit_message_text(api_url, callback_query, panel_text, panel_keyboard)
         except (KeyError, TypeError, ValueError):
             _ws_answer_callback(api_url, callback_id, "کانال معتبر یا قابل مدیریت نیست")
+
+    elif callback_data.startswith("ws:dest:language:") and len(parts) == 4:
+        from core import database as database_module
+        from core.workspace_destinations import can_manage_destinations
+
+        try:
+            destination_id = int(parts[3])
+            user = _identity_for_chat(chat_id)
+
+            destination = database_module.get_publication_destination(
+                destination_id
+            )
+
+            workspace_id = int(
+                (destination or {})["workspace_id"]
+            )
+
+            workspace = database_module.get_workspace(
+                workspace_id
+            )
+
+            member = database_module.get_workspace_member(
+                workspace_id,
+                (user or {})["id"],
+            )
+
+            allowed, _reason = can_manage_destinations(
+                (member or {}).get("role")
+            )
+
+            if (
+                not user
+                or not destination
+                or destination.get("status") == "removed"
+                or not workspace
+                or workspace.get("status") != "active"
+                or not member
+                or member.get("status") != "active"
+                or not allowed
+            ):
+                raise ValueError(
+                    "اجازه مدیریت این کانال را ندارید."
+                )
+
+            translation_enabled = bool(
+                destination.get("translation_enabled")
+            )
+
+            target_language_code = str(
+                destination.get("target_language_code")
+                or ""
+            ).strip()
+
+            translation_label = (
+                "روشن ✅"
+                if translation_enabled
+                else "خاموش ⛔"
+            )
+
+            language_label = (
+                target_language_code
+                if target_language_code
+                else "تعیین نشده"
+            )
+
+            text = (
+                f"🌐 تنظیمات زبان کانال\n\n"
+                f"کانال: {destination.get('external_id')}\n"
+                f"زبان مقصد: {language_label}\n"
+                f"ترجمه خودکار: {translation_label}"
+            )
+
+            keyboard = [
+                [{
+                    "text": "🌍 تغییر زبان مقصد",
+                    "callback_data": (
+                        f"ws:dest:language:set:"
+                        f"{destination_id}"
+                    ),
+                }],
+                [{
+                    "text": (
+                        "⛔ خاموش کردن ترجمه"
+                        if translation_enabled
+                        else "✅ روشن کردن ترجمه"
+                    ),
+                    "callback_data": (
+                        f"ws:dest:translation:toggle:"
+                        f"{destination_id}"
+                    ),
+                }],
+                [{
+                    "text": "⬅️ بازگشت",
+                    "callback_data": (
+                        f"ws:manage:{workspace_id}"
+                    ),
+                }],
+            ]
+
+            _ws_answer_callback(
+                api_url,
+                callback_id,
+                "تنظیمات زبان",
+            )
+
+            _ws_send_message_with_keyboard(
+                api_url,
+                chat_id,
+                text,
+                keyboard,
+            )
+
+        except (KeyError, TypeError, ValueError):
+            _ws_answer_callback(
+                api_url,
+                callback_id,
+                "کانال معتبر یا قابل مدیریت نیست",
+            )
+
+    elif (
+        callback_data.startswith("ws:dest:language:set:")
+        and len(parts) == 5
+    ):
+        from core import database as database_module
+        from core.workspace_destinations import can_manage_destinations
+
+        try:
+            destination_id = int(parts[4])
+            user = _identity_for_chat(chat_id)
+
+            destination = database_module.get_publication_destination(
+                destination_id
+            )
+
+            workspace_id = int(
+                (destination or {})["workspace_id"]
+            )
+
+            workspace = database_module.get_workspace(
+                workspace_id
+            )
+
+            member = database_module.get_workspace_member(
+                workspace_id,
+                (user or {})["id"],
+            )
+
+            allowed, _reason = can_manage_destinations(
+                (member or {}).get("role")
+            )
+
+            if (
+                not user
+                or not destination
+                or destination.get("status") == "removed"
+                or not workspace
+                or workspace.get("status") != "active"
+                or not member
+                or member.get("status") != "active"
+                or not allowed
+            ):
+                raise ValueError(
+                    "اجازه مدیریت این کانال را ندارید."
+                )
+
+            database_module.set_user_pending_workspace_action(
+                user["id"],
+                f"set_destination_language:{destination_id}",
+                workspace_id,
+            )
+
+            _ws_answer_callback(
+                api_url,
+                callback_id,
+                "کد زبان را ارسال کنید",
+            )
+
+            _ws_send_message(
+                api_url,
+                chat_id,
+                (
+                    "🌍 کد زبان مقصد را بفرستید.\n\n"
+                    "مثال‌ها:\n"
+                    "de — آلمانی\n"
+                    "fr — فرانسوی\n"
+                    "ar — عربی\n"
+                    "tr — ترکی\n"
+                    "es — اسپانیایی\n"
+                    "pt-BR — پرتغالی برزیل\n"
+                    "zh-Hant — چینی سنتی\n\n"
+                    "برای لغو: /cancel"
+                ),
+            )
+
+        except (KeyError, TypeError, ValueError):
+            _ws_answer_callback(
+                api_url,
+                callback_id,
+                "کانال معتبر یا قابل مدیریت نیست",
+            )
+
+    elif (
+        callback_data.startswith("ws:dest:translation:toggle:")
+        and len(parts) == 5
+    ):
+        from core import database as database_module
+        from core.workspace_destinations import can_manage_destinations
+
+        try:
+            destination_id = int(parts[4])
+            user = _identity_for_chat(chat_id)
+
+            destination = database_module.get_publication_destination(
+                destination_id
+            )
+
+            workspace_id = int(
+                (destination or {})["workspace_id"]
+            )
+
+            workspace = database_module.get_workspace(
+                workspace_id
+            )
+
+            member = database_module.get_workspace_member(
+                workspace_id,
+                (user or {})["id"],
+            )
+
+            allowed, _reason = can_manage_destinations(
+                (member or {}).get("role")
+            )
+
+            if (
+                not user
+                or not destination
+                or destination.get("status") == "removed"
+                or not workspace
+                or workspace.get("status") != "active"
+                or not member
+                or member.get("status") != "active"
+                or not allowed
+            ):
+                raise ValueError(
+                    "اجازه مدیریت این کانال را ندارید."
+                )
+
+            new_enabled = not bool(
+                destination.get("translation_enabled")
+            )
+
+            database_module.update_publication_destination(
+                destination_id,
+                translation_enabled=new_enabled,
+            )
+
+            _ws_answer_callback(
+                api_url,
+                callback_id,
+                (
+                    "ترجمه خودکار روشن شد"
+                    if new_enabled
+                    else "ترجمه خودکار خاموش شد"
+                ),
+            )
+
+            fresh_destination = (
+                database_module.get_publication_destination(
+                    destination_id
+                )
+            )
+
+            target_language_code = str(
+                fresh_destination.get(
+                    "target_language_code"
+                )
+                or ""
+            ).strip()
+
+            language_label = (
+                target_language_code
+                if target_language_code
+                else "تعیین نشده"
+            )
+
+            text = (
+                f"🌐 تنظیمات زبان کانال\n\n"
+                f"کانال: {fresh_destination.get('external_id')}\n"
+                f"زبان مقصد: {language_label}\n"
+                f"ترجمه خودکار: "
+                f"{'روشن ✅' if new_enabled else 'خاموش ⛔'}"
+            )
+
+            keyboard = [
+                [{
+                    "text": "🌍 تغییر زبان مقصد",
+                    "callback_data": (
+                        f"ws:dest:language:set:"
+                        f"{destination_id}"
+                    ),
+                }],
+                [{
+                    "text": (
+                        "⛔ خاموش کردن ترجمه"
+                        if new_enabled
+                        else "✅ روشن کردن ترجمه"
+                    ),
+                    "callback_data": (
+                        f"ws:dest:translation:toggle:"
+                        f"{destination_id}"
+                    ),
+                }],
+                [{
+                    "text": "⬅️ بازگشت",
+                    "callback_data": (
+                        f"ws:manage:{workspace_id}"
+                    ),
+                }],
+            ]
+
+            _ws_edit_message_text(
+                api_url,
+                callback_query,
+                text,
+                keyboard,
+            )
+
+        except (KeyError, TypeError, ValueError):
+            _ws_answer_callback(
+                api_url,
+                callback_id,
+                "کانال معتبر یا قابل مدیریت نیست",
+            )
 
     elif callback_data.startswith("ws:move:") and len(parts) >= 4:
         from core import database as database_module
