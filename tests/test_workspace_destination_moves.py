@@ -274,3 +274,281 @@ def test_forged_destination_toggle_is_rejected(monkeypatch, role, status):
 
     assert updates == []
     assert answers and "قابل مدیریت نیست" in answers[-1][-1]
+
+def test_management_panel_adds_language_settings_button_per_destination():
+    _text, keyboard = build_workspace_management_panel(
+        {"id": 2, "name": "سیاسی"},
+        [
+            dest(10, 2, "telegram", "@one"),
+            dest(11, 2, "bale", "@two"),
+        ],
+    )
+
+    callbacks = [
+        button["callback_data"]
+        for row in keyboard
+        for button in row
+    ]
+
+    assert "ws:dest:language:10" in callbacks
+    assert "ws:dest:language:11" in callbacks
+
+def test_destination_language_panel_shows_current_settings(monkeypatch):
+    database = _load_real_database(monkeypatch)
+    from core import workspace_publisher
+
+    row = dest(
+        10,
+        2,
+        "telegram",
+        "@one",
+        target_language_code="de",
+        translation_enabled=True,
+    )
+
+    sent = []
+
+    monkeypatch.setattr(
+        database,
+        "get_user_by_telegram_id",
+        lambda _chat: {"id": 7},
+    )
+    monkeypatch.setattr(
+        database,
+        "get_publication_destination",
+        lambda _id: deepcopy(row),
+    )
+    monkeypatch.setattr(
+        database,
+        "get_workspace",
+        lambda _id: {
+            "id": 2,
+            "name": "سیاسی",
+            "status": "active",
+        },
+    )
+    monkeypatch.setattr(
+        database,
+        "get_workspace_member",
+        lambda _wid, _uid: {
+            "role": "manager",
+            "status": "active",
+        },
+    )
+    monkeypatch.setattr(
+        workspace_publisher,
+        "_ws_answer_callback",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        workspace_publisher,
+        "_ws_send_message_with_keyboard",
+        lambda *args: sent.append(args),
+    )
+
+    workspace_publisher._handle_workspace_callback(
+        {
+            "id": "cb",
+            "data": "ws:dest:language:10",
+            "from": {"id": 100},
+        },
+        "req",
+        "https://api.test",
+    )
+
+    assert sent
+    assert "زبان مقصد: de" in sent[0][2]
+    assert "ترجمه خودکار: روشن ✅" in sent[0][2]
+
+    keyboard = sent[0][3]
+    callbacks = [
+        button["callback_data"]
+        for row in keyboard
+        for button in row
+    ]
+
+    assert "ws:dest:language:set:10" in callbacks
+    assert "ws:dest:translation:toggle:10" in callbacks
+
+def test_translation_toggle_updates_only_selected_destination(monkeypatch):
+    database = _load_real_database(monkeypatch)
+    from core import workspace_publisher
+
+    row = dest(
+        10,
+        2,
+        "telegram",
+        "@one",
+        target_language_code="de",
+        translation_enabled=False,
+    )
+
+    updates = []
+    edits = []
+
+    monkeypatch.setattr(
+        database,
+        "get_user_by_telegram_id",
+        lambda _chat: {"id": 7},
+    )
+    monkeypatch.setattr(
+        database,
+        "get_publication_destination",
+        lambda _id: deepcopy(row),
+    )
+    monkeypatch.setattr(
+        database,
+        "get_workspace",
+        lambda _id: {
+            "id": 2,
+            "name": "سیاسی",
+            "status": "active",
+        },
+    )
+    monkeypatch.setattr(
+        database,
+        "get_workspace_member",
+        lambda _wid, _uid: {
+            "role": "manager",
+            "status": "active",
+        },
+    )
+    monkeypatch.setattr(
+        database,
+        "update_publication_destination",
+        lambda did, **fields: updates.append((did, fields)),
+    )
+
+    fresh_row = {
+        **row,
+        "translation_enabled": True,
+    }
+
+    calls = {"count": 0}
+
+    def get_destination(_id):
+        calls["count"] += 1
+        return deepcopy(
+            row if calls["count"] == 1 else fresh_row
+        )
+
+    monkeypatch.setattr(
+        database,
+        "get_publication_destination",
+        get_destination,
+    )
+
+    monkeypatch.setattr(
+        workspace_publisher,
+        "_ws_answer_callback",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        workspace_publisher,
+        "_ws_edit_message_text",
+        lambda *args: edits.append(args),
+    )
+
+    workspace_publisher._handle_workspace_callback(
+        {
+            "id": "cb",
+            "data": "ws:dest:translation:toggle:10",
+            "from": {"id": 100},
+            "message": {
+                "chat": {"id": 100},
+                "message_id": 5,
+            },
+        },
+        "req",
+        "https://api.test",
+    )
+
+    assert updates == [
+        (10, {"translation_enabled": True})
+    ]
+
+    assert edits
+    assert "زبان مقصد: de" in edits[0][2]
+    assert "ترجمه خودکار: روشن ✅" in edits[0][2]
+
+def test_destination_language_input_updates_selected_destination(monkeypatch):
+    database = _load_real_database(monkeypatch)
+    from core import command_handler
+    monkeypatch.setattr(
+        command_handler,
+        "_identity_for_chat",
+        lambda _chat: deepcopy(user),
+    )
+
+    user = {
+        "id": 7,
+        "telegram_user_id": 100,
+        "status": "active",
+        "pending_workspace_action": "set_destination_language:10",
+        "pending_workspace_id": 2,
+    }
+
+    destination = dest(
+        10,
+        2,
+        "telegram",
+        "@one",
+        target_language_code="",
+        translation_enabled=False,
+    )
+
+    updates = []
+    messages = []
+
+    monkeypatch.setattr(
+        database,
+        "get_user_by_telegram_id",
+        lambda _chat: deepcopy(user),
+    )
+    monkeypatch.setattr(
+        database,
+        "get_user_by_id",
+        lambda _uid: deepcopy(user),
+    )
+    monkeypatch.setattr(
+        database,
+        "get_publication_destination",
+        lambda _id: deepcopy(destination),
+    )
+    monkeypatch.setattr(
+        database,
+        "get_workspace_member",
+        lambda _wid, _uid: {
+            "role": "manager",
+            "status": "active",
+        },
+    )
+    monkeypatch.setattr(
+        database,
+        "update_publication_destination",
+        lambda did, **fields: updates.append((did, fields)),
+    )
+    monkeypatch.setattr(
+        database,
+        "clear_user_pending_workspace_action",
+        lambda _uid: True,
+    )
+    monkeypatch.setattr(
+        command_handler,
+        "send_message",
+        lambda chat_id, text, parse_mode=None: messages.append(
+            (chat_id, text)
+        ) or True,
+    )
+
+    handled = command_handler.handle_workspace_stateful_input(
+        "de",
+        100,
+    )
+
+    assert handled is True
+    assert updates == [
+        (10, {"target_language_code": "de"})
+    ]
+    assert messages
+    assert "de" in messages[-1][1]

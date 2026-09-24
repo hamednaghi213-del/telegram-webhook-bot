@@ -1049,6 +1049,98 @@ def handle_workspace_stateful_input(text: str, chat_id: int) -> bool:
     refreshed_user = database_module.get_user_by_id(user["id"]) or user
     action = refreshed_user.get("pending_workspace_action")
 
+    if (
+        isinstance(action, str)
+        and action.startswith("set_destination_language:")
+    ):
+        try:
+            destination_id = int(action.rsplit(":", 1)[1])
+        except (TypeError, ValueError):
+            database_module.clear_user_pending_workspace_action(
+                user["id"]
+            )
+            send_message(
+                chat_id,
+                "❌ درخواست تنظیم زبان معتبر نیست.",
+            )
+            return True
+
+        language_code = value.replace("_", "-").strip()
+
+        if not re.fullmatch(
+            r"[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*",
+            language_code,
+        ):
+            send_message(
+                chat_id,
+                (
+                    "❌ کد زبان معتبر نیست.\n"
+                    "مثال: de ، fr ، ar ، tr ، es ، pt-BR ، zh-Hant\n"
+                    "دوباره کد زبان را بفرستید یا /cancel را بزنید."
+                ),
+            )
+            return True
+
+        destination = (
+            database_module.get_publication_destination(
+                destination_id
+            )
+        )
+
+        workspace_id = int(
+            (destination or {}).get("workspace_id") or 0
+        )
+
+        member = (
+            database_module.get_workspace_member(
+                workspace_id,
+                user["id"],
+            )
+            if workspace_id
+            else None
+        )
+
+        allowed, _reason = can_manage_destinations(
+            (member or {}).get("role")
+        )
+
+        if (
+            not destination
+            or destination.get("status") == "removed"
+            or not member
+            or member.get("status") != "active"
+            or not allowed
+        ):
+            database_module.clear_user_pending_workspace_action(
+                user["id"]
+            )
+            send_message(
+                chat_id,
+                "❌ امکان تغییر زبان این کانال وجود ندارد.",
+            )
+            return True
+
+        normalized_language_code = language_code.lower()
+
+        database_module.update_publication_destination(
+            destination_id,
+            target_language_code=normalized_language_code,
+        )
+
+        database_module.clear_user_pending_workspace_action(
+            user["id"]
+        )
+
+        send_message(
+            chat_id,
+            (
+                "✅ زبان مقصد کانال تنظیم شد:\n"
+                f"🌐 {normalized_language_code}"
+            ),
+        )
+
+        return True
+
     if action in {"create_workspace_name", "rename_workspace"}:
         valid, name_or_error = _validate_workspace_name(value)
         if not valid:
