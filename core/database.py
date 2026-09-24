@@ -1552,10 +1552,13 @@ def register_setup_destination_canonical(
     calls the move RPC, which would remove another workspace's association.
     """
     workspace_id = int(workspace_id)
-    if not get_workspace(workspace_id):
+    workspace = get_workspace(workspace_id)
+    if not workspace:
         raise ValueError(f"Workspace not found: {workspace_id}")
+
     platform = _validate_enum(
-        platform, PUBLICATION_DESTINATION_PLATFORMS,
+        platform,
+        PUBLICATION_DESTINATION_PLATFORMS,
         "publication destination platform",
     )
     external_id = _validate_external_id(external_id)
@@ -1563,6 +1566,103 @@ def register_setup_destination_canonical(
     if not normalized:
         raise ValueError("Publication destination external_id is required")
     name = _validate_destination_name(name)
+
+    owner_user_id = workspace.get("owner_user_id")
+    if owner_user_id is None:
+        raise RuntimeError(
+            f"Workspace owner is missing: {workspace_id}"
+        )
+    owner_user_id = int(owner_user_id)
+    media_identity_key = f"workspace:{workspace_id}"
+
+    if service_supabase is None:
+        raise RuntimeError(
+            "Service role is required to register canonical media identity"
+        )
+
+    def ensure_workspace_media_identity() -> Dict[str, Any]:
+        result = (
+            service_supabase
+            .table("media_identities")
+            .select("*")
+            .eq("identity_key", media_identity_key)
+            .limit(1)
+            .execute()
+        )
+        media_identity = _first_row(result)
+
+        if media_identity is None:
+            now = time.time()
+            try:
+                result = (
+                    service_supabase
+                    .table("media_identities")
+                    .insert({
+                        "identity_key": media_identity_key,
+                        "media_name": name,
+                        "status": "active",
+                        "created_at": now,
+                        "updated_at": now,
+                    })
+                    .execute()
+                )
+                media_identity = _first_row(result)
+            except Exception:
+                result = (
+                    service_supabase
+                    .table("media_identities")
+                    .select("*")
+                    .eq("identity_key", media_identity_key)
+                    .limit(1)
+                    .execute()
+                )
+                media_identity = _first_row(result)
+
+        if media_identity is None:
+            raise RuntimeError(
+                "Failed to create canonical media identity "
+                f"for workspace {workspace_id}"
+            )
+
+        return media_identity
+
+    def ensure_workspace_media_owner(media_identity_id: int) -> None:
+        service_supabase.table("media_identity_members").upsert(
+            {
+                "media_identity_id": int(media_identity_id),
+                "user_id": owner_user_id,
+                "role": "owner",
+                "status": "active",
+                "updated_at": time.time(),
+            },
+            on_conflict="media_identity_id,user_id",
+        ).execute()
+
+    def repair_missing_media_identity(
+        current_destination: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        media_identity_id = current_destination.get("media_identity_id")
+        if media_identity_id is not None:
+            return current_destination
+
+        media_identity = ensure_workspace_media_identity()
+        media_identity_id = int(media_identity["id"])
+        ensure_workspace_media_owner(media_identity_id)
+
+        result = (
+            service_supabase
+            .table("publication_destinations")
+            .update({
+                "media_identity_id": media_identity_id,
+                "updated_at": time.time(),
+            })
+            .eq("id", int(current_destination["id"]))
+            .execute()
+        )
+        return _first_row(result) or {
+            **current_destination,
+            "media_identity_id": media_identity_id,
+        }
 
     def find_canonical():
         result = (
@@ -1575,8 +1675,6 @@ def register_setup_destination_canonical(
 
     destination = find_canonical()
     if destination is None:
-        # Migration 016 left older rows' normalized IDs nullable. Reuse a
-        # unique legacy row instead of making a second physical destination.
         legacy_rows = (
             supabase.table("publication_destinations").select("*")
             .eq("platform", platform)
@@ -1603,6 +1701,7 @@ def register_setup_destination_canonical(
                 destination = find_canonical()
                 if destination is None:
                     raise
+
     if destination is None:
         now = time.time()
         try:
@@ -1620,12 +1719,14 @@ def register_setup_destination_canonical(
             }).execute()
             destination = _first_row(result)
         except Exception:
-            # A concurrent insert may have won the canonical unique index.
             destination = find_canonical()
             if destination is None:
                 raise
+
         if destination is None:
-            raise RuntimeError("Canonical destination insert returned no row")
+            raise RuntimeError(
+                "Canonical destination insert returned no row"
+            )
 
     def active_associations():
         return (
@@ -1636,32 +1737,52 @@ def register_setup_destination_canonical(
         )
 
     associations = active_associations()
+
     if associations:
-        if any(int(row["workspace_id"]) != workspace_id for row in associations):
+        if any(
+            int(row["workspace_id"]) != workspace_id
+            for row in associations
+        ):
             return destination, "owned_elsewhere"
-        return destination, "same_workspace"
+
+        if any(
+            int(row["workspace_id"]) == workspace_id
+            for row in associations
+        ):
+            destination = repair_missing_media_identity(destination)
+            return destination, "same_workspace"
 
     now = time.time()
 
-    if service_supabase is None:
-        raise RuntimeError(
-            "Service role is required to associate workspace destinations"
-        )
-
     try:
-        service_supabase.table("workspace_destinations").upsert({
-            "workspace_id": workspace_id,
-            "destination_id": int(destination["id"]),
-            "status": "active",
-            "updated_at": now,
-        }, on_conflict="workspace_id,destination_id").execute()
+        service_supabase.table("workspace_destinations").upsert(
+            {
+                "workspace_id": workspace_id,
+                "destination_id": int(destination["id"]),
+                "status": "active",
+                "updated_at": now,
+            },
+            on_conflict="workspace_id,destination_id",
+        ).execute()
     except Exception:
         associations = active_associations()
-        if any(int(row["workspace_id"]) != workspace_id for row in associations):
+
+        if any(
+            int(row["workspace_id"]) != workspace_id
+            for row in associations
+        ):
             return destination, "owned_elsewhere"
-        if any(int(row["workspace_id"]) == workspace_id for row in associations):
+
+        if any(
+            int(row["workspace_id"]) == workspace_id
+            for row in associations
+        ):
+            destination = repair_missing_media_identity(destination)
             return destination, "same_workspace"
+
         raise
+
+    destination = repair_missing_media_identity(destination)
     return destination, "associated"
 
 
@@ -5316,4 +5437,3 @@ def mark_persistent_translation_review_confirmed(
         review_id,
         status="confirmed",
     )
-
