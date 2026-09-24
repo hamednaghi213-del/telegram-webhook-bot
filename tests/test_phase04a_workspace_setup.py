@@ -1887,3 +1887,61 @@ def test_owned_destination_failure_is_clear_and_consumed(monkeypatch):
     assert "خطا در افزودن بله" not in sent[-1][1]
     assert len(db.workspace_destinations) == 2
 
+def test_stateful_bale_input_uses_active_incomplete_workspace(monkeypatch):
+    ws_mod, ch_mod, db, _ = _load_modules(monkeypatch)
+
+    telegram_id = 99001
+    user = db.get_or_create_user_by_telegram_id(telegram_id)
+
+    older_workspace = db.create_workspace(
+        "Older workspace",
+        user["id"],
+    )
+    active_workspace = db.create_workspace(
+        "Active workspace",
+        user["id"],
+    )
+
+    ws_mod.start_setup(older_workspace["id"])
+    ws_mod.start_setup(active_workspace["id"])
+
+    ws_mod.advance_to_step(
+        older_workspace["id"],
+        "setup_channel",
+    )
+    ws_mod.advance_to_step(
+        active_workspace["id"],
+        "setup_bale_channel",
+    )
+
+    db.set_active_workspace(
+        user["id"],
+        active_workspace["id"],
+    )
+
+    calls = []
+
+    monkeypatch.setattr(
+        ch_mod,
+        "handle_addchannel",
+        lambda value, chat_id: calls.append(
+            ("telegram", value, chat_id)
+        ) or True,
+    )
+
+    monkeypatch.setattr(
+        ch_mod,
+        "handle_addbale",
+        lambda value, chat_id: calls.append(
+            ("bale", value, chat_id)
+        ) or True,
+    )
+
+    assert ch_mod.handle_workspace_stateful_input(
+        "@samechannel",
+        telegram_id,
+    ) is True
+
+    assert calls == [
+        ("bale", "@samechannel", telegram_id)
+    ]

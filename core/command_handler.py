@@ -1095,7 +1095,24 @@ def handle_workspace_stateful_input(text: str, chat_id: int) -> bool:
     ]
     if not incomplete:
         return False
-    workspace = sorted(incomplete, key=lambda item: item.get("id", 0))[0]
+
+    preference = get_active_workspace_preference(user["id"]) or {}
+    active_workspace_id = preference.get("active_workspace_id")
+
+    workspace = next(
+        (
+            item for item in incomplete
+            if item.get("id") == active_workspace_id
+        ),
+        None,
+    )
+
+    if workspace is None:
+        workspace = sorted(
+            incomplete,
+            key=lambda item: item.get("id", 0),
+        )[0]
+
     state = get_workspace_setup_state(workspace["id"]) or {}
     current = state.get("current_step_key")
     if current == "setup_channel":
