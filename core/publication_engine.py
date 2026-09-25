@@ -1964,6 +1964,19 @@ def publish_prepared_content(
         unique_targets.values()
     )
 
+    # Keep Telegram publication latency isolated from Bale media upload
+    # latency. Bale multipart uploads may legitimately take longer or retry,
+    # so all Telegram destinations are executed first while preserving the
+    # existing relative order within each platform group.
+    targets = sorted(
+        targets,
+        key=lambda target: (
+            0
+            if target.platform == "telegram"
+            else 1
+        ),
+    )
+
     if not allow_duplicate:
         duplicate_decisions = (
             _duplicate_decisions_for_targets(
