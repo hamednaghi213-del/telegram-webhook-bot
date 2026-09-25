@@ -223,6 +223,53 @@ def test_management_panel_scales_without_fixed_destination_limit():
     assert sum(1 for row in keyboard if row[0]["callback_data"].startswith("ws:dest:toggle:")) == 100
 
 
+def _panel_callbacks(destinations):
+    _text, keyboard = build_workspace_management_panel(
+        {"id": 2, "name": "سیاسی"},
+        destinations,
+    )
+    return [
+        button["callback_data"]
+        for row in keyboard
+        for button in row
+    ]
+
+
+def test_management_panel_with_only_telegram_offers_only_bale_add():
+    callbacks = _panel_callbacks([
+        dest(10, 2, "telegram", "@telegram_only"),
+    ])
+
+    assert "ws:addbale:2" in callbacks
+    assert "ws:addtelegram:2" not in callbacks
+
+
+def test_management_panel_with_only_bale_offers_only_telegram_add():
+    callbacks = _panel_callbacks([
+        dest(11, 2, "bale", "@bale_only"),
+    ])
+
+    assert "ws:addtelegram:2" in callbacks
+    assert "ws:addbale:2" not in callbacks
+
+
+def test_management_panel_with_no_destinations_offers_both_platforms():
+    callbacks = _panel_callbacks([])
+
+    assert "ws:addtelegram:2" in callbacks
+    assert "ws:addbale:2" in callbacks
+
+
+def test_management_panel_with_both_platforms_offers_no_add_platform_button():
+    callbacks = _panel_callbacks([
+        dest(10, 2, "telegram", "@telegram"),
+        dest(11, 2, "bale", "@bale"),
+    ])
+
+    assert "ws:addtelegram:2" not in callbacks
+    assert "ws:addbale:2" not in callbacks
+
+
 def test_destination_toggle_is_authorized_and_does_not_touch_workspace_selection(monkeypatch):
     database = _load_real_database(monkeypatch)
     from core import workspace_publisher

@@ -1638,11 +1638,60 @@ def register_setup_destination_canonical(
             on_conflict="media_identity_id,user_id",
         ).execute()
 
+    def repair_workspace_media_identity(
+        current_destination: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Align a destination owned by this workspace to its canonical media identity.
+
+        Missing and stale/wrong media_identity_id values are repaired in place.
+        This helper is called only after ownership checks have proven that the
+        destination belongs to this workspace, so it never reassigns a
+        destination owned by another workspace.
+        """
+        media_identity = ensure_workspace_media_identity()
+        canonical_media_identity_id = int(media_identity["id"])
+        ensure_workspace_media_owner(canonical_media_identity_id)
+
+        current_media_identity_id = current_destination.get(
+            "media_identity_id"
+        )
+        try:
+            already_canonical = (
+                current_media_identity_id is not None
+                and int(current_media_identity_id)
+                == canonical_media_identity_id
+            )
+        except (TypeError, ValueError):
+            already_canonical = False
+
+        if already_canonical:
+            return current_destination
+
+        result = (
+            service_supabase
+            .table("publication_destinations")
+            .update({
+                "media_identity_id": canonical_media_identity_id,
+                "updated_at": time.time(),
+            })
+            .eq("id", int(current_destination["id"]))
+            .execute()
+        )
+        return _first_row(result) or {
+            **current_destination,
+            "media_identity_id": canonical_media_identity_id,
+        }
+
     def repair_missing_media_identity(
         current_destination: Dict[str, Any],
     ) -> Dict[str, Any]:
-        media_identity_id = current_destination.get("media_identity_id")
-        if media_identity_id is not None:
+        """Fill only a missing media identity for a newly associated destination.
+
+        If an unassociated physical destination already has a media identity,
+        preserve it. This keeps the existing canonical association contract while
+        allowing same-workspace re-registration to repair stale identity links.
+        """
+        if current_destination.get("media_identity_id") is not None:
             return current_destination
 
         media_identity = ensure_workspace_media_identity()
@@ -1749,7 +1798,7 @@ def register_setup_destination_canonical(
             int(row["workspace_id"]) == workspace_id
             for row in associations
         ):
-            destination = repair_missing_media_identity(destination)
+            destination = repair_workspace_media_identity(destination)
             return destination, "same_workspace"
 
     now = time.time()
@@ -1777,7 +1826,7 @@ def register_setup_destination_canonical(
             int(row["workspace_id"]) == workspace_id
             for row in associations
         ):
-            destination = repair_missing_media_identity(destination)
+            destination = repair_workspace_media_identity(destination)
             return destination, "same_workspace"
 
         raise

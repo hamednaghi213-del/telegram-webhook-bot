@@ -1360,21 +1360,35 @@ def handle_addchannel(args: str, chat_id: int) -> bool:
         )
 
         if is_dup:
-            send_message_with_keyboard(
+            send_message(
                 chat_id,
-                f"⚠️ کانال {external_id} قبلاً اضافه شده است.\n\n"
-                "می‌توانید کانال دیگری اضافه کنید یا ادامه دهید.",
-                _setup_destination_actions_keyboard(workspace["id"]),
+                f"⚠️ کانال {external_id} قبلاً در همین رسانه ثبت شده است.\n\n"
+                "🔍 در حال بررسی مجدد دسترسی ادمین ربات...",
             )
+            if dest:
+                _verify_and_activate_channel(
+                    workspace["id"],
+                    dest,
+                    chat_id,
+                )
+                send_message_with_keyboard(
+                    chat_id,
+                    "مسیرهای بعدی:",
+                    _setup_destination_actions_keyboard(workspace["id"]),
+                )
         elif dest:
-            send_message_with_keyboard(
+            send_message(
                 chat_id,
                 f"✅ کانال {external_id} ثبت شد.\n\n"
                 "🔍 در حال بررسی دسترسی ادمین ربات...",
-                _setup_destination_actions_keyboard(workspace["id"]),
             )
             # Phase 4B: Real Telegram verification
             _verify_and_activate_channel(workspace["id"], dest, chat_id)
+            send_message_with_keyboard(
+                chat_id,
+                "مسیرهای بعدی:",
+                _setup_destination_actions_keyboard(workspace["id"]),
+            )
         else:
             send_message(chat_id, "❌ خطا در ثبت کانال. دوباره تلاش کنید.")
 
@@ -1441,18 +1455,117 @@ def _verify_and_activate_channel(
 
 
 def _setup_destination_actions_keyboard(workspace_id=None) -> list:
-    keyboard = [
-        [
+    """Build setup actions from the actual destinations of one workspace.
+
+    A platform that already exists is never offered as a second Add action.
+    Existing unverified destinations get an explicit reverify action instead.
+    The callback carries both workspace_id and destination_id so verification
+    stays scoped to the workspace that rendered the button.
+    """
+    keyboard = []
+
+    if workspace_id is None:
+        keyboard.append([
             {"text": "➕ افزودن کانال تلگرام", "callback_data": "setup:add_telegram"},
             {"text": "➕ افزودن کانال بله", "callback_data": "setup:add_bale"},
-        ],
-    ]
-    if workspace_id is not None:
+        ])
+    else:
+        workspace_id = int(workspace_id)
+        destinations = []
+        get_verification = None
+
+        try:
+            database_module = importlib.import_module("core.database")
+            list_destinations = getattr(
+                database_module,
+                "list_workspace_destinations",
+                None,
+            )
+            get_verification = getattr(
+                database_module,
+                "get_destination_verification",
+                None,
+            )
+            if callable(list_destinations):
+                destinations = list_destinations(
+                    workspace_id,
+                    include_removed=False,
+                ) or []
+        except Exception:
+            logger.exception(
+                "Failed to build workspace-scoped setup destination actions"
+            )
+            destinations = []
+
+        existing_platforms = {
+            str(destination.get("platform") or "").strip().lower()
+            for destination in destinations
+            if destination.get("status") != "removed"
+        }
+
+        if "telegram" not in existing_platforms:
+            keyboard.append([{
+                "text": "➕ افزودن کانال تلگرام",
+                "callback_data": "setup:add_telegram",
+            }])
+
+        if "bale" not in existing_platforms:
+            keyboard.append([{
+                "text": "➕ افزودن کانال بله",
+                "callback_data": "setup:add_bale",
+            }])
+
+        for destination in sorted(
+            destinations,
+            key=lambda item: int(item.get("id", 0)),
+        ):
+            platform = str(
+                destination.get("platform") or ""
+            ).strip().lower()
+            if platform not in {"telegram", "bale"}:
+                continue
+
+            verification = None
+            if callable(get_verification):
+                try:
+                    verification = get_verification(
+                        int(destination["id"])
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to read destination verification | "
+                        f"destination={destination.get('id')}"
+                    )
+
+            verified = bool(
+                verification
+                and verification.get("verified") is True
+            )
+            if verification is None and destination.get("status") == "active":
+                verified = True
+
+            if verified:
+                continue
+
+            platform_label = "تلگرام" if platform == "telegram" else "بله"
+            external_id = str(destination.get("external_id") or "").strip()
+            label_suffix = f" {external_id}" if external_id else ""
+            keyboard.append([{
+                "text": f"🔄 تأیید مجدد {platform_label}{label_suffix}"[:64],
+                "callback_data": (
+                    f"setup:reverify:{platform}:"
+                    f"{workspace_id}:{int(destination['id'])}"
+                ),
+            }])
+
         keyboard.append([{
             "text": "📥 انتقال کانال موجود",
-            "callback_data": f"ws:move:list:{int(workspace_id)}",
+            "callback_data": f"ws:move:list:{workspace_id}",
         }])
-    keyboard.append([{"text": "▶️ ادامه", "callback_data": "setup:continue_branding"}])
+
+    keyboard.append([
+        {"text": "▶️ ادامه", "callback_data": "setup:continue_branding"}
+    ])
     return keyboard
 
 
@@ -1500,9 +1613,20 @@ def handle_verifychannel(args: str, chat_id: int) -> bool:
             workspace["id"],
             include_removed=False
         )
+        normalized_external_id = (
+            external_id.strip().lstrip("@").casefold()
+        )
         target = None
         for destination in destinations:
-            if destination.get("external_id") == external_id:
+            if (
+                str(destination.get("platform") or "").strip().lower()
+                == "telegram"
+                and str(destination.get("external_id") or "")
+                .strip()
+                .lstrip("@")
+                .casefold()
+                == normalized_external_id
+            ):
                 target = destination
                 break
 
@@ -1693,11 +1817,21 @@ def handle_addbale(args: str, chat_id: int) -> bool:
             workspace["id"], external_id, external_id
         )
         if duplicate:
-            send_message_with_keyboard(
+            send_message(
                 chat_id,
-                "⚠️ این کانال بله قبلاً ثبت شده است.",
-                _setup_destination_actions_keyboard(workspace["id"]),
+                "⚠️ این کانال بله قبلاً در همین رسانه ثبت شده است.\n\n"
+                "🔍 در حال بررسی مجدد دسترسی ادمین ربات...",
             )
+            if destination:
+                _verify_and_activate_bale(
+                    destination,
+                    chat_id,
+                )
+                send_message_with_keyboard(
+                    chat_id,
+                    "مسیرهای بعدی:",
+                    _setup_destination_actions_keyboard(workspace["id"]),
+                )
             return True
         _verify_and_activate_bale(destination, chat_id)
         send_message_with_keyboard(
@@ -1730,11 +1864,19 @@ def handle_verifybale(args: str, chat_id: int) -> bool:
         if not allowed:
             send_message(chat_id, f"❌ {reason}")
             return True
+        normalized_external_id = (
+            external_id.strip().lstrip("@").casefold()
+        )
         destination = next(
             (
-                item for item in list_workspace_destinations(workspace["id"])
-                if item.get("platform") == "bale"
-                and item.get("external_id") == external_id
+                item
+                for item in list_workspace_destinations(workspace["id"])
+                if str(item.get("platform") or "").strip().lower() == "bale"
+                and str(item.get("external_id") or "")
+                .strip()
+                .lstrip("@")
+                .casefold()
+                == normalized_external_id
             ),
             None,
         )
@@ -3357,4 +3499,3 @@ def handle_command(text: str, chat_id: int) -> bool:
             "❌ خطا در پردازش دستور"
         )
         return False
-
