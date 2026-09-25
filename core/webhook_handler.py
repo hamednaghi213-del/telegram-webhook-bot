@@ -4816,12 +4816,90 @@ def handle_setup_callback(
         "setup:add_bale",
         "setup:continue_branding",
     }
-    if callback_data not in valid_actions:
+    is_reverify_action = callback_data.startswith("setup:reverify:")
+    if callback_data not in valid_actions and not is_reverify_action:
         _origin_answer_callback(callback_id, "دستور راه‌اندازی نامعتبر است.")
         return True
 
     if user_id is None:
         _origin_answer_callback(callback_id, "کاربر قابل تشخیص نیست.")
+        return True
+
+    if is_reverify_action:
+        parts = callback_data.split(":")
+        if len(parts) != 5:
+            _origin_answer_callback(callback_id, "درخواست تأیید مجدد نامعتبر است.")
+            return True
+
+        platform = str(parts[2] or "").strip().lower()
+        try:
+            workspace_id = int(parts[3])
+            destination_id = int(parts[4])
+        except (TypeError, ValueError):
+            _origin_answer_callback(callback_id, "درخواست تأیید مجدد نامعتبر است.")
+            return True
+
+        if platform not in {"telegram", "bale"}:
+            _origin_answer_callback(callback_id, "پلتفرم مقصد نامعتبر است.")
+            return True
+
+        from core.command_handler import (
+            _authorize_destination_manager,
+            _identity_for_chat,
+            _verify_and_activate_bale,
+            _verify_and_activate_channel,
+        )
+        from core.database import (
+            get_workspace,
+            list_workspace_destinations,
+        )
+
+        user = _identity_for_chat(int(user_id))
+        workspace = get_workspace(workspace_id)
+        if not user or not workspace:
+            _origin_answer_callback(callback_id, "گروه رسانه‌ای یافت نشد.")
+            return True
+
+        allowed, reason = _authorize_destination_manager(
+            user,
+            workspace,
+        )
+        if not allowed:
+            _origin_answer_callback(callback_id, f"اجازه این کار را ندارید: {reason}")
+            return True
+
+        destination = next(
+            (
+                item
+                for item in list_workspace_destinations(
+                    workspace_id,
+                    include_removed=False,
+                )
+                if int(item.get("id", 0)) == destination_id
+                and str(item.get("platform") or "").strip().lower()
+                == platform
+            ),
+            None,
+        )
+        if not destination:
+            _origin_answer_callback(
+                callback_id,
+                "این مقصد در این گروه رسانه‌ای یافت نشد.",
+            )
+            return True
+
+        _origin_answer_callback(callback_id, "در حال بررسی مجدد دسترسی...")
+        if platform == "telegram":
+            _verify_and_activate_channel(
+                workspace_id,
+                destination,
+                int(user_id),
+            )
+        else:
+            _verify_and_activate_bale(
+                destination,
+                int(user_id),
+            )
         return True
 
     if callback_data in {"setup:create_workspace", "setup:add_media"}:
@@ -7676,5 +7754,3 @@ def handle_webhook() -> Tuple[
                     e
                 )
         }, 500
-
-

@@ -83,45 +83,108 @@ def selected_destination_ids_from_callback(callback_query: Dict) -> set:
 
 
 def build_workspace_management_panel(workspace: Dict, destinations: List[Dict]):
-    """Render destination state directly on the workspace management page."""
+    """Render destination state and remaining-platform actions."""
     workspace_id = int(workspace["id"])
     lines = [f"📁 {workspace.get('name') or workspace_id}", ""]
     keyboard = []
-    for destination in sorted(destinations, key=lambda item: int(item.get("id", 0))):
+
+    visible_destinations = [
+        destination
+        for destination in (destinations or [])
+        if destination.get("status") != "removed"
+    ]
+
+    for destination in sorted(
+        visible_destinations,
+        key=lambda item: int(item.get("id", 0)),
+    ):
         active = destination.get("status") == "active"
-        platform = "تلگرام" if destination.get("platform") == "telegram" else "بله"
-        label = f"{'✅' if active else '⬜'} {destination.get('external_id')} — {platform}"
+        platform = (
+            "تلگرام"
+            if destination.get("platform") == "telegram"
+            else "بله"
+        )
+        label = (
+            f"{'✅' if active else '⬜'} "
+            f"{destination.get('external_id')} — {platform}"
+        )
+
         lines.append(label)
+
         keyboard.append([
-    {
-        "text": label[:48],
-        "callback_data": f"ws:dest:toggle:{int(destination['id'])}",
-    },
-    {
-        "text": "🌐 زبان و ترجمه",
-        "callback_data": f"ws:dest:language:{int(destination['id'])}",
-    },
-])
-    if not destinations:
+            {
+                "text": label[:48],
+                "callback_data": (
+                    f"ws:dest:toggle:{int(destination['id'])}"
+                ),
+            },
+            {
+                "text": "🌐 زبان و ترجمه",
+                "callback_data": (
+                    f"ws:dest:language:{int(destination['id'])}"
+                ),
+            },
+        ])
+
+    if not visible_destinations:
         lines.append("هنوز کانالی در این گروه نیست.")
+
+    existing_platforms = {
+        str(destination.get("platform") or "").strip().lower()
+        for destination in visible_destinations
+    }
+
+    add_rows = []
+    add_labels = []
+
+    if "telegram" not in existing_platforms:
+        add_rows.append([{
+            "text": "➕ افزودن کانال تلگرام",
+            "callback_data": f"ws:addtelegram:{workspace_id}",
+        }])
+        add_labels.append("➕ افزودن کانال تلگرام")
+
+    if "bale" not in existing_platforms:
+        add_rows.append([{
+            "text": "➕ افزودن کانال بله",
+            "callback_data": f"ws:addbale:{workspace_id}",
+        }])
+        add_labels.append("➕ افزودن کانال بله")
+
+    lines.append("")
+    lines.append("✏️ تغییر نام گروه")
+    lines.extend(add_labels)
     lines.extend([
-        "",
-        "✏️ تغییر نام گروه",
-        "➕ افزودن کانال",
         "📥 انتقال کانال موجود",
         "👥 مدیریت اعضا",
         "⚙️ تنظیمات رسانه",
     ])
-    keyboard.extend([
-        [{"text": "✏️ تغییر نام گروه", "callback_data": f"ws:rename:{workspace_id}"}],
-        [{"text": "➕ افزودن کانال", "callback_data": f"ws:addchannel:{workspace_id}"}],
-        [{"text": "📥 انتقال کانال موجود", "callback_data": f"ws:move:list:{workspace_id}"}],
-        [{"text": "👥 مدیریت اعضا", "callback_data": f"ws:members:{workspace_id}"}],
-        [{"text": "⚙️ تنظیمات رسانه", "callback_data": f"ws:settings:{workspace_id}"}],
-        [{"text": "⬅️ بازگشت", "callback_data": "ws:back"}],
-    ])
-    return "\n".join(lines), keyboard
 
+    keyboard.extend([
+        [{
+            "text": "✏️ تغییر نام گروه",
+            "callback_data": f"ws:rename:{workspace_id}",
+        }],
+        *add_rows,
+        [{
+            "text": "📥 انتقال کانال موجود",
+            "callback_data": f"ws:move:list:{workspace_id}",
+        }],
+        [{
+            "text": "👥 مدیریت اعضا",
+            "callback_data": f"ws:members:{workspace_id}",
+        }],
+        [{
+            "text": "⚙️ تنظیمات رسانه",
+            "callback_data": f"ws:settings:{workspace_id}",
+        }],
+        [{
+            "text": "⬅️ بازگشت",
+            "callback_data": "ws:back",
+        }],
+    ])
+
+    return "\n".join(lines), keyboard
 
 def visible_workspace_rows(workspaces: List[Dict]) -> List[Dict]:
     """Hide only truly empty canonical groups; inactive destinations still count."""
@@ -2387,27 +2450,112 @@ def _handle_workspace_callback(
         except (TypeError, ValueError):
             _ws_answer_callback(api_url, callback_id, "گروه رسانه‌ای معتبر نیست")
 
-    elif callback_data.startswith(("ws:addchannel:", "ws:members:", "ws:settings:")) and len(parts) >= 3:
+    elif (
+        callback_data.startswith((
+            "ws:addtelegram:",
+            "ws:addbale:",
+            "ws:addchannel:",
+            "ws:members:",
+            "ws:settings:",
+        ))
+        and len(parts) >= 3
+    ):
         try:
             from core.database import get_workspace_member
             from core.workspace_destinations import can_manage_destinations
+
             workspace_id = int(parts[2])
             user = _identity_for_chat(chat_id)
-            member = get_workspace_member(workspace_id, (user or {}).get("id"))
-            allowed, reason = can_manage_destinations((member or {}).get("role"))
-            if not user or not member or member.get("status") != "active" or not allowed:
-                raise ValueError(reason or "workspace access denied")
-            set_active_workspace(user["id"], workspace_id)
+            member = get_workspace_member(
+                workspace_id,
+                (user or {}).get("id"),
+            )
+            allowed, reason = can_manage_destinations(
+                (member or {}).get("role")
+            )
+
+            if (
+                not user
+                or not member
+                or member.get("status") != "active"
+                or not allowed
+            ):
+                raise ValueError(
+                    reason or "workspace access denied"
+                )
+
+            # Always bind the add/setup action to the workspace encoded
+            # in the callback. This prevents a stale active-workspace
+            # preference from attaching the new destination elsewhere.
+            set_active_workspace(
+                user["id"],
+                workspace_id,
+            )
+
             action = parts[1]
+
+            if action in {"addtelegram", "addbale"}:
+                from core.command_handler import _setup_resume_message
+                from core.workspace_setup import advance_to_step
+
+                step = (
+                    "setup_bale_channel"
+                    if action == "addbale"
+                    else "setup_channel"
+                )
+
+                advance_to_step(
+                    workspace_id,
+                    step,
+                )
+
+                _ws_answer_callback(
+                    api_url,
+                    callback_id,
+                    (
+                        "شناسه کانال بله را ارسال کنید"
+                        if action == "addbale"
+                        else "شناسه کانال تلگرام را ارسال کنید"
+                    ),
+                )
+
+                _ws_send_message(
+                    api_url,
+                    chat_id,
+                    _setup_resume_message(step),
+                )
+                return
+
             message = {
-                "addchannel": "شناسه کانال را با /addchannel @mychannel اضافه کنید.",
-                "members": "برای مدیریت اعضا /members را بفرستید.",
-                "settings": "برای تنظیمات رسانه /settings را بفرستید.",
+                "addchannel": (
+                    "شناسه کانال را با "
+                    "/addchannel @mychannel اضافه کنید."
+                ),
+                "members": (
+                    "برای مدیریت اعضا /members را بفرستید."
+                ),
+                "settings": (
+                    "برای تنظیمات رسانه /settings را بفرستید."
+                ),
             }[action]
-            _ws_answer_callback(api_url, callback_id, "گروه برای مدیریت فعال شد")
-            _ws_send_message(api_url, chat_id, message)
+
+            _ws_answer_callback(
+                api_url,
+                callback_id,
+                "گروه برای مدیریت فعال شد",
+            )
+            _ws_send_message(
+                api_url,
+                chat_id,
+                message,
+            )
+
         except (TypeError, ValueError):
-            _ws_answer_callback(api_url, callback_id, "گروه رسانه‌ای معتبر نیست")
+            _ws_answer_callback(
+                api_url,
+                callback_id,
+                "گروه رسانه‌ای معتبر نیست",
+            )
 
     elif callback_data == "ws:back":
         _ws_answer_callback(api_url, callback_id, "بازگشت")

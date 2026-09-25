@@ -270,6 +270,56 @@ def test_unassociated_destination_keeps_media_identity_and_other_owner_rejected(
     }]
 
 
+
+def test_same_workspace_reregistration_repairs_wrong_media_identity(database):
+    module, client = database
+
+    client.rows["publication_destinations"].append({
+        "id": 24,
+        "workspace_id": 28,
+        "platform": "bale",
+        "external_id": "@khatehmarzi",
+        "normalized_external_id": "khatehmarzi",
+        "media_identity_id": 7,
+        "status": "inactive",
+    })
+    client.rows["workspace_destinations"].append({
+        "workspace_id": 28,
+        "destination_id": 24,
+        "status": "active",
+    })
+
+    repaired, outcome = module.register_setup_destination_canonical(
+        28,
+        "bale",
+        "@KHATEHMARZI",
+        "@khatehmarzi",
+    )
+
+    assert outcome == "same_workspace"
+    assert repaired["id"] == 24
+
+    canonical = next(
+        row
+        for row in client.rows["media_identities"]
+        if row["identity_key"] == "workspace:28"
+    )
+
+    assert repaired["media_identity_id"] == canonical["id"]
+    assert (
+        client.rows["publication_destinations"][0]["media_identity_id"]
+        == canonical["id"]
+    )
+    assert canonical["id"] != 7
+
+    assert client.rows["workspace_destinations"] == [{
+        "workspace_id": 28,
+        "destination_id": 24,
+        "status": "active",
+    }]
+
+
+
 def test_legacy_null_identity_and_competing_insert_do_not_duplicate(database):
     module, client = database
 
