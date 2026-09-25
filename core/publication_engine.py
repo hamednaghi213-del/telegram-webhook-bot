@@ -69,6 +69,7 @@ def _get_runtime_state_store() -> PublicationStateStore:
         ):
             _state_store = PersistentPublicationStateStore(
                 lease_owner=_LEASE_OWNER,
+                lease_seconds=900,
             )
 
     except Exception:
@@ -2819,4 +2820,3 @@ def publish_prepared_content(
         "errors":
             resolution_errors,
     }
-
