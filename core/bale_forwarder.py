@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import time
 import requests
 
 from core.branding_manager import get_branding
@@ -14,6 +15,85 @@ logger = logging.getLogger(__name__)
 # =========================================================
 
 BALE_API_BASE = "https://tapi.bale.ai/bot"
+
+
+BALE_MEDIA_CONNECT_TIMEOUT = 10
+BALE_MEDIA_RESPONSE_TIMEOUT = 90
+BALE_MEDIA_UPLOAD_ATTEMPTS = 2
+
+
+def _is_retryable_bale_upload_error(exc):
+    """
+    Retry only a transport failure that happened while writing the
+    multipart request body. Read/response failures are intentionally
+    not retried because Bale may already have accepted the message.
+    """
+    message = str(exc).lower()
+    return "write operation timed out" in message
+
+
+def _post_bale_multipart(url, *, data, files, operation):
+    """
+    Send one Bale multipart request with one bounded retry for a
+    confirmed write-timeout. The same in-memory bytes are reusable on
+    the retry, so Telegram/Bale media does not need to be downloaded
+    again.
+    """
+    last_error = None
+
+    for attempt in range(1, BALE_MEDIA_UPLOAD_ATTEMPTS + 1):
+        started = time.monotonic()
+
+        try:
+            response = requests.post(
+                url,
+                data=data,
+                files=files,
+                timeout=(
+                    BALE_MEDIA_CONNECT_TIMEOUT,
+                    BALE_MEDIA_RESPONSE_TIMEOUT,
+                ),
+            )
+
+            logger.info(
+                "Bale multipart upload completed | operation=%s | "
+                "attempt=%s/%s | status=%s | elapsed=%.2fs",
+                operation,
+                attempt,
+                BALE_MEDIA_UPLOAD_ATTEMPTS,
+                response.status_code,
+                time.monotonic() - started,
+            )
+
+            return response
+
+        except requests.RequestException as exc:
+            last_error = exc
+            retryable = _is_retryable_bale_upload_error(exc)
+
+            logger.warning(
+                "Bale multipart upload transport error | operation=%s | "
+                "attempt=%s/%s | retryable=%s | elapsed=%.2fs | error=%s",
+                operation,
+                attempt,
+                BALE_MEDIA_UPLOAD_ATTEMPTS,
+                retryable,
+                time.monotonic() - started,
+                exc,
+            )
+
+            if (
+                not retryable
+                or attempt >= BALE_MEDIA_UPLOAD_ATTEMPTS
+            ):
+                raise
+
+            time.sleep(1)
+
+    if last_error is not None:
+        raise last_error
+
+    raise RuntimeError("Bale multipart upload failed without an exception")
 
 
 def _native_bale_file_id(file_id, token):
@@ -65,11 +145,11 @@ def send_typed_media_to_bale(channel, token, caption, file_id, media_type, retur
     if content is None:
         return _failed_result(return_result)
     try:
-        response = requests.post(
+        response = _post_bale_multipart(
             f"{BALE_API_BASE}{token}/{method}",
             data={"chat_id": channel, "caption": caption or ""},
             files={media_type: (filename, content)},
-            timeout=300,
+            operation=method,
         )
         return _send_result(response, return_result)
     except requests.RequestException:
@@ -577,11 +657,11 @@ def send_photo_to_bale(
             f"size={len(file_content)} bytes"
         )
 
-        response = requests.post(
+        response = _post_bale_multipart(
             url,
             data=data,
             files=files,
-            timeout=300
+            operation="sendPhoto",
         )
 
         if response.status_code == 200:
@@ -668,11 +748,11 @@ def send_video_to_bale(
             f"size={len(file_content)} bytes"
         )
 
-        response = requests.post(
+        response = _post_bale_multipart(
             url,
             data=data,
             files=files,
-            timeout=300
+            operation="sendVideo",
         )
 
         if response.status_code == 200:
@@ -759,11 +839,11 @@ def send_document_to_bale(
             f"size={len(file_content)} bytes"
         )
 
-        response = requests.post(
+        response = _post_bale_multipart(
             url,
             data=data,
             files=files,
-            timeout=300
+            operation="sendDocument",
         )
 
         if response.status_code == 200:
@@ -1089,11 +1169,11 @@ def send_media_group_to_bale(
             f"count={len(media_items)}"
         )
 
-        response = requests.post(
+        response = _post_bale_multipart(
             url,
             data=data,
             files=upload_files or None,
-            timeout=300
+            operation="sendMediaGroup",
         )
 
         if response.status_code == 200:
