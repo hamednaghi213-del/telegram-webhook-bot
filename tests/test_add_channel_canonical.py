@@ -360,3 +360,46 @@ def test_legacy_null_identity_and_competing_insert_do_not_duplicate(database):
     assert race_outcome == "associated"
     assert raced["media_identity_id"] is not None
     assert len(client.rows["publication_destinations"]) == 2
+
+def test_reregistration_repairs_missing_association_and_media_identity(database):
+    module, client = database
+
+    client.rows["publication_destinations"].append({
+        "id": 31,
+        "workspace_id": 8,
+        "platform": "telegram",
+        "external_id": "@pijoo_24",
+        "normalized_external_id": "pijoo_24",
+        "media_identity_id": None,
+        "status": "active",
+    })
+
+    repaired, outcome = module.register_setup_destination_canonical(
+        8,
+        "telegram",
+        "@PIJOO_24",
+        "Pijoo",
+    )
+
+    assert outcome == "associated"
+    assert repaired["id"] == 31
+    assert repaired["media_identity_id"] is not None
+
+    assert client.rows["workspace_destinations"] == [{
+        "workspace_id": 8,
+        "destination_id": 31,
+        "status": "active",
+        "updated_at": client.rows["workspace_destinations"][0]["updated_at"],
+    }]
+
+    canonical = next(
+        row
+        for row in client.rows["media_identities"]
+        if row["identity_key"] == "workspace:8"
+    )
+
+    assert repaired["media_identity_id"] == canonical["id"]
+    assert (
+        client.rows["publication_destinations"][0]["media_identity_id"]
+        == canonical["id"]
+    )

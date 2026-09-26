@@ -40,12 +40,16 @@ class InMemoryDb4A:
         self.destination_brandings: Dict[int, Dict] = {}
         self.user_workspace_preferences: Dict[int, Dict] = {}
         self.tenants: Dict[int, Dict] = {}
+        self.canonical_media_enabled_flag = False
         self._next_id = 1
 
     def _next(self):
         val = self._next_id
         self._next_id += 1
         return val
+
+    def canonical_media_enabled(self):
+        return self.canonical_media_enabled_flag
 
     # ── users ──────────────────────────────────────────
     def get_user_by_telegram_id(self, telegram_user_id):
@@ -392,6 +396,7 @@ class InMemoryDb4A:
 def _make_fake_db_module(db: InMemoryDb4A) -> types.ModuleType:
     """Build a fake core.database module backed by db."""
     mod = types.ModuleType("core.database")
+    mod.canonical_media_enabled = db.canonical_media_enabled
     mod.get_tenant = db.get_tenant
     mod.save_tenant = db.save_tenant
     mod.update_bale_settings = db.update_bale_settings
@@ -1945,3 +1950,52 @@ def test_stateful_bale_input_uses_active_incomplete_workspace(monkeypatch):
     assert calls == [
         ("bale", "@samechannel", telegram_id)
     ]
+
+def test_finishsetup_rejects_destination_without_canonical_integrity(monkeypatch):
+    """Setup must not complete when the Telegram destination is not canonically linked."""
+    ws_mod, _, db, _ = _load_modules(monkeypatch)
+    db.canonical_media_enabled_flag = True
+
+    user = db.get_or_create_user_by_telegram_id(99001)
+    ws = db.create_workspace("Canonical Guard", user["id"])
+
+    db.upsert_workspace_branding(
+        ws["id"],
+        "Canonical Guard",
+        "#guard",
+        "@guard",
+    )
+    db.upsert_workspace_setup_state(
+        ws["id"],
+        "in_progress",
+        "setup_member",
+    )
+    db.update_workspace_branding_sample(
+        ws["id"],
+        "نمونه",
+        [],
+        "confirmed",
+    )
+
+    destination = db.create_publication_destination(
+        ws["id"],
+        "telegram",
+        "channel",
+        "Guard Channel",
+        "@guard_channel",
+        "active",
+    )
+
+    # Destination looks active, but canonical integrity is deliberately broken:
+    # no workspace_destinations association and no media_identity_id.
+    db.upsert_destination_verification(
+        destination["id"],
+        verified=True,
+        verification_note="verified",
+    )
+
+    ok, error = ws_mod.complete_setup(ws["id"], user["id"])
+
+    assert ok is False
+    assert error
+    assert ws_mod.is_setup_completed(ws["id"]) is False
