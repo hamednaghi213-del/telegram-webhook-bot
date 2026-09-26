@@ -682,6 +682,18 @@ def _normalize_bale_bold_title_markers(
         if normalized.get(entities_name):
             continue
 
+        # Bale forwards may expose bold markup either around the
+        # whole multi-line message or only around the first/title line.
+        if (
+            len(value) >= 3
+            and value.startswith("*")
+            and value.endswith("*")
+            and not value.startswith("**")
+            and not value.endswith("**")
+        ):
+            normalized[field_name] = value[1:-1]
+            continue
+
         first_line, separator, remainder = value.partition("\n")
 
         if (
