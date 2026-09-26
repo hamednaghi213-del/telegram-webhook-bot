@@ -656,6 +656,48 @@ def handle_bale_update(
 
 
 
+def _normalize_bale_bold_title_markers(
+    message: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Remove Bale's literal single-* title wrapper before shared processing.
+
+    Some Bale clients deliver a visually-bold first line as literal
+    ``*title*`` text instead of structured entities. Normalize only that
+    narrow shape, and only when the corresponding entity list is absent
+    or empty, so real entity formatting and arbitrary body asterisks are
+    left untouched.
+    """
+
+    normalized = dict(message)
+
+    for field_name, entities_name in (
+        ("text", "entities"),
+        ("caption", "caption_entities"),
+    ):
+        value = normalized.get(field_name)
+
+        if not isinstance(value, str) or not value:
+            continue
+
+        if normalized.get(entities_name):
+            continue
+
+        first_line, separator, remainder = value.partition("\n")
+
+        if (
+            len(first_line) >= 3
+            and first_line.startswith("*")
+            and first_line.endswith("*")
+            and not first_line.startswith("**")
+            and not first_line.endswith("**")
+        ):
+            normalized[field_name] = (
+                first_line[1:-1] + separator + remainder
+            )
+
+    return normalized
+
+
 def _handle_bale_content(
 
     message: Dict[str, Any],
@@ -726,7 +768,9 @@ def _handle_bale_content(
 
         from core.bale_media import bale_media_ref
 
-        normalized_message = dict(message)
+        normalized_message = _normalize_bale_bold_title_markers(
+            message
+        )
         for media_type in ("video", "document", "audio", "voice", "animation"):
             media = normalized_message.get(media_type)
             if isinstance(media, dict) and media.get("file_id"):
