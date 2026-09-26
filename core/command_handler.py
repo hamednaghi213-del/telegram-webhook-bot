@@ -3059,7 +3059,13 @@ def handle_register(chat_id: int) -> bool:
             return True
         
         # Cutover: new registrations use the canonical Workspace model.
-        get_or_create_identity_for_chat(chat_id)
+        user = get_or_create_identity_for_chat(chat_id)
+
+        # Resume an existing owned workspace instead of starting another one.
+        # This preserves the onboarding contract across repeated /register calls.
+        if list_owned_workspaces(user["id"], include_inactive=True):
+            return handle_start(chat_id)
+
         send_message(chat_id, "✅ ثبت‌نام انجام شد؛ نام گروه رسانه‌ای را وارد کنید.")
         return handle_create_workspace(chat_id)
         
