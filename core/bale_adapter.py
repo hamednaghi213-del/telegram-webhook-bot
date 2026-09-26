@@ -659,16 +659,56 @@ def handle_bale_update(
 def _normalize_bale_bold_title_markers(
     message: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Remove Bale's literal single-* title wrapper before shared processing.
-
-    Some Bale clients deliver a visually-bold first line as literal
-    ``*title*`` text instead of structured entities. Normalize only that
-    narrow shape, and only when the corresponding entity list is absent
-    or empty, so real entity formatting and arbitrary body asterisks are
-    left untouched.
-    """
-
+    """Remove Bale literal single-* wrappers and preserve UTF-16 entities."""
     normalized = dict(message)
+
+    def _utf16_offset(text: str, index: int) -> int:
+        return len(text[:index].encode("utf-16-le")) // 2
+
+    def _strip_positions(value: str, entities, indexes):
+        removed_utf16 = [
+            _utf16_offset(value, index)
+            for index in sorted(indexes)
+        ]
+
+        chars = list(value)
+        for index in sorted(indexes, reverse=True):
+            del chars[index]
+
+        adjusted_entities = []
+        if isinstance(entities, list):
+            for entity in entities:
+                if not isinstance(entity, dict):
+                    adjusted_entities.append(entity)
+                    continue
+
+                adjusted = dict(entity)
+                try:
+                    start = int(adjusted["offset"])
+                    length = int(adjusted["length"])
+                except (KeyError, TypeError, ValueError):
+                    adjusted_entities.append(adjusted)
+                    continue
+
+                end = start + length
+                new_start = start - sum(
+                    1 for position in removed_utf16
+                    if position < start
+                )
+                new_end = end - sum(
+                    1 for position in removed_utf16
+                    if position < end
+                )
+                new_length = max(0, new_end - new_start)
+
+                if new_length == 0:
+                    continue
+
+                adjusted["offset"] = new_start
+                adjusted["length"] = new_length
+                adjusted_entities.append(adjusted)
+
+        return "".join(chars), adjusted_entities
 
     for field_name, entities_name in (
         ("text", "entities"),
@@ -679,11 +719,9 @@ def _normalize_bale_bold_title_markers(
         if not isinstance(value, str) or not value:
             continue
 
-        if normalized.get(entities_name):
-            continue
+        entities = normalized.get(entities_name)
 
-        # Bale forwards may expose bold markup either around the
-        # whole multi-line message or only around the first/title line.
+        # Whole-message wrapper: *multi-line content*
         if (
             len(value) >= 3
             and value.startswith("*")
@@ -691,11 +729,19 @@ def _normalize_bale_bold_title_markers(
             and not value.startswith("**")
             and not value.endswith("**")
         ):
-            normalized[field_name] = value[1:-1]
+            stripped, adjusted = _strip_positions(
+                value,
+                entities,
+                [0, len(value) - 1],
+            )
+            normalized[field_name] = stripped
+            if isinstance(entities, list):
+                normalized[entities_name] = adjusted
             continue
 
         first_line, separator, remainder = value.partition("\n")
 
+        # First-line/title wrapper: *title*\nbody
         if (
             len(first_line) >= 3
             and first_line.startswith("*")
@@ -703,12 +749,16 @@ def _normalize_bale_bold_title_markers(
             and not first_line.startswith("**")
             and not first_line.endswith("**")
         ):
-            normalized[field_name] = (
-                first_line[1:-1] + separator + remainder
+            stripped, adjusted = _strip_positions(
+                value,
+                entities,
+                [0, len(first_line) - 1],
             )
+            normalized[field_name] = stripped
+            if isinstance(entities, list):
+                normalized[entities_name] = adjusted
 
     return normalized
-
 
 def _handle_bale_content(
 
