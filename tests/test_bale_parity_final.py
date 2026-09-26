@@ -596,6 +596,43 @@ def test_bale_markdown_bold_title_is_normalized_before_shared_pipeline(
     )
 
 
+def test_bale_multiline_markdown_bold_wrapper_is_normalized_before_shared_pipeline(
+    monkeypatch,
+):
+    seen = {}
+
+    def _fake_pipeline(msg, req_id, update_id=None):
+        seen["msg"] = msg
+        return {"ok": True, "media": False}, 200
+
+    _patch_wh(
+        monkeypatch,
+        "process_incoming_message",
+        _fake_pipeline,
+    )
+
+    response, status = (
+        _BALE_ADAPTER.handle_bale_update(
+            _bale_message(
+                3,
+                text=(
+                    "*تیتر خبر\n"
+                    "خط دوم خبر\n"
+                    "آخر خبر*"
+                ),
+            )
+        )
+    )
+
+    assert status == 200
+    assert response["handled"] is True
+    assert seen["msg"]["text"] == (
+        "تیتر خبر\n"
+        "خط دوم خبر\n"
+        "آخر خبر"
+    )
+
+
 def test_bale_channel_message_does_not_reenter_shared_content_pipeline(
     monkeypatch,
 ):
