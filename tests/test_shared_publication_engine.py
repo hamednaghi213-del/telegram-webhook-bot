@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import types
 from types import SimpleNamespace
 
@@ -251,6 +251,15 @@ def test_same_news_different_source_keys_cannot_publish_concurrently_for_shared_
         sys.modules,
         "core.database",
         fake_database,
+    )
+
+    import core
+
+    monkeypatch.setattr(
+        core,
+        "database",
+        fake_database,
+        raising=False,
     )
 
     monkeypatch.setattr(
