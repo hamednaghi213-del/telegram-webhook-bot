@@ -1578,3 +1578,37 @@ def test_telegram_ed_callback_still_routed_in_webhook(
     assert calls[0]["data"] == (
         "ed:original:r1"
     )
+
+
+
+def test_bale_literal_bold_title_with_entities_preserves_entity_offsets(
+    monkeypatch,
+):
+    seen = {}
+
+    def _fake_pipeline(msg, req_id, update_id=None):
+        seen["msg"] = msg
+        return {"ok": True, "media": False}, 200
+
+    _patch_wh(
+        monkeypatch,
+        "process_incoming_message",
+        _fake_pipeline,
+    )
+
+    response, status = _BALE_ADAPTER.handle_bale_update(
+        _bale_message(
+            4,
+            text="*تیتر خبر*\nمتن خبر",
+            entities=[
+                {"type": "bold", "offset": 11, "length": 3},
+            ],
+        )
+    )
+
+    assert status == 200
+    assert response["handled"] is True
+    assert seen["msg"]["text"] == "تیتر خبر\nمتن خبر"
+    assert seen["msg"]["entities"] == [
+        {"type": "bold", "offset": 9, "length": 3},
+    ]
