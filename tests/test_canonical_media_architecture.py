@@ -301,3 +301,14 @@ def test_backfill_apply_rolls_back_on_halfway_failure():
     with pytest.raises(RuntimeError):
         apply_backfill_plan(build_backfill_plan({}, [_mapping()]), transaction)
     assert transaction.events == ["begin", "apply", "rollback"]
+
+def test_resolver_reports_selected_workspace_with_no_ready_canonical_target(monkeypatch):
+    database = _install_canonical_database(monkeypatch)
+    database.list_canonical_publication_destinations = lambda _user, _ids: []
+
+    targets, errors = resolve_publication_targets(100)
+
+    assert targets == []
+    assert errors == [
+        "برای رسانه «سیاسی» مقصد انتشار آماده‌ای پیدا نشد؛ اتصال و تأیید کانال را بررسی کنید"
+    ]

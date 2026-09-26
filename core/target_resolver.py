@@ -147,23 +147,51 @@ def resolve_publication_targets(chat_id: int) -> Tuple[List[PublicationTarget], 
             group_access_allows,
             media_access_allows,
         )
+
         memberships = list_user_workspace_memberships(user["id"]) or []
-        membership_by_workspace = {int(row["id"]): row for row in memberships}
+        membership_by_workspace = {
+            int(row["id"]): row for row in memberships
+        }
+
         authorized_selected = [
-            workspace_id for workspace_id in selected_ids
-            if group_access_allows(membership_by_workspace.get(int(workspace_id)))
+            workspace_id
+            for workspace_id in selected_ids
+            if group_access_allows(
+                membership_by_workspace.get(int(workspace_id))
+            )
         ]
-        loader = getattr(database, "list_canonical_publication_destinations", None)
-        canonical_rows = loader(user["id"], authorized_selected) if loader else []
+
+        loader = getattr(
+            database,
+            "list_canonical_publication_destinations",
+            None,
+        )
+        canonical_rows = (
+            loader(user["id"], authorized_selected)
+            if loader
+            else []
+        )
+
+        ready_workspace_ids = set()
+        workspace_error_ids = set()
+
         for destination in canonical_rows or []:
             workspace_id = int(destination["workspace_id"])
+
             if not media_access_allows(destination.get("media_member")):
                 errors.append(
-                    f"مجوز انتشار هویت رسانه در گروه «{membership_by_workspace.get(workspace_id, {}).get('name') or workspace_id}» معتبر نیست"
+                    f"مجوز انتشار هویت رسانه در گروه "
+                    f"«{membership_by_workspace.get(workspace_id, {}).get('name') or workspace_id}» "
+                    f"معتبر نیست"
                 )
+                workspace_error_ids.add(workspace_id)
                 continue
+
             if not canonical_target_is_ready(destination):
                 continue
+
+            ready_workspace_ids.add(workspace_id)
+
             targets.append(PublicationTarget(
                 key=f"workspace:{workspace_id}:destination:{destination['id']}",
                 kind="workspace",
@@ -171,8 +199,33 @@ def resolve_publication_targets(chat_id: int) -> Tuple[List[PublicationTarget], 
                 external_id=str(destination.get("external_id") or ""),
                 workspace_id=workspace_id,
                 destination_id=destination.get("id"),
-                destination={**dict(destination), "_canonical_media": True},
+                destination={
+                    **dict(destination),
+                    "_canonical_media": True,
+                },
             ))
+
+        for workspace_id in authorized_selected:
+            workspace_id = int(workspace_id)
+
+            if workspace_id in ready_workspace_ids:
+                continue
+
+            if workspace_id in workspace_error_ids:
+                continue
+
+            workspace_name = (
+                membership_by_workspace
+                .get(workspace_id, {})
+                .get("name")
+                or workspace_id
+            )
+
+            errors.append(
+                f"برای رسانه «{workspace_name}» مقصد انتشار آماده‌ای پیدا نشد؛ "
+                f"اتصال و تأیید کانال را بررسی کنید"
+            )
+
     elif user:
         memberships = list_user_workspace_memberships(user["id"]) or []
         for workspace in memberships:

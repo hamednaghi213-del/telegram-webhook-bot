@@ -303,6 +303,43 @@ def add_member_to_workspace(
 # SETUP COMPLETION
 # =========================================================
 
+def _telegram_destination_integrity_ready(
+    destinations: List[Dict[str, Any]],
+) -> bool:
+    """
+    Return True when setup has a valid Telegram destination.
+
+    Legacy mode keeps the historical completion rule unchanged.
+    Canonical mode requires an active and verified Telegram destination with
+    an active workspace association and a canonical media identity.
+    """
+    import importlib
+
+    database = importlib.import_module("core.database")
+    canonical_enabled = bool(
+        getattr(database, "canonical_media_enabled", lambda: False)()
+    )
+    if not canonical_enabled:
+        return has_required_telegram_destination(destinations)
+
+    for destination in destinations:
+        if destination.get("platform") != "telegram":
+            continue
+        if destination.get("status") != "active":
+            continue
+        if destination.get("association_status", "active") != "active":
+            continue
+        if destination.get("media_identity_id") is None:
+            continue
+
+        verification = get_destination_verification(destination["id"]) or {}
+        if not verification.get("verified"):
+            continue
+
+        return True
+
+    return False
+
 def can_complete_setup(
     workspace_id: int,
     owner_user_id: int,
@@ -314,7 +351,7 @@ def can_complete_setup(
     1. Active owner membership
     2. Workspace branding with at least a media_name
     3. A confirmed branding sample
-    4. At least one registered Telegram destination
+    4. At least one Telegram destination with valid canonical integrity
     """
     member = get_workspace_member(workspace_id, owner_user_id)
     if not member or member.get("role") != "owner" or member.get("status") != "active":
@@ -331,6 +368,12 @@ def can_complete_setup(
     destinations = list_workspace_destinations(workspace_id, include_removed=False)
     if not has_required_telegram_destination(destinations):
         return False, "حداقل یک کانال تلگرام اضافه کنید"
+
+    if not _telegram_destination_integrity_ready(destinations):
+        return (
+            False,
+            "اتصال کانال تلگرام کامل نیست. کانال باید فعال، تأییدشده و به هویت رسانه متصل باشد",
+        )
 
     return True, None
 
