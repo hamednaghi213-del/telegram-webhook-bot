@@ -560,6 +560,42 @@ def test_bale_text_enters_shared_content_pipeline(
         == "telegram"
     )
 
+
+def test_bale_markdown_bold_title_is_normalized_before_shared_pipeline(
+    monkeypatch,
+):
+    seen = {}
+
+    def _fake_pipeline(msg, req_id, update_id=None):
+        seen["msg"] = msg
+        return {"ok": True, "media": False}, 200
+
+    _patch_wh(
+        monkeypatch,
+        "process_incoming_message",
+        _fake_pipeline,
+    )
+
+    response, status = (
+        _BALE_ADAPTER.handle_bale_update(
+            _bale_message(
+                2,
+                text=(
+                    "*روحانی: دستاورد جنگ باید کاهش احتمال جنگ بعدی باشد*\n"
+                    "متن خبر"
+                ),
+            )
+        )
+    )
+
+    assert status == 200
+    assert response["handled"] is True
+    assert seen["msg"]["text"] == (
+        "روحانی: دستاورد جنگ باید کاهش احتمال جنگ بعدی باشد\n"
+        "متن خبر"
+    )
+
+
 def test_bale_channel_message_does_not_reenter_shared_content_pipeline(
     monkeypatch,
 ):
