@@ -1,3 +1,5 @@
+﻿import sys
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -81,6 +83,238 @@ def test_duplicate_target_and_retry_are_idempotent(monkeypatch):
 
     assert first["ok"] is True
     assert second["ok"] is True
+    assert len(sent) == 1
+
+
+def test_same_news_different_source_keys_cannot_publish_concurrently_for_shared_media(
+    monkeypatch,
+):
+    target = PublicationTarget(
+        key="workspace:1:destination:1",
+        kind="workspace",
+        platform="telegram",
+        external_id="@shared",
+        workspace_id=1,
+        destination_id=1,
+        destination={
+            "_canonical_media": True,
+            "media_identity": {"id": 77},
+        },
+    )
+
+    history_rows = []
+    claims = {}
+    sent = []
+    nested_result = {}
+
+    fake_database = types.ModuleType("core.database")
+
+    def get_recent_duplicate_news(media_identity_id, limit=50):
+        return [
+            row
+            for row in history_rows
+            if row["media_identity_id"] == media_identity_id
+        ][:limit]
+
+    def record_duplicate_news_history(**kwargs):
+        row = {
+            "id": len(history_rows) + 1,
+            "media_identity_id": kwargs["media_identity_id"],
+            "actor_user_id": kwargs.get("actor_user_id"),
+            "source_key": kwargs["source_key"],
+            "content_text": kwargs["content_text"],
+            "normalized_text": kwargs["normalized_text"],
+            "fingerprint": kwargs["fingerprint"],
+            "published_at": "2026-09-26T00:00:00Z",
+        }
+        history_rows.append(row)
+        return row
+
+    def claim_duplicate_news_publication(
+        *,
+        media_identity_id,
+        fingerprint,
+        source_key,
+        actor_user_id=None,
+        lease_seconds=300,
+    ):
+        key = (
+            int(media_identity_id),
+            str(fingerprint),
+        )
+
+        existing = claims.get(key)
+
+        if (
+            existing is None
+            or existing["source_key"] == source_key
+        ):
+            claims[key] = {
+                "source_key": source_key,
+                "actor_user_id": actor_user_id,
+            }
+
+            return {
+                "claimed": True,
+                "owner_source_key": source_key,
+                "lease_expires_at":
+                    "2026-09-26T00:05:00Z",
+            }
+
+        return {
+            "claimed": False,
+            "owner_source_key":
+                existing["source_key"],
+            "lease_expires_at":
+                "2026-09-26T00:05:00Z",
+        }
+
+    def finalize_duplicate_news_publication(
+        *,
+        media_identity_id,
+        fingerprint,
+        source_key,
+        actor_user_id,
+        content_text,
+        normalized_text,
+    ):
+        key = (
+            int(media_identity_id),
+            str(fingerprint),
+        )
+
+        existing = claims.get(key)
+
+        if (
+            existing is None
+            or existing["source_key"] != source_key
+        ):
+            return False
+
+        record_duplicate_news_history(
+            media_identity_id=media_identity_id,
+            actor_user_id=actor_user_id,
+            source_key=source_key,
+            content_text=content_text,
+            normalized_text=normalized_text,
+            fingerprint=fingerprint,
+        )
+
+        claims.pop(
+            key,
+            None,
+        )
+
+        return True
+
+    def release_duplicate_news_publication(
+        *,
+        media_identity_id,
+        fingerprint,
+        source_key,
+    ):
+        key = (
+            int(media_identity_id),
+            str(fingerprint),
+        )
+
+        existing = claims.get(key)
+
+        if (
+            existing is None
+            or existing["source_key"] != source_key
+        ):
+            return False
+
+        claims.pop(
+            key,
+            None,
+        )
+
+        return True
+
+    fake_database.get_recent_duplicate_news = get_recent_duplicate_news
+    fake_database.record_duplicate_news_history = record_duplicate_news_history
+    fake_database.claim_duplicate_news_publication = (
+        claim_duplicate_news_publication
+    )
+    fake_database.finalize_duplicate_news_publication = (
+        finalize_duplicate_news_publication
+    )
+    fake_database.release_duplicate_news_publication = (
+        release_duplicate_news_publication
+    )
+    fake_database.get_user_by_telegram_id = lambda _chat_id: {"id": 1}
+    fake_database.mark_persistent_publication_source = lambda **_kwargs: None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "core.database",
+        fake_database,
+    )
+
+    import core
+
+    monkeypatch.setattr(
+        core,
+        "database",
+        fake_database,
+        raising=False,
+    )
+
+    monkeypatch.setattr(
+        "core.caption_manager.analyze_content",
+        lambda **_kwargs: _plan(),
+    )
+    monkeypatch.setattr(
+        publication_engine,
+        "_target_content_and_branding",
+        lambda *_args: ("same news body", "brand"),
+    )
+
+    first_prepared = PreparedContent(
+        main_text="same news body",
+        neutral_text="same news body",
+        source_key="tg:update:1001",
+    )
+    second_prepared = PreparedContent(
+        main_text="same news body",
+        neutral_text="same news body",
+        source_key="tg:update:1002",
+    )
+
+    def fake_send(*_args):
+        sent.append(1)
+
+        if len(sent) == 1:
+            nested_result["value"] = (
+                publication_engine.publish_prepared_content(
+                    11,
+                    "api",
+                    second_prepared,
+                    [target],
+                )
+            )
+
+        return True
+
+    monkeypatch.setattr(
+        publication_engine,
+        "_send_text_target",
+        fake_send,
+    )
+
+    publication_engine.reset_local_idempotency_state()
+
+    first_result = publication_engine.publish_prepared_content(
+        10,
+        "api",
+        first_prepared,
+        [target],
+    )
+
+    assert first_result["ok"] is True
+    assert nested_result["value"].get("duplicate_warning") is True
     assert len(sent) == 1
 
 
