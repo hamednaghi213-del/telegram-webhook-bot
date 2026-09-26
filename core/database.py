@@ -2807,6 +2807,209 @@ def record_duplicate_news_history(
 
     return result.data[0]
 
+
+@with_retry
+def claim_duplicate_news_publication(
+    *,
+    media_identity_id: int,
+    fingerprint: str,
+    source_key: str,
+    actor_user_id: Optional[int] = None,
+    lease_seconds: int = 300,
+) -> Optional[Dict[str, Any]]:
+    """
+    Atomically reserve one exact-news fingerprint for publication.
+
+    Returns the RPC result row:
+      {
+          "claimed": bool,
+          "owner_source_key": str,
+          "lease_expires_at": str | None,
+      }
+
+    A live claim owned by another source blocks concurrent publication.
+    The same source may safely refresh its own lease.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Duplicate news claim is not configured"
+        )
+
+    result = (
+        service_supabase
+        .rpc(
+            "claim_duplicate_news_publication",
+            {
+                "p_media_identity_id":
+                    int(media_identity_id),
+
+                "p_fingerprint":
+                    str(fingerprint or ""),
+
+                "p_source_key":
+                    str(source_key or ""),
+
+                "p_actor_user_id": (
+                    int(actor_user_id)
+                    if actor_user_id is not None
+                    else None
+                ),
+
+                "p_lease_seconds":
+                    max(
+                        30,
+                        min(
+                            int(lease_seconds),
+                            3600,
+                        ),
+                    ),
+            },
+        )
+        .execute()
+    )
+
+    rows = result.data or []
+
+    if not rows:
+        return None
+
+    return rows[0]
+
+
+@with_retry
+def finalize_duplicate_news_publication(
+    *,
+    media_identity_id: int,
+    fingerprint: str,
+    source_key: str,
+    actor_user_id: Optional[int],
+    content_text: str,
+    normalized_text: str,
+) -> bool:
+    """
+    Finalize one successful duplicate-news claim.
+
+    The database RPC persists duplicate_news_history and releases
+    the in-flight claim atomically in the same transaction.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Duplicate news claim is not configured"
+        )
+
+    result = (
+        service_supabase
+        .rpc(
+            "finalize_duplicate_news_publication",
+            {
+                "p_media_identity_id":
+                    int(media_identity_id),
+
+                "p_fingerprint":
+                    str(fingerprint or ""),
+
+                "p_source_key":
+                    str(source_key or ""),
+
+                "p_actor_user_id": (
+                    int(actor_user_id)
+                    if actor_user_id is not None
+                    else None
+                ),
+
+                "p_content_text":
+                    str(content_text or ""),
+
+                "p_normalized_text":
+                    str(normalized_text or ""),
+            },
+        )
+        .execute()
+    )
+
+    value = result.data
+
+    if isinstance(value, list):
+        if not value:
+            return False
+
+        value = value[0]
+
+    if isinstance(value, dict):
+        if "finalize_duplicate_news_publication" in value:
+            return bool(
+                value[
+                    "finalize_duplicate_news_publication"
+                ]
+            )
+
+        if "result" in value:
+            return bool(
+                value["result"]
+            )
+
+    return bool(value)
+
+
+@with_retry
+def release_duplicate_news_publication(
+    *,
+    media_identity_id: int,
+    fingerprint: str,
+    source_key: str,
+) -> bool:
+    """
+    Release an in-flight duplicate-news claim after total failure.
+
+    A source can release only its own reservation.
+    """
+    if service_supabase is None:
+        raise RuntimeError(
+            "Duplicate news claim is not configured"
+        )
+
+    result = (
+        service_supabase
+        .rpc(
+            "release_duplicate_news_publication",
+            {
+                "p_media_identity_id":
+                    int(media_identity_id),
+
+                "p_fingerprint":
+                    str(fingerprint or ""),
+
+                "p_source_key":
+                    str(source_key or ""),
+            },
+        )
+        .execute()
+    )
+
+    value = result.data
+
+    if isinstance(value, list):
+        if not value:
+            return False
+
+        value = value[0]
+
+    if isinstance(value, dict):
+        if "release_duplicate_news_publication" in value:
+            return bool(
+                value[
+                    "release_duplicate_news_publication"
+                ]
+            )
+
+        if "result" in value:
+            return bool(
+                value["result"]
+            )
+
+    return bool(value)
+
+
 # =========================================================
 # PERSISTENT PUBLICATION STATE
 # =========================================================

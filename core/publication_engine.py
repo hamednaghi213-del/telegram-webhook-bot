@@ -2083,6 +2083,197 @@ def publish_prepared_content(
         analyzed.publication_identity
     )
 
+    # Reserve the exact analyzed news fingerprint before destination fan-out.
+    #
+    # The normal history check above is intentionally retained because it
+    # handles already-published exact/near duplicates. This additional
+    # database-backed reservation closes the race between two different
+    # source updates that pass the history check before either publication
+    # has had time to write duplicate_news_history.
+    duplicate_claimed_media_ids: List[int] = []
+    duplicate_claim_text = ""
+    duplicate_claim_normalized_text = ""
+    duplicate_claim_fingerprint = ""
+    duplicate_claim_actor_user_id: Optional[int] = None
+
+    if not allow_duplicate:
+        try:
+            from core import database
+            from core.duplicate_guard import (
+                duplicate_fingerprint,
+                normalize_duplicate_text,
+            )
+
+            duplicate_claim_text = (
+                analyzed.neutral_text
+                or analyzed.main_text
+                or ""
+            ).strip()
+
+            if duplicate_claim_text:
+                user = database.get_user_by_telegram_id(
+                    chat_id
+                )
+
+                duplicate_claim_actor_user_id = (
+                    int(user["id"])
+                    if (
+                        user
+                        and user.get("id")
+                        is not None
+                    )
+                    else None
+                )
+
+                duplicate_claim_normalized_text = (
+                    normalize_duplicate_text(
+                        duplicate_claim_text
+                    )
+                )
+
+                duplicate_claim_fingerprint = (
+                    duplicate_fingerprint(
+                        duplicate_claim_text
+                    )
+                )
+
+                for media_identity_id in (
+                    _unique_media_identity_ids(
+                        targets
+                    )
+                ):
+                    try:
+                        claim_result = (
+                            database.claim_duplicate_news_publication(
+                                media_identity_id=(
+                                    media_identity_id
+                                ),
+                                fingerprint=(
+                                    duplicate_claim_fingerprint
+                                ),
+                                source_key=(
+                                    source_key
+                                ),
+                                actor_user_id=(
+                                    duplicate_claim_actor_user_id
+                                ),
+                            )
+                        )
+
+                    except Exception:
+                        # Duplicate Guard has historically been fail-open on
+                        # database errors. Preserve that contract: a transient
+                        # claim failure must not stop normal publication.
+                        logger.exception(
+                            "Duplicate publication claim failed | "
+                            "media_identity_id=%s | source=%s",
+                            media_identity_id,
+                            source_key,
+                        )
+                        continue
+
+                    # No RPC row is treated as an unavailable claim service,
+                    # preserving the existing fail-open database contract.
+                    if not claim_result:
+                        logger.warning(
+                            "Duplicate publication claim returned no row | "
+                            "media_identity_id=%s | source=%s",
+                            media_identity_id,
+                            source_key,
+                        )
+                        continue
+
+                    if bool(
+                        claim_result.get(
+                            "claimed"
+                        )
+                    ):
+                        duplicate_claimed_media_ids.append(
+                            media_identity_id
+                        )
+                        continue
+
+                    # Another source owns the live fingerprint reservation.
+                    # Release any reservations this invocation already acquired
+                    # for other Media Identities before returning the existing
+                    # duplicate-warning contract.
+                    for claimed_media_identity_id in (
+                        duplicate_claimed_media_ids
+                    ):
+                        try:
+                            database.release_duplicate_news_publication(
+                                media_identity_id=(
+                                    claimed_media_identity_id
+                                ),
+                                fingerprint=(
+                                    duplicate_claim_fingerprint
+                                ),
+                                source_key=(
+                                    source_key
+                                ),
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Duplicate publication claim release failed | "
+                                "media_identity_id=%s | source=%s",
+                                claimed_media_identity_id,
+                                source_key,
+                            )
+
+                    duplicate_claimed_media_ids = []
+
+                    try:
+                        from core.duplicate_pending import (
+                            create_pending_duplicate,
+                        )
+
+                        duplicate_token = (
+                            create_pending_duplicate(
+                                chat_id=chat_id,
+                                prepared=prepared,
+                                targets=targets,
+                            )
+                        )
+
+                    except Exception:
+                        logger.exception(
+                            "Duplicate pending creation failed | source=%s",
+                            source_key,
+                        )
+                        duplicate_token = None
+
+                    return {
+                        "ok": False,
+                        "results": [],
+                        "errors": [],
+                        "duplicate_token":
+                            duplicate_token,
+                        "duplicate_warning":
+                            True,
+                        "matches": [
+                            {
+                                "media_identity_id":
+                                    media_identity_id,
+                                "match_type":
+                                    "exact_in_flight",
+                                "similarity":
+                                    1.0,
+                                "publication_id":
+                                    None,
+                                "actor_user_id":
+                                    None,
+                                "published_at":
+                                    None,
+                            }
+                        ],
+                    }
+
+        except Exception:
+            logger.exception(
+                "Duplicate publication claim setup failed | source=%s",
+                source_key,
+            )
+
     store.claim_source(
         source_key
     )
@@ -2782,36 +2973,68 @@ def publish_prepared_content(
                     )
                 )
 
+                claimed_media_ids = set(
+                    duplicate_claimed_media_ids
+                )
+
                 for media_identity_id in (
                     _unique_media_identity_ids(
                         targets
                     )
                 ):
                     try:
-                        database.record_duplicate_news_history(
-                            media_identity_id=(
-                                media_identity_id
-                            ),
-                            actor_user_id=(
-                                actor_user_id
-                            ),
-                            source_key=(
-                                source_key
-                            ),
-                            content_text=(
-                                history_text
-                            ),
-                            normalized_text=(
-                                normalized_history_text
-                            ),
-                            fingerprint=(
-                                history_fingerprint
-                            ),
-                        )
+                        if (
+                            media_identity_id
+                            in claimed_media_ids
+                        ):
+                            database.finalize_duplicate_news_publication(
+                                media_identity_id=(
+                                    media_identity_id
+                                ),
+                                fingerprint=(
+                                    duplicate_claim_fingerprint
+                                ),
+                                source_key=(
+                                    source_key
+                                ),
+                                actor_user_id=(
+                                    duplicate_claim_actor_user_id
+                                ),
+                                content_text=(
+                                    duplicate_claim_text
+                                ),
+                                normalized_text=(
+                                    duplicate_claim_normalized_text
+                                ),
+                            )
+                        else:
+                            # allow_duplicate=True and fail-open claim errors
+                            # continue to use the established durable history
+                            # writer so successful publications are recorded.
+                            database.record_duplicate_news_history(
+                                media_identity_id=(
+                                    media_identity_id
+                                ),
+                                actor_user_id=(
+                                    actor_user_id
+                                ),
+                                source_key=(
+                                    source_key
+                                ),
+                                content_text=(
+                                    history_text
+                                ),
+                                normalized_text=(
+                                    normalized_history_text
+                                ),
+                                fingerprint=(
+                                    history_fingerprint
+                                ),
+                            )
 
                     except Exception:
                         logger.exception(
-                            "Duplicate history write failed | "
+                            "Duplicate history finalize/write failed | "
                             "media_identity_id=%s | source=%s",
                             media_identity_id,
                             source_key,
@@ -2820,6 +3043,42 @@ def publish_prepared_content(
         except Exception:
             logger.exception(
                 "Duplicate history recording failed | source=%s",
+                source_key,
+            )
+
+    elif duplicate_claimed_media_ids:
+        # Nothing reached a destination, so this news must remain eligible
+        # for a legitimate retry. Release only reservations owned by this
+        # source; crash recovery is additionally bounded by the DB lease.
+        try:
+            from core import database
+
+            for media_identity_id in (
+                duplicate_claimed_media_ids
+            ):
+                try:
+                    database.release_duplicate_news_publication(
+                        media_identity_id=(
+                            media_identity_id
+                        ),
+                        fingerprint=(
+                            duplicate_claim_fingerprint
+                        ),
+                        source_key=(
+                            source_key
+                        ),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Duplicate publication claim release failed | "
+                        "media_identity_id=%s | source=%s",
+                        media_identity_id,
+                        source_key,
+                    )
+
+        except Exception:
+            logger.exception(
+                "Duplicate publication claim cleanup failed | source=%s",
                 source_key,
             )
 
