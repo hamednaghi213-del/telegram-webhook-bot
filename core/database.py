@@ -1,6 +1,7 @@
 import os
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from supabase import create_client
 
@@ -5689,3 +5690,163 @@ def mark_persistent_translation_review_confirmed(
         review_id,
         status="confirmed",
     )
+
+# =========================================================
+# ADMIN CONTROL LAYER
+# =========================================================
+
+@with_retry
+def get_admin_destination_control(destination_id: int):
+    response = (
+        service_supabase
+        .table("admin_destination_controls")
+        .select("*")
+        .eq("destination_id", destination_id)
+        .limit(1)
+        .execute()
+    )
+    rows = response.data or []
+    return rows[0] if rows else None
+
+
+@with_retry
+def upsert_admin_destination_control(
+    destination_id: int,
+    admin_state: str,
+    *,
+    reason: str | None = None,
+    changed_by_platform: str | None = None,
+    changed_by_external_user_id: int | None = None,
+):
+    payload = {
+        "destination_id": destination_id,
+        "admin_state": admin_state,
+        "reason": reason,
+        "changed_by_platform": changed_by_platform,
+        "changed_by_external_user_id": changed_by_external_user_id,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    response = (
+        service_supabase
+        .table("admin_destination_controls")
+        .upsert(payload, on_conflict="destination_id")
+        .execute()
+    )
+
+    rows = response.data or []
+    return rows[0] if rows else None
+
+
+@with_retry
+def list_admin_destination_controls():
+    response = (
+        service_supabase
+        .table("admin_destination_controls")
+        .select("*")
+        .execute()
+    )
+    return response.data or []
+
+
+@with_retry
+def create_admin_access_request(
+    requester_user_id: int,
+    workspace_id: int,
+    platform: str,
+    external_id: str,
+    normalized_external_id: str,
+    display_name: str | None = None,
+):
+    payload = {
+        "request_type": "add_destination",
+        "requester_user_id": requester_user_id,
+        "workspace_id": workspace_id,
+        "platform": platform,
+        "external_id": external_id,
+        "normalized_external_id": normalized_external_id,
+        "display_name": display_name,
+        "status": "pending",
+    }
+
+    response = (
+        service_supabase
+        .table("admin_access_requests")
+        .insert(payload)
+        .execute()
+    )
+
+    rows = response.data or []
+    return rows[0] if rows else None
+
+
+@with_retry
+def list_pending_admin_access_requests():
+    response = (
+        service_supabase
+        .table("admin_access_requests")
+        .select("*")
+        .eq("status", "pending")
+        .execute()
+    )
+    return response.data or []
+
+
+@with_retry
+def review_admin_access_request(
+    request_id: int,
+    status: str,
+    *,
+    review_reason: str | None = None,
+    reviewed_by_platform: str | None = None,
+    reviewed_by_external_user_id: int | None = None,
+):
+    payload = {
+        "status": status,
+        "review_reason": review_reason,
+        "reviewed_by_platform": reviewed_by_platform,
+        "reviewed_by_external_user_id": reviewed_by_external_user_id,
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    response = (
+        service_supabase
+        .table("admin_access_requests")
+        .update(payload)
+        .eq("id", request_id)
+        .execute()
+    )
+
+    rows = response.data or []
+    return rows[0] if rows else None
+
+
+@with_retry
+def record_admin_audit_log(
+    action: str,
+    actor_platform: str,
+    *,
+    actor_external_user_id: int | None = None,
+    target_type: str,
+    target_id: int | None = None,
+    details: dict | None = None,
+):
+    payload = {
+        "action": action,
+        "actor_platform": actor_platform,
+        "actor_external_user_id": actor_external_user_id,
+        "target_type": target_type,
+        "target_id": target_id,
+        "details": details or {},
+    }
+
+    response = (
+        service_supabase
+        .table("admin_audit_log")
+        .insert(payload)
+        .execute()
+    )
+
+    rows = response.data or []
+    return rows[0] if rows else None
