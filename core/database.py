@@ -589,7 +589,8 @@ def batch_update_tenants(
 
 USER_STATUSES = {
     "active",
-    "inactive"
+    "inactive",
+    "pending"
 }
 
 WORKSPACE_STATUSES = {
@@ -686,6 +687,31 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
         .limit(1)
         .execute()
     )
+    return _first_row(result)
+
+
+@with_retry
+def update_user_status(
+    user_id: int,
+    status: str,
+) -> Optional[Dict[str, Any]]:
+    validated_status = _validate_enum(
+        status,
+        USER_STATUSES,
+        "user status",
+    )
+
+    result = (
+        supabase
+        .table("users")
+        .update({
+            "status": validated_status,
+            "updated_at": time.time(),
+        })
+        .eq("id", int(user_id))
+        .execute()
+    )
+
     return _first_row(result)
 
 
@@ -5815,6 +5841,97 @@ def review_admin_access_request(
         .table("admin_access_requests")
         .update(payload)
         .eq("id", request_id)
+        .execute()
+    )
+
+    rows = response.data or []
+    return rows[0] if rows else None
+
+
+@with_retry
+def get_admin_registration_request_for_user(
+    user_id: int,
+):
+    response = (
+        service_supabase
+        .table("admin_registration_requests")
+        .select("*")
+        .eq("user_id", int(user_id))
+        .limit(1)
+        .execute()
+    )
+
+    rows = response.data or []
+    return rows[0] if rows else None
+
+
+@with_retry
+def create_admin_registration_request(
+    user_id: int,
+    requested_platform: str,
+    requested_external_user_id: int,
+):
+    existing = get_admin_registration_request_for_user(user_id)
+    if existing:
+        return existing
+
+    payload = {
+        "user_id": int(user_id),
+        "requested_platform": requested_platform,
+        "requested_external_user_id": int(requested_external_user_id),
+        "status": "pending",
+    }
+
+    response = (
+        service_supabase
+        .table("admin_registration_requests")
+        .insert(payload)
+        .execute()
+    )
+
+    rows = response.data or []
+    return rows[0] if rows else None
+
+
+@with_retry
+def list_pending_admin_registration_requests():
+    response = (
+        service_supabase
+        .table("admin_registration_requests")
+        .select("*")
+        .eq("status", "pending")
+        .execute()
+    )
+
+    return response.data or []
+
+
+@with_retry
+def review_admin_registration_request(
+    request_id: int,
+    status: str,
+    *,
+    review_reason: str | None = None,
+    reviewed_by_platform: str | None = None,
+    reviewed_by_external_user_id: int | None = None,
+):
+    if status not in {"approved", "rejected"}:
+        raise ValueError("Invalid registration review status")
+
+    payload = {
+        "status": status,
+        "review_reason": review_reason,
+        "reviewed_by_platform": reviewed_by_platform,
+        "reviewed_by_external_user_id": reviewed_by_external_user_id,
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    response = (
+        service_supabase
+        .table("admin_registration_requests")
+        .update(payload)
+        .eq("id", int(request_id))
         .execute()
     )
 

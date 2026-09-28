@@ -4825,6 +4825,19 @@ def handle_setup_callback(
         _origin_answer_callback(callback_id, "کاربر قابل تشخیص نیست.")
         return True
 
+    from core.admin_control import admin_control_enabled
+
+    if admin_control_enabled():
+        from core.command_handler import _identity_for_chat
+
+        user = _identity_for_chat(int(user_id))
+        if user and user.get("status") == "pending":
+            _origin_answer_callback(
+                callback_id,
+                "⏳ حساب شما در انتظار تأیید مدیر است.",
+            )
+            return True
+
     if is_reverify_action:
         parts = callback_data.split(":")
         if len(parts) != 5:
