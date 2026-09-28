@@ -1403,6 +1403,51 @@ def handle_addchannel(args: str, chat_id: int) -> bool:
                 send_message(chat_id, f"❌ {reason}")
                 return True
 
+        if admin_control_enabled():
+            from core.admin_control import is_admin_identity
+
+            requester_platform = (
+                "bale" if CURRENT_ORIGIN == "bale" else "telegram"
+            )
+
+            if not is_admin_identity(requester_platform, chat_id):
+                from core.database import (
+                    create_admin_access_request,
+                    list_pending_admin_access_requests,
+                )
+
+                normalized_external_id = external_id.lstrip("@").lower()
+
+                existing_request = next(
+                    (
+                        row
+                        for row in list_pending_admin_access_requests()
+                        if int(row.get("requester_user_id")) == int(user["id"])
+                        and int(row.get("workspace_id")) == int(workspace["id"])
+                        and row.get("platform") == "telegram"
+                        and row.get("normalized_external_id")
+                        == normalized_external_id
+                    ),
+                    None,
+                )
+
+                if existing_request is None:
+                    create_admin_access_request(
+                        requester_user_id=int(user["id"]),
+                        workspace_id=int(workspace["id"]),
+                        platform="telegram",
+                        external_id=external_id,
+                        normalized_external_id=normalized_external_id,
+                        display_name=external_id,
+                    )
+
+                send_message(
+                    chat_id,
+                    f"✅ درخواست افزودن کانال {external_id} ثبت شد.\n\n"
+                    "⏳ این کانال پس از تأیید مدیر اضافه خواهد شد.",
+                )
+                return True
+
         dest, is_dup = register_channel_destination(
             workspace["id"],
             external_id=external_id,
@@ -3464,6 +3509,172 @@ def handle_status(chat_id: int) -> bool:
 
 
 # =========================================================
+# ADMIN CONTROL — ADD DESTINATION APPROVAL
+# =========================================================
+
+def _require_admin(chat_id: int) -> bool:
+    from core.admin_control import is_admin_identity
+
+    platform = "bale" if CURRENT_ORIGIN == "bale" else "telegram"
+    if not is_admin_identity(platform, chat_id):
+        send_message(chat_id, "❌ دسترسی ادمین ندارید.")
+        return False
+    return True
+
+
+def handle_adminrequests(chat_id: int) -> bool:
+    if not _require_admin(chat_id):
+        return True
+
+    from core.database import list_pending_admin_access_requests
+
+    requests_ = list_pending_admin_access_requests()
+
+    if not requests_:
+        send_message(
+            chat_id,
+            "✅ درخواست pending برای افزودن کانال وجود ندارد.",
+        )
+        return True
+
+    lines = ["📋 درخواست‌های در انتظار تأیید:\n"]
+
+    for row in requests_:
+        lines.append(
+            f"ID: {row['id']}\n"
+            f"Workspace: {row['workspace_id']}\n"
+            f"Channel: {row['external_id']}\n"
+            f"User ID: {row['requester_user_id']}\n"
+            f"/adminapprove {row['id']}\n"
+            f"/adminreject {row['id']}\n"
+        )
+
+    send_long_message(chat_id, "\n".join(lines))
+    return True
+
+
+def handle_adminapprove(args: str, chat_id: int) -> bool:
+    if not _require_admin(chat_id):
+        return True
+
+    try:
+        request_id = int((args or "").strip())
+    except (TypeError, ValueError):
+        send_message(
+            chat_id,
+            "❌ فرمت صحیح: /adminapprove <request_id>",
+        )
+        return True
+
+    from core.database import (
+        list_pending_admin_access_requests,
+        review_admin_access_request,
+    )
+
+    request_row = next(
+        (
+            row
+            for row in list_pending_admin_access_requests()
+            if int(row["id"]) == request_id
+        ),
+        None,
+    )
+
+    if request_row is None:
+        send_message(chat_id, "❌ درخواست pending پیدا نشد.")
+        return True
+
+    try:
+        dest, _is_dup = register_channel_destination(
+            int(request_row["workspace_id"]),
+            external_id=request_row["external_id"],
+            name=(
+                request_row.get("display_name")
+                or request_row["external_id"]
+            ),
+        )
+
+        platform = "bale" if CURRENT_ORIGIN == "bale" else "telegram"
+
+        review_admin_access_request(
+            request_id,
+            "approved",
+            reviewed_by_platform=platform,
+            reviewed_by_external_user_id=int(chat_id),
+        )
+
+        if dest:
+            _verify_and_activate_channel(
+                int(request_row["workspace_id"]),
+                dest,
+                chat_id,
+            )
+
+        send_message(
+            chat_id,
+            f"✅ درخواست {request_id} تأیید شد.\n"
+            f"کانال {request_row['external_id']} به رسانه اضافه شد.",
+        )
+        return True
+
+    except DestinationOwnedElsewhereError as exc:
+        send_message(chat_id, f"❌ {exc}")
+        return True
+    except Exception:
+        logger.exception("❌ Error approving admin access request")
+        send_message(chat_id, "❌ خطا در تأیید درخواست.")
+        return True
+
+
+def handle_adminreject(args: str, chat_id: int) -> bool:
+    if not _require_admin(chat_id):
+        return True
+
+    try:
+        request_id = int((args or "").strip())
+    except (TypeError, ValueError):
+        send_message(
+            chat_id,
+            "❌ فرمت صحیح: /adminreject <request_id>",
+        )
+        return True
+
+    from core.database import (
+        list_pending_admin_access_requests,
+        review_admin_access_request,
+    )
+
+    request_row = next(
+        (
+            row
+            for row in list_pending_admin_access_requests()
+            if int(row["id"]) == request_id
+        ),
+        None,
+    )
+
+    if request_row is None:
+        send_message(chat_id, "❌ درخواست pending پیدا نشد.")
+        return True
+
+    platform = "bale" if CURRENT_ORIGIN == "bale" else "telegram"
+
+    review_admin_access_request(
+        request_id,
+        "rejected",
+        reviewed_by_platform=platform,
+        reviewed_by_external_user_id=int(chat_id),
+    )
+
+    send_message(
+        chat_id,
+        f"⛔ درخواست {request_id} رد شد.\n"
+        f"کانال {request_row['external_id']} اضافه نشد.",
+    )
+    return True
+
+
+# =========================================================
 # COMMAND DETECTION
 # =========================================================
 
@@ -3558,6 +3769,9 @@ def handle_command(text: str, chat_id: int) -> bool:
             # Phase 4A setup wizard
             "setup": lambda: handle_setup(chat_id),
             "addchannel": lambda: handle_addchannel(args, chat_id),
+            "adminrequests": lambda: handle_adminrequests(chat_id),
+            "adminapprove": lambda: handle_adminapprove(args, chat_id),
+            "adminreject": lambda: handle_adminreject(args, chat_id),
             "verifychannel": lambda: handle_verifychannel(args, chat_id),
             "addbale": lambda: handle_addbale(args, chat_id),
             "verifybale": lambda: handle_verifybale(args, chat_id),
