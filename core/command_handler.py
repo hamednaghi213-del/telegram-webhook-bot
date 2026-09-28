@@ -180,9 +180,14 @@ def _identity_for_chat(chat_id: int) -> Optional[Dict[str, Any]]:
     identity -- numeric Bale IDs are never treated as Telegram IDs.
     """
     if CURRENT_ORIGIN == "bale":
-        from core.database import get_user_by_bale_id
+        from core.database import (
+            get_or_create_user_by_bale_id,
+        )
 
-        return get_user_by_bale_id(int(chat_id))
+        return get_or_create_user_by_bale_id(
+            int(chat_id),
+            status="active",
+        )
 
     return get_user_by_telegram_id(chat_id)
 

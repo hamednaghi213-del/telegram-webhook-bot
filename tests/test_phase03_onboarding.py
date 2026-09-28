@@ -210,7 +210,6 @@ def _load_command_handler(monkeypatch):
     fake_database.update_workspace_member_status = db.update_workspace_member_status
     monkeypatch.setitem(sys.modules, "core.database", fake_database)
 
-    sys.modules.pop("core.command_handler", None)
     command_handler = importlib.import_module("core.command_handler")
     command_handler = importlib.reload(command_handler)
 
