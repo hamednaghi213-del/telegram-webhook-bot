@@ -5845,7 +5845,29 @@ def review_admin_access_request(
     )
 
     rows = response.data or []
-    return rows[0] if rows else None
+    reviewed_row = rows[0] if rows else None
+
+    if reviewed_row:
+        try:
+            record_admin_audit_log(
+                f"review_add_destination_{status}",
+                reviewed_by_platform or "system",
+                actor_external_user_id=(
+                    reviewed_by_external_user_id
+                ),
+                target_type="access_request",
+                target_id=int(request_id),
+                details={
+                    "status": status,
+                    "reason": review_reason,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "Failed to audit add-destination review"
+            )
+
+    return reviewed_row
 
 
 @with_retry
@@ -5967,3 +5989,114 @@ def record_admin_audit_log(
 
     rows = response.data or []
     return rows[0] if rows else None
+
+
+
+@with_retry
+def list_admin_destination_inventory():
+    """Return publication destinations enriched with admin state/workspace."""
+    if service_supabase is None:
+        return []
+
+    destination_response = (
+        service_supabase
+        .table("publication_destinations")
+        .select("*")
+        .execute()
+    )
+
+    control_response = (
+        service_supabase
+        .table("admin_destination_controls")
+        .select("*")
+        .execute()
+    )
+
+    workspace_response = (
+        service_supabase
+        .table("workspaces")
+        .select("id,name,owner_user_id,status")
+        .execute()
+    )
+
+    controls = {
+        int(row["destination_id"]): row
+        for row in (control_response.data or [])
+        if row.get("destination_id") is not None
+    }
+
+    workspaces = {
+        int(row["id"]): row
+        for row in (workspace_response.data or [])
+        if row.get("id") is not None
+    }
+
+    result = []
+
+    for row in destination_response.data or []:
+        if row.get("status") == "removed":
+            continue
+
+        item = dict(row)
+
+        destination_id = item.get("id")
+        control = (
+            controls.get(int(destination_id))
+            if destination_id is not None
+            else None
+        ) or {}
+
+        workspace_id = item.get("workspace_id")
+        workspace = (
+            workspaces.get(int(workspace_id))
+            if workspace_id is not None
+            else None
+        ) or {}
+
+        item["admin_state"] = (
+            control.get("admin_state")
+            or "active"
+        )
+        item["admin_reason"] = control.get("reason")
+        item["workspace_name"] = workspace.get("name")
+        item["workspace_owner_user_id"] = workspace.get(
+            "owner_user_id"
+        )
+        item["workspace_status"] = workspace.get("status")
+
+        result.append(item)
+
+    return sorted(
+        result,
+        key=lambda item: int(item.get("id") or 0),
+    )
+
+
+@with_retry
+def list_admin_audit_log(limit: int = 20):
+    if service_supabase is None:
+        return []
+
+    safe_limit = max(
+        1,
+        min(int(limit or 20), 100),
+    )
+
+    response = (
+        service_supabase
+        .table("admin_audit_log")
+        .select("*")
+        .execute()
+    )
+
+    rows = response.data or []
+
+    rows = sorted(
+        rows,
+        key=lambda row: str(
+            row.get("created_at") or ""
+        ),
+        reverse=True,
+    )
+
+    return rows[:safe_limit]

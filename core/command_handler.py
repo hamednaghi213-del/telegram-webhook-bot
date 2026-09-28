@@ -1384,6 +1384,36 @@ def handle_addchannel(args: str, chat_id: int) -> bool:
             return True
 
         external_id = args.strip()
+
+        if admin_control_enabled():
+            from core.admin_control import (
+                external_destination_is_blocked,
+                is_admin_identity,
+            )
+
+            requester_platform = (
+                "bale"
+                if CURRENT_ORIGIN == "bale"
+                else "telegram"
+            )
+
+            if (
+                not is_admin_identity(
+                    requester_platform,
+                    chat_id,
+                )
+                and external_destination_is_blocked(
+                    "telegram",
+                    external_id,
+                )
+            ):
+                send_message(
+                    chat_id,
+                    "⛔ این کانال توسط مدیریت "
+                    "بلاک شده و امکان ثبت مجدد "
+                    "آن وجود ندارد.",
+                )
+                return True
         is_valid, err = validate_channel(external_id)
         if not is_valid:
             send_message(chat_id, err)
@@ -3523,22 +3553,151 @@ def _require_admin(chat_id: int) -> bool:
 
 
 def handle_admin(chat_id: int) -> bool:
-    if not _require_admin(chat_id):
-        return True
-
-    send_message(
-        chat_id,
-        "🛡 پنل مدیریت\n\n"
-        "📥 درخواست‌های افزودن کانال\n"
-        "/adminrequests\n\n"
-        "👤 ثبت‌نام کاربران\n"
-        "⏳ ماژول مدیریت ثبت‌نام در حال تکمیل\n\n"
-        "📡 کانال‌ها و مقصدها\n"
-        "⏳ ماژول کنترل مقصدها در حال تکمیل\n\n"
-        "📜 گزارش فعالیت‌ها\n"
-        "⏳ ماژول Audit در حال تکمیل"
+    from core.admin_panel import (
+        handle_admin_root,
     )
-    return True
+
+    return handle_admin_root(
+        chat_id,
+        send_message,
+        CURRENT_ORIGIN,
+    )
+
+
+def handle_adminregistrations(chat_id: int) -> bool:
+    from core.admin_panel import (
+        handle_admin_registrations,
+    )
+
+    return handle_admin_registrations(
+        chat_id,
+        send_message,
+        CURRENT_ORIGIN,
+    )
+
+
+def handle_adminregapprove(
+    args: str,
+    chat_id: int,
+) -> bool:
+    from core.admin_panel import (
+        handle_admin_registration_approve,
+    )
+
+    return handle_admin_registration_approve(
+        args,
+        chat_id,
+        send_message,
+        CURRENT_ORIGIN,
+    )
+
+
+def handle_adminregreject(
+    args: str,
+    chat_id: int,
+) -> bool:
+    from core.admin_panel import (
+        handle_admin_registration_reject,
+    )
+
+    return handle_admin_registration_reject(
+        args,
+        chat_id,
+        send_message,
+        CURRENT_ORIGIN,
+    )
+
+
+def handle_admindestinations(
+    chat_id: int,
+) -> bool:
+    from core.admin_panel import (
+        handle_admin_destinations,
+    )
+
+    return handle_admin_destinations(
+        chat_id,
+        send_message,
+        CURRENT_ORIGIN,
+    )
+
+
+def handle_adminpause(
+    args: str,
+    chat_id: int,
+) -> bool:
+    from core.admin_panel import (
+        handle_admin_pause,
+    )
+
+    return handle_admin_pause(
+        args,
+        chat_id,
+        send_message,
+        CURRENT_ORIGIN,
+    )
+
+
+def handle_adminresume(
+    args: str,
+    chat_id: int,
+) -> bool:
+    from core.admin_panel import (
+        handle_admin_resume,
+    )
+
+    return handle_admin_resume(
+        args,
+        chat_id,
+        send_message,
+        CURRENT_ORIGIN,
+    )
+
+
+def handle_adminblock(
+    args: str,
+    chat_id: int,
+) -> bool:
+    from core.admin_panel import (
+        handle_admin_block,
+    )
+
+    return handle_admin_block(
+        args,
+        chat_id,
+        send_message,
+        CURRENT_ORIGIN,
+    )
+
+
+def handle_adminunblock(
+    args: str,
+    chat_id: int,
+) -> bool:
+    from core.admin_panel import (
+        handle_admin_unblock,
+    )
+
+    return handle_admin_unblock(
+        args,
+        chat_id,
+        send_message,
+        CURRENT_ORIGIN,
+    )
+
+
+def handle_adminaudit(
+    chat_id: int,
+) -> bool:
+    from core.admin_panel import (
+        handle_admin_audit,
+    )
+
+    return handle_admin_audit(
+        chat_id,
+        send_message,
+        CURRENT_ORIGIN,
+    )
 
 
 def handle_adminrequests(chat_id: int) -> bool:
@@ -3603,6 +3762,29 @@ def handle_adminapprove(args: str, chat_id: int) -> bool:
         send_message(chat_id, "❌ درخواست pending پیدا نشد.")
         return True
 
+    from core.admin_control import (
+        external_destination_is_blocked,
+    )
+
+    if external_destination_is_blocked(
+        str(
+            request_row.get("platform")
+            or "telegram"
+        ),
+        str(
+            request_row.get("external_id")
+            or ""
+        ),
+    ):
+        send_message(
+            chat_id,
+            "⛔ این مقصد بعد از ایجاد "
+            "درخواست توسط مدیریت بلاک "
+            "شده و قابل تأیید نیست.",
+        )
+        return True
+
+    # blocked after request creation guard
     try:
         dest, _is_dup = register_channel_destination(
             int(request_row["workspace_id"]),
@@ -3789,6 +3971,15 @@ def handle_command(text: str, chat_id: int) -> bool:
             "setup": lambda: handle_setup(chat_id),
             "addchannel": lambda: handle_addchannel(args, chat_id),
             "admin": lambda: handle_admin(chat_id),
+            "adminregistrations": lambda: handle_adminregistrations(chat_id),
+            "adminregapprove": lambda: handle_adminregapprove(args, chat_id),
+            "adminregreject": lambda: handle_adminregreject(args, chat_id),
+            "admindestinations": lambda: handle_admindestinations(chat_id),
+            "adminpause": lambda: handle_adminpause(args, chat_id),
+            "adminresume": lambda: handle_adminresume(args, chat_id),
+            "adminblock": lambda: handle_adminblock(args, chat_id),
+            "adminunblock": lambda: handle_adminunblock(args, chat_id),
+            "adminaudit": lambda: handle_adminaudit(chat_id),
             "adminrequests": lambda: handle_adminrequests(chat_id),
             "adminapprove": lambda: handle_adminapprove(args, chat_id),
             "adminreject": lambda: handle_adminreject(args, chat_id),
