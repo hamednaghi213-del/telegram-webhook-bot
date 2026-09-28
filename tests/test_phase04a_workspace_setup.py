@@ -39,6 +39,7 @@ class InMemoryDb4A:
         self.destination_verifications: Dict[int, Dict] = {}
         self.destination_brandings: Dict[int, Dict] = {}
         self.user_workspace_preferences: Dict[int, Dict] = {}
+        self.admin_access_requests: List[Dict] = []
         self.tenants: Dict[int, Dict] = {}
         self.canonical_media_enabled_flag = False
         self._next_id = 1
@@ -81,6 +82,50 @@ class InMemoryDb4A:
         return self.set_user_pending_workspace_action(user_id, None, None)
 
     # ── tenants (legacy) ───────────────────────────────
+    def create_admin_access_request(
+        self,
+        requester_user_id,
+        workspace_id,
+        platform,
+        external_id,
+        normalized_external_id,
+        display_name=None,
+    ):
+        row = {
+            "id": self._next(),
+            "requester_user_id": requester_user_id,
+            "workspace_id": workspace_id,
+            "platform": platform,
+            "external_id": external_id,
+            "normalized_external_id": normalized_external_id,
+            "display_name": display_name,
+            "status": "pending",
+        }
+        self.admin_access_requests.append(row)
+        return deepcopy(row)
+
+    def list_pending_admin_access_requests(self):
+        return [
+            deepcopy(row)
+            for row in self.admin_access_requests
+            if row.get("status") == "pending"
+        ]
+
+    def review_admin_access_request(
+        self,
+        request_id,
+        status,
+        reviewed_by_platform,
+        reviewed_by_external_user_id,
+    ):
+        for row in self.admin_access_requests:
+            if row["id"] == request_id:
+                row["status"] = status
+                row["reviewed_by_platform"] = reviewed_by_platform
+                row["reviewed_by_external_user_id"] = reviewed_by_external_user_id
+                return deepcopy(row)
+        return None
+
     def get_tenant(self, user_id):
         return self.tenants.get(user_id)
 
@@ -397,6 +442,9 @@ def _make_fake_db_module(db: InMemoryDb4A) -> types.ModuleType:
     """Build a fake core.database module backed by db."""
     mod = types.ModuleType("core.database")
     mod.canonical_media_enabled = db.canonical_media_enabled
+    mod.create_admin_access_request = db.create_admin_access_request
+    mod.list_pending_admin_access_requests = db.list_pending_admin_access_requests
+    mod.review_admin_access_request = db.review_admin_access_request
     mod.get_tenant = db.get_tenant
     mod.save_tenant = db.save_tenant
     mod.update_bale_settings = db.update_bale_settings
@@ -946,6 +994,111 @@ def test_24_addchannel_command_registers_unverified_destination(monkeypatch):
     assert verification is not None
     assert verification["verified"] is False
     assert "pending" in verification["verification_note"].lower()
+
+
+def test_24a_addchannel_requires_admin_approval_for_non_admin(monkeypatch):
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+    _start_with_workspace(ch_mod, db, 2101)
+    monkeypatch.setenv("ENABLE_ADMIN_CONTROL", "true")
+    monkeypatch.setenv("ADMIN_TELEGRAM_USER_ID", "999999")
+    ch_mod.handle_command("/addchannel @PendingChannel", 2101)
+    assert len(db.admin_access_requests) == 1
+    request = db.admin_access_requests[0]
+    assert request["status"] == "pending"
+    assert request["external_id"] == "@PendingChannel"
+    assert db.list_workspace_destinations(request["workspace_id"]) == []
+
+
+def test_24b_addchannel_duplicate_pending_request_is_not_duplicated(monkeypatch):
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+    _start_with_workspace(ch_mod, db, 2102)
+    monkeypatch.setenv("ENABLE_ADMIN_CONTROL", "true")
+    monkeypatch.setenv("ADMIN_TELEGRAM_USER_ID", "999999")
+    ch_mod.handle_command("/addchannel @PendingChannel", 2102)
+    ch_mod.handle_command("/addchannel @pendingchannel", 2102)
+    assert len(db.admin_access_requests) == 1
+    assert db.admin_access_requests[0]["normalized_external_id"] == "pendingchannel"
+
+
+def test_24c_admin_addchannel_bypasses_approval(monkeypatch):
+    _, ch_mod, db, _ = _load_modules(monkeypatch)
+    _start_with_workspace(ch_mod, db, 999999)
+    monkeypatch.setenv("ENABLE_ADMIN_CONTROL", "true")
+    monkeypatch.setenv("ADMIN_TELEGRAM_USER_ID", "999999")
+    ch_mod.handle_command("/addchannel @AdminChannel", 999999)
+    assert db.admin_access_requests == []
+    workspace_id = db.workspaces[0]["id"]
+    destinations = db.list_workspace_destinations(workspace_id)
+    assert len(destinations) == 1
+    assert destinations[0]["external_id"] == "@AdminChannel"
+
+
+def test_24d_adminrequests_is_admin_only_and_lists_pending(monkeypatch):
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    _start_with_workspace(ch_mod, db, 2104)
+    monkeypatch.setenv("ENABLE_ADMIN_CONTROL", "true")
+    monkeypatch.setenv("ADMIN_TELEGRAM_USER_ID", "999999")
+    ch_mod.handle_command("/addchannel @PendingList", 2104)
+    request_id = db.admin_access_requests[0]["id"]
+    sent.clear()
+    ch_mod.handle_command("/adminrequests", 2104)
+    assert any("دسترسی ادمین ندارید" in msg for _, msg in sent)
+    sent.clear()
+    ch_mod.handle_command("/adminrequests", 999999)
+    text = "\\n".join(msg for _, msg in sent)
+    assert f"ID: {request_id}" in text
+    assert "@PendingList" in text
+    assert f"/adminapprove {request_id}" in text
+    assert f"/adminreject {request_id}" in text
+
+
+def test_24e_adminapprove_adds_destination_and_marks_request_approved(monkeypatch):
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    _start_with_workspace(ch_mod, db, 2105)
+    monkeypatch.setenv("ENABLE_ADMIN_CONTROL", "true")
+    monkeypatch.setenv("ADMIN_TELEGRAM_USER_ID", "999999")
+    ch_mod.handle_command("/addchannel @ApproveMe", 2105)
+    req = db.admin_access_requests[0]
+    sent.clear()
+    assert ch_mod.handle_command(f"/adminapprove {req['id']}", 999999) is True
+    destinations = db.list_workspace_destinations(req["workspace_id"])
+    assert len(destinations) == 1
+    assert destinations[0]["external_id"] == "@ApproveMe"
+    assert req["status"] == "approved"
+    assert req["reviewed_by_platform"] == "telegram"
+    assert req["reviewed_by_external_user_id"] == 999999
+    assert any("تأیید شد" in msg for _, msg in sent)
+
+
+def test_24f_adminreject_marks_rejected_without_creating_destination(monkeypatch):
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    _start_with_workspace(ch_mod, db, 2106)
+    monkeypatch.setenv("ENABLE_ADMIN_CONTROL", "true")
+    monkeypatch.setenv("ADMIN_TELEGRAM_USER_ID", "999999")
+    ch_mod.handle_command("/addchannel @RejectMe", 2106)
+    req = db.admin_access_requests[0]
+    sent.clear()
+    assert ch_mod.handle_command(f"/adminreject {req['id']}", 999999) is True
+    assert db.list_workspace_destinations(req["workspace_id"]) == []
+    assert req["status"] == "rejected"
+    assert req["reviewed_by_platform"] == "telegram"
+    assert req["reviewed_by_external_user_id"] == 999999
+    assert any("رد شد" in msg for _, msg in sent)
+
+
+def test_24g_non_admin_cannot_approve_or_reject_pending_request(monkeypatch):
+    _, ch_mod, db, sent = _load_modules(monkeypatch)
+    _start_with_workspace(ch_mod, db, 2107)
+    monkeypatch.setenv("ENABLE_ADMIN_CONTROL", "true")
+    monkeypatch.setenv("ADMIN_TELEGRAM_USER_ID", "999999")
+    ch_mod.handle_command("/addchannel @ProtectedReq", 2107)
+    req = db.admin_access_requests[0]
+    sent.clear()
+    assert ch_mod.handle_command(f"/adminapprove {req['id']}", 2107) is True
+    assert ch_mod.handle_command(f"/adminreject {req['id']}", 2107) is True
+    assert req["status"] == "pending"
+    assert db.list_workspace_destinations(req["workspace_id"]) == []
+    assert sum("دسترسی ادمین ندارید" in msg for _, msg in sent) == 2
 
 
 def test_25_setbranding_command_saves_workspace_branding(monkeypatch):
