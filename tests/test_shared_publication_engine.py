@@ -747,3 +747,140 @@ def test_destination_translation_runs_separately_for_different_languages(
     assert calls == ["de", "ru"]
     assert translated_de.main_text == "translated-de"
     assert translated_ru.main_text == "translated-ru"
+
+def test_x_only_routing_excludes_telegram_and_bale():
+    targets = [
+        PublicationTarget(
+            "telegram",
+            "workspace",
+            "telegram",
+            "@telegram",
+            1,
+            1,
+        ),
+        PublicationTarget(
+            "bale",
+            "workspace",
+            "bale",
+            "@bale",
+            1,
+            2,
+        ),
+        PublicationTarget(
+            "x",
+            "workspace",
+            "x",
+            "123456789",
+            1,
+            3,
+        ),
+    ]
+
+    prepared = PreparedContent(
+        main_text="خبر برای ایکس",
+        neutral_text="خبر برای ایکس",
+        source_key="routing:x-only",
+        routing_platforms=("x",),
+    )
+
+    filtered = (
+        publication_engine
+        ._filter_targets_for_routing(
+            prepared,
+            targets,
+        )
+    )
+
+    assert [
+        target.platform
+        for target in filtered
+    ] == ["x"]
+
+
+def test_normal_routing_excludes_x_destination():
+    targets = [
+        PublicationTarget(
+            "telegram",
+            "workspace",
+            "telegram",
+            "@telegram",
+            1,
+            1,
+        ),
+        PublicationTarget(
+            "bale",
+            "workspace",
+            "bale",
+            "@bale",
+            1,
+            2,
+        ),
+        PublicationTarget(
+            "x",
+            "workspace",
+            "x",
+            "123456789",
+            1,
+            3,
+        ),
+    ]
+
+    prepared = PreparedContent(
+        main_text="خبر عادی",
+        neutral_text="خبر عادی",
+        source_key="routing:normal",
+    )
+
+    filtered = (
+        publication_engine
+        ._filter_targets_for_routing(
+            prepared,
+            targets,
+        )
+    )
+
+    assert [
+        target.platform
+        for target in filtered
+    ] == [
+        "telegram",
+        "bale",
+    ]
+
+
+def test_x_only_routing_has_no_fallback_when_x_is_unavailable():
+    targets = [
+        PublicationTarget(
+            "telegram",
+            "workspace",
+            "telegram",
+            "@telegram",
+            1,
+            1,
+        ),
+        PublicationTarget(
+            "bale",
+            "workspace",
+            "bale",
+            "@bale",
+            1,
+            2,
+        ),
+    ]
+
+    prepared = PreparedContent(
+        main_text="خبر برای ایکس",
+        neutral_text="خبر برای ایکس",
+        source_key="routing:x-unavailable",
+        routing_platforms=("x",),
+    )
+
+    filtered = (
+        publication_engine
+        ._filter_targets_for_routing(
+            prepared,
+            targets,
+        )
+    )
+
+    assert filtered == []

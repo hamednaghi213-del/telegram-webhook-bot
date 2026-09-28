@@ -1900,6 +1900,83 @@ def _delivery_parts(
         )
 
 
+def _filter_targets_for_routing(
+    prepared: PreparedContent,
+    targets: List[PublicationTarget],
+) -> List[PublicationTarget]:
+    """
+    Apply destination-routing intent without introducing fallback.
+
+    V1 routing contract:
+    - Empty routing_platforms means ordinary publication. X is opt-in and
+      must not receive ordinary Telegram/Bale publications.
+    - Explicit routing_platforms keeps only the requested platforms.
+    - If an explicitly requested platform is unavailable, the result is
+      intentionally empty. The caller must never fall back to another
+      platform.
+    """
+
+    requested_platforms = tuple(
+        str(platform)
+        .strip()
+        .lower()
+        for platform in (
+            prepared.routing_platforms
+            or ()
+        )
+        if str(platform).strip()
+    )
+
+    if requested_platforms:
+        allowed = set(
+            requested_platforms
+        )
+
+        filtered = [
+            target
+            for target in targets
+            if (
+                str(
+                    target.platform
+                    or ""
+                )
+                .strip()
+                .lower()
+                in allowed
+            )
+        ]
+    else:
+        filtered = [
+            target
+            for target in targets
+            if (
+                str(
+                    target.platform
+                    or ""
+                )
+                .strip()
+                .lower()
+                != "x"
+            )
+        ]
+
+    logger.info(
+        "🎯 Destination routing applied | "
+        "source=%s | platforms=%s | targets=%s",
+        prepared.publication_identity,
+        (
+            ",".join(
+                requested_platforms
+            )
+            if requested_platforms
+            else "default-no-x"
+        ),
+        len(filtered),
+    )
+
+    return filtered
+
+
 def publish_prepared_content(
     chat_id: int,
     api_url: str,
@@ -1962,6 +2039,11 @@ def publish_prepared_content(
 
     targets = list(
         unique_targets.values()
+    )
+
+    targets = _filter_targets_for_routing(
+        prepared,
+        targets,
     )
 
     # Keep Telegram publication latency isolated from Bale media upload

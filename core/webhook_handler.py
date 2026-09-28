@@ -5,6 +5,7 @@ import os
 import uuid
 import secrets
 import requests
+import re
 
 from typing import (
     Dict,
@@ -210,6 +211,201 @@ def get_message_entities(
             []
         )
         or []
+    )
+
+
+# =========================================================
+# X ROUTING CONTROL TAG
+# =========================================================
+
+_X_ROUTING_TAG_PATTERN = re.compile(
+    r"(?<![\w#])#ایکس(?![\w])",
+    re.UNICODE,
+)
+
+
+def detect_x_routing_tag(
+    text: str,
+    entities: List[Dict[str, Any]],
+) -> Tuple[
+    bool,
+    str,
+    List[Dict[str, Any]],
+]:
+    """
+    Detect and remove the #ایکس routing control tag.
+
+    Empty/absent tag keeps normal routing.
+    An exact standalone #ایکس requests X-only routing.
+
+    Telegram entity offsets are UTF-16 code-unit offsets.  Removing the
+    routing directive therefore shifts later entities by the UTF-16 length
+    of each removed tag.  Entities overlapping the directive itself are
+    discarded.
+    """
+
+    original_text = str(
+        text
+        or ""
+    )
+
+    original_entities = [
+        dict(entity)
+        for entity in (
+            entities
+            or []
+        )
+        if isinstance(
+            entity,
+            dict,
+        )
+    ]
+
+    matches = list(
+        _X_ROUTING_TAG_PATTERN.finditer(
+            original_text
+        )
+    )
+
+    if not matches:
+
+        return (
+            False,
+            original_text,
+            original_entities,
+        )
+
+    def utf16_length(
+        value: str,
+    ) -> int:
+
+        return (
+            len(
+                value.encode(
+                    "utf-16-le"
+                )
+            )
+            // 2
+        )
+
+    removed_ranges = []
+
+    for match in matches:
+
+        start = match.start()
+        end = match.end()
+
+        removed_ranges.append(
+            (
+                utf16_length(
+                    original_text[
+                        :start
+                    ]
+                ),
+                utf16_length(
+                    original_text[
+                        start:end
+                    ]
+                ),
+            )
+        )
+
+    cleaned_text = (
+        _X_ROUTING_TAG_PATTERN
+        .sub(
+            "",
+            original_text,
+        )
+    )
+
+    adjusted_entities: List[
+        Dict[str, Any]
+    ] = []
+
+    for entity in original_entities:
+
+        try:
+
+            offset = int(
+                entity.get(
+                    "offset",
+                    0,
+                )
+            )
+
+            length = int(
+                entity.get(
+                    "length",
+                    0,
+                )
+            )
+
+        except Exception:
+
+            continue
+
+        end = (
+            offset
+            + length
+        )
+
+        overlaps_control_tag = False
+        removed_before = 0
+
+        for (
+            removed_start,
+            removed_length,
+        ) in removed_ranges:
+
+            removed_end = (
+                removed_start
+                + removed_length
+            )
+
+            if (
+                offset
+                < removed_end
+                and end
+                > removed_start
+            ):
+
+                overlaps_control_tag = True
+                break
+
+            if removed_end <= offset:
+
+                removed_before += (
+                    removed_length
+                )
+
+        if overlaps_control_tag:
+
+            continue
+
+        adjusted = dict(
+            entity
+        )
+
+        adjusted[
+            "offset"
+        ] = (
+            offset
+            - removed_before
+        )
+
+        adjusted_entities.append(
+            adjusted
+        )
+
+    logger.info(
+        "🏷️ X routing tag detected | "
+        "routing=x-only"
+    )
+
+    return (
+        True,
+        cleaned_text,
+        adjusted_entities,
     )
 
 
@@ -1878,6 +2074,7 @@ def publish_prepared_text(
     files: Optional[List[Dict[str, Any]]] = None,
     media_presentation: str = "",
     require_single_message: bool = False,
+    routing_platforms: Optional[Tuple[str, ...]] = None,
     return_result: bool = False,
 ) -> Any:
 
@@ -1900,6 +2097,10 @@ def publish_prepared_text(
                 editorial_finalized=editorial_finalized,
                 require_single_message=require_single_message,
                 source_key=source_key,
+                routing_platforms=tuple(
+                    routing_platforms
+                    or ()
+                ),
             ),
         )
         if return_result:
@@ -2700,10 +2901,17 @@ def process_text_message(
 
     try:
 
-        prepared = (
-            prepare_text_content(
+        x_only, routed_text, routed_entities = (
+            detect_x_routing_tag(
                 text=text,
                 entities=entities,
+            )
+        )
+
+        prepared = (
+            prepare_text_content(
+                text=routed_text,
+                entities=routed_entities,
                 forward_source=forward_source
             )
         )
@@ -2732,6 +2940,11 @@ def process_text_message(
             ),
             neutral_text=prepared.get("neutral_text"),
             source_key=source_key,
+            routing_platforms=(
+                ("x",)
+                if x_only
+                else ()
+            ),
             return_result=return_result,
         )
 
