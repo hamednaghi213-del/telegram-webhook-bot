@@ -3522,6 +3522,25 @@ def _require_admin(chat_id: int) -> bool:
     return True
 
 
+def handle_admin(chat_id: int) -> bool:
+    if not _require_admin(chat_id):
+        return True
+
+    send_message(
+        chat_id,
+        "🛡 پنل مدیریت\n\n"
+        "📥 درخواست‌های افزودن کانال\n"
+        "/adminrequests\n\n"
+        "👤 ثبت‌نام کاربران\n"
+        "⏳ ماژول مدیریت ثبت‌نام در حال تکمیل\n\n"
+        "📡 کانال‌ها و مقصدها\n"
+        "⏳ ماژول کنترل مقصدها در حال تکمیل\n\n"
+        "📜 گزارش فعالیت‌ها\n"
+        "⏳ ماژول Audit در حال تکمیل"
+    )
+    return True
+
+
 def handle_adminrequests(chat_id: int) -> bool:
     if not _require_admin(chat_id):
         return True
@@ -3769,6 +3788,7 @@ def handle_command(text: str, chat_id: int) -> bool:
             # Phase 4A setup wizard
             "setup": lambda: handle_setup(chat_id),
             "addchannel": lambda: handle_addchannel(args, chat_id),
+            "admin": lambda: handle_admin(chat_id),
             "adminrequests": lambda: handle_adminrequests(chat_id),
             "adminapprove": lambda: handle_adminapprove(args, chat_id),
             "adminreject": lambda: handle_adminreject(args, chat_id),
