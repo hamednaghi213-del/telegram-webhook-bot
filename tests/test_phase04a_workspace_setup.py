@@ -1101,6 +1101,24 @@ def test_24g_non_admin_cannot_approve_or_reject_pending_request(monkeypatch):
     assert sum("دسترسی ادمین ندارید" in msg for _, msg in sent) == 2
 
 
+def test_24h_admin_root_panel_is_private_and_routes_to_shared_shell(monkeypatch):
+    _, ch_mod, _db, sent = _load_modules(monkeypatch)
+    monkeypatch.setenv("ENABLE_ADMIN_CONTROL", "true")
+    monkeypatch.setenv("ADMIN_TELEGRAM_USER_ID", "999999")
+
+    ch_mod.handle_command("/admin", 2108)
+    assert any("دسترسی ادمین ندارید" in msg for _, msg in sent)
+
+    sent.clear()
+    assert ch_mod.handle_command("/admin", 999999) is True
+    text = "\\n".join(msg for _, msg in sent)
+    assert "پنل مدیریت" in text
+    assert "/adminrequests" in text
+    assert "ثبت‌نام کاربران" in text
+    assert "کانال‌ها و مقصدها" in text
+    assert "گزارش فعالیت‌ها" in text
+
+
 def test_25_setbranding_command_saves_workspace_branding(monkeypatch):
     """/setbranding stores branding on the workspace, not the user."""
     _, ch_mod, db, sent = _load_modules(monkeypatch)
