@@ -9,6 +9,7 @@ class InMemoryDb:
         self.workspaces = []
         self.workspace_members = []
         self.tenants = {}
+        self.admin_registration_requests = []
         self.calls = {
             "get_tenant": 0,
             "get_or_create_user_by_telegram_id": 0,
@@ -66,6 +67,36 @@ class InMemoryDb:
         }
         self.users.append(user)
         return user
+
+    def get_admin_registration_request_for_user(self, user_id):
+        return next(
+            (
+                row
+                for row in self.admin_registration_requests
+                if row["user_id"] == user_id
+            ),
+            None,
+        )
+
+    def create_admin_registration_request(
+        self,
+        user_id,
+        requested_platform,
+        requested_external_user_id,
+    ):
+        existing = self.get_admin_registration_request_for_user(user_id)
+        if existing:
+            return existing
+
+        row = {
+            "id": len(self.admin_registration_requests) + 1,
+            "user_id": user_id,
+            "requested_platform": requested_platform,
+            "requested_external_user_id": requested_external_user_id,
+            "status": "pending",
+        }
+        self.admin_registration_requests.append(row)
+        return row
 
     def get_user_by_id(self, user_id):
         return next((user for user in self.users if user["id"] == user_id), None)
@@ -162,6 +193,12 @@ def _load_command_handler(monkeypatch):
     fake_database.update_bale_settings = db.update_bale_settings
     fake_database.get_user_by_telegram_id = db.get_user_by_telegram_id
     fake_database.get_or_create_user_by_telegram_id = db.get_or_create_user_by_telegram_id
+    fake_database.get_admin_registration_request_for_user = (
+    db.get_admin_registration_request_for_user
+    )
+    fake_database.create_admin_registration_request = (
+    db.create_admin_registration_request
+    )
     fake_database.get_user_by_id = db.get_user_by_id
     fake_database.set_user_pending_workspace_action = db.set_user_pending_workspace_action
     fake_database.clear_user_pending_workspace_action = db.clear_user_pending_workspace_action
@@ -307,3 +344,112 @@ def test_help_button_action_and_existing_command_routing(monkeypatch):
 
     monkeypatch.setattr(command_handler, "handle_status", lambda chat_id: True)
     assert command_handler.handle_command("/status", 3002) is True
+
+def test_register_pending_user_waits_for_admin_approval(monkeypatch):
+    monkeypatch.setenv("ENABLE_ADMIN_CONTROL", "true")
+    monkeypatch.delenv("ADMIN_TELEGRAM_USER_ID", raising=False)
+
+    command_handler, db, sent = _load_command_handler(monkeypatch)
+
+    assert command_handler.handle_command("/register", 4001) is True
+
+    user = db.get_user_by_telegram_id(4001)
+    assert user is not None
+    assert user["status"] == "pending"
+
+    assert len(db.admin_registration_requests) == 1
+    request = db.admin_registration_requests[0]
+    assert request["user_id"] == user["id"]
+    assert request["requested_platform"] == "telegram"
+    assert request["requested_external_user_id"] == 4001
+    assert request["status"] == "pending"
+
+    assert db.workspaces == []
+    assert db.workspace_members == []
+
+    assert command_handler.handle_command("/register", 4001) is True
+    assert len(db.admin_registration_requests) == 1
+    assert db.workspaces == []
+
+    assert sent
+
+def test_register_admin_identity_stays_active(monkeypatch):
+    monkeypatch.setenv("ENABLE_ADMIN_CONTROL", "true")
+    monkeypatch.setenv("ADMIN_TELEGRAM_USER_ID", "5001")
+
+    command_handler, db, sent = _load_command_handler(monkeypatch)
+
+    assert command_handler.handle_command("/register", 5001) is True
+
+    user = db.get_user_by_telegram_id(5001)
+    assert user is not None
+    assert user["status"] == "active"
+
+    assert db.admin_registration_requests == []
+    assert sent
+
+def test_start_new_user_waits_for_admin_approval(monkeypatch):
+    monkeypatch.setenv("ENABLE_ADMIN_CONTROL", "true")
+    monkeypatch.delenv("ADMIN_TELEGRAM_USER_ID", raising=False)
+
+    command_handler, db, sent = _load_command_handler(monkeypatch)
+
+    assert command_handler.handle_command("/start", 6001) is True
+
+    user = db.get_user_by_telegram_id(6001)
+    assert user is not None
+    assert user["status"] == "pending"
+
+    assert len(db.admin_registration_requests) == 1
+    request = db.admin_registration_requests[0]
+    assert request["user_id"] == user["id"]
+    assert request["status"] == "pending"
+
+    assert db.workspaces == []
+    assert db.workspace_members == []
+
+    assert sent
+
+def test_pending_user_cannot_use_operational_commands(monkeypatch):
+    monkeypatch.setenv("ENABLE_ADMIN_CONTROL", "true")
+    monkeypatch.delenv("ADMIN_TELEGRAM_USER_ID", raising=False)
+
+    command_handler, db, sent = _load_command_handler(monkeypatch)
+
+    assert command_handler.handle_command("/register", 7001) is True
+
+    user = db.get_user_by_telegram_id(7001)
+    assert user is not None
+    assert user["status"] == "pending"
+
+    sent.clear()
+
+    assert command_handler.handle_command("/workspaces", 7001) is True
+
+    assert db.workspaces == []
+    assert sent
+    assert any(
+        "انتظار تأیید مدیر" in item[1]
+        for item in sent
+    )
+
+def test_pending_user_cannot_complete_workspace_stateful_input(monkeypatch):
+    monkeypatch.setenv("ENABLE_ADMIN_CONTROL", "true")
+    monkeypatch.delenv("ADMIN_TELEGRAM_USER_ID", raising=False)
+
+    command_handler, db, sent = _load_command_handler(monkeypatch)
+
+    assert command_handler.handle_command("/register", 8001) is True
+
+    user = db.get_user_by_telegram_id(8001)
+    assert user is not None
+    assert user["status"] == "pending"
+
+    user["pending_workspace_action"] = "create_workspace_name"
+
+    assert command_handler.handle_workspace_stateful_input(
+        "گروه آزمایشی",
+        8001,
+    ) is True
+
+    assert db.workspaces == []

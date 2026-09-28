@@ -9,6 +9,10 @@ from contextvars import ContextVar
 from typing import Optional, Dict, Any, Tuple
 
 from core.workspace_destinations import can_manage_destinations
+from core.admin_control import (
+    admin_control_enabled,
+    new_user_status_for_identity,
+)
 
 from core.database import (
     get_tenant,
@@ -176,19 +180,18 @@ def _identity_for_chat(chat_id: int) -> Optional[Dict[str, Any]]:
     identity -- numeric Bale IDs are never treated as Telegram IDs.
     """
     if CURRENT_ORIGIN == "bale":
-        from core.database import (
-            get_or_create_user_by_bale_id,
-        )
+        from core.database import get_user_by_bale_id
 
-        return get_or_create_user_by_bale_id(
-            int(chat_id),
-            status="active",
-        )
+        return get_user_by_bale_id(int(chat_id))
 
     return get_user_by_telegram_id(chat_id)
 
 
-def get_or_create_identity_for_chat(chat_id: int) -> Dict[str, Any]:
+def get_or_create_identity_for_chat(
+    chat_id: int,
+    *,
+    status: str = "active",
+) -> Dict[str, Any]:
     """Origin-aware get-or-create of the shared application user."""
     user = _identity_for_chat(chat_id)
 
@@ -202,12 +205,12 @@ def get_or_create_identity_for_chat(chat_id: int) -> Dict[str, Any]:
 
         return get_or_create_user_by_bale_id(
             int(chat_id),
-            status="active",
+            status=status,
         )
 
     return get_or_create_user_by_telegram_id(
         chat_id,
-        status="active",
+        status=status,
     )
 
 
@@ -621,7 +624,38 @@ def handle_start(chat_id: int) -> bool:
             )
             return True
 
-        user = get_or_create_identity_for_chat(chat_id)
+        registration_platform = (
+            "bale"
+            if CURRENT_ORIGIN == "bale"
+            else "telegram"
+        )
+
+        registration_status = new_user_status_for_identity(
+            registration_platform,
+            chat_id,
+        )
+
+        user = get_or_create_identity_for_chat(
+            chat_id,
+            status=registration_status,
+        )
+
+        if user.get("status") == "pending":
+            database_module = importlib.import_module("core.database")
+
+            database_module.create_admin_registration_request(
+                user_id=user["id"],
+                requested_platform=registration_platform,
+                requested_external_user_id=chat_id,
+            )
+
+            send_message(
+                chat_id,
+                "✅ درخواست ثبت‌نام شما ثبت شد.\n\n"
+                "⏳ حساب شما در انتظار تأیید مدیر است."
+            )
+            return True
+
         if CURRENT_ORIGIN == "bale" and user.get("telegram_user_id") is None and not list_owned_workspaces(user["id"], include_inactive=True):
             send_message(chat_id, "If you already use the Telegram bot, send /linkbale there, then enter /linkbale CODE here. For a new account, use /register.")
             return True
@@ -1047,6 +1081,17 @@ def handle_workspace_stateful_input(text: str, chat_id: int) -> bool:
         return False
     database_module = importlib.import_module("core.database")
     refreshed_user = database_module.get_user_by_id(user["id"]) or user
+
+    if (
+        admin_control_enabled()
+        and refreshed_user.get("status") == "pending"
+    ):
+        send_message(
+            chat_id,
+            "⏳ حساب شما در انتظار تأیید مدیر است."
+        )
+        return True
+
     action = refreshed_user.get("pending_workspace_action")
 
     if (
@@ -3059,7 +3104,37 @@ def handle_register(chat_id: int) -> bool:
             return True
         
         # Cutover: new registrations use the canonical Workspace model.
-        user = get_or_create_identity_for_chat(chat_id)
+        registration_platform = (
+            "bale"
+            if CURRENT_ORIGIN == "bale"
+            else "telegram"
+        )
+
+        registration_status = new_user_status_for_identity(
+            registration_platform,
+            chat_id,
+        )
+
+        user = get_or_create_identity_for_chat(
+            chat_id,
+            status=registration_status,
+        )
+
+        if user.get("status") == "pending":
+            database_module = importlib.import_module("core.database")
+
+            database_module.create_admin_registration_request(
+                user_id=user["id"],
+                requested_platform=registration_platform,
+                requested_external_user_id=chat_id,
+            )
+
+            send_message(
+                chat_id,
+                "✅ درخواست ثبت‌نام شما ثبت شد.\n\n"
+                "⏳ حساب شما در انتظار تأیید مدیر است."
+            )
+            return True
 
         # Resume an existing owned workspace instead of starting another one.
         # This preserves the onboarding contract across repeated /register calls.
@@ -3440,6 +3515,30 @@ def handle_command(text: str, chat_id: int) -> bool:
             f"args_len={len(args)}"
         )
         
+        # Admin Control registration gate:
+        # when enabled, a pending user may only access the small set of
+        # commands needed to understand or complete registration/linking.
+        if admin_control_enabled():
+            user = _identity_for_chat(chat_id)
+            pending_allowed_commands = {
+                "start",
+                "register",
+                "help",
+                "linkbale",
+            }
+
+            if (
+                user
+                and user.get("status") == "pending"
+                and command not in pending_allowed_commands
+            ):
+                send_message(
+                    chat_id,
+                    "⏳ حساب شما در انتظار تأیید مدیر است.\n\n"
+                    "پس از تأیید، امکانات مدیریتی و رسانه‌ای فعال می‌شوند."
+                )
+                return True
+
         # Command routing
         commands = {
             "start": lambda: handle_start(chat_id),

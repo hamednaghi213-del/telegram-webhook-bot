@@ -199,3 +199,134 @@ def test_record_admin_audit_log(monkeypatch):
     assert query.payload["target_id"] == 10
     assert query.payload["details"]["reason"] == "temporary pause"
 
+class FakeRegistrationQuery(FakeQuery):
+    def execute(self):
+        if self.payload is None:
+            return SimpleNamespace(data=[])
+
+        return SimpleNamespace(
+            data=[{
+                "id": 201,
+                "user_id": self.payload["user_id"],
+                "requested_platform": self.payload["requested_platform"],
+                "requested_external_user_id": self.payload[
+                    "requested_external_user_id"
+                ],
+                "status": self.payload["status"],
+            }]
+        )
+
+
+def test_get_admin_registration_request_for_user(monkeypatch):
+    fake = FakeSupabase()
+    query = FakeQuery([
+        {
+            "id": 201,
+            "user_id": 5,
+            "requested_platform": "telegram",
+            "requested_external_user_id": 123,
+            "status": "pending",
+        }
+    ])
+    fake.tables["admin_registration_requests"] = query
+    monkeypatch.setattr(db, "service_supabase", fake)
+
+    result = db.get_admin_registration_request_for_user(5)
+
+    assert result["id"] == 201
+    assert result["user_id"] == 5
+    assert ("user_id", 5) in query.filters
+
+
+def test_create_admin_registration_request(monkeypatch):
+    fake = FakeSupabase()
+    query = FakeRegistrationQuery()
+    fake.tables["admin_registration_requests"] = query
+    monkeypatch.setattr(db, "service_supabase", fake)
+
+    result = db.create_admin_registration_request(
+        user_id=5,
+        requested_platform="telegram",
+        requested_external_user_id=123,
+    )
+
+    assert result["id"] == 201
+    assert result["status"] == "pending"
+    assert query.payload["user_id"] == 5
+    assert query.payload["requested_platform"] == "telegram"
+    assert query.payload["requested_external_user_id"] == 123
+
+
+def test_create_admin_registration_request_reuses_existing(monkeypatch):
+    fake = FakeSupabase()
+    existing = {
+        "id": 201,
+        "user_id": 5,
+        "requested_platform": "telegram",
+        "requested_external_user_id": 123,
+        "status": "pending",
+    }
+    query = FakeQuery([existing])
+    fake.tables["admin_registration_requests"] = query
+    monkeypatch.setattr(db, "service_supabase", fake)
+
+    result = db.create_admin_registration_request(
+        user_id=5,
+        requested_platform="telegram",
+        requested_external_user_id=123,
+    )
+
+    assert result == existing
+    assert query.payload is None
+
+
+def test_list_pending_admin_registration_requests(monkeypatch):
+    fake = FakeSupabase()
+    query = FakeQuery([
+        {
+            "id": 201,
+            "user_id": 5,
+            "status": "pending",
+        }
+    ])
+    fake.tables["admin_registration_requests"] = query
+    monkeypatch.setattr(db, "service_supabase", fake)
+
+    result = db.list_pending_admin_registration_requests()
+
+    assert result == [
+        {
+            "id": 201,
+            "user_id": 5,
+            "status": "pending",
+        }
+    ]
+    assert ("status", "pending") in query.filters
+
+
+def test_review_admin_registration_request(monkeypatch):
+    fake = FakeSupabase()
+    query = FakeQuery([
+        {
+            "id": 201,
+            "status": "approved",
+        }
+    ])
+    fake.tables["admin_registration_requests"] = query
+    monkeypatch.setattr(db, "service_supabase", fake)
+
+    result = db.review_admin_registration_request(
+        201,
+        "approved",
+        review_reason="approved by admin",
+        reviewed_by_platform="telegram",
+        reviewed_by_external_user_id=123,
+    )
+
+    assert result["status"] == "approved"
+    assert query.payload["status"] == "approved"
+    assert query.payload["review_reason"] == "approved by admin"
+    assert query.payload["reviewed_by_platform"] == "telegram"
+    assert query.payload["reviewed_by_external_user_id"] == 123
+    assert query.payload["reviewed_at"]
+    assert query.payload["updated_at"]
