@@ -261,4 +261,41 @@ def resolve_publication_targets(chat_id: int) -> Tuple[List[PublicationTarget], 
         previous = deduplicated.get(identity)
         if previous is None or (previous.kind == "legacy" and target.kind == "workspace"):
             deduplicated[identity] = target
-    return list(deduplicated.values()), errors
+    resolved_targets = list(
+        deduplicated.values()
+    )
+
+    # Admin Control is applied after Legacy/Workspace physical
+    # destination deduplication. This is important: a blocked
+    # canonical Workspace destination must not fall back to the
+    # same Legacy physical channel.
+    try:
+        from core.admin_control import destination_admin_allowed
+
+        filtered_targets = []
+
+        for target in resolved_targets:
+            if (
+                target.kind == "workspace"
+                and target.destination_id is not None
+                and not destination_admin_allowed(
+                    int(target.destination_id)
+                )
+            ):
+                errors.append(
+                    "انتشار به مقصد "
+                    f"«{target.external_id}» "
+                    "به‌دلیل کنترل مدیریتی متوقف است"
+                )
+                continue
+
+            filtered_targets.append(target)
+
+        resolved_targets = filtered_targets
+
+    except Exception:
+        # Compatibility/fail-open: Admin Control must never break
+        # historical publication because of an optional control lookup.
+        pass
+
+    return resolved_targets, errors
