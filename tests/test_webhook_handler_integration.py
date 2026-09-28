@@ -2382,3 +2382,138 @@ def test_publish_prepared_text_split_blockquote_keeps_parse_modes_per_piece():
         in last_call.args[0]
     )
 
+# =========================================================
+# X ROUTING TAG
+# =========================================================
+
+
+def test_x_routing_tag_is_removed_and_routes_x_only():
+
+    matched, cleaned, entities = (
+        webhook_handler.detect_x_routing_tag(
+            text="خبر مهم #ایکس",
+            entities=[],
+        )
+    )
+
+    assert matched is True
+    assert "#ایکس" not in cleaned
+    assert "خبر مهم" in cleaned
+    assert entities == []
+
+
+def test_x_routing_tag_does_not_match_embedded_text():
+
+    for text in (
+        "خبر #ایکس123",
+        "خبر abc#ایکس",
+    ):
+        matched, cleaned, entities = (
+            webhook_handler.detect_x_routing_tag(
+                text=text,
+                entities=[],
+            )
+        )
+
+        assert matched is False
+        assert cleaned == text
+        assert entities == []
+
+
+def test_x_routing_tag_removes_overlapping_hashtag_entity():
+
+    text = "#ایکس خبر مهم"
+
+    matched, cleaned, entities = (
+        webhook_handler.detect_x_routing_tag(
+            text=text,
+            entities=[
+                {
+                    "type": "hashtag",
+                    "offset": 0,
+                    "length": 5,
+                }
+            ],
+        )
+    )
+
+    assert matched is True
+    assert "#ایکس" not in cleaned
+    assert entities == []
+
+
+def test_x_routing_tag_preserves_utf16_entity_offsets():
+
+    text = "😀 #ایکس خبر"
+
+    # Telegram entity offsets are UTF-16 code units.
+    #
+    # "😀" = 2 UTF-16 units
+    # space = 1
+    # "#ایکس" = 5
+    # space = 1
+    # so "خبر" starts at offset 9 before tag removal.
+    matched, cleaned, entities = (
+        webhook_handler.detect_x_routing_tag(
+            text=text,
+            entities=[
+                {
+                    "type": "bold",
+                    "offset": 9,
+                    "length": 3,
+                }
+            ],
+        )
+    )
+
+    assert matched is True
+    assert cleaned == "😀  خبر"
+    assert entities == [
+        {
+            "type": "bold",
+            "offset": 4,
+            "length": 3,
+        }
+    ]
+
+
+def test_process_text_message_passes_x_routing_to_prepared_publication():
+
+    with patch.object(
+        webhook_handler,
+        "prepare_text_content",
+        return_value={
+            "main_text": "خبر برای ایکس ",
+            "blockquote_blocks": [],
+            "expandable_blocks": [],
+            "other_entities": [],
+        },
+    ), patch.object(
+        webhook_handler,
+        "publish_prepared_text",
+        return_value=True,
+    ) as mock_publish:
+
+        result = (
+            webhook_handler.process_text_message(
+                chat_id=1001,
+                text="خبر برای ایکس #ایکس",
+                entities=[],
+                source_key="tg:1001:message:x-routing",
+            )
+        )
+
+    assert result is True
+
+    mock_publish.assert_called_once()
+
+    kwargs = mock_publish.call_args.kwargs
+
+    assert kwargs[
+        "routing_platforms"
+    ] == ("x",)
+
+    assert "#ایکس" not in kwargs[
+        "main_text"
+    ]
+

@@ -37,10 +37,16 @@ def deep_freeze(value: Any) -> Any:
         )
 
     if isinstance(value, (list, tuple)):
-        return tuple(deep_freeze(item) for item in value)
+        return tuple(
+            deep_freeze(item)
+            for item in value
+        )
 
     if isinstance(value, (set, frozenset)):
-        return frozenset(deep_freeze(item) for item in value)
+        return frozenset(
+            deep_freeze(item)
+            for item in value
+        )
 
     return value
 
@@ -48,7 +54,9 @@ def deep_freeze(value: Any) -> Any:
 def _freeze_mapping(
     value: Optional[Mapping[str, Any]]
 ) -> Mapping[str, Any]:
-    return deep_freeze(dict(value or {}))
+    return deep_freeze(
+        dict(value or {})
+    )
 
 
 def _freeze_mapping_sequence(
@@ -95,11 +103,35 @@ class PreparedContent:
     require_single_message: bool = False
     source_key: str = ""
 
+    # Empty tuple:
+    #   ordinary Workspace/Legacy routing.
+    #
+    # Example:
+    #   ("x",)
+    # means this prepared item must be routed only
+    # to active X destinations.
+    routing_platforms: Tuple[str, ...] = field(
+        default_factory=tuple
+    )
+
     publication_id: str = field(
         default_factory=lambda: uuid4().hex
     )
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "routing_platforms",
+            tuple(
+                str(platform)
+                .strip()
+                .lower()
+                for platform
+                in self.routing_platforms
+                if str(platform).strip()
+            ),
+        )
+
         object.__setattr__(
             self,
             "blockquote_blocks",
@@ -158,7 +190,9 @@ class PublicationTarget:
         object.__setattr__(
             self,
             "destination",
-            _freeze_mapping(self.destination),
+            _freeze_mapping(
+                self.destination
+            ),
         )
 
 

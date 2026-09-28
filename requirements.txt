@@ -7,3 +7,4 @@ deep-translator==1.11.4
 supabase==2.5.1
 trafilatura==2.2.0
 py3langid==0.3.0
+lxml_html_clean==0.4.5
