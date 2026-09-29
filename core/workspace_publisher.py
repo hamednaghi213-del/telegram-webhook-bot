@@ -38,7 +38,12 @@ def build_destination_move_keyboard(
     for destination in candidates:
         move_key = str(destination.get("move_key") or f"d{int(destination['id'])}")
         checked = move_key in selected
-        platform = "تلگرام" if destination.get("platform") == "telegram" else "بله"
+        platform_key = str(destination.get("platform") or "").strip().lower()
+        platform = {
+            "telegram": "تلگرام",
+            "bale": "بله",
+            "x": "X",
+        }.get(platform_key, platform_key or "نامشخص")
         label = (
             f"{'✅' if checked else '⬜'} {destination.get('external_id')} — {platform}"
             f" — {destination.get('source_workspace_name')}"
@@ -99,10 +104,17 @@ def build_workspace_management_panel(workspace: Dict, destinations: List[Dict]):
         key=lambda item: int(item.get("id", 0)),
     ):
         active = destination.get("status") == "active"
-        platform = (
-            "تلگرام"
-            if destination.get("platform") == "telegram"
-            else "بله"
+        platform_key = str(
+            destination.get("platform") or ""
+        ).strip().lower()
+
+        platform = {
+            "telegram": "تلگرام",
+            "bale": "بله",
+            "x": "X",
+        }.get(
+            platform_key,
+            platform_key or "نامشخص",
         )
         label = (
             f"{'✅' if active else '⬜'} "
@@ -150,6 +162,13 @@ def build_workspace_management_panel(workspace: Dict, destinations: List[Dict]):
             "callback_data": f"ws:addbale:{workspace_id}",
         }])
         add_labels.append("➕ افزودن کانال بله")
+
+    if "x" not in existing_platforms:
+        add_rows.append([{
+            "text": "➕ افزودن حساب X",
+            "callback_data": f"ws:addx:{workspace_id}",
+        }])
+        add_labels.append("➕ افزودن حساب X")
 
     lines.append("")
     lines.append("✏️ تغییر نام گروه")
@@ -2454,6 +2473,7 @@ def _handle_workspace_callback(
         callback_data.startswith((
             "ws:addtelegram:",
             "ws:addbale:",
+            "ws:addx:",
             "ws:addchannel:",
             "ws:members:",
             "ws:settings:",
@@ -2523,6 +2543,57 @@ def _handle_workspace_callback(
                     api_url,
                     chat_id,
                     _setup_resume_message(step),
+                )
+                return
+
+            if action == "addx":
+                try:
+                    from core.x_oauth import start_x_oauth
+
+                    authorization_url = start_x_oauth(
+                        workspace_id=workspace_id,
+                        requested_by_user_id=int(user["id"]),
+                        action="connect",
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "X OAuth start failed | "
+                        "workspace=%s | user=%s | error=%s",
+                        workspace_id,
+                        user.get("id"),
+                        exc,
+                    )
+                    _ws_answer_callback(
+                        api_url,
+                        callback_id,
+                        "اتصال X آماده نشد",
+                    )
+                    _ws_send_message(
+                        api_url,
+                        chat_id,
+                        "❌ اتصال حساب X در حال حاضر آماده نیست. "
+                        "لطفاً تنظیمات OAuth را بررسی و دوباره تلاش کنید.",
+                    )
+                    return
+
+                _ws_answer_callback(
+                    api_url,
+                    callback_id,
+                    "لینک اتصال X آماده شد",
+                )
+
+                _ws_send_message_with_keyboard(
+                    api_url,
+                    chat_id,
+                    (
+                        "𝕏 اتصال حساب X\n\n"
+                        "برای اتصال حساب X به این گروه رسانه‌ای، "
+                        "دکمه زیر را بزنید و دسترسی را در X تأیید کنید."
+                    ),
+                    [[{
+                        "text": "🔗 اتصال حساب X",
+                        "url": authorization_url,
+                    }]],
                 )
                 return
 

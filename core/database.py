@@ -6100,3 +6100,65 @@ def list_admin_audit_log(limit: int = 20):
     )
 
     return rows[:safe_limit]
+
+# =========================================================
+# X OAUTH PERSISTENCE
+# =========================================================
+
+@with_retry
+def create_x_oauth_session(*, state_hash: str, workspace_id: int, destination_id: int | None, requested_by_user_id: int | None, action: str, code_verifier_ciphertext: str, redirect_uri: str, expires_at: float):
+    if service_supabase is None:
+        raise RuntimeError("Service-role Supabase client is not configured")
+    if action not in {"connect", "reconnect"}:
+        raise ValueError("Invalid X OAuth action")
+    payload = {"state_hash": str(state_hash), "workspace_id": int(workspace_id), "destination_id": int(destination_id) if destination_id is not None else None, "requested_by_user_id": int(requested_by_user_id) if requested_by_user_id is not None else None, "action": action, "code_verifier_ciphertext": str(code_verifier_ciphertext), "redirect_uri": str(redirect_uri), "expires_at": float(expires_at)}
+    response = service_supabase.table("x_oauth_sessions").insert(payload).execute()
+    rows = response.data or []
+    return rows[0] if rows else None
+
+@with_retry
+def get_x_oauth_session_by_state_hash(state_hash: str):
+    if service_supabase is None:
+        return None
+    response = service_supabase.table("x_oauth_sessions").select("*").eq("state_hash", str(state_hash)).is_("consumed_at", "null").limit(1).execute()
+    rows = response.data or []
+    return rows[0] if rows else None
+
+@with_retry
+def consume_x_oauth_session(session_id: int):
+    if service_supabase is None:
+        raise RuntimeError("Service-role Supabase client is not configured")
+    response = service_supabase.table("x_oauth_sessions").update({"consumed_at": time.time()}).eq("id", int(session_id)).is_("consumed_at", "null").execute()
+    rows = response.data or []
+    return rows[0] if rows else None
+
+@with_retry
+def get_x_oauth_connection(destination_id: int):
+    if service_supabase is None:
+        return None
+    response = service_supabase.table("x_oauth_connections").select("*").eq("destination_id", int(destination_id)).limit(1).execute()
+    rows = response.data or []
+    return rows[0] if rows else None
+
+@with_retry
+def upsert_x_oauth_connection(*, destination_id: int, workspace_id: int, connected_by_user_id: int | None, x_user_id: str, x_username: str | None, x_display_name: str | None, access_token_ciphertext: str, refresh_token_ciphertext: str | None, token_expires_at: float | None, granted_scopes, connection_status: str = "connected", last_error: str | None = None):
+    if service_supabase is None:
+        raise RuntimeError("Service-role Supabase client is not configured")
+    if connection_status not in {"connected", "reconnect_required", "disconnected"}:
+        raise ValueError("Invalid X OAuth connection status")
+    now = time.time()
+    payload = {"destination_id": int(destination_id), "workspace_id": int(workspace_id), "connected_by_user_id": int(connected_by_user_id) if connected_by_user_id is not None else None, "x_user_id": str(x_user_id), "x_username": str(x_username) if x_username else None, "x_display_name": str(x_display_name) if x_display_name else None, "access_token_ciphertext": str(access_token_ciphertext), "refresh_token_ciphertext": str(refresh_token_ciphertext) if refresh_token_ciphertext else None, "token_expires_at": float(token_expires_at) if token_expires_at is not None else None, "granted_scopes": list(granted_scopes or []), "connection_status": connection_status, "last_connected_at": now, "last_error": last_error, "updated_at": now}
+    response = service_supabase.table("x_oauth_connections").upsert(payload, on_conflict="destination_id").execute()
+    rows = response.data or []
+    return rows[0] if rows else None
+
+@with_retry
+def update_x_oauth_connection_status(destination_id: int, connection_status: str, *, last_error: str | None = None):
+    if service_supabase is None:
+        raise RuntimeError("Service-role Supabase client is not configured")
+    if connection_status not in {"connected", "reconnect_required", "disconnected"}:
+        raise ValueError("Invalid X OAuth connection status")
+    payload = {"connection_status": connection_status, "last_error": last_error, "updated_at": time.time()}
+    response = service_supabase.table("x_oauth_connections").update(payload).eq("destination_id", int(destination_id)).execute()
+    rows = response.data or []
+    return rows[0] if rows else None
