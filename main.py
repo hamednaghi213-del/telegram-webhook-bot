@@ -672,7 +672,7 @@ def bale_webhook():
     methods=["GET"]
 )
 def x_oauth_callback():
-    """Complete X OAuth and bind the authenticated account to its Workspace."""
+    """Complete X OAuth and bind or reconnect the authenticated account."""
 
     error = str(
         request.args.get("error")
@@ -711,7 +711,9 @@ def x_oauth_callback():
             complete_x_oauth_callback,
         )
         from core.database import (
+            get_publication_destination,
             get_workspace_member,
+            get_x_oauth_connection,
             register_setup_destination_canonical,
             update_publication_destination_status,
             upsert_x_oauth_connection,
@@ -757,31 +759,103 @@ def x_oauth_callback():
             )
         )
 
-        # Use the immutable X user ID as the physical destination identity.
-        external_id = f"x:{result.x_user_id}"
+        if result.action == "reconnect":
+            if result.destination_id is None:
+                raise PermissionError(
+                    "X reconnect session has no destination"
+                )
 
-        destination, association_status = (
-            register_setup_destination_canonical(
-                workspace_id=result.workspace_id,
-                platform="x",
-                external_id=external_id,
-                name=display_name,
-            )
-        )
-
-        if not destination:
-            raise RuntimeError(
-                "X destination could not be created"
+            destination_id = int(
+                result.destination_id
             )
 
-        if association_status == "owned_elsewhere":
+            destination = (
+                get_publication_destination(
+                    destination_id
+                )
+            )
+
+            if (
+                not destination
+                or destination.get("status") == "removed"
+                or str(
+                    destination.get("platform")
+                    or ""
+                ).strip().lower() != "x"
+                or int(
+                    destination.get("workspace_id")
+                    or 0
+                ) != int(result.workspace_id)
+            ):
+                raise PermissionError(
+                    "X reconnect destination is invalid"
+                )
+
+            existing_connection = (
+                get_x_oauth_connection(
+                    destination_id
+                )
+            )
+
+            if not existing_connection:
+                raise PermissionError(
+                    "X reconnect connection does not exist"
+                )
+
+            existing_x_user_id = str(
+                existing_connection.get(
+                    "x_user_id"
+                )
+                or ""
+            ).strip()
+
+            if (
+                not existing_x_user_id
+                or existing_x_user_id
+                != str(result.x_user_id)
+            ):
+                raise PermissionError(
+                    "Authenticated X account does not match existing destination"
+                )
+
+        elif result.action == "connect":
+            # Use the immutable X user ID as the physical destination identity.
+            external_id = (
+                f"x:{result.x_user_id}"
+            )
+
+            destination, association_status = (
+                register_setup_destination_canonical(
+                    workspace_id=(
+                        result.workspace_id
+                    ),
+                    platform="x",
+                    external_id=external_id,
+                    name=display_name,
+                )
+            )
+
+            if not destination:
+                raise RuntimeError(
+                    "X destination could not be created"
+                )
+
+            if (
+                association_status
+                == "owned_elsewhere"
+            ):
+                raise PermissionError(
+                    "This X account is already connected to another Workspace"
+                )
+
+            destination_id = int(
+                destination["id"]
+            )
+
+        else:
             raise PermissionError(
-                "This X account is already connected to another Workspace"
+                "Unsupported X OAuth action"
             )
-
-        destination_id = int(
-            destination["id"]
-        )
 
         connection = upsert_x_oauth_connection(
             destination_id=destination_id,
@@ -791,7 +865,9 @@ def x_oauth_callback():
             ),
             x_user_id=result.x_user_id,
             x_username=result.x_username,
-            x_display_name=result.x_display_name,
+            x_display_name=(
+                result.x_display_name
+            ),
             access_token_ciphertext=(
                 result.access_token_ciphertext
             ),
@@ -826,12 +902,24 @@ def x_oauth_callback():
             )
 
         logger.info(
-            "X OAuth connected | "
+            "X OAuth %s | "
             "workspace=%s | destination=%s | x_user=%s",
+            (
+                "reconnected"
+                if result.action == "reconnect"
+                else "connected"
+            ),
             result.workspace_id,
             destination_id,
             result.x_user_id,
         )
+
+        if result.action == "reconnect":
+            return (
+                "✅ اتصال حساب X با موفقیت بازیابی شد. "
+                "می‌توانید این صفحه را ببندید و به ربات برگردید.",
+                200,
+            )
 
         return (
             "✅ حساب X با موفقیت به رسانه متصل شد. "

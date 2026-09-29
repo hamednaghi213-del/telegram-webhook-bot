@@ -39,6 +39,8 @@ def _load_main_safely(
     oauth_result=None,
     calls=None,
     upsert_result=None,
+    publication_destination=None,
+    x_connection=None,
 ):
     calls = (
         calls
@@ -63,6 +65,16 @@ def _load_main_safely(
 
     calls.setdefault(
         "complete",
+        [],
+    )
+
+    calls.setdefault(
+        "get_destination",
+        [],
+    )
+
+    calls.setdefault(
+        "get_x_connection",
         [],
     )
 
@@ -208,6 +220,60 @@ def _load_main_safely(
             **kwargs,
         }
 
+    if publication_destination is None:
+        publication_destination = {
+            "id": 909,
+            "workspace_id": 101,
+            "platform": "x",
+            "external_id": "x:123456789",
+            "status": "active",
+        }
+
+    if x_connection is None:
+        x_connection = {
+            "destination_id": 909,
+            "workspace_id": 101,
+            "x_user_id": "123456789",
+            "x_username": "example_user",
+            "connection_status": "connected",
+        }
+
+    def get_publication_destination(
+        destination_id,
+    ):
+        calls["get_destination"].append(
+            destination_id
+        )
+
+        if (
+            publication_destination
+            and int(
+                publication_destination.get("id")
+                or 0
+            ) == int(destination_id)
+        ):
+            return publication_destination
+
+        return None
+
+    def get_x_oauth_connection(
+        destination_id,
+    ):
+        calls["get_x_connection"].append(
+            destination_id
+        )
+
+        if (
+            x_connection
+            and int(
+                x_connection.get("destination_id")
+                or 0
+            ) == int(destination_id)
+        ):
+            return x_connection
+
+        return None
+
     fake_database = _module(
         "core.database",
         init_db=(
@@ -216,6 +282,12 @@ def _load_main_safely(
         get_workspace_member=(
             lambda workspace_id,
             user_id: member
+        ),
+        get_publication_destination=(
+            get_publication_destination
+        ),
+        get_x_oauth_connection=(
+            get_x_oauth_connection
         ),
         register_setup_destination_canonical=(
             register_setup_destination_canonical
@@ -751,3 +823,178 @@ def test_x_oauth_callback_does_not_activate_if_connection_persist_fails(
         calls["activate"]
         == []
     )
+
+
+def test_x_oauth_callback_reconnects_same_destination_without_registering_new_one(
+    monkeypatch,
+):
+    oauth_result = SimpleNamespace(
+        workspace_id=101,
+        destination_id=909,
+        requested_by_user_id=55,
+        action="reconnect",
+        x_user_id="123456789",
+        x_username="example_user",
+        x_display_name="Example User",
+        access_token_ciphertext=(
+            "encrypted-new-access"
+        ),
+        refresh_token_ciphertext=(
+            "encrypted-new-refresh"
+        ),
+        token_expires_at=(
+            2234567890.0
+        ),
+        granted_scopes=(
+            "tweet.read",
+            "tweet.write",
+            "users.read",
+            "offline.access",
+        ),
+    )
+
+    main, calls = (
+        _load_main_safely(
+            monkeypatch,
+            member={
+                "role": "owner",
+                "status": "active",
+            },
+            oauth_result=oauth_result,
+            publication_destination={
+                "id": 909,
+                "workspace_id": 101,
+                "platform": "x",
+                "external_id": "x:123456789",
+                "status": "active",
+            },
+            x_connection={
+                "destination_id": 909,
+                "workspace_id": 101,
+                "x_user_id": "123456789",
+                "x_username": "example_user",
+                "connection_status": "reconnect_required",
+            },
+        )
+    )
+
+    client = main.app.test_client()
+
+    response = client.get(
+        "/oauth/x/callback"
+        "?state=test-state"
+        "&code=test-code"
+    )
+
+    assert response.status_code == 200
+
+    assert calls["register"] == []
+
+    assert calls["get_destination"] == [
+        909
+    ]
+
+    assert calls["get_x_connection"] == [
+        909
+    ]
+
+    assert len(
+        calls["upsert"]
+    ) == 1
+
+    connection = calls["upsert"][0]
+
+    assert (
+        connection["destination_id"]
+        == 909
+    )
+
+    assert (
+        connection["workspace_id"]
+        == 101
+    )
+
+    assert (
+        connection["x_user_id"]
+        == "123456789"
+    )
+
+    assert (
+        connection["connection_status"]
+        == "connected"
+    )
+
+    assert calls["activate"] == [
+        (
+            909,
+            "active",
+        )
+    ]
+
+
+def test_x_oauth_callback_reconnect_rejects_different_x_account(
+    monkeypatch,
+):
+    oauth_result = SimpleNamespace(
+        workspace_id=101,
+        destination_id=909,
+        requested_by_user_id=55,
+        action="reconnect",
+        x_user_id="DIFFERENT-X-USER",
+        x_username="wrong_user",
+        x_display_name="Wrong User",
+        access_token_ciphertext=(
+            "encrypted-wrong-access"
+        ),
+        refresh_token_ciphertext=(
+            "encrypted-wrong-refresh"
+        ),
+        token_expires_at=(
+            2234567890.0
+        ),
+        granted_scopes=(
+            "tweet.read",
+            "tweet.write",
+            "users.read",
+            "offline.access",
+        ),
+    )
+
+    main, calls = (
+        _load_main_safely(
+            monkeypatch,
+            member={
+                "role": "owner",
+                "status": "active",
+            },
+            oauth_result=oauth_result,
+            publication_destination={
+                "id": 909,
+                "workspace_id": 101,
+                "platform": "x",
+                "external_id": "x:123456789",
+                "status": "active",
+            },
+            x_connection={
+                "destination_id": 909,
+                "workspace_id": 101,
+                "x_user_id": "123456789",
+                "x_username": "example_user",
+                "connection_status": "reconnect_required",
+            },
+        )
+    )
+
+    client = main.app.test_client()
+
+    response = client.get(
+        "/oauth/x/callback"
+        "?state=test-state"
+        "&code=test-code"
+    )
+
+    assert response.status_code == 403
+
+    assert calls["register"] == []
+    assert calls["upsert"] == []
+    assert calls["activate"] == []
