@@ -664,6 +664,204 @@ def bale_webhook():
 
 
 # =========================================================
+# X OAUTH CALLBACK
+# =========================================================
+
+@app.route(
+    "/oauth/x/callback",
+    methods=["GET"]
+)
+def x_oauth_callback():
+    """Complete X OAuth and bind the authenticated account to its Workspace."""
+
+    error = str(
+        request.args.get("error")
+        or ""
+    ).strip()
+
+    if error:
+        logger.warning(
+            "X OAuth denied or failed | error=%s",
+            error,
+        )
+        return (
+            "❌ اتصال حساب X انجام نشد. "
+            "می‌توانید این صفحه را ببندید و دوباره از ربات تلاش کنید.",
+            400,
+        )
+
+    state = str(
+        request.args.get("state")
+        or ""
+    ).strip()
+
+    code = str(
+        request.args.get("code")
+        or ""
+    ).strip()
+
+    if not state or not code:
+        return (
+            "❌ اطلاعات callback حساب X ناقص است.",
+            400,
+        )
+
+    try:
+        from core.x_oauth import (
+            complete_x_oauth_callback,
+        )
+        from core.database import (
+            get_workspace_member,
+            register_setup_destination_canonical,
+            update_publication_destination_status,
+            upsert_x_oauth_connection,
+        )
+        from core.workspace_destinations import (
+            can_manage_destinations,
+        )
+
+        result = complete_x_oauth_callback(
+            state=state,
+            code=code,
+        )
+
+        if result.requested_by_user_id is None:
+            raise PermissionError(
+                "X OAuth session has no requesting user"
+            )
+
+        member = get_workspace_member(
+            result.workspace_id,
+            result.requested_by_user_id,
+        )
+
+        allowed, _reason = can_manage_destinations(
+            (member or {}).get("role")
+        )
+
+        if (
+            not member
+            or member.get("status") != "active"
+            or not allowed
+        ):
+            raise PermissionError(
+                "User can no longer manage Workspace destinations"
+            )
+
+        display_name = (
+            result.x_display_name
+            or (
+                f"@{result.x_username}"
+                if result.x_username
+                else f"X {result.x_user_id}"
+            )
+        )
+
+        # Use the immutable X user ID as the physical destination identity.
+        external_id = f"x:{result.x_user_id}"
+
+        destination, association_status = (
+            register_setup_destination_canonical(
+                workspace_id=result.workspace_id,
+                platform="x",
+                external_id=external_id,
+                name=display_name,
+            )
+        )
+
+        if not destination:
+            raise RuntimeError(
+                "X destination could not be created"
+            )
+
+        if association_status == "owned_elsewhere":
+            raise PermissionError(
+                "This X account is already connected to another Workspace"
+            )
+
+        destination_id = int(
+            destination["id"]
+        )
+
+        connection = upsert_x_oauth_connection(
+            destination_id=destination_id,
+            workspace_id=result.workspace_id,
+            connected_by_user_id=(
+                result.requested_by_user_id
+            ),
+            x_user_id=result.x_user_id,
+            x_username=result.x_username,
+            x_display_name=result.x_display_name,
+            access_token_ciphertext=(
+                result.access_token_ciphertext
+            ),
+            refresh_token_ciphertext=(
+                result.refresh_token_ciphertext
+            ),
+            token_expires_at=(
+                result.token_expires_at
+            ),
+            granted_scopes=(
+                result.granted_scopes
+            ),
+            connection_status="connected",
+            last_error=None,
+        )
+
+        if not connection:
+            raise RuntimeError(
+                "X OAuth connection could not be persisted"
+            )
+
+        activated = (
+            update_publication_destination_status(
+                destination_id,
+                "active",
+            )
+        )
+
+        if not activated:
+            raise RuntimeError(
+                "X destination could not be activated"
+            )
+
+        logger.info(
+            "X OAuth connected | "
+            "workspace=%s | destination=%s | x_user=%s",
+            result.workspace_id,
+            destination_id,
+            result.x_user_id,
+        )
+
+        return (
+            "✅ حساب X با موفقیت به رسانه متصل شد. "
+            "می‌توانید این صفحه را ببندید و به ربات برگردید.",
+            200,
+        )
+
+    except PermissionError as exc:
+        logger.warning(
+            "X OAuth callback permission rejected | %s",
+            exc,
+        )
+        return (
+            "❌ اجازه اتصال این حساب X به رسانه وجود ندارد.",
+            403,
+        )
+
+    except Exception as exc:
+        logger.exception(
+            "X OAuth callback failed | %s",
+            exc,
+        )
+        return (
+            "❌ اتصال حساب X کامل نشد. "
+            "لطفاً از داخل ربات دوباره تلاش کنید.",
+            500,
+        )
+
+
+# =========================================================
 # STARTUP
 # =========================================================
 
