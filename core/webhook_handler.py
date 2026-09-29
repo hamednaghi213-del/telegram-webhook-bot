@@ -5892,40 +5892,36 @@ def process_incoming_message(
         # Pending Editorial has priority over every bare setup/name input.
         if command_text.strip():
             try:
-                from core.editorial_pending import get_waiting_admin_instruction_review
+                from core.editorial_pending import (
+                    get_pending_reviews_for_user,
+                    get_waiting_admin_instruction_review,
+                )
 
-                _origin_user_id = chat_id
+                _origin_user_id = (
+                    _canonical_pending_user_id(
+                        chat_id
+                    )
+                )
 
-                try:
+                waiting_review = (
+                    get_waiting_admin_instruction_review(
+                        user_id=_origin_user_id
+                    )
+                )
 
-                    from core.messaging import current_context as _cc
+                active_pending_reviews = (
+                    get_pending_reviews_for_user(
+                        user_id=_origin_user_id
+                    )
+                )
 
-                    if _cc().name == "bale":
-
-                        _db_module = __import__(
-                            "core.database",
-                            fromlist=["get_user_by_bale_id"],
-                        )
-
-                        _bale_user = (
-                            _db_module.get_user_by_bale_id(
-                                chat_id
-                            )
-                        )
-
-                        if _bale_user:
-                            _origin_user_id = (
-                                _bale_user["id"]
-                            )
-
-                except Exception:
-
-                    _origin_user_id = chat_id
-
-                waiting_review = get_waiting_admin_instruction_review(user_id=_origin_user_id)
             except Exception as e:
-                logger.exception(f"[{req_id}] ❌ Early editorial guard failed | {e}")
+                logger.exception(
+                    f"[{req_id}] ❌ Early editorial guard failed | {e}"
+                )
                 waiting_review = None
+                active_pending_reviews = []
+
             if waiting_review is not None:
                 process_admin_instruction_message(
                     chat_id=chat_id,
@@ -5936,6 +5932,29 @@ def process_incoming_message(
                     "ok": True,
                     "admin_instruction": True,
                     "review_id": waiting_review.review_id,
+                }, 200
+
+            if active_pending_reviews:
+                active_review = (
+                    active_pending_reviews[0]
+                )
+
+                logger.info(
+                    f"[{req_id}] 🛑 EDITORIAL-PENDING-GUARD | "
+                    f"review_id={active_review.review_id} | "
+                    f"user={chat_id}"
+                )
+
+                send_message(
+                    chat_id,
+                    "⏳ یک بررسی تحریریه باز دارید. "
+                    "ابتدا همان مورد را تأیید، اصلاح یا لغو کنید."
+                )
+
+                return {
+                    "ok": True,
+                    "editorial_pending": True,
+                    "review_id": active_review.review_id,
                 }, 200
 
             try:
@@ -6614,27 +6633,37 @@ def process_incoming_message(
             try:
 
                 from core.editorial_pending import (
-                    get_waiting_admin_instruction_review
+                    get_pending_reviews_for_user,
+                    get_waiting_admin_instruction_review,
+                )
+
+                pending_user_id = (
+                    _canonical_pending_user_id(
+                        chat_id
+                    )
                 )
 
                 waiting_review = (
                     get_waiting_admin_instruction_review(
-                        user_id=(
-                            _canonical_pending_user_id(
-                                chat_id
-                            )
-                        )
+                        user_id=pending_user_id
+                    )
+                )
+
+                active_pending_reviews = (
+                    get_pending_reviews_for_user(
+                        user_id=pending_user_id
                     )
                 )
 
             except Exception as e:
 
                 logger.exception(
-                    f"[{req_id}] ❌ Admin instruction "
-                    f"waiting lookup failed | {e}"
+                    f"[{req_id}] ❌ Editorial pending "
+                    f"lookup failed | {e}"
                 )
 
                 waiting_review = None
+                active_pending_reviews = []
 
             if waiting_review is not None:
 
@@ -6659,6 +6688,31 @@ def process_incoming_message(
                         True,
                     "review_id":
                         waiting_review.review_id
+                }, 200
+
+            if active_pending_reviews:
+
+                active_review = (
+                    active_pending_reviews[0]
+                )
+
+                logger.info(
+                    f"[{req_id}] 🛑 EDITORIAL-PENDING-GUARD | "
+                    f"review_id={active_review.review_id} | "
+                    f"user={chat_id}"
+                )
+
+                send_message(
+                    chat_id,
+                    "⏳ یک بررسی تحریریه باز دارید. "
+                    "ابتدا همان مورد را تأیید، اصلاح یا لغو کنید."
+                )
+
+                return {
+                    "ok": True,
+                    "editorial_pending": True,
+                    "review_id":
+                        active_review.review_id
                 }, 200
 
         # =================================================

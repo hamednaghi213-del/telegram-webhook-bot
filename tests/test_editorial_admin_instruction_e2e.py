@@ -765,6 +765,83 @@ def test_admin_instruction_text_is_never_published_directly(
 
 
 # =========================================================
+# REGRESSION
+# ACTIVE PENDING REVIEW MUST BLOCK NEW NORMAL TEXT
+# =========================================================
+
+def test_active_pending_review_blocks_new_normal_text(
+    monkeypatch,
+    app
+):
+
+    create_test_review()
+
+    sent_messages = []
+
+    install_common_webhook_mocks(
+        monkeypatch,
+        sent_messages
+    )
+
+    direct_publish_called = {
+        "value":
+            False
+    }
+
+    def fake_process_text_message(
+        *args,
+        **kwargs
+    ):
+
+        direct_publish_called[
+            "value"
+        ] = True
+
+        return True
+
+    monkeypatch.setattr(
+        webhook_handler,
+        "process_text_message",
+        fake_process_text_message
+    )
+
+    payload = (
+        build_text_payload(
+            "این پیام جدید نباید منتشر شود"
+        )
+    )
+
+    with app.test_request_context(
+        "/webhook",
+        method="POST",
+        json=payload
+    ):
+
+        response, status = (
+            webhook_handler.handle_webhook()
+        )
+
+    assert (
+        status
+        == 200
+    )
+
+    assert (
+        response[
+            "ok"
+        ]
+        is True
+    )
+
+    assert (
+        direct_publish_called[
+            "value"
+        ]
+        is False
+    )
+
+
+# =========================================================
 # TEST 04
 # FAILED ADMIN EDIT KEEPS PREVIOUS SUMMARY
 # =========================================================
