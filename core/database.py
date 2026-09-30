@@ -2498,7 +2498,7 @@ def list_verified_active_destinations(
     """
     Return publication_destinations that are:
     - status = 'active'
-    - platform is supported ('telegram' or 'bale')
+    - platform is supported ('telegram', 'bale', or 'x')
     - have a matching destination_verification with verified = True
 
     Reuses existing helper functions — no new Supabase calls introduced beyond what
@@ -2512,7 +2512,7 @@ def list_verified_active_destinations(
         for dest in all_active:
             if dest.get("status") != "active":
                 continue
-            if dest.get("platform") not in {"telegram", "bale"}:
+            if dest.get("platform") not in {"telegram", "bale", "x"}:
                 continue
             verif = get_destination_verification(dest["id"])
             if verif and verif.get("verified"):

@@ -2663,7 +2663,11 @@ def publish_prepared_content(
                 branding,
             ) = cached_content
 
+            output_kind = (
+                "media" if target_prepared.files and target.platform != "x" else "text"
+            )
             plan_key = (
+                output_kind,
                 main_text,
                 branding,
                 target_prepared.editorial_finalized,
@@ -2696,7 +2700,7 @@ def publish_prepared_content(
             if plan is None:
                 with suppress_smart_summary():
                     plan = analyze_content(
-                        output_kind="media" if target_prepared.files else "text",
+                        output_kind=output_kind,
                         main_text=main_text,
                         blockquote_blocks=list(
                             target_prepared.blockquote_blocks
@@ -2717,21 +2721,25 @@ def publish_prepared_content(
                     plan_key
                 ] = plan
 
-            platform_plan = (
-                plan.telegram
-                if (
-                    target_prepared.files
-                    and target.platform
-                    == "telegram"
+            if target.platform == "x":
+                from core.x_publisher import build_x_plan
+                platform_plan = build_x_plan(plan, target_prepared.other_entities)
+            else:
+                platform_plan = (
+                    plan.telegram
+                    if (
+                        target_prepared.files
+                        and target.platform
+                        == "telegram"
+                    )
+                    else (
+                        plan.bale
+                        if target_prepared.files
+                        else plan.text[
+                            target.platform
+                        ]
+                    )
                 )
-                else (
-                    plan.bale
-                    if target_prepared.files
-                    else plan.text[
-                        target.platform
-                    ]
-                )
-            )
 
             error = None
             part_name = None
@@ -2751,17 +2759,24 @@ def publish_prepared_content(
                 ):
                     continue
 
-                outcome = (
-                    _execute_delivery_part(
-                        chat_id,
-                        api_url,
-                        target,
-                        target_prepared,
-                        platform_plan,
-                        part_kind,
-                        index,
+                if target.platform == "x":
+                    from core.x_publication_state import execute_x_delivery
+                    outcome = execute_x_delivery(
+                        store, source_key, identity, target,
+                        platform_plan["x_text"], list(target_prepared.files),
                     )
-                )
+                else:
+                    outcome = (
+                        _execute_delivery_part(
+                            chat_id,
+                            api_url,
+                            target,
+                            target_prepared,
+                            platform_plan,
+                            part_kind,
+                            index,
+                        )
+                    )
 
                 if not _outcome_ok(
                     outcome
