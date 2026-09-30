@@ -241,3 +241,10 @@ class DeliveryResult:
     operation: Optional[str] = None
     attempt: int = 0
     idempotency_key: str = ""
+
+    @property
+    def message_url(self) -> Optional[str]:
+        """X post links use the immutable post ID, so renamed accounts still work."""
+        if self.platform == "x" and self.primary_message_id:
+            return f"https://x.com/i/status/{self.primary_message_id}"
+        return None

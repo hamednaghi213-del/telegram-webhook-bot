@@ -567,3 +567,18 @@ def test_get_tenant_behavior_is_unchanged(database_module):
         "select": "*",
         "on_conflict": None,
     }
+
+
+def test_verified_active_x_is_available_for_explicit_routing(database_module, monkeypatch):
+    database, _ = database_module
+    rows = [
+        {"id": 1, "platform": "telegram", "status": "active"},
+        {"id": 2, "platform": "bale", "status": "active"},
+        {"id": 3, "platform": "x", "status": "active"},
+        {"id": 4, "platform": "x", "status": "inactive"},
+        {"id": 5, "platform": "x", "status": "active"},
+    ]
+    monkeypatch.setattr(database, "list_workspace_destinations", lambda *a, **kw: rows)
+    monkeypatch.setattr(database, "get_destination_verification",
+                        lambda dest: {"verified": dest != 5})
+    assert [row["id"] for row in database.list_verified_active_destinations(1)] == [1, 2, 3]
