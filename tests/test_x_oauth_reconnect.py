@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import types
 
 from core import workspace_publisher
@@ -220,6 +220,13 @@ def test_ws_reconnectx_owner_starts_reconnect_for_same_destination(
     )
 
     monkeypatch.setattr(
+        sys.modules["core"],
+        "database",
+        fake_database,
+        raising=False,
+    )
+
+    monkeypatch.setattr(
         workspace_publisher,
         "_identity_for_chat",
         lambda _chat_id: {
@@ -393,6 +400,13 @@ def test_ws_reconnectx_non_manager_cannot_start_reconnect(
         sys.modules,
         "core.database",
         fake_database,
+    )
+
+    monkeypatch.setattr(
+        sys.modules["core"],
+        "database",
+        fake_database,
+        raising=False,
     )
 
     monkeypatch.setattr(
