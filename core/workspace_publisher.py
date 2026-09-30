@@ -87,11 +87,16 @@ def selected_destination_ids_from_callback(callback_query: Dict) -> set:
     return selected
 
 
-def build_workspace_management_panel(workspace: Dict, destinations: List[Dict]):
+def build_workspace_management_panel(
+    workspace: Dict,
+    destinations: List[Dict],
+    x_connection_statuses: Optional[Dict[int, str]] = None,
+):
     """Render destination state and remaining-platform actions."""
     workspace_id = int(workspace["id"])
     lines = [f"📁 {workspace.get('name') or workspace_id}", ""]
     keyboard = []
+    x_connection_statuses = x_connection_statuses or {}
 
     visible_destinations = [
         destination
@@ -137,6 +142,22 @@ def build_workspace_management_panel(workspace: Dict, destinations: List[Dict]):
                 ),
             },
         ])
+
+        if (
+            platform_key == "x"
+            and x_connection_statuses.get(
+                int(destination["id"])
+            ) == "reconnect_required"
+        ):
+            lines.append(
+                "⚠️ اتصال حساب X نیاز به اتصال مجدد دارد."
+            )
+            keyboard.append([{
+                "text": "🔄 اتصال مجدد X",
+                "callback_data": (
+                    f"ws:reconnectx:{int(destination['id'])}"
+                ),
+            }])
 
     if not visible_destinations:
         lines.append("هنوز کانالی در این گروه نیست.")
@@ -2004,7 +2025,11 @@ def _handle_workspace_callback(
         and len(parts) >= 3
     ):
         try:
-            from core.database import get_workspace_member, list_workspace_destinations
+            from core.database import (
+                get_workspace_member,
+                get_x_oauth_connection,
+                list_workspace_destinations,
+            )
             from core.workspace_destinations import can_manage_destinations
             workspace_id = int(parts[2])
             user = _identity_for_chat(chat_id)
@@ -2020,13 +2045,173 @@ def _handle_workspace_callback(
             if not user or not workspace or not member or member.get("status") != "active" or not allowed:
                 raise ValueError("workspace access denied")
             destinations = list_workspace_destinations(workspace_id)
+            x_connection_statuses = {}
+            for destination in destinations:
+                if str(
+                    destination.get("platform") or ""
+                ).strip().lower() != "x":
+                    continue
+
+                connection = (
+                    get_x_oauth_connection(
+                        int(destination["id"])
+                    )
+                    or {}
+                )
+                connection_status = str(
+                    connection.get("connection_status")
+                    or ""
+                ).strip().lower()
+
+                if connection_status:
+                    x_connection_statuses[
+                        int(destination["id"])
+                    ] = connection_status
+
         except (TypeError, ValueError):
             _ws_answer_callback(api_url, callback_id, "گروه رسانه‌ای معتبر نیست")
             return
 
         _ws_answer_callback(api_url, callback_id, "مدیریت گروه")
-        panel_text, panel_keyboard = build_workspace_management_panel(workspace, destinations)
+        panel_text, panel_keyboard = build_workspace_management_panel(
+            workspace,
+            destinations,
+            x_connection_statuses,
+        )
         _ws_send_message_with_keyboard(api_url, chat_id, panel_text, panel_keyboard)
+
+    elif callback_data.startswith("ws:reconnectx:") and len(parts) == 3:
+        from core import database as database_module
+        from core.workspace_destinations import can_manage_destinations
+
+        try:
+            destination_id = int(parts[2])
+            user = _identity_for_chat(chat_id)
+
+            destination = (
+                database_module.get_publication_destination(
+                    destination_id
+                )
+            )
+
+            if (
+                not user
+                or not destination
+                or str(
+                    destination.get("platform") or ""
+                ).strip().lower() != "x"
+                or destination.get("status") == "removed"
+            ):
+                raise ValueError(
+                    "X destination is not manageable"
+                )
+
+            workspace_id = int(
+                destination["workspace_id"]
+            )
+
+            workspace = (
+                database_module.get_workspace(
+                    workspace_id
+                )
+            )
+
+            member = (
+                database_module.get_workspace_member(
+                    workspace_id,
+                    user["id"],
+                )
+            )
+
+            allowed, _reason = (
+                can_manage_destinations(
+                    (member or {}).get("role")
+                )
+            )
+
+            connection = (
+                database_module.get_x_oauth_connection(
+                    destination_id
+                )
+                or {}
+            )
+
+            if (
+                not workspace
+                or workspace.get("status") != "active"
+                or not member
+                or member.get("status") != "active"
+                or not allowed
+                or str(
+                    connection.get(
+                        "connection_status"
+                    )
+                    or ""
+                ).strip().lower()
+                != "reconnect_required"
+            ):
+                raise ValueError(
+                    "X reconnect is not allowed"
+                )
+
+            set_active_workspace(
+                user["id"],
+                workspace_id,
+            )
+
+            from core.x_oauth import start_x_oauth
+
+            authorization_url = start_x_oauth(
+                workspace_id=workspace_id,
+                requested_by_user_id=int(
+                    user["id"]
+                ),
+                destination_id=destination_id,
+                action="reconnect",
+            )
+
+            _ws_answer_callback(
+                api_url,
+                callback_id,
+                "لینک اتصال مجدد X آماده شد",
+            )
+
+            _ws_send_message_with_keyboard(
+                api_url,
+                chat_id,
+                (
+                    "𝕏 اتصال مجدد حساب X\n\n"
+                    "برای بازیابی اتصال این حساب، "
+                    "دکمه زیر را بزنید و دسترسی را در X تأیید کنید."
+                ),
+                [[{
+                    "text": "🔄 اتصال مجدد X",
+                    "url": authorization_url,
+                }]],
+            )
+            return
+
+        except Exception as exc:
+            logger.exception(
+                "X OAuth reconnect start failed | "
+                "destination=%s | error=%s",
+                parts[2] if len(parts) >= 3 else None,
+                exc,
+            )
+            _ws_answer_callback(
+                api_url,
+                callback_id,
+                "اتصال مجدد X آماده نشد",
+            )
+            _ws_send_message(
+                api_url,
+                chat_id,
+                (
+                    "❌ اتصال مجدد حساب X در حال حاضر "
+                    "انجام نشد. لطفاً دوباره تلاش کنید."
+                ),
+            )
+            return
 
     elif callback_data.startswith("ws:dest:toggle:") and len(parts) == 4:
         from core import database as database_module
@@ -2048,7 +2233,35 @@ def _handle_workspace_callback(
             new_status = "inactive" if destination.get("status") == "active" else "active"
             database_module.update_publication_destination_status(destination_id, new_status)
             fresh = database_module.list_workspace_destinations(workspace_id)
-            panel_text, panel_keyboard = build_workspace_management_panel(workspace, fresh)
+
+            x_connection_statuses = {}
+            for item in fresh:
+                if str(
+                    item.get("platform") or ""
+                ).strip().lower() != "x":
+                    continue
+
+                connection = (
+                    database_module.get_x_oauth_connection(
+                        int(item["id"])
+                    )
+                    or {}
+                )
+                connection_status = str(
+                    connection.get("connection_status")
+                    or ""
+                ).strip().lower()
+
+                if connection_status:
+                    x_connection_statuses[
+                        int(item["id"])
+                    ] = connection_status
+
+            panel_text, panel_keyboard = build_workspace_management_panel(
+                workspace,
+                fresh,
+                x_connection_statuses,
+            )
             _ws_answer_callback(api_url, callback_id, "وضعیت کانال به‌روزرسانی شد")
             _ws_edit_message_text(api_url, callback_query, panel_text, panel_keyboard)
         except (KeyError, TypeError, ValueError):

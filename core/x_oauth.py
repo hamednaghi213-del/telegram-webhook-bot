@@ -79,9 +79,16 @@ X_OAUTH_SCOPES = tuple(
     if item
 )
 
+X_TOKEN_REFRESH_SKEW_SECONDS = int(
+    os.getenv(
+        "X_TOKEN_REFRESH_SKEW_SECONDS",
+        "60",
+    )
+)
+
 
 # =========================================================
-# RESULT MODEL
+# RESULT MODELS
 # =========================================================
 
 @dataclass(frozen=True)
@@ -100,6 +107,29 @@ class XOAuthCallbackResult:
 
     token_expires_at: Optional[float]
     granted_scopes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class XOAuthRefreshResult:
+    destination_id: int
+    access_token: str
+    access_token_ciphertext: str
+    refresh_token_ciphertext: Optional[str]
+    token_expires_at: Optional[float]
+    granted_scopes: tuple[str, ...]
+
+
+class XOAuthRefreshError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        reconnect_required: bool = False,
+    ):
+        super().__init__(message)
+        self.reconnect_required = bool(
+            reconnect_required
+        )
 
 
 # =========================================================
@@ -325,7 +355,79 @@ def start_x_oauth(
 
 
 # =========================================================
-# TOKEN EXCHANGE
+# TOKEN REQUEST HELPERS
+# =========================================================
+
+def _token_request_auth_and_client(
+    data: Dict[str, Any],
+):
+    auth = None
+
+    if X_CLIENT_SECRET:
+        auth = (
+            X_CLIENT_ID,
+            X_CLIENT_SECRET,
+        )
+    else:
+        data["client_id"] = (
+            X_CLIENT_ID
+        )
+
+    return auth
+
+
+def _parse_scopes(
+    raw_scope: Any,
+    *,
+    fallback=(),
+) -> tuple[str, ...]:
+    scopes = tuple(
+        item
+        for item in (
+            str(
+                raw_scope
+                or ""
+            )
+            .replace(",", " ")
+            .split()
+        )
+        if item
+    )
+
+    if scopes:
+        return scopes
+
+    return tuple(
+        item
+        for item in fallback
+        if item
+    )
+
+
+def _token_expiry_from_payload(
+    payload: Dict[str, Any],
+) -> Optional[float]:
+    expires_in = payload.get(
+        "expires_in"
+    )
+
+    if expires_in is None:
+        return None
+
+    try:
+        return (
+            time.time()
+            + float(expires_in)
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+
+# =========================================================
+# AUTHORIZATION CODE EXCHANGE
 # =========================================================
 
 def _exchange_code_for_tokens(
@@ -347,17 +449,9 @@ def _exchange_code_for_tokens(
         ),
     }
 
-    auth = None
-
-    if X_CLIENT_SECRET:
-        auth = (
-            X_CLIENT_ID,
-            X_CLIENT_SECRET,
-        )
-    else:
-        data["client_id"] = (
-            X_CLIENT_ID
-        )
+    auth = _token_request_auth_and_client(
+        data
+    )
 
     response = requests.post(
         X_TOKEN_URL,
@@ -400,6 +494,490 @@ def _exchange_code_for_tokens(
         )
 
     return payload
+
+
+# =========================================================
+# REFRESH TOKEN EXCHANGE
+# =========================================================
+
+def _refresh_tokens(
+    *,
+    refresh_token: str,
+) -> Dict[str, Any]:
+    if not refresh_token:
+        raise XOAuthRefreshError(
+            "X refresh token is missing",
+            reconnect_required=True,
+        )
+
+    data = {
+        "grant_type": (
+            "refresh_token"
+        ),
+        "refresh_token": str(
+            refresh_token
+        ),
+    }
+
+    auth = _token_request_auth_and_client(
+        data
+    )
+
+    try:
+        response = requests.post(
+            X_TOKEN_URL,
+            data=data,
+            auth=auth,
+            headers={
+                "Accept": (
+                    "application/json"
+                ),
+            },
+            timeout=(
+                X_HTTP_TIMEOUT_SECONDS
+            ),
+        )
+    except requests.RequestException as exc:
+        raise XOAuthRefreshError(
+            "X token refresh request failed",
+            reconnect_required=False,
+        ) from exc
+
+    payload = {}
+
+    try:
+        payload = response.json() or {}
+    except Exception:
+        payload = {}
+
+    if response.status_code >= 400:
+        error_code = str(
+            payload.get("error")
+            or ""
+        ).strip().lower()
+
+        reconnect_required = (
+            response.status_code == 401
+            or error_code
+            in {
+                "invalid_grant",
+                "invalid_token",
+                "unauthorized_client",
+            }
+        )
+
+        logger.warning(
+            "X OAuth token refresh failed | "
+            "status=%s | error=%s | body=%s",
+            response.status_code,
+            error_code or "unknown",
+            response.text[:500],
+        )
+
+        raise XOAuthRefreshError(
+            "X OAuth token refresh failed",
+            reconnect_required=(
+                reconnect_required
+            ),
+        )
+
+    access_token = str(
+        payload.get(
+            "access_token"
+        )
+        or ""
+    ).strip()
+
+    if not access_token:
+        raise XOAuthRefreshError(
+            "X refresh response did not contain an access token",
+            reconnect_required=True,
+        )
+
+    return payload
+
+
+def refresh_x_oauth_connection(
+    destination_id: int,
+) -> XOAuthRefreshResult:
+    """
+    Refresh one persisted X OAuth connection.
+
+    Transient network/server failures do not force reconnect.
+    Invalid/revoked refresh credentials move the connection to
+    reconnect_required.
+    """
+    _require_config()
+
+    from core.database import (
+        get_x_oauth_connection,
+        update_x_oauth_connection_status,
+        upsert_x_oauth_connection,
+    )
+
+    destination_id = int(
+        destination_id
+    )
+
+    connection = (
+        get_x_oauth_connection(
+            destination_id
+        )
+    )
+
+    if not connection:
+        raise XOAuthRefreshError(
+            "X OAuth connection was not found",
+            reconnect_required=True,
+        )
+
+    connection_status = str(
+        connection.get(
+            "connection_status"
+        )
+        or ""
+    ).strip().lower()
+
+    if connection_status == "disconnected":
+        raise XOAuthRefreshError(
+            "X OAuth connection is disconnected",
+            reconnect_required=True,
+        )
+
+    refresh_ciphertext = str(
+        connection.get(
+            "refresh_token_ciphertext"
+        )
+        or ""
+    ).strip()
+
+    if not refresh_ciphertext:
+        update_x_oauth_connection_status(
+            destination_id,
+            "reconnect_required",
+            last_error=(
+                "missing_refresh_token"
+            ),
+        )
+
+        raise XOAuthRefreshError(
+            "X refresh token is missing",
+            reconnect_required=True,
+        )
+
+    try:
+        refresh_token = (
+            decrypt_x_secret(
+                refresh_ciphertext
+            )
+        )
+    except Exception as exc:
+        update_x_oauth_connection_status(
+            destination_id,
+            "reconnect_required",
+            last_error=(
+                "refresh_token_decrypt_failed"
+            ),
+        )
+
+        raise XOAuthRefreshError(
+            "X refresh token could not be decrypted",
+            reconnect_required=True,
+        ) from exc
+
+    try:
+        payload = _refresh_tokens(
+            refresh_token=(
+                refresh_token
+            )
+        )
+    except XOAuthRefreshError as exc:
+        if exc.reconnect_required:
+            update_x_oauth_connection_status(
+                destination_id,
+                "reconnect_required",
+                last_error=str(exc),
+            )
+
+        raise
+
+    access_token = str(
+        payload.get(
+            "access_token"
+        )
+        or ""
+    ).strip()
+
+    returned_refresh_token = str(
+        payload.get(
+            "refresh_token"
+        )
+        or ""
+    ).strip()
+
+    if returned_refresh_token:
+        refresh_token_ciphertext = (
+            encrypt_x_secret(
+                returned_refresh_token
+            )
+        )
+    else:
+        # Some OAuth servers do not rotate refresh tokens on every refresh.
+        # Keep the existing encrypted token in that case.
+        refresh_token_ciphertext = (
+            refresh_ciphertext
+        )
+
+    access_token_ciphertext = (
+        encrypt_x_secret(
+            access_token
+        )
+    )
+
+    token_expires_at = (
+        _token_expiry_from_payload(
+            payload
+        )
+    )
+
+    existing_scopes = (
+        connection.get(
+            "granted_scopes"
+        )
+        or ()
+    )
+
+    if isinstance(
+        existing_scopes,
+        str,
+    ):
+        existing_scopes = (
+            existing_scopes
+            .replace(",", " ")
+            .split()
+        )
+
+    granted_scopes = _parse_scopes(
+        payload.get(
+            "scope"
+        ),
+        fallback=(
+            existing_scopes
+            or X_OAUTH_SCOPES
+        ),
+    )
+
+    persisted = (
+        upsert_x_oauth_connection(
+            destination_id=destination_id,
+            workspace_id=int(
+                connection[
+                    "workspace_id"
+                ]
+            ),
+            connected_by_user_id=(
+                int(
+                    connection[
+                        "connected_by_user_id"
+                    ]
+                )
+                if connection.get(
+                    "connected_by_user_id"
+                )
+                is not None
+                else None
+            ),
+            x_user_id=str(
+                connection[
+                    "x_user_id"
+                ]
+            ),
+            x_username=(
+                str(
+                    connection[
+                        "x_username"
+                    ]
+                )
+                if connection.get(
+                    "x_username"
+                )
+                else None
+            ),
+            x_display_name=(
+                str(
+                    connection[
+                        "x_display_name"
+                    ]
+                )
+                if connection.get(
+                    "x_display_name"
+                )
+                else None
+            ),
+            access_token_ciphertext=(
+                access_token_ciphertext
+            ),
+            refresh_token_ciphertext=(
+                refresh_token_ciphertext
+            ),
+            token_expires_at=(
+                token_expires_at
+            ),
+            granted_scopes=(
+                granted_scopes
+            ),
+            connection_status="connected",
+            last_error=None,
+        )
+    )
+
+    if not persisted:
+        raise XOAuthRefreshError(
+            "Refreshed X OAuth connection could not be persisted",
+            reconnect_required=False,
+        )
+
+    logger.info(
+        "X OAuth token refreshed | destination=%s",
+        destination_id,
+    )
+
+    return XOAuthRefreshResult(
+        destination_id=(
+            destination_id
+        ),
+        access_token=(
+            access_token
+        ),
+        access_token_ciphertext=(
+            access_token_ciphertext
+        ),
+        refresh_token_ciphertext=(
+            refresh_token_ciphertext
+        ),
+        token_expires_at=(
+            token_expires_at
+        ),
+        granted_scopes=(
+            granted_scopes
+        ),
+    )
+
+
+def get_valid_x_access_token(
+    destination_id: int,
+    *,
+    min_ttl_seconds: Optional[int] = None,
+) -> str:
+    """
+    Return a usable plaintext access token for one X destination.
+
+    The plaintext token exists only in process memory. If the persisted token
+    is near expiry or already expired, refresh it first.
+    """
+    _require_config()
+
+    from core.database import (
+        get_x_oauth_connection,
+    )
+
+    destination_id = int(
+        destination_id
+    )
+
+    connection = (
+        get_x_oauth_connection(
+            destination_id
+        )
+    )
+
+    if not connection:
+        raise XOAuthRefreshError(
+            "X OAuth connection was not found",
+            reconnect_required=True,
+        )
+
+    status = str(
+        connection.get(
+            "connection_status"
+        )
+        or ""
+    ).strip().lower()
+
+    if status != "connected":
+        raise XOAuthRefreshError(
+            "X OAuth connection requires reconnect",
+            reconnect_required=True,
+        )
+
+    ttl = (
+        int(min_ttl_seconds)
+        if min_ttl_seconds
+        is not None
+        else int(
+            X_TOKEN_REFRESH_SKEW_SECONDS
+        )
+    )
+
+    expires_at = connection.get(
+        "token_expires_at"
+    )
+
+    should_refresh = False
+
+    if expires_at is not None:
+        try:
+            should_refresh = (
+                float(expires_at)
+                <= (
+                    time.time()
+                    + max(
+                        0,
+                        ttl,
+                    )
+                )
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            should_refresh = True
+
+    access_ciphertext = str(
+        connection.get(
+            "access_token_ciphertext"
+        )
+        or ""
+    ).strip()
+
+    if not access_ciphertext:
+        should_refresh = True
+
+    if should_refresh:
+        refreshed = (
+            refresh_x_oauth_connection(
+                destination_id
+            )
+        )
+
+        return (
+            refreshed.access_token
+        )
+
+    try:
+        return decrypt_x_secret(
+            access_ciphertext
+        )
+    except Exception:
+        refreshed = (
+            refresh_x_oauth_connection(
+                destination_id
+            )
+        )
+
+        return (
+            refreshed.access_token
+        )
 
 
 # =========================================================
@@ -576,41 +1154,19 @@ def complete_x_oauth_callback(
         )
     )
 
-    expires_in = (
-        token_payload.get(
-            "expires_in"
+    token_expires_at = (
+        _token_expiry_from_payload(
+            token_payload
         )
     )
 
-    token_expires_at = None
-
-    if expires_in is not None:
-        try:
-            token_expires_at = (
-                time.time()
-                + float(expires_in)
-            )
-        except (
-            TypeError,
-            ValueError,
-        ):
-            token_expires_at = None
-
-    raw_scope = str(
+    scopes = _parse_scopes(
         token_payload.get(
             "scope"
-        )
-        or ""
-    )
-
-    scopes = tuple(
-        item
-        for item in (
-            raw_scope
-            .replace(",", " ")
-            .split()
-        )
-        if item
+        ),
+        fallback=(
+            X_OAUTH_SCOPES
+        ),
     )
 
     return XOAuthCallbackResult(

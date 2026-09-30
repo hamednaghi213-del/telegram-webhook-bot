@@ -1,3 +1,6 @@
+import sys
+import time
+import types
 from urllib.parse import parse_qs, urlparse
 
 from core import workspace_publisher
@@ -17,8 +20,6 @@ def _fake_database_module(
     member=None,
     active_workspace_calls=None,
 ):
-    import types
-
     module = types.ModuleType(
         "core.database"
     )
@@ -88,6 +89,62 @@ def _fake_database_module(
     )
 
     return module
+
+
+def _configure_x_oauth_for_unit_test(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        x_oauth,
+        "X_CLIENT_ID",
+        "test-client-id",
+    )
+
+    monkeypatch.setattr(
+        x_oauth,
+        "X_CLIENT_SECRET",
+        "",
+    )
+
+    monkeypatch.setattr(
+        x_oauth,
+        "X_OAUTH_REDIRECT_URI",
+        "https://example.com/oauth/x/callback",
+    )
+
+    monkeypatch.setattr(
+        x_oauth,
+        "X_OAUTH_ENCRYPTION_KEY",
+        "test-key-for-mocked-encryption",
+    )
+
+
+def _refresh_connection_row(
+    *,
+    expires_at=None,
+):
+    return {
+        "destination_id": 3,
+        "workspace_id": 101,
+        "connected_by_user_id": 55,
+        "x_user_id": "123456789",
+        "x_username": "example_user",
+        "x_display_name": "Example User",
+        "access_token_ciphertext": "encrypted-old-access",
+        "refresh_token_ciphertext": "encrypted-old-refresh",
+        "token_expires_at": (
+            expires_at
+            if expires_at is not None
+            else time.time() - 60
+        ),
+        "granted_scopes": [
+            "tweet.read",
+            "tweet.write",
+            "users.read",
+            "offline.access",
+        ],
+        "connection_status": "connected",
+    }
 
 
 def test_workspace_management_panel_adds_x_button_when_missing():
@@ -236,33 +293,10 @@ def test_x_pkce_and_state_hash_are_deterministic():
 def test_start_x_oauth_persists_only_hashed_state_and_encrypted_verifier(
     monkeypatch,
 ):
-    import sys
-    import types
-
     captured = {}
 
-    monkeypatch.setattr(
-        x_oauth,
-        "X_CLIENT_ID",
-        "test-client-id",
-    )
-
-    monkeypatch.setattr(
-        x_oauth,
-        "X_CLIENT_SECRET",
-        "",
-    )
-
-    monkeypatch.setattr(
-        x_oauth,
-        "X_OAUTH_REDIRECT_URI",
-        "https://example.com/oauth/x/callback",
-    )
-
-    monkeypatch.setattr(
-        x_oauth,
-        "X_OAUTH_ENCRYPTION_KEY",
-        "test-key-for-mocked-encryption",
+    _configure_x_oauth_for_unit_test(
+        monkeypatch
     )
 
     monkeypatch.setattr(
@@ -421,8 +455,6 @@ def test_start_x_oauth_persists_only_hashed_state_and_encrypted_verifier(
 def test_ws_addx_owner_starts_oauth_and_sends_url_button(
     monkeypatch,
 ):
-    import sys
-
     oauth_calls = []
     active_workspace_calls = []
     answers = []
@@ -600,8 +632,6 @@ def test_ws_addx_owner_starts_oauth_and_sends_url_button(
 def test_ws_addx_non_manager_cannot_start_oauth(
     monkeypatch,
 ):
-    import sys
-
     oauth_calls = []
     keyboards = []
     answers = []
@@ -702,3 +732,435 @@ def test_ws_addx_non_manager_cannot_start_oauth(
         == "گروه رسانه‌ای معتبر نیست"
         for item in answers
     )
+
+
+def test_refresh_x_oauth_connection_rotates_tokens_and_persists(
+    monkeypatch,
+):
+    _configure_x_oauth_for_unit_test(
+        monkeypatch
+    )
+
+    connection = (
+        _refresh_connection_row()
+    )
+
+    upserts = []
+    statuses = []
+
+    fake_database = types.ModuleType(
+        "core.database"
+    )
+
+    fake_database.get_x_oauth_connection = (
+        lambda destination_id: (
+            connection
+            if destination_id == 3
+            else None
+        )
+    )
+
+    fake_database.update_x_oauth_connection_status = (
+        lambda destination_id,
+        status,
+        *,
+        last_error=None: statuses.append(
+            (
+                destination_id,
+                status,
+                last_error,
+            )
+        )
+    )
+
+    def fake_upsert(
+        **kwargs,
+    ):
+        upserts.append(
+            kwargs
+        )
+
+        return {
+            "id": 1,
+            **kwargs,
+        }
+
+    fake_database.upsert_x_oauth_connection = (
+        fake_upsert
+    )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "core.database",
+        fake_database,
+    )
+
+    monkeypatch.setattr(
+        x_oauth,
+        "decrypt_x_secret",
+        lambda ciphertext: (
+            "old-refresh-plain"
+            if ciphertext
+            == "encrypted-old-refresh"
+            else "old-access-plain"
+        ),
+    )
+
+    monkeypatch.setattr(
+        x_oauth,
+        "encrypt_x_secret",
+        lambda value: (
+            f"encrypted::{value}"
+        ),
+    )
+
+    monkeypatch.setattr(
+        x_oauth,
+        "_refresh_tokens",
+        lambda *,
+        refresh_token: {
+            "access_token":
+                "new-access",
+            "refresh_token":
+                "new-refresh",
+            "expires_in":
+                7200,
+            "scope": (
+                "tweet.read "
+                "tweet.write "
+                "users.read "
+                "offline.access"
+            ),
+        },
+    )
+
+    result = (
+        x_oauth.refresh_x_oauth_connection(
+            3
+        )
+    )
+
+    assert (
+        result.destination_id
+        == 3
+    )
+
+    assert (
+        result.access_token
+        == "new-access"
+    )
+
+    assert len(upserts) == 1
+
+    persisted = upserts[0]
+
+    assert (
+        persisted[
+            "access_token_ciphertext"
+        ]
+        == "encrypted::new-access"
+    )
+
+    assert (
+        persisted[
+            "refresh_token_ciphertext"
+        ]
+        == "encrypted::new-refresh"
+    )
+
+    assert (
+        persisted[
+            "connection_status"
+        ]
+        == "connected"
+    )
+
+    assert (
+        persisted["last_error"]
+        is None
+    )
+
+    assert statuses == []
+
+
+def test_refresh_x_oauth_connection_preserves_existing_refresh_token_if_not_rotated(
+    monkeypatch,
+):
+    _configure_x_oauth_for_unit_test(
+        monkeypatch
+    )
+
+    connection = (
+        _refresh_connection_row()
+    )
+
+    upserts = []
+
+    fake_database = types.ModuleType(
+        "core.database"
+    )
+
+    fake_database.get_x_oauth_connection = (
+        lambda _destination_id: (
+            connection
+        )
+    )
+
+    fake_database.update_x_oauth_connection_status = (
+        lambda *_args, **_kwargs: None
+    )
+
+    def fake_upsert(
+        **kwargs,
+    ):
+        upserts.append(
+            kwargs
+        )
+
+        return {
+            "id": 1,
+            **kwargs,
+        }
+
+    fake_database.upsert_x_oauth_connection = (
+        fake_upsert
+    )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "core.database",
+        fake_database,
+    )
+
+    monkeypatch.setattr(
+        x_oauth,
+        "decrypt_x_secret",
+        lambda _ciphertext: (
+            "old-refresh-plain"
+        ),
+    )
+
+    monkeypatch.setattr(
+        x_oauth,
+        "encrypt_x_secret",
+        lambda value: (
+            f"encrypted::{value}"
+        ),
+    )
+
+    monkeypatch.setattr(
+        x_oauth,
+        "_refresh_tokens",
+        lambda *,
+        refresh_token: {
+            "access_token":
+                "new-access",
+            "expires_in":
+                7200,
+        },
+    )
+
+    result = (
+        x_oauth.refresh_x_oauth_connection(
+            3
+        )
+    )
+
+    assert (
+        result.refresh_token_ciphertext
+        == "encrypted-old-refresh"
+    )
+
+    assert (
+        upserts[0][
+            "refresh_token_ciphertext"
+        ]
+        == "encrypted-old-refresh"
+    )
+
+
+def test_refresh_x_oauth_connection_marks_reconnect_required_on_invalid_refresh(
+    monkeypatch,
+):
+    _configure_x_oauth_for_unit_test(
+        monkeypatch
+    )
+
+    connection = (
+        _refresh_connection_row()
+    )
+
+    statuses = []
+    upserts = []
+
+    fake_database = types.ModuleType(
+        "core.database"
+    )
+
+    fake_database.get_x_oauth_connection = (
+        lambda _destination_id: (
+            connection
+        )
+    )
+
+    fake_database.update_x_oauth_connection_status = (
+        lambda destination_id,
+        status,
+        *,
+        last_error=None: statuses.append(
+            (
+                destination_id,
+                status,
+                last_error,
+            )
+        )
+    )
+
+    fake_database.upsert_x_oauth_connection = (
+        lambda **kwargs: upserts.append(
+            kwargs
+        )
+    )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "core.database",
+        fake_database,
+    )
+
+    monkeypatch.setattr(
+        x_oauth,
+        "decrypt_x_secret",
+        lambda _ciphertext: (
+            "old-refresh-plain"
+        ),
+    )
+
+    def fail_refresh(
+        *,
+        refresh_token,
+    ):
+        raise x_oauth.XOAuthRefreshError(
+            "X OAuth token refresh failed",
+            reconnect_required=True,
+        )
+
+    monkeypatch.setattr(
+        x_oauth,
+        "_refresh_tokens",
+        fail_refresh,
+    )
+
+    try:
+        x_oauth.refresh_x_oauth_connection(
+            3
+        )
+    except x_oauth.XOAuthRefreshError as exc:
+        assert (
+            exc.reconnect_required
+            is True
+        )
+    else:
+        raise AssertionError(
+            "Expected XOAuthRefreshError"
+        )
+
+    assert upserts == []
+
+    assert len(statuses) == 1
+
+    assert statuses[0][0] == 3
+    assert (
+        statuses[0][1]
+        == "reconnect_required"
+    )
+
+
+def test_get_valid_x_access_token_refreshes_near_expiry(
+    monkeypatch,
+):
+    _configure_x_oauth_for_unit_test(
+        monkeypatch
+    )
+
+    connection = (
+        _refresh_connection_row(
+            expires_at=(
+                time.time()
+                + 10
+            )
+        )
+    )
+
+    fake_database = types.ModuleType(
+        "core.database"
+    )
+
+    fake_database.get_x_oauth_connection = (
+        lambda _destination_id: (
+            connection
+        )
+    )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "core.database",
+        fake_database,
+    )
+
+    refresh_calls = []
+
+    def fake_refresh(
+        destination_id,
+    ):
+        refresh_calls.append(
+            destination_id
+        )
+
+        return (
+            x_oauth.XOAuthRefreshResult(
+                destination_id=(
+                    destination_id
+                ),
+                access_token=(
+                    "fresh-access"
+                ),
+                access_token_ciphertext=(
+                    "encrypted-fresh-access"
+                ),
+                refresh_token_ciphertext=(
+                    "encrypted-fresh-refresh"
+                ),
+                token_expires_at=(
+                    time.time()
+                    + 7200
+                ),
+                granted_scopes=(
+                    "tweet.read",
+                    "tweet.write",
+                    "users.read",
+                    "offline.access",
+                ),
+            )
+        )
+
+    monkeypatch.setattr(
+        x_oauth,
+        "refresh_x_oauth_connection",
+        fake_refresh,
+    )
+
+    access_token = (
+        x_oauth.get_valid_x_access_token(
+            3
+        )
+    )
+
+    assert (
+        access_token
+        == "fresh-access"
+    )
+
+    assert refresh_calls == [
+        3
+    ]
