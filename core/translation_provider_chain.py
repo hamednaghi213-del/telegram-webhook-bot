@@ -316,7 +316,7 @@ def translation_provider_chain(
 
     failures = []
 
-    for entry in entries:
+    for index, entry in enumerate(entries):
         name = _provider_name(entry)
 
         if provider_in_cooldown(name, entry.provider):
@@ -377,10 +377,14 @@ def translation_provider_chain(
             if error.category not in FALLBACK_CATEGORIES:
                 raise
 
-            # TranslationService owns the retry budget. Retryable provider
-            # failures must escape unchanged so the same provider can be
-            # retried before chain cooldown/fallback is activated.
-            if error.retryable:
+            # Prefer an available fallback over retrying this provider.
+            # With no usable successor, leave the existing retry budget
+            # in TranslationService and keep this provider out of cooldown.
+            has_fallback = any(
+                not provider_in_cooldown(_provider_name(next_entry), next_entry.provider)
+                for next_entry in entries[index + 1:]
+            )
+            if error.retryable and not has_fallback:
                 raise
 
             mark_provider_cooldown(name, error, entry.provider)
