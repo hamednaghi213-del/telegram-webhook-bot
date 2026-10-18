@@ -297,3 +297,50 @@ def test_database_retry_update_is_conditional(monkeypatch, current_status):
     assert filters == {"review_id": "review", "status": "failed"}
     assert query.update.call_args.args[0]["metadata"]["files"] == ["photo"]
     query.execute.assert_called_once()
+
+
+@pytest.mark.parametrize("cloudflare_status", [200, 503])
+def test_gemini_503_falls_back_before_review_decision(flow, monkeypatch, cloudflare_status):
+    from core import translation_provider_registry as registry
+    from core import translation_service as service
+
+    monkeypatch.setattr(registry, "_registry", registry.TranslationProviderRegistry())
+    monkeypatch.setenv("CLOUDFLARE_AI_API_TOKEN", "test-token")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+    sleep = Mock()
+    monkeypatch.setattr(service.time, "sleep", sleep)
+    urls = []
+
+    def post(url, **kwargs):
+        urls.append(url)
+        flow.stages.append("translate")
+        if "generativelanguage.googleapis.com" in url:
+            return flow.reply(503)
+        assert "api.cloudflare.com" in url
+        if cloudflare_status != 200:
+            return flow.reply(cloudflare_status)
+        return SimpleNamespace(ok=True, status_code=200, headers={}, json=lambda: {
+            "success": True, "result": {"response": MACHINE},
+        })
+
+    monkeypatch.setattr(provider, "provider_post", post)
+    result = flow.start()
+    row = flow.rows[result.review_id]
+    assert row["original_text"] == SOURCE
+    assert len([url for url in urls if "generativelanguage.googleapis.com" in url]) == 1
+    flow.publish.assert_not_called()
+    if cloudflare_status == 200:
+        assert result.success and row["status"] == "preview"
+        assert row["translated_text"] == MACHINE
+        assert len(urls) == 2
+        sleep.assert_not_called()
+        assert flow.stages == ["detect", "translate", "translate", "policy", "quality"]
+        assert flow.click(result.review_id, "confirm").success
+        assert flow.publish.call_args.kwargs["main_text"] == MACHINE
+        assert len(urls) == 2
+    else:
+        assert not result.success and row["status"] == "failed"
+        assert row["translated_text"] == ""
+        assert len(urls) == 4
+        assert [call.args[0] for call in sleep.call_args_list] == [1, 2]
+        assert "quality" not in flow.stages
