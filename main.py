@@ -365,6 +365,14 @@ def initialize_modules():
         os.getenv("BALE_WEBHOOK_SECRET_TOKEN", "").strip()
     )
 
+    from core.bale_diagnostics import check_bale_connection
+
+    threading.Thread(
+        target=check_bale_connection,
+        name="BaleConnectionCheck",
+        daemon=True,
+    ).start()
+
     logger.info(
         "✅ Bale Adapter initialized"
     )
