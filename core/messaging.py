@@ -14,6 +14,8 @@ import threading
 
 import requests
 
+from core.bale_diagnostics import bale_response_ok
+
 logger = logging.getLogger(__name__)
 
 # The Bale forwarder is used only for its API base constant. It is
@@ -184,16 +186,9 @@ def send_bale_text(
             timeout=30,
         )
 
-        return (
-            response.status_code == 200
-            and (
-                response.json() or {}
-            ).get("ok", True) is not False
-        )
-    except Exception:
-        logger.exception(
-            "Bale sendMessage failed"
-        )
+        return bale_response_ok(response, "sendMessage")
+    except Exception as exc:
+        logger.error("Bale sendMessage failed | exception_type=%s", type(exc).__name__)
         return False
 
 
@@ -223,16 +218,9 @@ def acknowledge_bale_callback(
             timeout=10,
         )
 
-        return (
-            response.status_code == 200
-            and (
-                response.json() or {}
-            ).get("ok", True) is not False
-        )
-    except Exception:
-        logger.exception(
-            "Bale answerCallbackQuery failed"
-        )
+        return bale_response_ok(response, "answerCallbackQuery")
+    except Exception as exc:
+        logger.error("Bale answerCallbackQuery failed | exception_type=%s", type(exc).__name__)
         return False
 
 
@@ -263,16 +251,9 @@ def send_bale_keyboard(
             timeout=30,
         )
 
-        return (
-            response.status_code == 200
-            and (
-                response.json() or {}
-            ).get("ok", True) is not False
-        )
-    except Exception:
-        logger.exception(
-            "Bale keyboard sendMessage failed"
-        )
+        return bale_response_ok(response, "sendMessage.keyboard")
+    except Exception as exc:
+        logger.error("Bale keyboard sendMessage failed | exception_type=%s", type(exc).__name__)
         return False
 
 
