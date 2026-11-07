@@ -433,7 +433,9 @@ class InMemoryPublicationStateStore(
                 target_identity,
             )
 
-            state.status = "failed"
+            from core.transport_errors import delivery_outcome_unknown
+
+            state.status = "failed_terminal" if delivery_outcome_unknown(error) else "failed"
             state.error = str(error)
 
     def get_delivery(

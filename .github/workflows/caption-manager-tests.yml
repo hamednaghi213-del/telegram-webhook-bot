@@ -25,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest
+          pip install pytest pytest-socket==0.8.1
 
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
@@ -35,4 +35,4 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          pytest -v tests
+          pytest -v tests --disable-socket --allow-hosts=127.0.0.1,localhost,::1 --allow-unix-socket

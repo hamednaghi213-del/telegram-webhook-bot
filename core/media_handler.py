@@ -1156,6 +1156,8 @@ def telegram_post(
     upload_files: Optional[Dict[str, Any]] = None,
 ) -> Optional[requests.Response]:
 
+    from core.transport_errors import DeliveryOutcomeUnknown
+
     # Final transport boundary: an unresolved Bale reference must never
     # be submitted to any Telegram method, including Rich Message APIs.
     from core.bale_media import BALE_MEDIA_PREFIX
@@ -1371,14 +1373,18 @@ def telegram_post(
             }, "files": upload_files}
             if upload_files else {"json": payload}
         )
-        response = requests.post(
-            url,
-            **request_kwargs,
-            timeout=(
-                TELEGRAM_CONNECT_TIMEOUT,
-                TELEGRAM_READ_TIMEOUT
+        if endpoint == "sendMediaGroup":
+            from core.telegram_album_transport import post_album
+            response = post_album(
+                url, request_kwargs,
+                (TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT),
             )
-        )
+        else:
+            response = requests.post(
+                url,
+                **request_kwargs,
+                timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT),
+            )
 
         elapsed = (
             time.monotonic()
@@ -1402,6 +1408,10 @@ def telegram_post(
         )
 
         return response
+
+    except DeliveryOutcomeUnknown:
+        logger.error("Telegram album outcome unknown; automatic resend blocked")
+        raise
 
     except requests.exceptions.ConnectTimeout as e:
 
