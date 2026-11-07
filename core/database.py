@@ -3695,8 +3695,10 @@ def mark_persistent_publication_delivery_failed(
             "Persistent publication state is not configured"
         )
 
+    from core.transport_errors import delivery_outcome_unknown
+
     payload = {
-        "status": "failed",
+        "status": "failed_terminal" if delivery_outcome_unknown(error) else "failed",
         "last_error": str(error),
         "lease_owner": None,
         "lease_expires_at": None,
