@@ -1574,6 +1574,24 @@ def telegram_response_ok(
         "ok"
     ) is True:
 
+        # Telegram can accept a video/album for deferred publication and
+        # return message_id=0. It is already accepted, not a failed send:
+        # never retry it while waiting for real message IDs to become usable.
+        result = data.get("result")
+        messages = result if isinstance(result, list) else [result]
+        if any(
+            isinstance(message, dict)
+            and type(message.get("message_id")) is int
+            and message["message_id"] == 0
+            for message in messages
+        ):
+            from core.transport_errors import DeliveryOutcomeUnknown
+
+            raise DeliveryOutcomeUnknown(
+                f"Telegram accepted {endpoint} for deferred publication "
+                "(message_id=0); automatic resend blocked"
+            )
+
         return True
 
     logger.error(
